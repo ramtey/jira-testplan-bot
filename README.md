@@ -6,7 +6,8 @@ Generate a structured QA test plan from a Jira ticket (title + description / acc
 
 ### What it does (now)
 - Runs a small FastAPI service
-- (Next milestone) Fetches a Jira issue by key and generates a test plan using an LLM
+- Fetches a Jira issue by key (`GET /issue/{issue_key}`) returning key, summary, and description
+- (Next milestone) Generates a test plan using an LLM
 - (Next milestone) Posts the generated plan back to Jira as a comment
 
 ### What it does NOT do yet
@@ -29,6 +30,7 @@ Generate a structured QA test plan from a Jira ticket (title + description / acc
 src/
   app/
     main.py        # FastAPI app entrypoint
+    jira_client.py # Jira REST API client
     config.py      # environment configuration
 tests/
 ```
@@ -82,6 +84,31 @@ http://127.0.0.1:8000/health
 http://127.0.0.1:8000/docs
 ```
 
+### Fetch a Jira issue
+
+```
+GET http://127.0.0.1:8000/issue/{issue_key}
+```
+
+Returns JSON:
+
+```json
+{
+  "key": "PROJ-123",
+  "summary": "Issue title",
+  "description": "Issue description text"
+}
+```
+
+**Error responses:**
+
+| Status | Meaning |
+|--------|---------|
+| 404 | Issue not found |
+| 401 | Jira authentication failed |
+| 403 | Jira access forbidden (permissions) |
+| 502 | Jira unreachable or timed out |
+
 ## Environments & Secrets
 
 - Never commit `.env`
@@ -89,7 +116,7 @@ http://127.0.0.1:8000/docs
 
 ## Roadmap (high level)
 
-- [ ] Jira: fetch issue summary/description by issue key
+- [x] Jira: fetch issue summary/description by issue key
 - [ ] LLM: generate structured JSON test plan
 - [ ] Formatter: convert JSON to Jira-friendly Markdown
 - [ ] Jira: post test plan as a comment
