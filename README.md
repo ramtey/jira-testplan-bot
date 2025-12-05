@@ -33,9 +33,12 @@ jira-testplan-bot/
 │   └── utils/
 │       ├── __init__.py
 │       └── formatter.py     # Markdown formatter
-├── requirements.txt
-├── .env.example
-└── README.md
+├── requirements.txt         # Python dependencies
+├── .env.example            # Environment variables template
+├── example_usage.py        # Example API usage script
+├── Dockerfile              # Docker container definition
+├── docker-compose.yml      # Docker Compose configuration
+└── README.md              # Project documentation
 ```
 
 ## Prerequisites
@@ -45,6 +48,8 @@ jira-testplan-bot/
 - OpenAI API key
 
 ## Setup
+
+### Option 1: Local Setup
 
 1. **Clone the repository**
    ```bash
@@ -86,6 +91,38 @@ jira-testplan-bot/
    APP_PORT=8000
    ```
 
+### Option 2: Docker Setup
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/ramtey/jira-testplan-bot.git
+   cd jira-testplan-bot
+   ```
+
+2. **Configure environment variables**
+   
+   Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+   
+   Edit `.env` and fill in your credentials.
+
+3. **Build and run with Docker Compose**
+   ```bash
+   docker-compose up -d
+   ```
+
+4. **Check logs**
+   ```bash
+   docker-compose logs -f
+   ```
+
+5. **Stop the service**
+   ```bash
+   docker-compose down
+   ```
+
 ### Getting Jira API Token
 
 1. Log in to Jira
@@ -101,8 +138,9 @@ jira-testplan-bot/
 
 ## Usage
 
-### Start the server
+### Start the Server
 
+**Option 1: Local Python**
 ```bash
 python -m app.main
 ```
@@ -112,7 +150,24 @@ Or using uvicorn directly:
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+**Option 2: Docker**
+```bash
+docker-compose up -d
+```
+
 The server will start at `http://localhost:8000`
+
+### Example Usage Script
+
+Use the provided example script to test the API:
+
+```bash
+# Check server health
+python example_usage.py
+
+# Generate test plan for a specific issue
+python example_usage.py PROJ-123
+```
 
 ### API Endpoints
 
