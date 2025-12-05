@@ -39,9 +39,10 @@ class LLMService:
         prompt = self._create_prompt(issue_summary, issue_description)
         
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            # Prepare API call parameters
+            api_params = {
+                "model": self.model,
+                "messages": [
                     {
                         "role": "system",
                         "content": "You are a QA engineer expert. Generate comprehensive test plans in JSON format."
@@ -51,9 +52,18 @@ class LLMService:
                         "content": prompt
                     }
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.7
-            )
+                "temperature": 0.7
+            }
+            
+            # Add response_format if supported (OpenAI API 1.0+)
+            try:
+                api_params["response_format"] = {"type": "json_object"}
+                response = self.client.chat.completions.create(**api_params)
+            except TypeError:
+                # Fallback for older API versions that don't support response_format
+                logger.warning("response_format not supported, falling back to text response")
+                del api_params["response_format"]
+                response = self.client.chat.completions.create(**api_params)
             
             result = json.loads(response.choices[0].message.content)
             logger.info("Test plan generated successfully")

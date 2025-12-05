@@ -4,6 +4,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Constants
+DEFAULT_DESCRIPTION = "No description provided"
+
 
 class JiraService:
     """Service for interacting with Jira API."""
@@ -40,7 +43,7 @@ class JiraService:
             return {
                 "key": issue_key,
                 "summary": issue.fields.summary,
-                "description": issue.fields.description or "No description provided"
+                "description": issue.fields.description or DEFAULT_DESCRIPTION
             }
         except Exception as e:
             logger.error(f"Error fetching issue {issue_key}: {str(e)}")

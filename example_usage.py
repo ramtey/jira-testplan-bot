@@ -42,7 +42,7 @@ def generate_test_plan(issue_key: str, base_url: str = "http://localhost:8000"):
             try:
                 error_detail = e.response.json()
                 print(f"Error details: {json.dumps(error_detail, indent=2)}")
-            except:
+            except (json.JSONDecodeError, ValueError):
                 print(f"Response: {e.response.text}")
         return False
     except Exception as e:
