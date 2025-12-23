@@ -3,7 +3,9 @@ from dataclasses import dataclass
 
 import httpx
 
+from .adf_parser import extract_text_from_adf
 from .config import settings
+from .description_analyzer import DescriptionAnalysis, analyze_description
 
 
 class JiraAuthError(Exception):
@@ -27,6 +29,7 @@ class JiraIssue:
     key: str
     summary: str
     description: str | None
+    description_analysis: DescriptionAnalysis
 
 
 class JiraClient:
@@ -73,15 +76,15 @@ class JiraClient:
         summary = fields.get("summary") or ""
         description = fields.get("description")  # Jira Cloud often returns ADF (dict)
 
-        # MVP: store description as string so you can see what Jira returns
-        description_str = None
-        if isinstance(description, str):
-            description_str = description
-        elif description is not None:
-            description_str = str(description)
+        # Extract readable text from ADF format
+        description_str = extract_text_from_adf(description)
+
+        # Analyze description quality
+        analysis = analyze_description(description_str)
 
         return JiraIssue(
             key=data["key"],
             summary=summary,
-            description=description_str,
+            description=description_str if description_str else None,
+            description_analysis=analysis,
         )

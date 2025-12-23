@@ -1,28 +1,102 @@
 # jira-testplan-bot
 
-Generate a structured QA test plan from a Jira ticket (title + description / acceptance criteria) and post it back to the ticket as a comment.
+Generate a structured QA test plan from a Jira ticket using the ticket's title/description and user-provided supplemental testing info when Acceptance Criteria (AC) or key testing details are missing.
 
-## MVP Scope
+## MVP Goal
 
-### What it does (now)
-- Runs a small FastAPI service
-- Fetches a Jira issue by key (`GET /issue/{issue_key}`) returning key, summary, and description
-- (Next milestone) Generates a test plan using an LLM
-- (Next milestone) Posts the generated plan back to Jira as a comment
+Provide a simple UI where a tester can enter a Jira ticket key, fetch ticket details, fill in missing context, and generate a structured, high-quality test plan that can be copied and used immediately.
 
-### What it does NOT do yet
-- Auto-trigger on "Ready to Test" (webhooks/automation)
-- GitHub PR/commit analysis
-- Attachment parsing
-- UI
+### Non-goal (MVP)
+
+Writing the test plan back into Jira (comment/custom field). This can be a Phase 2+ enhancement.
+
+## MVP Features
+
+### 1) Jira Integration (Read)
+
+Fetch source data used for test plan generation.
+
+- [x] Fetch Jira issue summary/title and description
+- [x] Extract readable text from Jira description (best-effort; Jira often returns rich text)
+- [x] Display a clear message when description/AC is missing or weak
+- [x] Handle errors gracefully:
+  - Ticket not found (404)
+  - Auth failure / permissions (401/403)
+  - Jira downtime/rate limiting (502)
+
+### 2) UI: Ticket Input + Fetch + Review
+
+Provide a lightweight workflow for testers.
+
+- [ ] Input field for Jira issue key (e.g., ABC-123)
+- [ ] "Fetch Ticket" button
+- [ ] Display:
+  - Title
+  - Description/AC (extracted text)
+  - Labels (optional)
+  - Issue type (optional)
+- [ ] Clear loading state + friendly errors
+
+### 3) Gap Detection + User-Supplied Testing Context
+
+Improve output quality when Jira ticket content is incomplete.
+
+When AC/testing info is missing or unclear, prompt the user to fill in:
+
+- [ ] Acceptance Criteria (if missing)
+- [ ] Test data notes (accounts, roles, sample data)
+- [ ] Environments (staging/prod flags, feature flags)
+- [ ] Roles/permissions involved
+- [ ] Out of scope / assumptions
+- [ ] Known risk areas / impacted modules
+
+Even if data is missing, the tool should still generate a plan and include a "Questions/Assumptions" section.
+
+### 4) LLM Prompt That Returns Structured JSON
+
+Generate test plan suggestions reliably.
+
+- [ ] Prompt the LLM using:
+  - Jira title + extracted description/AC
+  - User-provided testing context
+- [ ] Require structured JSON output using a fixed schema
+- [ ] Validate the JSON response (fail gracefully if invalid)
+
+**MVP Output Schema:**
+
+```json
+{
+  "happy_path": [{ "title": "", "steps": [], "expected": "" }],
+  "edge_cases": [{ "title": "", "steps": [], "expected": "" }],
+  "regression_checklist": [],
+  "non_functional": [],
+  "assumptions": [],
+  "questions": []
+}
+```
+
+### 5) Present Test Plan in UI + Export
+
+Make it usable immediately.
+
+- [ ] Render the plan in readable sections:
+  - Happy Path
+  - Edge Cases
+  - Regression Checklist
+  - Non-functional (if relevant)
+  - Assumptions / Risks
+  - Questions for PM/Dev
+- [ ] "Copy as Markdown" button
+- [ ] (Optional) "Download as .md" button
 
 ## Tech Stack
 
-- Python
-- FastAPI
-- uv for dependency management + running
-- httpx for HTTP calls
-- Pydantic Settings for environment config
+- **Backend:** Python + FastAPI
+- **Frontend:** React (or basic HTML first)
+- **LLM:** Any approved provider (or local model for dev)
+- **HTTP Client:** httpx
+- **Config:** Pydantic Settings + `.env` locally; secrets manager later
+- **Deployment (Phase 2):** Internal hosting + JumpCloud SSO
 
 ## Project Structure
 
@@ -96,7 +170,14 @@ Returns JSON:
 {
   "key": "PROJ-123",
   "summary": "Issue title",
-  "description": "Issue description text"
+  "description": "Issue description text (extracted from ADF format)",
+  "description_quality": {
+    "has_description": true,
+    "is_weak": false,
+    "warnings": [],
+    "char_count": 245,
+    "word_count": 42
+  }
 }
 ```
 
@@ -114,15 +195,40 @@ Returns JSON:
 - Never commit `.env`
 - Use `.env.example` as the template
 
-## Roadmap (high level)
+## Testing Strategy
 
-- [x] Jira: fetch issue summary/description by issue key
-- [ ] LLM: generate structured JSON test plan
-- [ ] Formatter: convert JSON to Jira-friendly Markdown
-- [ ] Jira: post test plan as a comment
-- [ ] Add idempotency (avoid duplicate comments)
-- [ ] Optional: webhook trigger on "Ready to Test"
-- [ ] Optional: GitHub PR/file-change awareness
+### Unit tests
+
+- Jira client (mock responses)
+- Gap detection logic
+- JSON schema validation
+- Formatter/export
+
+### End-to-end testing
+
+- Fetch → validate ticket → gather user inputs → LLM → render → copy/export
+- Use a dedicated Jira test project (or safe test tickets) to avoid production impact
+
+## Timeline and Milestones
+
+| Milestone | Status |
+|-----------|--------|
+| Initial Setup (Repo, basic API + UI skeleton) | ✅ Done |
+| Jira Read Integration Complete | ✅ Done |
+| UI Fetch + Display Ticket | To Do |
+| Gap Detection + User Input Form | To Do |
+| LLM Prompting + Schema Finalized | To Do |
+| UI Test Plan Rendering + Copy/Export | To Do |
+| Internal MVP Demo | To Do |
+| Phase 2 Planning (JumpCloud + Hosting) | To Do |
+
+## Post-MVP Considerations (Phase 2+)
+
+- JumpCloud SSO and internal hosting for company-wide access
+- "Post back to Jira" as a button (manual write) before automation
+- GitHub integration to incorporate changed files/repo areas
+- Feedback loop (thumbs up/down per plan) to improve prompts
+- Saved history of generated plans (per ticket) with audit trail
 
 ## License
 

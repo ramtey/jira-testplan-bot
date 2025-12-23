@@ -24,6 +24,13 @@ async def get_issue(issue_key: str):
             "key": issue.key,
             "summary": issue.summary,
             "description": issue.description,
+            "description_quality": {
+                "has_description": issue.description_analysis.has_description,
+                "is_weak": issue.description_analysis.is_weak,
+                "warnings": issue.description_analysis.warnings,
+                "char_count": issue.description_analysis.char_count,
+                "word_count": issue.description_analysis.word_count,
+            },
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
