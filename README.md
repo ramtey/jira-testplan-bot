@@ -197,12 +197,28 @@ Returns JSON:
 
 ## Testing Strategy
 
+### Run tests
+
+Quick test with dummy data (no dependencies):
+
+```bash
+uv run python tests/run_tests.py
+```
+
+Run full test suite with pytest (optional):
+
+```bash
+uv add --dev pytest pytest-asyncio
+uv run pytest tests/ -v
+```
+
 ### Unit tests
 
 - Jira client (mock responses)
-- Gap detection logic
-- JSON schema validation
-- Formatter/export
+- ADF parser (text extraction)
+- Description analyzer (quality detection)
+- JSON schema validation (later)
+- Formatter/export (later)
 
 ### End-to-end testing
 
