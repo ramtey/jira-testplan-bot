@@ -272,8 +272,8 @@ button:disabled {
 }
 
 .btn-clear:hover:not(:disabled) {
-  background: var(--text-primary);
-  box-shadow: 0 4px 12px rgba(23, 43, 77, 0.3);
+  background: #8a8a8a;
+  box-shadow: 0 4px 12px rgba(94, 108, 132, 0.3);
 }
 
 .btn-expand {
