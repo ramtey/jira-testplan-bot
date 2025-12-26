@@ -58,11 +58,13 @@ The UI displays an "Additional Testing Context" form after fetching a ticket, wi
 
 Generate test plan suggestions reliably.
 
-- [ ] Prompt the LLM using:
+- [x] Prompt the LLM using:
   - Jira title + extracted description/AC
   - User-provided testing context
-- [ ] Require structured JSON output using a fixed schema
-- [ ] Validate the JSON response (fail gracefully if invalid)
+- [x] Require structured JSON output using a fixed schema
+- [x] Validate the JSON response (fail gracefully if invalid)
+- [x] Abstraction layer supporting multiple LLM providers (Ollama, Claude)
+- [x] Easy provider switching via .env configuration
 
 **MVP Output Schema:**
 
@@ -95,7 +97,7 @@ Make it usable immediately.
 
 - **Backend:** Python + FastAPI
 - **Frontend:** React with Vite
-- **LLM:** Any approved provider (or local model for dev)
+- **LLM:** Ollama (local, free) or Claude API (Anthropic, paid) - switchable via config
 - **HTTP Client:** httpx
 - **Config:** Pydantic Settings + `.env` locally; secrets manager later
 - **Deployment (Phase 2):** Internal hosting + JumpCloud SSO
@@ -109,6 +111,7 @@ src/
     jira_client.py         # Jira REST API client
     adf_parser.py          # Atlassian Document Format parser
     description_analyzer.py # Description quality analyzer
+    llm_client.py          # LLM abstraction layer (Ollama + Claude)
     config.py              # environment configuration
 frontend/
   src/
@@ -117,6 +120,7 @@ frontend/
 tests/
   test_manual.py           # Unit tests for ADF parser & analyzer
   test_api_mock.py         # API endpoint tests with mocks
+  test_llm.py              # LLM integration test
   run_tests.py             # Simple test runner
 ```
 
@@ -152,7 +156,9 @@ cp .env.example .env
    - `JIRA_BASE_URL`
    - `JIRA_EMAIL`
    - `JIRA_API_TOKEN`
-   - (later) `LLM_API_KEY`
+   - `LLM_PROVIDER` - "ollama" (local) or "claude" (API)
+   - `LLM_MODEL` - model name (e.g., "llama3.1" for Ollama, "claude-3-5-sonnet-20241022" for Claude)
+   - `ANTHROPIC_API_KEY` - only if using Claude API
 
 ### Frontend Setup
 
@@ -167,6 +173,39 @@ cd frontend
 ```bash
 npm install
 ```
+
+### LLM Setup (Choose One)
+
+You have two options for the LLM provider:
+
+#### Option 1: Ollama (Local, Free) - Recommended for Development
+
+1. Install Ollama from [https://ollama.com/download](https://ollama.com/download)
+2. Start Ollama server: `ollama serve`
+3. Pull a model: `ollama pull llama3.1`
+4. In your `.env`, set:
+   ```
+   LLM_PROVIDER=ollama
+   LLM_MODEL=llama3.1
+   ```
+
+**Test it:** `uv run python tests/test_llm.py`
+
+#### Option 2: Claude API (Anthropic, Paid) - Best Quality
+
+1. Get API key from your company's Anthropic account
+2. In your `.env`, set:
+   ```
+   LLM_PROVIDER=claude
+   LLM_MODEL=claude-3-5-sonnet-20241022
+   ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
+   ```
+
+**Test it:** `uv run python tests/test_llm.py`
+
+#### Switching Providers
+
+To switch between providers, just update `LLM_PROVIDER` in your `.env` file. No code changes needed!
 
 ## Run the Application
 
@@ -233,6 +272,38 @@ Returns JSON:
 | 403 | Jira access forbidden (permissions) |
 | 502 | Jira unreachable or timed out |
 
+### Generate a test plan
+
+```
+POST http://127.0.0.1:8000/generate-test-plan
+```
+
+Request body:
+
+```json
+{
+  "ticket_key": "PROJ-123",
+  "summary": "Add password reset functionality",
+  "description": "Users should be able to reset their password via email...",
+  "testing_context": {
+    "acceptanceCriteria": "Given a user clicks 'Forgot Password'...",
+    "testDataNotes": "Test with valid and invalid emails",
+    "environments": "Staging and production",
+    "rolesPermissions": "Any authenticated user",
+    "outOfScope": "SSO password reset",
+    "riskAreas": "Email delivery, token generation"
+  }
+}
+```
+
+Returns structured test plan JSON with sections: `happy_path`, `edge_cases`, `regression_checklist`, `non_functional`, `assumptions`, `questions`.
+
+**Error responses:**
+
+| Status | Meaning |
+|--------|---------|
+| 503 | LLM service unavailable (Ollama not running, Claude API error) |
+
 ## Environments & Secrets
 
 - Never commit `.env`
@@ -248,6 +319,12 @@ Quick test with dummy data (no dependencies):
 uv run python tests/run_tests.py
 ```
 
+Test LLM integration:
+
+```bash
+uv run python tests/test_llm.py
+```
+
 Run full test suite with pytest (optional):
 
 ```bash
@@ -260,7 +337,8 @@ uv run pytest tests/ -v
 - Jira client (mock responses)
 - ADF parser (text extraction)
 - Description analyzer (quality detection)
-- JSON schema validation (later)
+- LLM client (mock LLM responses)
+- JSON schema validation
 - Formatter/export (later)
 
 ### End-to-end testing
@@ -276,7 +354,7 @@ uv run pytest tests/ -v
 | Jira Read Integration Complete | ✅ Done |
 | UI Fetch + Display Ticket | ✅ Done |
 | Gap Detection + User Input Form | ✅ Done |
-| LLM Prompting + Schema Finalized | To Do |
+| LLM Integration + Backend Endpoint | ✅ Done |
 | UI Test Plan Rendering + Copy/Export | To Do |
 | Internal MVP Demo | To Do |
 | Phase 2 Planning (JumpCloud + Hosting) | To Do |

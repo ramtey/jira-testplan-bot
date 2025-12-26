@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from .jira_client import (
     JiraAuthError,
@@ -7,6 +8,7 @@ from .jira_client import (
     JiraConnectionError,
     JiraNotFoundError,
 )
+from .llm_client import LLMError, get_llm_client
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
 
@@ -55,3 +57,43 @@ async def get_issue(issue_key: str):
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except JiraConnectionError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+class GenerateTestPlanRequest(BaseModel):
+    """Request body for generating test plans."""
+
+    ticket_key: str
+    summary: str
+    description: str | None = None
+    testing_context: dict = {}
+
+
+@app.post("/generate-test-plan")
+async def generate_test_plan(request: GenerateTestPlanRequest):
+    """
+    Generate a structured test plan using LLM.
+
+    This endpoint accepts ticket data and optional testing context,
+    then uses the configured LLM provider (Ollama or Claude) to generate
+    a comprehensive test plan.
+    """
+    try:
+        llm = get_llm_client()
+        test_plan = await llm.generate_test_plan(
+            ticket_key=request.ticket_key,
+            summary=request.summary,
+            description=request.description,
+            testing_context=request.testing_context,
+        )
+
+        return {
+            "ticket_key": request.ticket_key,
+            "happy_path": test_plan.happy_path,
+            "edge_cases": test_plan.edge_cases,
+            "regression_checklist": test_plan.regression_checklist,
+            "non_functional": test_plan.non_functional,
+            "assumptions": test_plan.assumptions,
+            "questions": test_plan.questions,
+        }
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e))
