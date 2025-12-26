@@ -8,6 +8,16 @@ function App() {
   const [ticketData, setTicketData] = useState(null)
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
 
+  // Testing context form state
+  const [testingContext, setTestingContext] = useState({
+    acceptanceCriteria: '',
+    testDataNotes: '',
+    environments: '',
+    rolesPermissions: '',
+    outOfScope: '',
+    riskAreas: ''
+  })
+
   const handleFetchTicket = async (e) => {
     e.preventDefault()
 
@@ -20,6 +30,14 @@ function App() {
     setError(null)
     setTicketData(null)
     setIsDescriptionExpanded(false)
+    setTestingContext({
+      acceptanceCriteria: '',
+      testDataNotes: '',
+      environments: '',
+      rolesPermissions: '',
+      outOfScope: '',
+      riskAreas: ''
+    })
 
     try {
       const response = await fetch(`http://localhost:8000/issue/${issueKey.trim()}`)
@@ -43,6 +61,21 @@ function App() {
     setTicketData(null)
     setError(null)
     setIsDescriptionExpanded(false)
+    setTestingContext({
+      acceptanceCriteria: '',
+      testDataNotes: '',
+      environments: '',
+      rolesPermissions: '',
+      outOfScope: '',
+      riskAreas: ''
+    })
+  }
+
+  const handleContextChange = (field, value) => {
+    setTestingContext(prev => ({
+      ...prev,
+      [field]: value
+    }))
   }
 
   const toggleDescription = () => {
@@ -184,6 +217,86 @@ function App() {
                   </ul>
                 </div>
               )}
+            </div>
+
+            <div className="ticket-section">
+              <h3>Additional Testing Context</h3>
+              <p className="section-description">
+                Provide supplemental information to improve test plan quality (all fields optional)
+              </p>
+
+              <div className="context-form">
+                <div className="form-field">
+                  <label htmlFor="acceptanceCriteria">
+                    Acceptance Criteria
+                    {(!ticketData.description || ticketData.description_quality.is_weak) && (
+                      <span className="field-suggested"> (Recommended)</span>
+                    )}
+                  </label>
+                  <textarea
+                    id="acceptanceCriteria"
+                    placeholder="e.g., Given a user clicks 'Forgot Password', when they enter their email, then they receive a reset link"
+                    value={testingContext.acceptanceCriteria}
+                    onChange={(e) => handleContextChange('acceptanceCriteria', e.target.value)}
+                    rows="3"
+                  />
+                </div>
+
+                <div className="form-field">
+                  <label htmlFor="testDataNotes">Test Data Notes</label>
+                  <textarea
+                    id="testDataNotes"
+                    placeholder="e.g., Test accounts, roles, sample data needed"
+                    value={testingContext.testDataNotes}
+                    onChange={(e) => handleContextChange('testDataNotes', e.target.value)}
+                    rows="3"
+                  />
+                </div>
+
+                <div className="form-field">
+                  <label htmlFor="environments">Environments</label>
+                  <textarea
+                    id="environments"
+                    placeholder="e.g., Staging/prod flags, feature flags, configuration notes"
+                    value={testingContext.environments}
+                    onChange={(e) => handleContextChange('environments', e.target.value)}
+                    rows="2"
+                  />
+                </div>
+
+                <div className="form-field">
+                  <label htmlFor="rolesPermissions">Roles/Permissions</label>
+                  <textarea
+                    id="rolesPermissions"
+                    placeholder="e.g., Admin, user, guest - which roles need testing?"
+                    value={testingContext.rolesPermissions}
+                    onChange={(e) => handleContextChange('rolesPermissions', e.target.value)}
+                    rows="2"
+                  />
+                </div>
+
+                <div className="form-field">
+                  <label htmlFor="outOfScope">Out of Scope / Assumptions</label>
+                  <textarea
+                    id="outOfScope"
+                    placeholder="e.g., What's explicitly not included in this change?"
+                    value={testingContext.outOfScope}
+                    onChange={(e) => handleContextChange('outOfScope', e.target.value)}
+                    rows="2"
+                  />
+                </div>
+
+                <div className="form-field">
+                  <label htmlFor="riskAreas">Known Risk Areas / Impacted Modules</label>
+                  <textarea
+                    id="riskAreas"
+                    placeholder="e.g., Authentication flow, payment processing, data migration"
+                    value={testingContext.riskAreas}
+                    onChange={(e) => handleContextChange('riskAreas', e.target.value)}
+                    rows="2"
+                  />
+                </div>
+              </div>
             </div>
           </div>
         )}

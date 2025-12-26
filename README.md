@@ -45,14 +45,14 @@ Improve output quality when Jira ticket content is incomplete.
 
 When AC/testing info is missing or unclear, prompt the user to fill in:
 
-- [ ] Acceptance Criteria (if missing)
-- [ ] Test data notes (accounts, roles, sample data)
-- [ ] Environments (staging/prod flags, feature flags)
-- [ ] Roles/permissions involved
-- [ ] Out of scope / assumptions
-- [ ] Known risk areas / impacted modules
+- [x] Acceptance Criteria (if missing)
+- [x] Test data notes (accounts, roles, sample data)
+- [x] Environments (staging/prod flags, feature flags)
+- [x] Roles/permissions involved
+- [x] Out of scope / assumptions
+- [x] Known risk areas / impacted modules
 
-Even if data is missing, the tool should still generate a plan and include a "Questions/Assumptions" section.
+The UI displays an "Additional Testing Context" form after fetching a ticket, with all fields optional. The form highlights recommended fields when description quality is weak.
 
 ### 4) LLM Prompt That Returns Structured JSON
 
@@ -275,7 +275,7 @@ uv run pytest tests/ -v
 | Initial Setup (Repo, basic API + UI skeleton) | ✅ Done |
 | Jira Read Integration Complete | ✅ Done |
 | UI Fetch + Display Ticket | ✅ Done |
-| Gap Detection + User Input Form | To Do |
+| Gap Detection + User Input Form | ✅ Done |
 | LLM Prompting + Schema Finalized | To Do |
 | UI Test Plan Rendering + Copy/Export | To Do |
 | Internal MVP Demo | To Do |
