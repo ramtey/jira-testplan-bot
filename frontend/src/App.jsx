@@ -563,6 +563,24 @@ function App() {
                   >
                     Copy as Markdown
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const markdown = formatTestPlanAsMarkdown(testPlan)
+                      const blob = new Blob([markdown], { type: 'text/markdown' })
+                      const url = URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url
+                      a.download = `test-plan-${ticketData.key}.md`
+                      document.body.appendChild(a)
+                      a.click()
+                      document.body.removeChild(a)
+                      URL.revokeObjectURL(url)
+                    }}
+                    className="btn-download"
+                  >
+                    Download as .md
+                  </button>
                 </div>
               </div>
             )}

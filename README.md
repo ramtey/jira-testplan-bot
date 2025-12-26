@@ -91,7 +91,7 @@ Make it usable immediately.
   - Assumptions / Risks
   - Questions for PM/Dev
 - [x] "Copy as Markdown" button
-- [ ] (Optional) "Download as .md" button
+- [x] "Download as .md" button
 
 ## Tech Stack
 

@@ -877,6 +877,20 @@ button:disabled {
   box-shadow: 0 6px 16px rgba(0, 135, 90, 0.4);
 }
 
+.btn-download {
+  padding: 1rem 2.5rem;
+  background: var(--primary);
+  font-size: 1rem;
+  font-weight: 600;
+  min-width: 200px;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.btn-download:hover:not(:disabled) {
+  background: #5568d3;
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
 /* Responsive adjustments for test plan */
 @media (max-width: 768px) {
   .btn-generate {
@@ -893,7 +907,8 @@ button:disabled {
     flex-direction: column;
   }
 
-  .btn-copy {
+  .btn-copy,
+  .btn-download {
     width: 100%;
     min-width: unset;
   }
