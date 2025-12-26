@@ -30,6 +30,8 @@ class JiraIssue:
     summary: str
     description: str | None
     description_analysis: DescriptionAnalysis
+    labels: list[str]
+    issue_type: str
 
 
 class JiraClient:
@@ -50,7 +52,7 @@ class JiraClient:
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         # Ask Jira for only what we need (faster + smaller payload)
-        params = {"fields": "summary,description"}
+        params = {"fields": "summary,description,labels,issuetype"}
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
@@ -75,6 +77,8 @@ class JiraClient:
         fields = data.get("fields", {})
         summary = fields.get("summary") or ""
         description = fields.get("description")  # Jira Cloud often returns ADF (dict)
+        labels = fields.get("labels", [])
+        issue_type = fields.get("issuetype", {}).get("name", "Unknown")
 
         # Extract readable text from ADF format
         description_str = extract_text_from_adf(description)
@@ -87,4 +91,6 @@ class JiraClient:
             summary=summary,
             description=description_str if description_str else None,
             description_analysis=analysis,
+            labels=labels,
+            issue_type=issue_type,
         )

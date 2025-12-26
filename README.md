@@ -28,14 +28,16 @@ Fetch source data used for test plan generation.
 
 Provide a lightweight workflow for testers.
 
-- [ ] Input field for Jira issue key (e.g., ABC-123)
-- [ ] "Fetch Ticket" button
-- [ ] Display:
+- [x] Input field for Jira issue key (e.g., ABC-123)
+- [x] "Fetch Ticket" button
+- [x] Display:
   - Title
   - Description/AC (extracted text)
-  - Labels (optional)
-  - Issue type (optional)
-- [ ] Clear loading state + friendly errors
+  - Labels
+  - Issue type (color-coded: Story=green, Bug=red, Spike=blue, Task=light blue, Epic=purple)
+- [x] Clear loading state + friendly errors
+- [x] Collapsible description (show more/less for long descriptions)
+- [x] Dark/Light theme support (follows system preference)
 
 ### 3) Gap Detection + User-Supplied Testing Context
 
@@ -92,7 +94,7 @@ Make it usable immediately.
 ## Tech Stack
 
 - **Backend:** Python + FastAPI
-- **Frontend:** React (or basic HTML first)
+- **Frontend:** React with Vite
 - **LLM:** Any approved provider (or local model for dev)
 - **HTTP Client:** httpx
 - **Config:** Pydantic Settings + `.env` locally; secrets manager later
@@ -103,15 +105,25 @@ Make it usable immediately.
 ```
 src/
   app/
-    main.py        # FastAPI app entrypoint
-    jira_client.py # Jira REST API client
-    config.py      # environment configuration
+    main.py                # FastAPI app entrypoint
+    jira_client.py         # Jira REST API client
+    adf_parser.py          # Atlassian Document Format parser
+    description_analyzer.py # Description quality analyzer
+    config.py              # environment configuration
+frontend/
+  src/
+    App.jsx                # React UI component
+    App.css                # Styles with dark/light theme
 tests/
+  test_manual.py           # Unit tests for ADF parser & analyzer
+  test_api_mock.py         # API endpoint tests with mocks
+  run_tests.py             # Simple test runner
 ```
 
 ## Prerequisites
 
 - Python 3.11+ recommended
+- Node.js 20.19+ or 22.12+ (for frontend)
 - uv installed
 
 ### Install uv
@@ -121,6 +133,8 @@ pip install uv
 ```
 
 ## Setup
+
+### Backend Setup
 
 1. Install dependencies:
 
@@ -140,11 +154,38 @@ cp .env.example .env
    - `JIRA_API_TOKEN`
    - (later) `LLM_API_KEY`
 
-## Run the API locally
+### Frontend Setup
+
+1. Navigate to frontend directory:
+
+```bash
+cd frontend
+```
+
+2. Install dependencies:
+
+```bash
+npm install
+```
+
+## Run the Application
+
+### Start Backend (Terminal 1)
 
 ```bash
 uv run uvicorn src.app.main:app --reload
 ```
+
+Backend runs on: `http://localhost:8000`
+
+### Start Frontend (Terminal 2)
+
+```bash
+cd frontend
+npm run dev
+```
+
+Frontend runs on: `http://localhost:5173`
 
 ### Health check
 
@@ -171,6 +212,8 @@ Returns JSON:
   "key": "PROJ-123",
   "summary": "Issue title",
   "description": "Issue description text (extracted from ADF format)",
+  "labels": ["security", "user-management"],
+  "issue_type": "Story",
   "description_quality": {
     "has_description": true,
     "is_weak": false,
@@ -231,7 +274,7 @@ uv run pytest tests/ -v
 |-----------|--------|
 | Initial Setup (Repo, basic API + UI skeleton) | ✅ Done |
 | Jira Read Integration Complete | ✅ Done |
-| UI Fetch + Display Ticket | To Do |
+| UI Fetch + Display Ticket | ✅ Done |
 | Gap Detection + User Input Form | To Do |
 | LLM Prompting + Schema Finalized | To Do |
 | UI Test Plan Rendering + Copy/Export | To Do |

@@ -30,6 +30,8 @@ async def test_issue_with_good_description():
         "key": "TEST-123",
         "fields": {
             "summary": "Add password reset functionality",
+            "labels": ["security", "user-management"],
+            "issuetype": {"name": "Story"},
             "description": {
                 "version": 1,
                 "type": "doc",
@@ -86,11 +88,15 @@ async def test_issue_with_good_description():
         data = response.json()
         assert data["key"] == "TEST-123"
         assert data["summary"] == "Add password reset functionality"
+        assert data["labels"] == ["security", "user-management"]
+        assert data["issue_type"] == "Story"
         assert "Users should be able to reset their password" in data["description"]
         assert "Acceptance Criteria" in data["description"]
         assert data["description_quality"]["has_description"] is True
         assert len(data["description_quality"]["warnings"]) == 0
         print("✓ Issue with good description works!")
+        print(f"  Labels: {data['labels']}")
+        print(f"  Issue Type: {data['issue_type']}")
         print(f"  Extracted description:\n  {data['description'][:100]}...")
 
 
@@ -99,7 +105,12 @@ async def test_issue_with_no_description():
     """Test fetching an issue with no description."""
     mock_jira_response = {
         "key": "TEST-456",
-        "fields": {"summary": "Fix login bug", "description": None},
+        "fields": {
+            "summary": "Fix login bug",
+            "description": None,
+            "labels": [],
+            "issuetype": {"name": "Bug"},
+        },
     }
 
     with patch("httpx.AsyncClient") as mock_client:
@@ -116,11 +127,14 @@ async def test_issue_with_no_description():
         data = response.json()
         assert data["key"] == "TEST-456"
         assert data["description"] is None
+        assert data["labels"] == []
+        assert data["issue_type"] == "Bug"
         assert data["description_quality"]["has_description"] is False
         assert data["description_quality"]["is_weak"] is True
         assert len(data["description_quality"]["warnings"]) > 0
         assert "No description provided" in data["description_quality"]["warnings"][0]
         print("✓ Issue with no description works!")
+        print(f"  Issue Type: {data['issue_type']}")
         print(f"  Warnings: {data['description_quality']['warnings']}")
 
 
@@ -129,7 +143,12 @@ async def test_issue_with_weak_description():
     """Test fetching an issue with a very short description."""
     mock_jira_response = {
         "key": "TEST-789",
-        "fields": {"summary": "Update UI", "description": "Make it blue"},
+        "fields": {
+            "summary": "Update UI",
+            "description": "Make it blue",
+            "labels": ["ui", "design"],
+            "issuetype": {"name": "Task"},
+        },
     }
 
     with patch("httpx.AsyncClient") as mock_client:
@@ -146,11 +165,15 @@ async def test_issue_with_weak_description():
         data = response.json()
         assert data["key"] == "TEST-789"
         assert data["description"] == "Make it blue"
+        assert data["labels"] == ["ui", "design"]
+        assert data["issue_type"] == "Task"
         assert data["description_quality"]["has_description"] is True
         assert data["description_quality"]["is_weak"] is True
         assert data["description_quality"]["char_count"] < 50
         assert len(data["description_quality"]["warnings"]) > 0
         print("✓ Issue with weak description works!")
+        print(f"  Labels: {data['labels']}")
+        print(f"  Issue Type: {data['issue_type']}")
         print(f"  Warnings: {data['description_quality']['warnings']}")
 
 
