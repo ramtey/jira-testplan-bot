@@ -662,3 +662,249 @@ button:disabled {
     padding: 1.25rem;
   }
 }
+
+/* Test Plan Generation */
+.generate-section {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.btn-generate {
+  padding: 1.25rem 3rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-size: 1.125rem;
+  font-weight: 700;
+  min-width: 250px;
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4);
+}
+
+.btn-generate:hover:not(:disabled) {
+  background: linear-gradient(135deg, #5568d3 0%, #6a3f8b 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+}
+
+.btn-generate:disabled {
+  background: var(--text-secondary);
+  opacity: 0.7;
+}
+
+/* Spinner animation inside button */
+.btn-generate .spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Animated dots */
+.btn-generate .dots::after {
+  content: '.';
+  animation: dots 1.5s steps(4, end) infinite;
+}
+
+@keyframes dots {
+  0%, 20% {
+    content: '.';
+  }
+  40% {
+    content: '..';
+  }
+  60%, 100% {
+    content: '...';
+  }
+}
+
+/* Generation message */
+.generation-message {
+  margin-top: 1rem;
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+  text-align: center;
+  animation: fadeIn 0.3s ease;
+}
+
+/* Test Plan Display */
+.test-plan-section {
+  animation: fadeIn 0.4s ease;
+}
+
+.test-plan-group {
+  margin-bottom: 2rem;
+}
+
+.test-plan-group h4 {
+  font-size: 1.25rem;
+  color: var(--text-primary);
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid var(--border);
+}
+
+.test-case {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+  transition: all 0.2s ease;
+}
+
+.test-case:hover {
+  border-left-color: #667eea;
+  box-shadow: 0 2px 8px var(--shadow);
+}
+
+.test-case h5 {
+  font-size: 1.125rem;
+  color: var(--text-primary);
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+
+.test-steps {
+  margin-bottom: 1rem;
+}
+
+.test-steps strong {
+  color: var(--text-primary);
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.9375rem;
+}
+
+.test-steps ol {
+  margin-left: 1.5rem;
+  color: var(--text-secondary);
+}
+
+.test-steps ol li {
+  padding: 0.25rem 0;
+  line-height: 1.6;
+}
+
+.test-expected {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.test-expected strong {
+  color: var(--text-primary);
+  font-size: 0.9375rem;
+}
+
+.checklist,
+.assumptions-list,
+.questions-list {
+  list-style: none;
+  padding: 0;
+}
+
+.checklist li,
+.assumptions-list li,
+.questions-list li {
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  line-height: 1.6;
+  position: relative;
+  padding-left: 2.5rem;
+}
+
+.checklist li::before {
+  content: '☐';
+  position: absolute;
+  left: 1rem;
+  font-size: 1.125rem;
+  color: var(--primary);
+}
+
+.assumptions-list li::before {
+  content: '💡';
+  position: absolute;
+  left: 1rem;
+}
+
+.questions-list li::before {
+  content: '❓';
+  position: absolute;
+  left: 1rem;
+}
+
+/* Test Plan Actions */
+.test-plan-actions {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.btn-copy {
+  padding: 1rem 2.5rem;
+  background: var(--success);
+  font-size: 1rem;
+  font-weight: 600;
+  min-width: 200px;
+  box-shadow: 0 4px 12px rgba(0, 135, 90, 0.3);
+}
+
+.btn-copy:hover:not(:disabled) {
+  background: #007a52;
+  box-shadow: 0 6px 16px rgba(0, 135, 90, 0.4);
+}
+
+/* Responsive adjustments for test plan */
+@media (max-width: 768px) {
+  .btn-generate {
+    padding: 1rem 2rem;
+    font-size: 1rem;
+    min-width: 100%;
+  }
+
+  .test-case {
+    padding: 1.25rem;
+  }
+
+  .test-plan-actions {
+    flex-direction: column;
+  }
+
+  .btn-copy {
+    width: 100%;
+    min-width: unset;
+  }
+}
+
+@media (max-width: 480px) {
+  .test-case h5 {
+    font-size: 1rem;
+  }
+
+  .test-plan-group h4 {
+    font-size: 1.125rem;
+  }
+}

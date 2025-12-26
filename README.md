@@ -83,14 +83,14 @@ Generate test plan suggestions reliably.
 
 Make it usable immediately.
 
-- [ ] Render the plan in readable sections:
+- [x] Render the plan in readable sections:
   - Happy Path
   - Edge Cases
   - Regression Checklist
   - Non-functional (if relevant)
   - Assumptions / Risks
   - Questions for PM/Dev
-- [ ] "Copy as Markdown" button
+- [x] "Copy as Markdown" button
 - [ ] (Optional) "Download as .md" button
 
 ## Tech Stack
@@ -355,17 +355,52 @@ uv run pytest tests/ -v
 | UI Fetch + Display Ticket | ✅ Done |
 | Gap Detection + User Input Form | ✅ Done |
 | LLM Integration + Backend Endpoint | ✅ Done |
-| UI Test Plan Rendering + Copy/Export | To Do |
+| UI Test Plan Rendering + Copy/Export | ✅ Done |
 | Internal MVP Demo | To Do |
 | Phase 2 Planning (JumpCloud + Hosting) | To Do |
 
 ## Post-MVP Considerations (Phase 2+)
 
+### Authentication & Deployment
 - JumpCloud SSO and internal hosting for company-wide access
+- Multi-user support with role-based access control
+
+### Jira Integration Enhancements
 - "Post back to Jira" as a button (manual write) before automation
+- Auto-populate testing context from previous similar tickets
+- Fetch related tickets to include in test plan context
+
+### Version Control Integration
 - GitHub integration to incorporate changed files/repo areas
+- Link test plans to specific commits or pull requests
+- Auto-suggest test areas based on code changes
+
+### Quality & Feedback
 - Feedback loop (thumbs up/down per plan) to improve prompts
-- Saved history of generated plans (per ticket) with audit trail
+- Analytics dashboard showing test plan usage and quality metrics
+- A/B testing different prompts to optimize output quality
+
+### Test Plan History & Reusability
+- **Saved history of generated plans** with full audit trail:
+  - Store ticket key, timestamp, generated test plan, and testing context used
+  - View history of test plans for a specific ticket
+  - Compare test plans across different versions/iterations
+  - Export history as CSV or JSON
+- **Reusable testing context templates**:
+  - Save common testing context combinations as templates
+  - Quick-load templates for similar ticket types (e.g., "Auth Flow", "Payment Feature", "UI Changes")
+  - Share templates across team members
+- **Search and filter history**:
+  - Search by ticket key, date range, or keywords
+  - Filter by ticket type, labels, or team member
+  - Bookmark favorite test plans for quick reference
+
+### Advanced Features
+- Batch processing: Generate test plans for multiple tickets at once
+- Integration with test management tools (TestRail, Zephyr, etc.)
+- Custom LLM prompt templates per team or project
+- Automated test case generation from test plans
+- Link to existing test automation frameworks
 
 ## License
 

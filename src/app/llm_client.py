@@ -155,7 +155,7 @@ class OllamaClient(LLMClient):
         prompt = self._build_prompt(ticket_key, summary, description, testing_context)
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(
                     f"{self.base_url}/api/generate",
                     json={
