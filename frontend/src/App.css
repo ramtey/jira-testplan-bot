@@ -21,8 +21,8 @@
 @media (prefers-color-scheme: light) {
   :root {
     --bg-primary: #ffffff;
-    --bg-secondary: #f4f5f7;
-    --bg-card: #f9f9f9;
+    --bg-secondary: #fafbfc;
+    --bg-card: #ffffff;
     --bg-input: #ffffff;
     --text-primary: #172b4d;
     --text-secondary: #5e6c84;
@@ -43,80 +43,91 @@
     background: var(--bg-secondary);
   }
 
-  .app-header {
-    background: var(--bg-primary);
-    border-bottom: 1px solid var(--border);
-  }
-
   input[type="text"] {
     background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
   }
 
   input[type="text"]:focus {
     background: var(--bg-input);
+    border-color: var(--primary);
   }
 
   .description-text {
-    background: var(--bg-card);
-    color: var(--text-primary);
-  }
-
-  .metric {
-    background: var(--bg-card);
+    background: #ffffff !important;
+    color: #172b4d !important;
+    border: 1px solid var(--border);
   }
 
   .issue-type {
     background: var(--bg-card);
     color: var(--text-secondary);
+    border: 1px solid var(--border);
   }
 
   .issue-type.story {
     background: rgba(0, 135, 90, 0.1);
     color: #00875a;
+    border-color: rgba(0, 135, 90, 0.3);
   }
 
   .issue-type.bug {
     background: rgba(222, 53, 11, 0.1);
     color: #de350b;
+    border-color: rgba(222, 53, 11, 0.3);
   }
 
   .issue-type.spike {
     background: rgba(0, 82, 204, 0.1);
     color: #0052cc;
+    border-color: rgba(0, 82, 204, 0.3);
   }
 
   .issue-type.task {
     background: rgba(66, 153, 225, 0.1);
     color: #2b6cb0;
+    border-color: rgba(66, 153, 225, 0.3);
   }
 
   .issue-type.epic {
     background: rgba(128, 90, 213, 0.1);
     color: #6b46c1;
+    border-color: rgba(128, 90, 213, 0.3);
   }
 
   .label {
     background: rgba(0, 82, 204, 0.1);
     color: var(--primary);
+    border: 1px solid rgba(0, 82, 204, 0.3);
   }
 
   .warnings {
     background: #fff4e6;
-    color: var(--text-primary);
+    color: #663c00;
+    border: 1px solid #ffe0b2;
   }
 
   .alert-error {
     background: #ffebe6;
-    color: var(--error);
+    color: #bf2600;
+    border: 1px solid #ffbdad;
   }
 
   .form-field textarea {
     background: var(--bg-input);
     color: var(--text-primary);
+    border: 1px solid var(--border);
   }
 
   .form-field textarea:focus {
     background: var(--bg-input);
+    border-color: var(--primary);
+  }
+
+  .ticket-details {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
   }
 }
 
@@ -129,7 +140,7 @@
 html, body, #root {
   height: 100%;
   width: 100%;
-  background: #0a0a0a;
+  background: var(--bg-secondary);
 }
 
 body {
@@ -138,7 +149,7 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #0a0a0a;
+  background: var(--bg-secondary);
   color: var(--text-primary);
 }
 
@@ -147,18 +158,18 @@ body {
   display: flex;
   flex-direction: column;
   width: 100%;
-  background: #0a0a0a;
+  background: var(--bg-secondary);
 }
 
 /* Header */
 .app-header {
-  background: #0d0d0d;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
   padding: 3rem 2rem;
   text-align: center;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   position: relative;
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
 }
 
 .app-header h1 {
@@ -166,17 +177,14 @@ body {
   margin-bottom: 0.75rem;
   font-weight: 700;
   letter-spacing: -0.5px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #ffffff;
 }
 
 .app-header p {
   font-size: 1.125rem;
-  opacity: 0.8;
+  opacity: 0.9;
   font-weight: 400;
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.9);
 }
 
 /* Main content */
@@ -227,7 +235,7 @@ input[type="text"] {
   font-size: 1.125rem;
   transition: all 0.2s ease;
   font-weight: 500;
-  background: #0d0d0d;
+  background: var(--bg-input);
   color: var(--text-primary);
 }
 
@@ -235,7 +243,7 @@ input[type="text"]:focus {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(0, 82, 204, 0.1);
-  background: #0d0d0d;
+  background: var(--bg-input);
 }
 
 input[type="text"]:disabled {
@@ -447,7 +455,7 @@ button:disabled {
 }
 
 .description-text {
-  background: #0d0d0d;
+  background: var(--bg-card);
   padding: 1rem;
   border-radius: 4px;
   border-left: 3px solid var(--primary);
@@ -456,7 +464,7 @@ button:disabled {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
   font-size: 0.875rem;
   line-height: 1.6;
-  color: #e0e0e0;
+  color: var(--text-primary);
 }
 
 .no-data {
@@ -477,7 +485,7 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   padding: 0.75rem;
-  background: #0d0d0d;
+  background: var(--bg-card);
   border-radius: 4px;
   border: 1px solid var(--border);
 }
