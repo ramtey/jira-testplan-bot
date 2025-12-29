@@ -1,0 +1,18 @@
+{
+  "name": "jira-testplan-bot",
+  "version": "0.1.0",
+  "description": "Jira Test Plan Bot - AI-powered test plan generation",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "uv run uvicorn src.app.main:app --reload --host 0.0.0.0 --port 8000",
+    "install:all": "npm install && cd frontend && npm install",
+    "build:frontend": "cd frontend && npm run build",
+    "lint:frontend": "cd frontend && npm run lint",
+    "preview:frontend": "cd frontend && npm run preview"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
