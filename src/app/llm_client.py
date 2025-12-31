@@ -45,15 +45,19 @@ class LLMClient(ABC):
         testing_context: dict,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
-        prompt = f"""You are a QA expert helping generate comprehensive test plans for software development tickets.
+        prompt = f"""You are an expert QA engineer with 10+ years of experience creating comprehensive test plans. Your role is to generate thorough, actionable test cases that catch bugs before they reach production.
 
-**Jira Ticket: {ticket_key}**
+**Your Task:** Create a detailed test plan for the following Jira ticket.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TICKET INFORMATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**Ticket:** {ticket_key}
 **Summary:** {summary}
 
 **Description:**
 {description if description else "No description provided"}
-
-**Additional Testing Context:**
 """
 
         # Add user-provided context if available
@@ -61,7 +65,7 @@ class LLMClient(ABC):
             prompt += f"\n**Acceptance Criteria:**\n{testing_context['acceptanceCriteria']}\n"
 
         if testing_context.get("testDataNotes"):
-            prompt += f"\n**Test Data Notes:**\n{testing_context['testDataNotes']}\n"
+            prompt += f"\n**Test Data:**\n{testing_context['testDataNotes']}\n"
 
         if testing_context.get("environments"):
             prompt += f"\n**Environments:**\n{testing_context['environments']}\n"
@@ -76,52 +80,102 @@ class LLMClient(ABC):
             prompt += f"\n**Risk Areas:**\n{testing_context['riskAreas']}\n"
 
         prompt += """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TEST PLAN REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Generate a comprehensive test plan in JSON format with the following structure:
+Generate a comprehensive test plan that ensures quality and prevents regressions. Follow these principles:
+
+**1. Happy Path Tests (2-4 cases)**
+   - Cover the primary user flows and main functionality
+   - Write from the user's perspective (what they see/do)
+   - Use clear, actionable steps (no vague instructions like "test the feature")
+   - Each step should be specific and verifiable
+   - Example: "Click the 'Forgot Password' button" not "Navigate to password reset"
+
+**2. Edge Cases & Error Scenarios (2-4 cases)**
+   - Boundary conditions (empty inputs, max lengths, special characters)
+   - Invalid inputs and validation failures
+   - Error handling and error messages
+   - Concurrent/race conditions (if applicable)
+   - Network failures and timeouts
+   - Authentication/authorization failures
+
+**3. Regression Checklist (3-5 items)**
+   - What existing functionality could this break?
+   - Related features that must still work
+   - Critical user flows that should be retested
+   - Focus on high-risk areas mentioned in the ticket
+
+**4. Non-Functional Requirements (if applicable)**
+   - Performance: Load times, response times, scalability concerns
+   - Security: Authentication, authorization, data protection, XSS, SQL injection
+   - Accessibility: Keyboard navigation, screen readers, WCAG compliance
+   - UX: Error messages, loading states, responsive design
+   - Data validation: Input sanitization, data integrity
+
+**5. Assumptions**
+   - List any assumptions you're making about the implementation
+   - Note dependencies on other systems or features
+   - Clarify what you're assuming is in vs out of scope
+
+**6. Questions for PM/Developers**
+   - What's unclear or ambiguous about the requirements?
+   - What edge cases need clarification?
+   - Are there technical constraints to consider?
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
 
 {
   "happy_path": [
     {
-      "title": "Test case title",
-      "steps": ["Step 1", "Step 2", "Step 3"],
-      "expected": "Expected result"
+      "title": "Descriptive test case name (user-focused, specific action)",
+      "steps": [
+        "Step 1: Specific, actionable step",
+        "Step 2: Another concrete step",
+        "Step 3: Final step with observable action"
+      ],
+      "expected": "Clear, measurable expected outcome (what the user sees/experiences)"
     }
   ],
   "edge_cases": [
     {
-      "title": "Edge case title",
-      "steps": ["Step 1", "Step 2"],
-      "expected": "Expected result"
+      "title": "Edge case or error scenario name",
+      "steps": [
+        "Step 1: Setup the edge case condition",
+        "Step 2: Trigger the scenario"
+      ],
+      "expected": "Expected behavior (error message, validation, graceful failure)"
     }
   ],
   "regression_checklist": [
-    "Item to verify hasn't broken",
-    "Another regression concern"
+    "Specific existing feature to verify (e.g., 'Login still works after password reset')",
+    "Another related feature to validate"
   ],
   "non_functional": [
-    "Performance consideration",
-    "Security consideration"
+    "Specific non-functional test (e.g., 'Password reset email arrives within 30 seconds')",
+    "Security check (e.g., 'Reset token expires after 24 hours')"
   ],
   "assumptions": [
-    "Assumption 1",
-    "Assumption 2"
+    "Clear assumption about the implementation or requirements"
   ],
   "questions": [
-    "Question for PM/Dev 1",
-    "Question for PM/Dev 2"
+    "Specific question that needs PM/Dev clarification"
   ]
 }
 
-**Guidelines:**
-- Include 2-4 happy path test cases covering the main functionality
-- Include 2-3 edge cases (boundary conditions, error handling, unexpected inputs)
-- List 3-5 regression items to verify existing functionality isn't broken
-- Add relevant non-functional concerns (performance, security, accessibility, UX)
-- Note any assumptions you're making
-- List questions that need clarification from PM or developers
+**Quality Standards:**
+- Write test steps from the user's perspective (not technical implementation)
+- Be specific and actionable (avoid vague terms like "verify", "check", "test")
+- Each test case should be independently executable
+- Expected results must be observable and measurable
+- Prioritize tests that catch real bugs (not just checklist items)
 
-Respond ONLY with valid JSON matching the schema above. No markdown formatting, no code blocks, just raw JSON.
-"""
+Generate the test plan now:"""
         return prompt
 
 
