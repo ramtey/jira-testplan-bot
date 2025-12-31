@@ -215,7 +215,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 # Package manager lock files (keep only the ones you use)
-package-lock.json
+# package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
