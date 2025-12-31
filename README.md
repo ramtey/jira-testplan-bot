@@ -107,21 +107,32 @@ Make it usable immediately.
 ```
 src/
   app/
-    main.py                # FastAPI app entrypoint
-    jira_client.py         # Jira REST API client
-    adf_parser.py          # Atlassian Document Format parser
+    main.py                 # FastAPI app entrypoint
+    models.py               # Data models (Pydantic & dataclasses)
+    jira_client.py          # Jira REST API client
+    adf_parser.py           # Atlassian Document Format parser
     description_analyzer.py # Description quality analyzer
-    llm_client.py          # LLM abstraction layer (Ollama + Claude)
-    config.py              # environment configuration
+    llm_client.py           # LLM abstraction layer (Ollama + Claude)
+    config.py               # Environment configuration
 frontend/
   src/
-    App.jsx                # React UI component
-    App.css                # Styles with dark/light theme
+    App.jsx                 # Main React app component
+    App.css                 # Styles with dark/light theme
+    config.js               # Frontend configuration (API URL)
+    main.jsx                # React app entry point
+    components/
+      TicketForm.jsx        # Jira ticket input form
+      TicketDetails.jsx     # Ticket display & quality analysis
+      TestingContextForm.jsx # Testing context input form
+      TestPlanDisplay.jsx   # Test plan rendering & export
+    utils/
+      stateHelpers.js       # State management utilities
+      markdown.js           # Markdown formatting utilities
 tests/
-  test_manual.py           # Unit tests for ADF parser & analyzer
-  test_api_mock.py         # API endpoint tests with mocks
-  test_llm.py              # LLM integration test
-  run_tests.py             # Simple test runner
+  test_manual.py            # Unit tests for ADF parser & analyzer
+  test_api_mock.py          # API endpoint tests with mocks
+  test_llm.py               # LLM integration test
+  run_tests.py              # Simple test runner
 ```
 
 ## Prerequisites
