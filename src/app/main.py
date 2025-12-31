@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from .jira_client import (
     JiraAuthError,
@@ -9,6 +8,7 @@ from .jira_client import (
     JiraNotFoundError,
 )
 from .llm_client import LLMError, get_llm_client
+from .models import GenerateTestPlanRequest
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
 
@@ -57,15 +57,6 @@ async def get_issue(issue_key: str):
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except JiraConnectionError as e:
         raise HTTPException(status_code=502, detail=str(e))
-
-
-class GenerateTestPlanRequest(BaseModel):
-    """Request body for generating test plans."""
-
-    ticket_key: str
-    summary: str
-    description: str | None = None
-    testing_context: dict = {}
 
 
 @app.post("/generate-test-plan")

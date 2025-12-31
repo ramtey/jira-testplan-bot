@@ -1,11 +1,11 @@
 import base64
-from dataclasses import dataclass
 
 import httpx
 
 from .adf_parser import extract_text_from_adf
 from .config import settings
-from .description_analyzer import DescriptionAnalysis, analyze_description
+from .description_analyzer import analyze_description
+from .models import DescriptionAnalysis, JiraIssue
 
 
 class JiraAuthError(Exception):
@@ -22,16 +22,6 @@ class JiraNotFoundError(Exception):
 
 class JiraConnectionError(Exception):
     """Raised when Jira is unreachable or times out."""
-
-
-@dataclass
-class JiraIssue:
-    key: str
-    summary: str
-    description: str | None
-    description_analysis: DescriptionAnalysis
-    labels: list[str]
-    issue_type: str
 
 
 class JiraClient:

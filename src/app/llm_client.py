@@ -10,23 +10,11 @@ Switch providers by changing LLM_PROVIDER in .env
 
 import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 import httpx
 
 from .config import settings
-
-
-@dataclass
-class TestPlan:
-    """Structured test plan output from LLM."""
-
-    happy_path: list[dict]
-    edge_cases: list[dict]
-    regression_checklist: list[str]
-    non_functional: list[str]
-    assumptions: list[str]
-    questions: list[str]
+from .models import TestPlan
 
 
 class LLMError(Exception):
@@ -194,7 +182,7 @@ class OllamaClient(LLMClient):
             ) from e
         except httpx.TimeoutException as e:
             raise LLMError(
-                f"Ollama request timed out after 120s. Try a smaller model or increase timeout. Error: {e}"
+                f"Ollama request timed out after 300s. Try a smaller model or increase timeout. Error: {e}"
             ) from e
         except httpx.HTTPStatusError as e:
             raise LLMError(

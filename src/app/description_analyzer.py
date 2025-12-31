@@ -4,18 +4,7 @@ Analyze Jira issue descriptions for quality and completeness.
 Detects when descriptions are missing, too short, or lack key testing information.
 """
 
-from dataclasses import dataclass
-
-
-@dataclass
-class DescriptionAnalysis:
-    """Analysis results for a Jira issue description."""
-
-    has_description: bool
-    is_weak: bool
-    warnings: list[str]
-    char_count: int
-    word_count: int
+from .models import DescriptionAnalysis
 
 
 def analyze_description(description: str | None) -> DescriptionAnalysis:
