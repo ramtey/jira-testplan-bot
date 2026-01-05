@@ -5,6 +5,14 @@
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 
 function TestPlanDisplay({ testPlan, ticketData }) {
+  // Add safety check and logging
+  if (!testPlan) {
+    return <div className="ticket-section">No test plan data available</div>
+  }
+
+  console.log('TestPlanDisplay - testPlan:', testPlan)
+  console.log('TestPlanDisplay - ticketData:', ticketData)
+
   const handleCopyMarkdown = () => {
     const markdown = formatTestPlanAsMarkdown(testPlan, ticketData)
     navigator.clipboard.writeText(markdown)
@@ -36,25 +44,25 @@ function TestPlanDisplay({ testPlan, ticketData }) {
     <div className="ticket-section test-plan-section">
       <h3>Generated Test Plan</h3>
 
-      {testPlan.happy_path && testPlan.happy_path.length > 0 && (
+      {testPlan.happy_path && Array.isArray(testPlan.happy_path) && testPlan.happy_path.length > 0 && (
         <div className="test-plan-group">
           <h4>✅ Happy Path Test Cases</h4>
           {testPlan.happy_path.map((test, index) => (
             <div key={index} className="test-case">
-              <h5>{test.title}</h5>
-              {test.steps && test.steps.length > 0 && (
+              <h5>{typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}</h5>
+              {test.steps && Array.isArray(test.steps) && test.steps.length > 0 && (
                 <div className="test-steps">
                   <strong>Steps:</strong>
                   <ol>
                     {test.steps.map((step, stepIndex) => (
-                      <li key={stepIndex}>{step}</li>
+                      <li key={stepIndex}>{typeof step === 'string' ? step : JSON.stringify(step)}</li>
                     ))}
                   </ol>
                 </div>
               )}
               {test.expected && (
                 <div className="test-expected">
-                  <strong>Expected:</strong> {test.expected}
+                  <strong>Expected:</strong> {typeof test.expected === 'string' ? test.expected : JSON.stringify(test.expected)}
                 </div>
               )}
             </div>
@@ -62,25 +70,25 @@ function TestPlanDisplay({ testPlan, ticketData }) {
         </div>
       )}
 
-      {testPlan.edge_cases && testPlan.edge_cases.length > 0 && (
+      {testPlan.edge_cases && Array.isArray(testPlan.edge_cases) && testPlan.edge_cases.length > 0 && (
         <div className="test-plan-group">
           <h4>🔍 Edge Cases</h4>
           {testPlan.edge_cases.map((test, index) => (
             <div key={index} className="test-case">
-              <h5>{test.title}</h5>
-              {test.steps && test.steps.length > 0 && (
+              <h5>{typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}</h5>
+              {test.steps && Array.isArray(test.steps) && test.steps.length > 0 && (
                 <div className="test-steps">
                   <strong>Steps:</strong>
                   <ol>
                     {test.steps.map((step, stepIndex) => (
-                      <li key={stepIndex}>{step}</li>
+                      <li key={stepIndex}>{typeof step === 'string' ? step : JSON.stringify(step)}</li>
                     ))}
                   </ol>
                 </div>
               )}
               {test.expected && (
                 <div className="test-expected">
-                  <strong>Expected:</strong> {test.expected}
+                  <strong>Expected:</strong> {typeof test.expected === 'string' ? test.expected : JSON.stringify(test.expected)}
                 </div>
               )}
             </div>
@@ -88,45 +96,45 @@ function TestPlanDisplay({ testPlan, ticketData }) {
         </div>
       )}
 
-      {testPlan.regression_checklist && testPlan.regression_checklist.length > 0 && (
+      {testPlan.regression_checklist && Array.isArray(testPlan.regression_checklist) && testPlan.regression_checklist.length > 0 && (
         <div className="test-plan-group">
           <h4>🔄 Regression Checklist</h4>
           <ul className="checklist">
             {testPlan.regression_checklist.map((item, index) => (
-              <li key={index}>{item}</li>
+              <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
             ))}
           </ul>
         </div>
       )}
 
-      {testPlan.non_functional && testPlan.non_functional.length > 0 && (
+      {testPlan.non_functional && Array.isArray(testPlan.non_functional) && testPlan.non_functional.length > 0 && (
         <div className="test-plan-group">
           <h4>⚡ Non-Functional Tests</h4>
           <ul className="checklist">
             {testPlan.non_functional.map((item, index) => (
-              <li key={index}>{item}</li>
+              <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
             ))}
           </ul>
         </div>
       )}
 
-      {testPlan.assumptions && testPlan.assumptions.length > 0 && (
+      {testPlan.assumptions && Array.isArray(testPlan.assumptions) && testPlan.assumptions.length > 0 && (
         <div className="test-plan-group">
           <h4>💡 Assumptions</h4>
           <ul className="assumptions-list">
             {testPlan.assumptions.map((item, index) => (
-              <li key={index}>{item}</li>
+              <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
             ))}
           </ul>
         </div>
       )}
 
-      {testPlan.questions && testPlan.questions.length > 0 && (
+      {testPlan.questions && Array.isArray(testPlan.questions) && testPlan.questions.length > 0 && (
         <div className="test-plan-group">
           <h4>❓ Questions for PM/Dev</h4>
           <ul className="questions-list">
             {testPlan.questions.map((item, index) => (
-              <li key={index}>{item}</li>
+              <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
             ))}
           </ul>
         </div>
@@ -143,7 +151,7 @@ function TestPlanDisplay({ testPlan, ticketData }) {
         <button
           type="button"
           onClick={handleCopyMarkdown}
-          className="btn-copy"
+          className="btn-copy-markdown"
         >
           Copy as Markdown
         </button>

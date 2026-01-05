@@ -885,6 +885,20 @@ button:disabled {
   box-shadow: 0 6px 16px rgba(0, 135, 90, 0.4);
 }
 
+.btn-copy-markdown {
+  padding: 1rem 2.5rem;
+  background: #2d3748;
+  font-size: 1rem;
+  font-weight: 600;
+  min-width: 200px;
+  box-shadow: 0 4px 12px rgba(45, 55, 72, 0.3);
+}
+
+.btn-copy-markdown:hover:not(:disabled) {
+  background: #1a202c;
+  box-shadow: 0 6px 16px rgba(45, 55, 72, 0.4);
+}
+
 .btn-download {
   padding: 1rem 2.5rem;
   background: var(--primary);
@@ -916,6 +930,7 @@ button:disabled {
   }
 
   .btn-copy,
+  .btn-copy-markdown,
   .btn-download {
     width: 100%;
     min-width: unset;
