@@ -98,6 +98,7 @@ function App() {
             rolesPermissions: testingContext.rolesPermissions,
             outOfScope: testingContext.outOfScope,
             riskAreas: testingContext.riskAreas,
+            specialInstructions: testingContext.specialInstructions,
           },
         }),
       })

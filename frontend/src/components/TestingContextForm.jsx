@@ -87,6 +87,17 @@ function TestingContextForm({
             rows="2"
           />
         </div>
+
+        <div className="form-field">
+          <label htmlFor="specialInstructions">Special Testing Instructions</label>
+          <textarea
+            id="specialInstructions"
+            placeholder="e.g., 'Test with specific examples from each category listed above' or 'Generate at least one test case per keyword category'"
+            value={testingContext.specialInstructions}
+            onChange={(e) => onContextChange('specialInstructions', e.target.value)}
+            rows="3"
+          />
+        </div>
       </div>
 
       <div className="generate-section">

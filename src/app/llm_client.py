@@ -79,6 +79,9 @@ TICKET INFORMATION
         if testing_context.get("riskAreas"):
             prompt += f"\n**Risk Areas:**\n{testing_context['riskAreas']}\n"
 
+        if testing_context.get("specialInstructions"):
+            prompt += f"\n**Special Testing Instructions:**\n{testing_context['specialInstructions']}\n"
+
         prompt += """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TEST PLAN REQUIREMENTS
@@ -86,43 +89,52 @@ TEST PLAN REQUIREMENTS
 
 Generate a comprehensive test plan that ensures quality and prevents regressions. Follow these principles:
 
-**1. Happy Path Tests (2-4 cases)**
-   - Cover the primary user flows and main functionality
-   - Write from the user's perspective (what they see/do)
-   - Use clear, actionable steps (no vague instructions like "test the feature")
-   - Each step should be specific and verifiable
-   - Example: "Click the 'Forgot Password' button" not "Navigate to password reset"
+**IMPORTANT:** When the ticket describes multiple categories, scenarios, or rule types (e.g., different keyword categories, user types, error conditions), you MUST create test cases that cover representative examples from EACH category. Do not create generic test cases - create specific ones with concrete examples.
 
-**2. Edge Cases & Error Scenarios (2-4 cases)**
+**1. Happy Path Tests (2-5 cases)**
+   - Cover the primary user flows and main functionality
+   - If the ticket has multiple categories/scenarios, create AT LEAST one happy path test for each major category
+   - Write from the user's perspective (what they see/do)
+   - Use clear, actionable steps with SPECIFIC EXAMPLES (no vague instructions like "test the feature")
+   - Each step should be specific and verifiable
+   - Example: "Enter 'no section 8' in chat" not "Enter a blocked keyword"
+
+**2. Edge Cases & Error Scenarios (3-6 cases)**
+   - If the ticket defines multiple rule categories, create test cases covering examples from different categories
    - Boundary conditions (empty inputs, max lengths, special characters)
    - Invalid inputs and validation failures
-   - Error handling and error messages
+   - Error handling and error messages with specific example inputs
    - Concurrent/race conditions (if applicable)
    - Network failures and timeouts
    - Authentication/authorization failures
+   - Mixed scenarios (e.g., phrases that contain both allowed and blocked terms)
 
 **3. Regression Checklist (3-5 items)**
    - What existing functionality could this break?
    - Related features that must still work
    - Critical user flows that should be retested
    - Focus on high-risk areas mentioned in the ticket
+   - IMPORTANT: Make these specific to the feature being tested, not generic examples
 
 **4. Non-Functional Requirements (if applicable)**
-   - Performance: Load times, response times, scalability concerns
-   - Security: Authentication, authorization, data protection, XSS, SQL injection
-   - Accessibility: Keyboard navigation, screen readers, WCAG compliance
-   - UX: Error messages, loading states, responsive design
-   - Data validation: Input sanitization, data integrity
+   - Performance: Load times, response times, scalability concerns specific to this feature
+   - Security: Authentication, authorization, data protection, XSS, SQL injection relevant to this feature
+   - Accessibility: Keyboard navigation, screen readers, WCAG compliance for this feature
+   - UX: Error messages, loading states, responsive design specific to this feature
+   - Data validation: Input sanitization, data integrity for this feature
+   - IMPORTANT: Only include items that are relevant to the feature described in the ticket
 
 **5. Assumptions**
    - List any assumptions you're making about the implementation
    - Note dependencies on other systems or features
    - Clarify what you're assuming is in vs out of scope
+   - IMPORTANT: Base assumptions on the actual ticket content, not generic scenarios
 
 **6. Questions for PM/Developers**
    - What's unclear or ambiguous about the requirements?
    - What edge cases need clarification?
    - Are there technical constraints to consider?
+   - IMPORTANT: Ask questions specific to this ticket, not generic questions
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT
@@ -153,12 +165,12 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     }
   ],
   "regression_checklist": [
-    "Specific existing feature to verify (e.g., 'Login still works after password reset')",
+    "Specific existing feature to verify that's relevant to this ticket",
     "Another related feature to validate"
   ],
   "non_functional": [
-    "Specific non-functional test (e.g., 'Password reset email arrives within 30 seconds')",
-    "Security check (e.g., 'Reset token expires after 24 hours')"
+    "Specific non-functional test relevant to this feature",
+    "Another non-functional requirement specific to this ticket"
   ],
   "assumptions": [
     "Clear assumption about the implementation or requirements"
@@ -174,6 +186,12 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
 - Each test case should be independently executable
 - Expected results must be observable and measurable
 - Prioritize tests that catch real bugs (not just checklist items)
+
+**CRITICAL JSON FORMATTING RULES:**
+- ALL string arrays (regression_checklist, non_functional, assumptions, questions) MUST contain ONLY strings
+- NEVER include objects in string arrays
+- Example CORRECT: "non_functional": ["Response time under 500ms for keyword matching"]
+- Example WRONG: "non_functional": [{"type": "performance", "test": "..."}]
 
 Generate the test plan now:"""
         return prompt

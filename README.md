@@ -51,8 +51,11 @@ When AC/testing info is missing or unclear, prompt the user to fill in:
 - [x] Roles/permissions involved
 - [x] Out of scope / assumptions
 - [x] Known risk areas / impacted modules
+- [x] Special Testing Instructions (for complex multi-category scenarios)
 
 The UI displays an "Additional Testing Context" form after fetching a ticket, with all fields optional. The form highlights recommended fields when description quality is weak.
+
+**New:** For complex features with multiple categories or scenarios (e.g., keyword blocking with 50+ rules), use the "Special Testing Instructions" field to guide the LLM to generate specific test cases for each category. See [TESTING_GUIDE.md](TESTING_GUIDE.md) for detailed examples.
 
 ### 4) LLM Prompt That Returns Structured JSON
 
@@ -61,10 +64,12 @@ Generate test plan suggestions reliably.
 - [x] Prompt the LLM using:
   - Jira title + extracted description/AC
   - User-provided testing context
+  - Special instructions for complex scenarios
 - [x] Require structured JSON output using a fixed schema
 - [x] Validate the JSON response (fail gracefully if invalid)
 - [x] Abstraction layer supporting multiple LLM providers (Ollama, Claude)
 - [x] Easy provider switching via .env configuration
+- [x] Enhanced prompts that automatically detect and handle multi-category scenarios
 
 **MVP Output Schema:**
 
@@ -90,9 +95,28 @@ Make it usable immediately.
   - Non-functional (if relevant)
   - Assumptions / Risks
   - Questions for PM/Dev
-- [x] "Copy for Jira" button (Jira markup format)
+- [x] "Copy for Jira" button (plain text format optimized for Jira comments)
 - [x] "Copy as Markdown" button (universal Markdown format)
 - [x] "Download as .md" button
+- [x] Distinct button colors for easy identification (Green=Jira, Gray=Markdown, Blue=Download)
+
+## Recent Improvements
+
+### Enhanced Test Plan Generation
+- **Smart multi-category detection**: Automatically generates specific test cases when tickets have multiple scenarios or rule categories
+- **Special Instructions field**: Guide the LLM for complex features (see [TESTING_GUIDE.md](TESTING_GUIDE.md))
+- **Better coverage**: Increased test case counts (2-5 happy path, 3-6 edge cases)
+- **Specific examples required**: LLM now uses concrete examples instead of generic placeholders
+
+### Improved Jira Integration
+- **Clean Jira formatting**: Plain text format that pastes cleanly into Jira comments (no more wiki markup issues)
+- **Better button UX**: Distinct colors for each export button (Green=Jira, Gray=Markdown, Blue=Download)
+- **Robust error handling**: Safe rendering even with malformed data
+
+### Better Developer Experience
+- See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive usage examples
+- Template examples for different feature types (APIs, wizards, permissions, etc.)
+- Clear guidance on when to use Special Instructions
 
 ## Tech Stack
 
@@ -303,7 +327,8 @@ Request body:
     "environments": "Staging and production",
     "rolesPermissions": "Any authenticated user",
     "outOfScope": "SSO password reset",
-    "riskAreas": "Email delivery, token generation"
+    "riskAreas": "Email delivery, token generation",
+    "specialInstructions": "Test with specific examples for each error scenario"
   }
 }
 ```
@@ -413,6 +438,31 @@ uv run pytest tests/ -v
 - Custom LLM prompt templates per team or project
 - Automated test case generation from test plans
 - Link to existing test automation frameworks
+
+## Tips for Best Results
+
+### For Simple Features
+Just fill in the ticket key and optionally add Acceptance Criteria if missing. The enhanced LLM prompt handles most cases automatically.
+
+### For Complex Features (Multiple Categories/Scenarios)
+Use the **Special Testing Instructions** field to guide test case generation:
+
+Example for keyword blocking:
+```
+Generate test cases for each keyword category with specific examples:
+- Source of income: "no section 8", "vouchers not accepted"
+- Familial status: "no kids", "adults only"
+- Race/color: "whites only", "no blacks"
+- FNF companies: "Fidelity National Title"
+- Competitors: "First American Title", "Dotloop"
+```
+
+See [TESTING_GUIDE.md](TESTING_GUIDE.md) for more examples and patterns.
+
+### Export Tips
+- **Copy for Jira**: Use this for pasting directly into Jira comments - plain text with visual separators
+- **Copy as Markdown**: Use for GitHub issues, Slack, or other tools that support Markdown
+- **Download as .md**: Save for documentation, sharing via email, or version control
 
 ## License
 

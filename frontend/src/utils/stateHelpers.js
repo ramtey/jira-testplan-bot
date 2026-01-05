@@ -8,7 +8,8 @@ export const initialTestingContext = {
   environments: '',
   rolesPermissions: '',
   outOfScope: '',
-  riskAreas: ''
+  riskAreas: '',
+  specialInstructions: ''
 }
 
 export const resetTestingContext = () => ({ ...initialTestingContext })
