@@ -7,6 +7,7 @@ function TestingContextForm({
   testingContext,
   onContextChange,
   onGenerateTestPlan,
+  onStopGeneration,
   generatingPlan
 }) {
   return (
@@ -101,25 +102,28 @@ function TestingContextForm({
       </div>
 
       <div className="generate-section">
-        <button
-          type="button"
-          onClick={onGenerateTestPlan}
-          disabled={generatingPlan}
-          className="btn-generate"
-        >
-          {generatingPlan ? (
-            <>
+        {!generatingPlan ? (
+          <button
+            type="button"
+            onClick={onGenerateTestPlan}
+            className="btn-generate"
+          >
+            Generate Test Plan
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={onStopGeneration}
+              className="btn-stop"
+            >
               <span className="spinner"></span>
-              Generating Test Plan<span className="dots"></span>
-            </>
-          ) : (
-            'Generate Test Plan'
-          )}
-        </button>
-        {generatingPlan && (
-          <p className="generation-message">
-            This may take 30-120 seconds. Please wait...
-          </p>
+              Stop Generation
+            </button>
+            <p className="generation-message">
+              Generating test plan<span className="dots"></span>
+            </p>
+          </>
         )}
       </div>
     </div>

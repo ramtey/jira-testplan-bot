@@ -703,8 +703,28 @@ button:disabled {
   opacity: 0.7;
 }
 
+.btn-stop {
+  padding: 1.25rem 3rem;
+  background: var(--error);
+  color: white;
+  font-size: 1.125rem;
+  font-weight: 700;
+  min-width: 250px;
+  box-shadow: 0 4px 16px rgba(222, 53, 11, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-stop:hover:not(:disabled) {
+  background: #bf2600;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(222, 53, 11, 0.5);
+}
+
 /* Spinner animation inside button */
-.btn-generate .spinner {
+.btn-generate .spinner,
+.btn-stop .spinner {
   display: inline-block;
   width: 16px;
   height: 16px;
@@ -723,7 +743,7 @@ button:disabled {
 }
 
 /* Animated dots */
-.btn-generate .dots::after {
+.dots::after {
   content: '.';
   animation: dots 1.5s steps(4, end) infinite;
 }
@@ -915,7 +935,8 @@ button:disabled {
 
 /* Responsive adjustments for test plan */
 @media (max-width: 768px) {
-  .btn-generate {
+  .btn-generate,
+  .btn-stop {
     padding: 1rem 2rem;
     font-size: 1rem;
     min-width: 100%;

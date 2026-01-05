@@ -21,6 +21,7 @@ function App() {
   const [generatingPlan, setGeneratingPlan] = useState(false)
   const [testPlan, setTestPlan] = useState(null)
   const [planError, setPlanError] = useState(null)
+  const [abortController, setAbortController] = useState(null)
 
   const handleFetchTicket = async (e) => {
     e.preventDefault()
@@ -77,6 +78,10 @@ function App() {
   const handleGenerateTestPlan = async () => {
     if (!ticketData) return
 
+    // Create new AbortController for this request
+    const controller = new AbortController()
+    setAbortController(controller)
+
     setGeneratingPlan(true)
     setPlanError(null)
     setTestPlan(null)
@@ -101,6 +106,7 @@ function App() {
             specialInstructions: testingContext.specialInstructions,
           },
         }),
+        signal: controller.signal,
       })
 
       if (!response.ok) {
@@ -111,9 +117,20 @@ function App() {
       const data = await response.json()
       setTestPlan(data)
     } catch (err) {
-      setPlanError(err.message)
+      if (err.name === 'AbortError') {
+        setPlanError('Test plan generation was cancelled')
+      } else {
+        setPlanError(err.message)
+      }
     } finally {
       setGeneratingPlan(false)
+      setAbortController(null)
+    }
+  }
+
+  const handleStopGeneration = () => {
+    if (abortController) {
+      abortController.abort()
     }
   }
 
@@ -153,6 +170,7 @@ function App() {
               testingContext={testingContext}
               onContextChange={handleContextChange}
               onGenerateTestPlan={handleGenerateTestPlan}
+              onStopGeneration={handleStopGeneration}
               generatingPlan={generatingPlan}
             />
 
