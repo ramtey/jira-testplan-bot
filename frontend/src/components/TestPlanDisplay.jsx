@@ -2,13 +2,20 @@
  * Display generated test plan with export options
  */
 
-import { formatTestPlanAsMarkdown } from '../utils/markdown'
+import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 
 function TestPlanDisplay({ testPlan, ticketData }) {
   const handleCopyMarkdown = () => {
     const markdown = formatTestPlanAsMarkdown(testPlan, ticketData)
     navigator.clipboard.writeText(markdown)
       .then(() => alert('Test plan copied to clipboard!'))
+      .catch(() => alert('Failed to copy to clipboard'))
+  }
+
+  const handleCopyJira = () => {
+    const jira = formatTestPlanAsJira(testPlan, ticketData)
+    navigator.clipboard.writeText(jira)
+      .then(() => alert('Test plan copied to clipboard in Jira format!'))
       .catch(() => alert('Failed to copy to clipboard'))
   }
 
@@ -126,6 +133,13 @@ function TestPlanDisplay({ testPlan, ticketData }) {
       )}
 
       <div className="test-plan-actions">
+        <button
+          type="button"
+          onClick={handleCopyJira}
+          className="btn-copy"
+        >
+          Copy for Jira
+        </button>
         <button
           type="button"
           onClick={handleCopyMarkdown}

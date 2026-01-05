@@ -90,7 +90,8 @@ Make it usable immediately.
   - Non-functional (if relevant)
   - Assumptions / Risks
   - Questions for PM/Dev
-- [x] "Copy as Markdown" button
+- [x] "Copy for Jira" button (Jira markup format)
+- [x] "Copy as Markdown" button (universal Markdown format)
 - [x] "Download as .md" button
 
 ## Tech Stack
