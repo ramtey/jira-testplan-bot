@@ -441,23 +441,28 @@ uv run pytest tests/ -v
 
 ## Tips for Best Results
 
-### For Simple Features
-Just fill in the ticket key and optionally add Acceptance Criteria if missing. The enhanced LLM prompt handles most cases automatically.
+### Start Simple - Let the System Work
+Just enter the Jira ticket key and click "Generate Test Plan". The enhanced LLM prompt automatically:
+- Detects multiple categories in the ticket description
+- Identifies behavior patterns (e.g., block vs allow continue)
+- Extracts specific examples from the ticket
+- Generates comprehensive test coverage (3-5 happy path, 6-10 edge cases for complex features)
 
-### For Complex Features (Multiple Categories/Scenarios)
-Use the **Special Testing Instructions** field to guide test case generation:
+**No special instructions needed for most cases!**
 
-Example for keyword blocking:
+### When to Use Special Instructions
+Only use the **Special Testing Instructions** field if:
+- The automatic generation missed critical test scenarios
+- You need to emphasize specific priorities not clear from the ticket
+- The ticket structure is unusual
+
+Keep it simple - a few sentences is enough:
 ```
-Generate test cases for each keyword category with specific examples:
-- Source of income: "no section 8", "vouchers not accepted"
-- Familial status: "no kids", "adults only"
-- Race/color: "whites only", "no blacks"
-- FNF companies: "Fidelity National Title"
-- Competitors: "First American Title", "Dotloop"
+Focus on testing all keyword categories mentioned.
+Test both hard block (racism) and soft block (FNF mentions) behaviors.
 ```
 
-See [TESTING_GUIDE.md](TESTING_GUIDE.md) for more examples and patterns.
+See [TESTING_GUIDE.md](TESTING_GUIDE.md) for detailed guidance.
 
 ### Export Tips
 - **Copy for Jira**: Use this for pasting directly into Jira comments - plain text with visual separators

@@ -6,17 +6,23 @@ This guide shows how to get comprehensive test plans for complex features with m
 ## The Problem
 For complex tickets (like keyword blocking with 50+ categories), the LLM might generate only generic test cases instead of covering all categories with specific examples.
 
-## The Solution: Hybrid Approach
+## The Solution: Smart Automatic Detection
 
-### 1. Enhanced System Prompt (Automatic)
-The system now automatically:
-- Detects when tickets have multiple categories/scenarios
-- Prompts the LLM to create specific test cases for EACH category
-- Requires concrete examples instead of generic placeholders
-- Increases test case counts (2-5 happy path, 3-6 edge cases)
+### Primary Approach: Let the System Do the Work
+The enhanced system prompt now automatically:
+- **Analyzes the ticket description** to detect categories, groups, and patterns
+- **Identifies behavior differences** (e.g., "block for X, allow continue for Y")
+- **Extracts specific examples** from the ticket content
+- **Generates comprehensive coverage** (3-5 happy path, 6-10 edge cases for multi-category features)
+- **Creates test cases** for each category using concrete examples
 
-### 2. Special Instructions Field (User-Guided)
-For very complex scenarios, use the **"Special Testing Instructions"** field to guide the LLM.
+**You should NOT need to write complex special instructions for most cases.**
+
+### Fallback: Special Instructions (Only When Needed)
+Use the **"Special Testing Instructions"** field ONLY when:
+- The automatic detection misses critical categories
+- You need to emphasize specific priorities
+- The ticket has unusual structure the system can't parse
 
 ## Example: Keyword Blocking Feature
 
@@ -25,41 +31,56 @@ For very complex scenarios, use the **"Special Testing Instructions"** field to 
 - Two different behaviors (block + new chat vs. respond + continue)
 - 50+ specific keywords/phrases across 10+ categories
 
-### How to Use Special Instructions:
+### ✅ Best Approach: Let It Work Automatically
 
-```
-Generate test cases covering specific examples from these key categories:
-1. Hard block keywords (racism, fraud) - should block chat
-2. Soft block keywords (FNF mentions, competitors) - should respond but allow continue
-3. Source of income discrimination (section 8, vouchers, housing assistance)
-4. Familial status (no kids, adults only, families not allowed)
-5. FNF company names (Fidelity National Title, Chicago Title, etc.)
-6. Competitor names (First American, Stewart Title, Dotloop, etc.)
+**Simply provide a good ticket description** with clear categories and examples. The system will automatically:
+- Detect the multiple categories (racism, source of income, familial status, FNF, competitors)
+- Identify behavior differences (block vs allow continue)
+- Extract specific examples ("no section 8", "no blacks", "Fidelity National Title")
+- Generate 6-10 edge cases covering each category
 
-For each category, use at least 2-3 actual examples from the ticket description.
-Test both exact matches and case-insensitive variants.
-Include tests for phrases that combine multiple keywords.
+**No special instructions needed!** Just click "Generate Test Plan."
+
+### ⚠️ Only Use Special Instructions If Needed
+
+If the automatic generation misses something important, add a **simple** note:
+
+**Good (Simple):**
 ```
+Focus on testing all keyword categories mentioned in the description.
+Test both hard block (racism) and soft block (FNF mentions) behaviors.
+```
+
+**Avoid (Too Complex):**
+```
+Create test cases covering ALL these categories with specific examples:
+HARD BLOCK (should refuse message + block chat):
+- Race: "no blacks", "whites only"
+[...20 more lines of detailed instructions...]
+```
+
+**Why?** The system already does this automatically. Keep it simple!
 
 ### Expected Output:
-With this guidance, you should get:
-- **Happy Path**: 4-5 test cases covering different "allowed" conversation flows
-- **Edge Cases**: 5-8 test cases with specific keyword examples from each major category
-- **Regression**: Checks that normal conversations still work
-- **Non-Functional**: Performance, false positives, case sensitivity
+With automatic detection (no special instructions needed), you should get:
+- **Happy Path**: 3-5 test cases covering normal conversation flows
+- **Edge Cases**: 6-10 test cases with specific examples from EACH category detected in the ticket
+- **Regression**: Specific checks related to the feature (e.g., "Normal chat messages without keywords still work")
+- **Non-Functional**: Feature-specific tests (e.g., "Response time under 500ms for keyword matching")
 
 ## When to Use Special Instructions
 
 ✅ **Use when:**
-- Ticket has 5+ categories/scenarios
-- You need specific examples from documentation
-- Feature has complex rule combinations
-- Previous generation was too generic
+- The automatic generation missed critical categories
+- You need to emphasize specific test priorities
+- The ticket structure is unusual or ambiguous
+- You want to add context not in the ticket description
 
-❌ **Don't need to use when:**
-- Simple CRUD operations
-- Single clear user flow
-- Well-defined acceptance criteria
+❌ **Don't use when:**
+- The ticket has clear categories and examples (system will detect automatically)
+- You're just restating what's already in the ticket
+- You're trying to format the output (system handles this)
+- Simple CRUD operations or single user flows
 
 ## Other Testing Context Fields
 
@@ -74,11 +95,49 @@ With this guidance, you should get:
 
 ## Tips for Better Test Plans
 
-1. **Be Specific**: Use actual examples from your ticket
-2. **List Categories**: If there are multiple categories, list them explicitly
-3. **Provide Context**: Explain WHY certain tests matter
-4. **Include Edge Cases**: Mention specific edge cases you're worried about
-5. **Reference Documentation**: If there's a long spec, summarize key testing points
+### 1. **Be Specific with Examples**
+❌ Bad: "Test keyword blocking"
+✅ Good: 'Test "no section 8", "no kids", "whites only"'
+
+### 2. **Group by Behavior/Category**
+Structure your instructions to match the feature's logic:
+```
+BEHAVIOR TYPE 1:
+- Category A: examples
+- Category B: examples
+
+BEHAVIOR TYPE 2:
+- Category C: examples
+```
+
+### 3. **Set Minimum Coverage Requirements**
+Don't just list categories - specify how many tests you expect:
+```
+Generate at least:
+- 3 happy path tests
+- 6 edge cases (1+ per category)
+- 3 regression tests
+```
+
+### 4. **Request Complete Test Cases**
+Explicitly ask for:
+- Steps AND expected results for every test case
+- Specific error messages or behaviors
+- Observable outcomes
+
+### 5. **Include Edge Case Guidance**
+Mention specific scenarios you're concerned about:
+- Case sensitivity
+- Mixed/combined keywords
+- Boundary conditions
+- Error states
+
+### 6. **Clarify Behavior Expectations**
+If different actions trigger different behaviors, spell it out:
+```
+Hard block: refuse message + block chat
+Soft block: respond with warning + allow continue
+```
 
 ## Example Special Instructions for Different Scenarios
 
@@ -115,10 +174,34 @@ Test each role's access to each resource:
 Test permission boundaries and escalation attempts.
 ```
 
+## Common Pitfalls to Avoid
+
+### 1. **Too Vague**
+❌ "Test all keyword categories"
+✅ List specific categories with examples
+
+### 2. **Missing Coverage Requirements**
+❌ Just listing categories
+✅ "Generate at least 1 test per category"
+
+### 3. **No Behavior Expectations**
+❌ Listing keywords without context
+✅ Explain what should happen for each type
+
+### 4. **Incomplete Test Cases**
+❌ Accepting edge cases without expected results
+✅ Demand "steps AND expected result for every case"
+
+### 5. **Generic Outputs**
+❌ "Verify keyword matching works"
+✅ 'Enter "no section 8" → expect "I can\'t answer that" message'
+
 ## Summary
 
-**Recommendation**:
-1. ✅ The enhanced system prompt will handle most cases automatically
-2. ✅ Use "Special Instructions" for complex scenarios with 5+ categories
-3. ✅ Always review and refine the generated test plan
-4. ✅ Iterate: regenerate with more specific instructions if needed
+**Best Practices**:
+1. ✅ **Start simple**: Just click "Generate Test Plan" - let the system work automatically
+2. ✅ **Good ticket descriptions win**: Clear categories and examples in the ticket = better test plans
+3. ✅ **Special Instructions = last resort**: Only use when automatic detection fails
+4. ✅ **Keep instructions simple**: A few sentences is enough, not a detailed template
+5. ✅ **Review and regenerate**: If output is weak, try rephrasing the ticket description or adding brief context
+6. ✅ **Trust the system**: The enhanced prompt detects categories, extracts examples, and generates comprehensive coverage automatically

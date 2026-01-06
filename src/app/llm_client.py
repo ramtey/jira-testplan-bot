@@ -87,27 +87,44 @@ TICKET INFORMATION
 TEST PLAN REQUIREMENTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Generate a comprehensive test plan that ensures quality and prevents regressions. Follow these principles:
+Generate a comprehensive test plan that ensures quality and prevents regressions.
 
-**IMPORTANT:** When the ticket describes multiple categories, scenarios, or rule types (e.g., different keyword categories, user types, error conditions), you MUST create test cases that cover representative examples from EACH category. Do not create generic test cases - create specific ones with concrete examples.
+**CRITICAL ANALYSIS FIRST:**
+Before generating test cases, analyze the ticket description to identify:
+1. **Categories/Groups**: Are there multiple categories, rule types, or scenarios mentioned? (e.g., "racism, fraud, FNF mentions, competitors" or "admin, user, guest roles")
+2. **Behavior Patterns**: Are there different behaviors for different types? (e.g., "block chat for X, allow continue for Y")
+3. **Specific Examples**: What concrete examples are provided in the description? (e.g., specific keywords, phrases, user types)
 
-**1. Happy Path Tests (2-5 cases)**
+**If multiple categories exist, you MUST:**
+- Create test cases covering representative examples from EACH category
+- Use the specific examples provided in the ticket description
+- Never create generic test cases like "test keyword blocking" - always use concrete examples like "test 'no section 8'"
+- If different behaviors exist (e.g., hard block vs soft block), test examples from each behavior type
+
+**1. Happy Path Tests (3-5 cases minimum)**
    - Cover the primary user flows and main functionality
-   - If the ticket has multiple categories/scenarios, create AT LEAST one happy path test for each major category
+   - **If multiple categories/scenarios exist:** Create AT LEAST one happy path test demonstrating normal operation (no restrictions triggered)
    - Write from the user's perspective (what they see/do)
-   - Use clear, actionable steps with SPECIFIC EXAMPLES (no vague instructions like "test the feature")
-   - Each step should be specific and verifiable
-   - Example: "Enter 'no section 8' in chat" not "Enter a blocked keyword"
+   - Use clear, actionable steps with SPECIFIC EXAMPLES from the ticket
+   - Each step must be concrete and verifiable
+   - Example: "Enter 'What are your office hours?' in chat" for normal conversation
 
-**2. Edge Cases & Error Scenarios (3-6 cases)**
-   - If the ticket defines multiple rule categories, create test cases covering examples from different categories
-   - Boundary conditions (empty inputs, max lengths, special characters)
-   - Invalid inputs and validation failures
-   - Error handling and error messages with specific example inputs
-   - Concurrent/race conditions (if applicable)
-   - Network failures and timeouts
-   - Authentication/authorization failures
-   - Mixed scenarios (e.g., phrases that contain both allowed and blocked terms)
+**2. Edge Cases & Error Scenarios (6-10 cases minimum for multi-category features)**
+   **AUTOMATIC CATEGORY DETECTION:**
+   - Scan the ticket description for lists, categories, or groups of items
+   - If you find multiple categories (e.g., different keyword types, user roles, error conditions):
+     * Create AT LEAST 1-2 test cases per category using specific examples from the ticket
+     * Prioritize categories with the most detailed examples in the ticket
+   - If behavior differs by category (e.g., "block for X, allow continue for Y"):
+     * Create tests demonstrating EACH behavior type with specific examples
+
+   **ALWAYS INCLUDE:**
+   - Specific examples from the ticket description (not generic placeholders)
+   - Complete steps AND expected results for every test case
+   - Mixed/combined scenarios when applicable (e.g., "no section 8 families with kids")
+   - Case sensitivity tests when relevant (e.g., "NO SECTION 8" vs "no section 8")
+   - Boundary conditions and validation failures
+   - Error messages must be specific and observable
 
 **3. Regression Checklist (3-5 items)**
    - What existing functionality could this break?
