@@ -33,6 +33,7 @@ class LLMClient(ABC):
         summary: str,
         description: str | None,
         testing_context: dict,
+        development_info: dict | None = None,
     ) -> TestPlan:
         """Generate a structured test plan from ticket data and context."""
         pass
@@ -43,6 +44,7 @@ class LLMClient(ABC):
         summary: str,
         description: str | None,
         testing_context: dict,
+        development_info: dict | None = None,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
         prompt = f"""You are an expert QA engineer with 10+ years of experience creating comprehensive test plans. Your role is to generate thorough, actionable test cases that catch bugs before they reach production.
@@ -60,24 +62,50 @@ TICKET INFORMATION
 {description if description else "No description provided"}
 """
 
+        # Add development information if available
+        if development_info:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "DEVELOPMENT ACTIVITY\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "\nThe following development work has been completed for this ticket:\n"
+
+            # Add pull request information
+            pull_requests = development_info.get("pull_requests", [])
+            if pull_requests:
+                prompt += f"\n**Pull Requests ({len(pull_requests)}):**\n"
+                for pr in pull_requests:
+                    prompt += f"- {pr.get('title', 'Untitled PR')} (Status: {pr.get('status', 'UNKNOWN')})\n"
+                    if pr.get('source_branch'):
+                        prompt += f"  Branch: {pr.get('source_branch')}\n"
+
+            # Add commit information
+            commits = development_info.get("commits", [])
+            if commits:
+                prompt += f"\n**Commits ({len(commits)}):**\n"
+                # Show first 10 commit messages to avoid overwhelming the prompt
+                for commit in commits[:10]:
+                    commit_msg = commit.get('message', 'No message').split('\n')[0]  # First line only
+                    author = commit.get('author', 'Unknown')
+                    prompt += f"- {commit_msg} (by {author})\n"
+                if len(commits) > 10:
+                    prompt += f"... and {len(commits) - 10} more commits\n"
+
+            # Add branch information
+            branches = development_info.get("branches", [])
+            if branches:
+                prompt += f"\n**Branches:**\n"
+                for branch in branches:
+                    prompt += f"- {branch}\n"
+
+            prompt += "\n**Use this development context to:**\n"
+            prompt += "- Infer what functionality was implemented from commit messages and PR titles\n"
+            prompt += "- Identify potential risk areas based on what code was changed\n"
+            prompt += "- Generate more specific test cases based on the actual implementation\n"
+            prompt += "- Focus testing on the areas that were modified\n"
+
         # Add user-provided context if available
         if testing_context.get("acceptanceCriteria"):
             prompt += f"\n**Acceptance Criteria:**\n{testing_context['acceptanceCriteria']}\n"
-
-        if testing_context.get("testDataNotes"):
-            prompt += f"\n**Test Data:**\n{testing_context['testDataNotes']}\n"
-
-        if testing_context.get("environments"):
-            prompt += f"\n**Environments:**\n{testing_context['environments']}\n"
-
-        if testing_context.get("rolesPermissions"):
-            prompt += f"\n**Roles/Permissions:**\n{testing_context['rolesPermissions']}\n"
-
-        if testing_context.get("outOfScope"):
-            prompt += f"\n**Out of Scope:**\n{testing_context['outOfScope']}\n"
-
-        if testing_context.get("riskAreas"):
-            prompt += f"\n**Risk Areas:**\n{testing_context['riskAreas']}\n"
 
         if testing_context.get("specialInstructions"):
             prompt += f"\n**Special Testing Instructions:**\n{testing_context['specialInstructions']}\n"
@@ -227,9 +255,10 @@ class OllamaClient(LLMClient):
         summary: str,
         description: str | None,
         testing_context: dict,
+        development_info: dict | None = None,
     ) -> TestPlan:
         """Generate test plan using Ollama."""
-        prompt = self._build_prompt(ticket_key, summary, description, testing_context)
+        prompt = self._build_prompt(ticket_key, summary, description, testing_context, development_info)
 
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
@@ -297,9 +326,10 @@ class ClaudeClient(LLMClient):
         summary: str,
         description: str | None,
         testing_context: dict,
+        development_info: dict | None = None,
     ) -> TestPlan:
         """Generate test plan using Claude API."""
-        prompt = self._build_prompt(ticket_key, summary, description, testing_context)
+        prompt = self._build_prompt(ticket_key, summary, description, testing_context, development_info)
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:

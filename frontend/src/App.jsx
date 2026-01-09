@@ -98,13 +98,9 @@ function App() {
           description: ticketData.description,
           testing_context: {
             acceptanceCriteria: testingContext.acceptanceCriteria,
-            testDataNotes: testingContext.testDataNotes,
-            environments: testingContext.environments,
-            rolesPermissions: testingContext.rolesPermissions,
-            outOfScope: testingContext.outOfScope,
-            riskAreas: testingContext.riskAreas,
             specialInstructions: testingContext.specialInstructions,
           },
+          development_info: ticketData.development_info,
         }),
         signal: controller.signal,
       })

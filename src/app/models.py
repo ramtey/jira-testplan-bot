@@ -97,3 +97,4 @@ class GenerateTestPlanRequest(BaseModel):
     summary: str
     description: str | None = None
     testing_context: dict = {}
+    development_info: dict | None = None

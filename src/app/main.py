@@ -88,6 +88,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             summary=request.summary,
             description=request.description,
             testing_context=request.testing_context,
+            development_info=request.development_info,
         )
 
         return {
