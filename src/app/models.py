@@ -26,6 +26,36 @@ class DescriptionAnalysis:
 
 
 @dataclass
+class Commit:
+    """Represents a commit linked to a Jira issue."""
+
+    message: str
+    author: str | None = None
+    date: str | None = None
+    url: str | None = None
+
+
+@dataclass
+class PullRequest:
+    """Represents a pull request linked to a Jira issue."""
+
+    title: str
+    status: str
+    url: str | None = None
+    source_branch: str | None = None
+    destination_branch: str | None = None
+
+
+@dataclass
+class DevelopmentInfo:
+    """Development information (commits, PRs, branches) for a Jira issue."""
+
+    commits: list[Commit]
+    pull_requests: list[PullRequest]
+    branches: list[str]
+
+
+@dataclass
 class JiraIssue:
     """Represents a Jira issue with extracted data."""
 
@@ -35,6 +65,7 @@ class JiraIssue:
     description_analysis: DescriptionAnalysis
     labels: list[str]
     issue_type: str
+    development_info: DevelopmentInfo | None = None
 
 
 # ============================================================================

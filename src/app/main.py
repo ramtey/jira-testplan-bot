@@ -1,3 +1,5 @@
+from dataclasses import asdict
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -37,6 +39,16 @@ async def get_issue(issue_key: str):
     jira = JiraClient()
     try:
         issue = await jira.get_issue(issue_key)
+
+        # Serialize development info if available
+        development_info_dict = None
+        if issue.development_info:
+            development_info_dict = {
+                "commits": [asdict(commit) for commit in issue.development_info.commits],
+                "pull_requests": [asdict(pr) for pr in issue.development_info.pull_requests],
+                "branches": issue.development_info.branches,
+            }
+
         return {
             "key": issue.key,
             "summary": issue.summary,
@@ -50,6 +62,7 @@ async def get_issue(issue_key: str):
                 "char_count": issue.description_analysis.char_count,
                 "word_count": issue.description_analysis.word_count,
             },
+            "development_info": development_info_dict,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

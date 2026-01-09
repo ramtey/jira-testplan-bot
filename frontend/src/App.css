@@ -967,3 +967,168 @@ button:disabled {
     font-size: 1.125rem;
   }
 }
+
+/* Development Info Styles */
+.dev-subsection {
+  margin-bottom: 1.5rem;
+}
+
+.dev-subsection h4 {
+  font-size: 1rem;
+  color: var(--text-primary);
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+}
+
+.dev-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.dev-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  transition: all 0.2s ease;
+}
+
+.dev-item:hover {
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px var(--shadow);
+}
+
+.dev-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.dev-link {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s ease;
+  flex: 1;
+}
+
+.dev-link:hover {
+  color: var(--primary-hover);
+  text-decoration: underline;
+}
+
+.dev-title {
+  color: var(--text-primary);
+  font-weight: 500;
+  flex: 1;
+}
+
+.pr-status {
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.pr-status.success {
+  background: rgba(0, 135, 90, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(0, 135, 90, 0.3);
+}
+
+.pr-status.warning {
+  background: rgba(255, 153, 31, 0.15);
+  color: var(--warning);
+  border: 1px solid rgba(255, 153, 31, 0.3);
+}
+
+.pr-branches {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.branch-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.branch-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.branch-name {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 0.8125rem;
+  border: 1px solid var(--border);
+}
+
+.commit-summary {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 6px;
+  padding: 1rem;
+}
+
+.commit-count {
+  color: var(--text-primary);
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+.branches-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.branch-tag {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 0.875rem;
+  border: 1px solid var(--border);
+  transition: all 0.2s ease;
+}
+
+.branch-tag:hover {
+  border-color: var(--primary);
+  background: var(--bg-secondary);
+}
+
+.info-note {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-style: italic;
+  margin-top: 0.5rem;
+}
+
+/* Responsive adjustments for development info */
+@media (max-width: 768px) {
+  .dev-item-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .pr-branches {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}

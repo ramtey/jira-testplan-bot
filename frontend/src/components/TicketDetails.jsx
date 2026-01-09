@@ -2,6 +2,8 @@
  * Display Jira ticket details and quality analysis
  */
 
+import DevelopmentInfo from './DevelopmentInfo'
+
 function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription }) {
   const getIssueTypeClass = (issueType) => {
     if (!issueType) return ''
@@ -99,6 +101,8 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription 
           </div>
         )}
       </div>
+
+      <DevelopmentInfo developmentInfo={ticketData.development_info} />
     </div>
   )
 }

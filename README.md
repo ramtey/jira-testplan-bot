@@ -19,6 +19,8 @@ Fetch source data used for test plan generation.
 - [x] Fetch Jira issue summary/title and description
 - [x] Extract readable text from Jira description (best-effort; Jira often returns rich text)
 - [x] Display a clear message when description/AC is missing or weak
+- [x] **Fetch development activity** (commits, pull requests, branches) linked to the ticket
+- [x] Display development information in the UI for additional context
 - [x] Handle errors gracefully:
   - Ticket not found (404)
   - Auth failure / permissions (401/403)
@@ -35,6 +37,10 @@ Provide a lightweight workflow for testers.
   - Description/AC (extracted text)
   - Labels
   - Issue type (color-coded: Story=green, Bug=red, Spike=blue, Task=light blue, Epic=purple)
+  - **Development Activity** section showing:
+    - Pull requests with status badges (MERGED, OPEN, etc.) and branch information
+    - Commit count (e.g., "27 commits linked to this ticket")
+    - Branch names
 - [x] Clear loading state + friendly errors
 - [x] Collapsible description (show more/less for long descriptions)
 - [x] Dark/Light theme support (follows system preference)
@@ -102,6 +108,19 @@ Make it usable immediately.
 
 ## Recent Improvements
 
+### Development Activity Tracking (Phase 1 Complete)
+- **Automatic fetching of development data** from Jira's dev-status API:
+  - Pull requests with titles, status (MERGED, OPEN, DECLINED), URLs, and branch information
+  - Commit messages and counts (e.g., "27 commits linked")
+  - Branch names associated with the ticket
+- **Visual display in UI** with:
+  - Clickable PR titles linking directly to GitHub/Bitbucket
+  - Color-coded status badges (green for merged/open, orange for declined/closed)
+  - Professional card-based layout with hover effects
+  - Responsive design for mobile and desktop
+- **Non-blocking integration**: Development info fetch won't fail ticket loading if unavailable
+- **Multi-platform support**: Works with GitHub, Bitbucket (Stash), and other Git integrations
+
 ### Enhanced Test Plan Generation
 - **Smart multi-category detection**: Automatically generates specific test cases when tickets have multiple scenarios or rule categories
 - **Special Instructions field**: Guide the LLM for complex features (see [TESTING_GUIDE.md](TESTING_GUIDE.md))
@@ -148,6 +167,7 @@ frontend/
     components/
       TicketForm.jsx        # Jira ticket input form
       TicketDetails.jsx     # Ticket display & quality analysis
+      DevelopmentInfo.jsx   # Development activity display (PRs, commits, branches)
       TestingContextForm.jsx # Testing context input form
       TestPlanDisplay.jsx   # Test plan rendering & export
     utils/
@@ -295,6 +315,26 @@ Returns JSON:
     "warnings": [],
     "char_count": 245,
     "word_count": 42
+  },
+  "development_info": {
+    "commits": [
+      {
+        "message": "Add password reset endpoint",
+        "author": "John Doe",
+        "date": "2026-01-05T10:55:58.000-0800",
+        "url": "https://github.com/owner/repo/commit/abc123"
+      }
+    ],
+    "pull_requests": [
+      {
+        "title": "SK-1782: Implement password reset",
+        "status": "MERGED",
+        "url": "https://github.com/owner/repo/pull/456",
+        "source_branch": "feature/SK-1782-password-reset",
+        "destination_branch": "main"
+      }
+    ],
+    "branches": ["feature/SK-1782-password-reset"]
   }
 }
 ```
@@ -393,24 +433,47 @@ uv run pytest tests/ -v
 | Gap Detection + User Input Form | ✅ Done |
 | LLM Integration + Backend Endpoint | ✅ Done |
 | UI Test Plan Rendering + Copy/Export | ✅ Done |
-| Internal MVP Demo | To Do |
-| Phase 2 Planning (JumpCloud + Hosting) | To Do |
+| Development Activity Integration (Phase 1) | ✅ Done |
+| Internal MVP Demo | ✅ Done |
+| Phase 2 Planning (GitHub Integration + LLM Enhancement) | To Do |
 
 ## Post-MVP Considerations (Phase 2+)
-
-### Authentication & Deployment
-- JumpCloud SSO and internal hosting for company-wide access
-- Multi-user support with role-based access control
 
 ### Jira Integration Enhancements
 - "Post back to Jira" as a button (manual write) before automation
 - Auto-populate testing context from previous similar tickets
 - Fetch related tickets to include in test plan context
 
-### Version Control Integration
-- GitHub integration to incorporate changed files/repo areas
-- Link test plans to specific commits or pull requests
-- Auto-suggest test areas based on code changes
+### Enhanced Version Control Integration (Phase 2-3)
+
+**Current State (Phase 1):**
+- ✅ Fetch commit messages, PR titles, and branch names from Jira
+- ✅ Display development activity in UI with clickable links
+- ✅ Show commit counts and PR statuses
+
+**Future Enhancements:**
+- **GitHub API Integration** for richer context:
+  - Extract PR descriptions (often contain better acceptance criteria than Jira)
+  - Fetch actual code diffs and file changes
+  - Identify which modules/files were modified (e.g., "backend auth, frontend login, API routes")
+  - Pull PR comments and review discussions
+  - Detect risk areas based on changed files (authentication, payment processing, etc.)
+- **Intelligent LLM Context**:
+  - Pass commit messages and PR data to LLM for smarter test plan generation
+  - Auto-infer testing context from code changes
+  - Suggest specific test areas based on files modified
+  - Detect potential side effects from code changes
+- **Implementation Approach**:
+  - Parse GitHub URLs from Jira's development info
+  - Use GitHub Personal Access Token for API authentication
+  - Fetch PR details: `GET /repos/{owner}/{repo}/pulls/{number}`
+  - Fetch file changes: `GET /repos/{owner}/{repo}/pulls/{number}/files`
+  - Fetch commit details: `GET /repos/{owner}/{repo}/commits/{sha}`
+- **Benefits**:
+  - Reduce manual "Testing Context" input by 50%+
+  - More accurate test coverage based on actual implementation
+  - Better risk area detection
+  - Context-aware test case generation
 
 ### Quality & Feedback
 - Feedback loop (thumbs up/down per plan) to improve prompts

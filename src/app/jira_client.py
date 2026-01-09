@@ -1,11 +1,14 @@
 import base64
+import logging
 
 import httpx
 
 from .adf_parser import extract_text_from_adf
 from .config import settings
 from .description_analyzer import analyze_description
-from .models import DescriptionAnalysis, JiraIssue
+from .models import Commit, DevelopmentInfo, DescriptionAnalysis, JiraIssue, PullRequest
+
+logger = logging.getLogger(__name__)
 
 
 class JiraAuthError(Exception):
@@ -39,10 +42,165 @@ class JiraClient:
             "Authorization": f"Basic {self._auth_header}",
         }
 
+    async def _get_development_info(
+        self, issue_id: str, issue_key: str
+    ) -> DevelopmentInfo | None:
+        """
+        Fetch development information (commits, PRs, branches) for a Jira issue.
+
+        This uses the internal dev-status API which is unofficial and may change.
+        Returns None if the endpoint is unavailable or returns errors.
+
+        Note: This works with GitHub, Bitbucket, and other integrations.
+        For Bitbucket, use applicationType='stash' (legacy naming).
+        """
+        commits: list[Commit] = []
+        pull_requests: list[PullRequest] = []
+        branches: list[str] = []
+
+        # Try to fetch development summary first to check what's available
+        summary_url = (
+            f"{self.base_url}/rest/dev-status/latest/issue/summary?issueId={issue_id}"
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                summary_response = await client.get(
+                    summary_url, headers=self._headers()
+                )
+
+                # If summary endpoint fails or returns 404, development info may not be available
+                if summary_response.status_code != 200:
+                    return None
+
+                summary_data = summary_response.json()
+
+                # Check which application types are available from the summary
+                # Common types: GitHub, github, githubenterprise, stash (Bitbucket), etc.
+                application_types = []
+
+                # Extract application types from byInstanceType across all data types
+                summary_info = summary_data.get("summary", {})
+                for data_type in ["repository", "pullrequest", "branch"]:
+                    if data_type in summary_info:
+                        by_instance = summary_info[data_type].get("byInstanceType", {})
+                        for app_type in by_instance.keys():
+                            if app_type not in application_types:
+                                application_types.append(app_type)
+
+                # Fetch detailed info for each application type
+                for app_type in set(application_types):
+                    # Fetch commits/repository info
+                    repo_url = f"{self.base_url}/rest/dev-status/latest/issue/detail"
+                    repo_params = {
+                        "issueId": issue_id,
+                        "applicationType": app_type,
+                        "dataType": "repository",
+                    }
+
+                    repo_response = await client.get(
+                        repo_url, headers=self._headers(), params=repo_params
+                    )
+
+                    if repo_response.status_code == 200:
+                        repo_data = repo_response.json()
+                        extracted_commits = self._extract_commits(repo_data)
+                        extracted_branches = self._extract_branches(repo_data)
+                        commits.extend(extracted_commits)
+                        branches.extend(extracted_branches)
+
+                    # Fetch pull request info
+                    pr_url = f"{self.base_url}/rest/dev-status/latest/issue/detail"
+                    pr_params = {
+                        "issueId": issue_id,
+                        "applicationType": app_type,
+                        "dataType": "pullrequest",
+                    }
+
+                    pr_response = await client.get(
+                        pr_url, headers=self._headers(), params=pr_params
+                    )
+
+                    if pr_response.status_code == 200:
+                        pr_data = pr_response.json()
+                        extracted_prs = self._extract_pull_requests(pr_data)
+                        pull_requests.extend(extracted_prs)
+
+        except (httpx.ConnectError, httpx.TimeoutException, Exception) as e:
+            # If dev-status API is unavailable, just return None
+            # This is a non-critical feature, don't block the main flow
+            logger.warning(f"Dev-status API error for {issue_key}: {type(e).__name__}: {e}")
+            return None
+
+        # Return None if no development info was found
+        if not commits and not pull_requests and not branches:
+            return None
+
+        return DevelopmentInfo(
+            commits=commits, pull_requests=pull_requests, branches=branches
+        )
+
+    def _extract_commits(self, repo_data: dict) -> list[Commit]:
+        """Extract commit information from repository data."""
+        commits = []
+        details = repo_data.get("detail", [])
+
+        for detail in details:
+            repositories = detail.get("repositories", [])
+            for repo in repositories:
+                repo_commits = repo.get("commits", [])
+                for commit in repo_commits:
+                    commits.append(
+                        Commit(
+                            message=commit.get("message", ""),
+                            author=commit.get("author", {}).get("name"),
+                            date=commit.get("authorTimestamp"),
+                            url=commit.get("url"),
+                        )
+                    )
+
+        return commits
+
+    def _extract_branches(self, repo_data: dict) -> list[str]:
+        """Extract branch names from repository data."""
+        branches = []
+        details = repo_data.get("detail", [])
+
+        for detail in details:
+            repositories = detail.get("repositories", [])
+            for repo in repositories:
+                repo_branches = repo.get("branches", [])
+                for branch in repo_branches:
+                    branch_name = branch.get("name")
+                    if branch_name:
+                        branches.append(branch_name)
+
+        return branches
+
+    def _extract_pull_requests(self, pr_data: dict) -> list[PullRequest]:
+        """Extract pull request information from PR data."""
+        pull_requests = []
+        details = pr_data.get("detail", [])
+
+        for detail in details:
+            prs = detail.get("pullRequests", [])
+            for pr in prs:
+                pull_requests.append(
+                    PullRequest(
+                        title=pr.get("name", ""),
+                        status=pr.get("status", "UNKNOWN"),
+                        url=pr.get("url"),
+                        source_branch=pr.get("source", {}).get("branch"),
+                        destination_branch=pr.get("destination", {}).get("branch"),
+                    )
+                )
+
+        return pull_requests
+
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
-        # Ask Jira for only what we need (faster + smaller payload)
-        params = {"fields": "summary,description,labels,issuetype"}
+        # Ask Jira for fields we need + development info if available
+        params = {"fields": "summary,description,labels,issuetype", "expand": "renderedFields"}
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
@@ -76,6 +234,11 @@ class JiraClient:
         # Analyze description quality
         analysis = analyze_description(description_str)
 
+        # Fetch development information (commits, PRs, branches)
+        # This is optional and non-blocking - if it fails, we continue without it
+        issue_id = data["id"]
+        development_info = await self._get_development_info(issue_id, issue_key)
+
         return JiraIssue(
             key=data["key"],
             summary=summary,
@@ -83,4 +246,5 @@ class JiraClient:
             description_analysis=analysis,
             labels=labels,
             issue_type=issue_type,
+            development_info=development_info,
         )
