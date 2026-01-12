@@ -80,9 +80,6 @@ class TestPlan:
     happy_path: list[dict]
     edge_cases: list[dict]
     regression_checklist: list[str]
-    non_functional: list[str]
-    assumptions: list[str]
-    questions: list[str]
 
 
 # ============================================================================

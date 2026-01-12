@@ -107,39 +107,6 @@ function TestPlanDisplay({ testPlan, ticketData }) {
         </div>
       )}
 
-      {testPlan.non_functional && Array.isArray(testPlan.non_functional) && testPlan.non_functional.length > 0 && (
-        <div className="test-plan-group">
-          <h4>⚡ Non-Functional Tests</h4>
-          <ul className="checklist">
-            {testPlan.non_functional.map((item, index) => (
-              <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {testPlan.assumptions && Array.isArray(testPlan.assumptions) && testPlan.assumptions.length > 0 && (
-        <div className="test-plan-group">
-          <h4>💡 Assumptions</h4>
-          <ul className="assumptions-list">
-            {testPlan.assumptions.map((item, index) => (
-              <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {testPlan.questions && Array.isArray(testPlan.questions) && testPlan.questions.length > 0 && (
-        <div className="test-plan-group">
-          <h4>❓ Questions for PM/Dev</h4>
-          <ul className="questions-list">
-            {testPlan.questions.map((item, index) => (
-              <li key={index}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
       <div className="test-plan-actions">
         <button
           type="button"

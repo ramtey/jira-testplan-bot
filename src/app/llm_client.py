@@ -161,26 +161,6 @@ Before generating test cases, analyze the ticket description to identify:
    - Focus on high-risk areas mentioned in the ticket
    - IMPORTANT: Make these specific to the feature being tested, not generic examples
 
-**4. Non-Functional Requirements (if applicable)**
-   - Performance: Load times, response times, scalability concerns specific to this feature
-   - Security: Authentication, authorization, data protection, XSS, SQL injection relevant to this feature
-   - Accessibility: Keyboard navigation, screen readers, WCAG compliance for this feature
-   - UX: Error messages, loading states, responsive design specific to this feature
-   - Data validation: Input sanitization, data integrity for this feature
-   - IMPORTANT: Only include items that are relevant to the feature described in the ticket
-
-**5. Assumptions**
-   - List any assumptions you're making about the implementation
-   - Note dependencies on other systems or features
-   - Clarify what you're assuming is in vs out of scope
-   - IMPORTANT: Base assumptions on the actual ticket content, not generic scenarios
-
-**6. Questions for PM/Developers**
-   - What's unclear or ambiguous about the requirements?
-   - What edge cases need clarification?
-   - Are there technical constraints to consider?
-   - IMPORTANT: Ask questions specific to this ticket, not generic questions
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -212,16 +192,6 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   "regression_checklist": [
     "Specific existing feature to verify that's relevant to this ticket",
     "Another related feature to validate"
-  ],
-  "non_functional": [
-    "Specific non-functional test relevant to this feature",
-    "Another non-functional requirement specific to this ticket"
-  ],
-  "assumptions": [
-    "Clear assumption about the implementation or requirements"
-  ],
-  "questions": [
-    "Specific question that needs PM/Dev clarification"
   ]
 }
 
@@ -289,9 +259,6 @@ class OllamaClient(LLMClient):
                     happy_path=test_plan_data.get("happy_path", []),
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
-                    non_functional=test_plan_data.get("non_functional", []),
-                    assumptions=test_plan_data.get("assumptions", []),
-                    questions=test_plan_data.get("questions", []),
                 )
 
         except httpx.ConnectError as e:
@@ -373,9 +340,6 @@ class ClaudeClient(LLMClient):
                     happy_path=test_plan_data.get("happy_path", []),
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
-                    non_functional=test_plan_data.get("non_functional", []),
-                    assumptions=test_plan_data.get("assumptions", []),
-                    questions=test_plan_data.get("questions", []),
                 )
 
         except httpx.HTTPStatusError as e:

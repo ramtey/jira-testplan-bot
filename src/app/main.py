@@ -96,9 +96,6 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             "happy_path": test_plan.happy_path,
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
-            "non_functional": test_plan.non_functional,
-            "assumptions": test_plan.assumptions,
-            "questions": test_plan.questions,
         }
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))

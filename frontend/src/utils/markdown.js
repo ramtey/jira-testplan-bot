@@ -48,30 +48,6 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
     markdown += '\n'
   }
 
-  if (plan.non_functional && plan.non_functional.length > 0) {
-    markdown += '## ⚡ Non-Functional Tests\n\n'
-    plan.non_functional.forEach(item => {
-      markdown += `- ${item}\n`
-    })
-    markdown += '\n'
-  }
-
-  if (plan.assumptions && plan.assumptions.length > 0) {
-    markdown += '## 💡 Assumptions\n\n'
-    plan.assumptions.forEach(item => {
-      markdown += `- ${item}\n`
-    })
-    markdown += '\n'
-  }
-
-  if (plan.questions && plan.questions.length > 0) {
-    markdown += '## ❓ Questions for PM/Dev\n\n'
-    plan.questions.forEach(item => {
-      markdown += `- ${item}\n`
-    })
-    markdown += '\n'
-  }
-
   return markdown
 }
 
@@ -120,30 +96,6 @@ export const formatTestPlanAsJira = (plan, ticketData) => {
   if (plan.regression_checklist && plan.regression_checklist.length > 0) {
     jira += '🔄 REGRESSION CHECKLIST\n\n'
     plan.regression_checklist.forEach(item => {
-      jira += `  • ${item}\n`
-    })
-    jira += '\n'
-  }
-
-  if (plan.non_functional && plan.non_functional.length > 0) {
-    jira += '⚡ NON-FUNCTIONAL TESTS\n\n'
-    plan.non_functional.forEach(item => {
-      jira += `  • ${item}\n`
-    })
-    jira += '\n'
-  }
-
-  if (plan.assumptions && plan.assumptions.length > 0) {
-    jira += '💡 ASSUMPTIONS\n\n'
-    plan.assumptions.forEach(item => {
-      jira += `  • ${item}\n`
-    })
-    jira += '\n'
-  }
-
-  if (plan.questions && plan.questions.length > 0) {
-    jira += '❓ QUESTIONS FOR PM/DEV\n\n'
-    plan.questions.forEach(item => {
       jira += `  • ${item}\n`
     })
     jira += '\n'

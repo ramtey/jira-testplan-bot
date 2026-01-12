@@ -840,16 +840,12 @@ button:disabled {
   font-size: 0.9375rem;
 }
 
-.checklist,
-.assumptions-list,
-.questions-list {
+.checklist {
   list-style: none;
   padding: 0;
 }
 
-.checklist li,
-.assumptions-list li,
-.questions-list li {
+.checklist li {
   padding: 0.75rem 1rem;
   margin-bottom: 0.5rem;
   background: var(--bg-card);
@@ -867,18 +863,6 @@ button:disabled {
   left: 1rem;
   font-size: 1.125rem;
   color: var(--primary);
-}
-
-.assumptions-list li::before {
-  content: '💡';
-  position: absolute;
-  left: 1rem;
-}
-
-.questions-list li::before {
-  content: '❓';
-  position: absolute;
-  left: 1rem;
 }
 
 /* Test Plan Actions */

@@ -73,13 +73,6 @@ Acceptance Criteria:
         for item in test_plan.regression_checklist[:3]:
             print(f"  - {item}")
 
-        print(f"\n⚡ Non-Functional: {len(test_plan.non_functional)} items")
-        for item in test_plan.non_functional[:3]:
-            print(f"  - {item}")
-
-        print(f"\n💡 Assumptions: {len(test_plan.assumptions)}")
-        print(f"❓ Questions: {len(test_plan.questions)}")
-
         print()
         print("=" * 80)
         print("✅ LLM integration test passed!")
