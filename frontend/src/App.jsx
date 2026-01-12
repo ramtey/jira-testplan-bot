@@ -36,6 +36,8 @@ function App() {
     setTicketData(null)
     setIsDescriptionExpanded(false)
     setTestingContext(resetTestingContext())
+    setTestPlan(null)
+    setPlanError(null)
 
     try {
       const response = await fetch(`${API_BASE_URL}/issue/${issueKey.trim()}`)
