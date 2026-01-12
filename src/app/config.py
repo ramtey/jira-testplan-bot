@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
 
     # LLM configuration
-    llm_provider: str = "ollama"  # "ollama" or "claude"
-    llm_model: str = "llama3.1"  # For Ollama: llama3.1, qwen2.5, etc. For Claude: claude-3-5-sonnet-20241022
-    ollama_base_url: str = "http://localhost:11434"  # Ollama server URL
-    anthropic_api_key: str | None = None  # For Claude API (when available)
+    llm_provider: str = "claude"  # "claude" (recommended) or "ollama"
+    llm_model: str = "claude-3-5-sonnet-20241022"  # For Claude: claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219; For Ollama: llama3.1, qwen2.5, etc.
+    anthropic_api_key: str | None = None  # For Claude API (required when using Claude)
+    ollama_base_url: str = "http://localhost:11434"  # Ollama server URL (only needed if using Ollama)
 
     # App
     app_env: str = "local"

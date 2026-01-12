@@ -94,17 +94,17 @@ Acceptance Criteria:
         print(f"\nError: {e}\n")
 
         # Provide helpful troubleshooting
-        if "Failed to connect to Ollama" in str(e):
+        if "ANTHROPIC_API_KEY not set" in str(e):
+            print("💡 Troubleshooting:")
+            print("   1. Get Claude API key from https://console.anthropic.com/")
+            print("   2. Add to .env: ANTHROPIC_API_KEY=sk-ant-api03-...")
+            print("   3. Or use local Ollama: LLM_PROVIDER=ollama")
+        elif "Failed to connect to Ollama" in str(e):
             print("💡 Troubleshooting:")
             print("   1. Install Ollama: https://ollama.com/download")
             print("   2. Start Ollama: ollama serve")
             print("   3. Pull a model: ollama pull llama3.1")
-            print("   4. Or switch to Claude API in .env: LLM_PROVIDER=claude")
-        elif "ANTHROPIC_API_KEY not set" in str(e):
-            print("💡 Troubleshooting:")
-            print("   1. Get Claude API key from your company")
-            print("   2. Add to .env: ANTHROPIC_API_KEY=sk-ant-api03-...")
-            print("   3. Or use Ollama: LLM_PROVIDER=ollama")
+            print("   4. Or use Claude API in .env: LLM_PROVIDER=claude")
 
         print()
         return False
