@@ -7,6 +7,9 @@ import TicketDetails from './components/TicketDetails'
 import TestingContextForm from './components/TestingContextForm'
 import TestPlanDisplay from './components/TestPlanDisplay'
 
+// Issue types that don't require test plans
+const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
+
 function App() {
   const [issueKey, setIssueKey] = useState('')
   const [loading, setLoading] = useState(false)
@@ -98,6 +101,7 @@ function App() {
           ticket_key: ticketData.key,
           summary: ticketData.summary,
           description: ticketData.description,
+          issue_type: ticketData.issue_type,
           testing_context: {
             acceptanceCriteria: testingContext.acceptanceCriteria,
             specialInstructions: testingContext.specialInstructions,
@@ -163,26 +167,38 @@ function App() {
               onToggleDescription={toggleDescription}
             />
 
-            <TestingContextForm
-              ticketData={ticketData}
-              testingContext={testingContext}
-              onContextChange={handleContextChange}
-              onGenerateTestPlan={handleGenerateTestPlan}
-              onStopGeneration={handleStopGeneration}
-              generatingPlan={generatingPlan}
-            />
-
-            {planError && (
-              <div className="alert alert-error">
-                <strong>Error:</strong> {planError}
+            {NON_TESTABLE_ISSUE_TYPES.has(ticketData.issue_type) ? (
+              <div className="ticket-section">
+                <div className="alert alert-info">
+                  <strong>ℹ️ Note:</strong> Test plans are not generated for {ticketData.issue_type} tickets.
+                  <br />
+                  Test plan generation is available for Story, Task, and Bug issues only.
+                </div>
               </div>
-            )}
+            ) : (
+              <>
+                <TestingContextForm
+                  ticketData={ticketData}
+                  testingContext={testingContext}
+                  onContextChange={handleContextChange}
+                  onGenerateTestPlan={handleGenerateTestPlan}
+                  onStopGeneration={handleStopGeneration}
+                  generatingPlan={generatingPlan}
+                />
 
-            {testPlan && (
-              <TestPlanDisplay
-                testPlan={testPlan}
-                ticketData={ticketData}
-              />
+                {planError && (
+                  <div className="alert alert-error">
+                    <strong>Error:</strong> {planError}
+                  </div>
+                )}
+
+                {testPlan && (
+                  <TestPlanDisplay
+                    testPlan={testPlan}
+                    ticketData={ticketData}
+                  />
+                )}
+              </>
             )}
           </>
         )}

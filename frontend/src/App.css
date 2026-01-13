@@ -336,6 +336,32 @@ button:disabled {
   color: var(--error);
 }
 
+.alert-info {
+  background: #1a2332;
+  border-left: 4px solid #42a5f5;
+  color: #90caf9;
+  padding: 1rem;
+  border-radius: 6px;
+  margin-bottom: 1.5rem;
+}
+
+.alert-info strong {
+  color: #bbdefb;
+}
+
+/* Light mode info alert */
+@media (prefers-color-scheme: light) {
+  .alert-info {
+    background: #e3f2fd;
+    border-left: 4px solid #2196f3;
+    color: #1565c0;
+  }
+
+  .alert-info strong {
+    color: #0d47a1;
+  }
+}
+
 /* Ticket details */
 .ticket-details {
   background: var(--bg-primary);

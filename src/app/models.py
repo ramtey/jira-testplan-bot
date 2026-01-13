@@ -93,5 +93,6 @@ class GenerateTestPlanRequest(BaseModel):
     ticket_key: str
     summary: str
     description: str | None = None
+    issue_type: str
     testing_context: dict = {}
     development_info: dict | None = None

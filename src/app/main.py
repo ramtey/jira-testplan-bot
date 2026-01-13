@@ -3,6 +3,7 @@ from dataclasses import asdict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from .config import NON_TESTABLE_ISSUE_TYPES
 from .jira_client import (
     JiraAuthError,
     JiraClient,
@@ -81,6 +82,14 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
     then uses the configured LLM provider (Ollama or Claude) to generate
     a comprehensive test plan.
     """
+    # Validate issue type
+    if request.issue_type in NON_TESTABLE_ISSUE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Test plans are not generated for {request.issue_type} issues. "
+            f"Only Story, Task, and Bug issues are supported.",
+        )
+
     try:
         llm = get_llm_client()
         test_plan = await llm.generate_test_plan(

@@ -102,7 +102,15 @@ Make it usable immediately.
 
 ## Recent Improvements
 
-### Test Plan Output Optimization (Latest)
+### Issue Type Validation (Latest)
+- **Smart issue type detection**: Automatically hides test plan generation for non-testable issue types
+  - Disabled for: Epic, Spike, Sub-task (configurable)
+  - Enabled for: Story, Task, Bug
+  - Frontend shows friendly info message for non-testable types
+  - Backend validates issue type and returns clear error if bypassed
+  - Hybrid approach: Better UX + security validation
+
+### Test Plan Output Optimization
 - **Streamlined test plan structure**: Removed non-actionable sections for cleaner, more focused output
   - Removed: Non-functional tests, Assumptions, Questions for PM/Dev
   - Kept only: Happy Path, Edge Cases, Regression Checklist
