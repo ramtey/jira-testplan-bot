@@ -467,7 +467,9 @@ uv run pytest tests/ -v
 | Internal MVP Demo | ✅ Done |
 | LLM Enhancement with Dev Context (Phase 2) | ✅ Done |
 | Claude API Integration | ✅ Done |
-| Phase 3 Planning (GitHub API + Advanced Features) | To Do |
+| Phase 3a Planning (GitHub API Integration) | To Do |
+| Phase 3b Planning (Visual & Video Context) | To Do |
+| Phase 3c Planning (Slack Bot Integration) | To Do |
 
 ## Post-MVP Considerations (Phase 3+)
 
@@ -487,7 +489,7 @@ uv run pytest tests/ -v
 - ✅ Automatic risk area identification from commit patterns
 - ✅ Streamlined user input (only 2 fields: Acceptance Criteria + Special Instructions)
 
-**Future Enhancements (Phase 3):**
+**Future Enhancements (Phase 3a - GitHub Integration):**
 - **GitHub API Integration** for even richer context:
   - Extract PR descriptions (often contain better acceptance criteria than Jira)
   - Fetch actual code diffs and file changes
@@ -510,6 +512,83 @@ uv run pytest tests/ -v
   - Even more accurate test coverage based on actual file changes
   - Precise risk area detection from modified code
   - File-aware test case generation
+
+**Visual & Video Context Integration (Phase 3b):**
+- **Screenshot Upload Support**:
+  - Accept 1-2 images (PNG/JPG) in testing context form
+  - Pass images to Claude API (multimodal vision capabilities)
+  - Generate visual test cases based on UI mockups
+  - Compare expected design vs actual screenshots
+  - Identify visual differences and generate specific UI test scenarios
+- **Loom Transcript Integration**:
+  - Support Loom video transcript text input (pasted by user)
+  - Automatic transcript extraction via Loom API or third-party scrapers (Apify)
+  - Parse video context for implementation details and acceptance criteria
+  - Extract visual demonstrations and user flows from video content
+  - **Challenge**: Loom's official API focuses on recording SDK, not transcript access
+  - **Workaround Options**:
+    - Manual paste: User copies transcript from Loom UI (SRT download available)
+    - Third-party APIs: Apify actors for automated transcript extraction
+    - Future: Direct Loom API integration if transcript endpoint becomes available
+- **GitHub PR Description Fetching**:
+  - Fetch full PR descriptions from GitHub API (not just titles from Jira)
+  - Extract detailed implementation notes often missing from Jira tickets
+  - Parse PR comments and code review discussions
+  - Identify acceptance criteria mentioned in PR descriptions
+  - **Benefits**: PR descriptions typically contain better technical context than Jira
+- **Implementation Approach**:
+  - Frontend: Add file upload component for screenshots
+  - Frontend: Add textarea for Loom transcript paste (or URL for future API integration)
+  - Backend: Extend TestingContext model with `screenshots`, `loom_transcript`, `figma_notes`
+  - Backend: Create `github_client.py` to fetch PR descriptions and comments
+  - LLM: Update prompt to include visual and video context
+  - LLM: Use Claude's vision API for screenshot analysis
+- **Benefits**:
+  - Catch visual regressions and UI implementation differences
+  - Leverage video demos for better test coverage
+  - Extract requirements from multiple sources (Jira + PR + video + design)
+  - Reduce miscommunication from poorly written tickets
+
+**Slack Bot Integration (Phase 3c):**
+- **Quick Test Plan Generation via Slash Command**:
+  - Slash command: `/testplan TICKET-123` generates plan without leaving Slack
+  - Auto-fetch ticket details and development info from Jira
+  - Generate test plan using existing backend logic (no manual context input)
+  - Post formatted plan directly in Slack channel (visible to team)
+  - Supports basic special instructions: `/testplan SK-1234 special: Test all keyword categories`
+- **Interactive Slack UI**:
+  - Formatted output using Slack Block Kit (collapsible sections, rich formatting)
+  - Action buttons:
+    - "📋 View Full Plan" - Links to web UI with full details
+    - "✨ Add Context & Regenerate" - Opens Slack modal for acceptance criteria input
+    - "💬 Discuss in Thread" - Encourages team collaboration
+  - Status updates: "⏳ Generating..." → "✅ Test plan ready"
+- **Use Cases**:
+  - **Quick wins**: Well-written tickets with good descriptions (~30% of tickets)
+  - **Team collaboration**: Share plans in channels for immediate feedback
+  - **Discovery**: Increases tool adoption without requiring web UI access
+  - **Triage**: Quick assessment of testing scope during sprint planning
+- **Implementation Approach**:
+  - Create Slack App at api.slack.com with slash command configuration
+  - New FastAPI endpoints:
+    - `POST /slack/commands` - Handle slash command invocations
+    - `POST /slack/interactions` - Handle button clicks and modal submissions
+  - Slack signature verification for security
+  - Reuse existing `generate_test_plan` logic (same backend, different client)
+  - Format test plans as Slack Block Kit messages with collapsible sections
+  - Store bot token and signing secret in environment config
+- **Benefits**:
+  - **Lower friction**: Generate plans without context switching
+  - **Increased adoption**: Visible in Slack, easy to discover and use
+  - **Team visibility**: Plans shared in channels for discussion
+  - **Hybrid workflow**: Simple tickets via Slack, complex tickets via web UI
+  - **Same quality**: Uses identical LLM prompts and Jira integration as web UI
+- **Limitations (by design)**:
+  - No screenshot upload (use web UI for visual context)
+  - Limited context input (basic special instructions only)
+  - Text-only formatting (no rich PR cards like web UI)
+  - Best for tickets with decent descriptions (fallback to web UI for poor tickets)
+- **Estimated Effort**: 4-6 hours for MVP (slash command + basic formatting)
 
 ### Quality & Feedback
 - Feedback loop (thumbs up/down per plan) to improve prompts
