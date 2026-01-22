@@ -61,7 +61,7 @@ When AC/testing info is missing or unclear, prompt the user to fill in:
 
 The UI displays an "Additional Testing Context" form after fetching a ticket, with all fields optional. The form highlights recommended fields when description quality is weak.
 
-**New:** For complex features with multiple categories or scenarios (e.g., keyword blocking with 50+ rules), use the "Special Testing Instructions" field to guide the LLM to generate specific test cases for each category. See [docs/docs/TESTING_GUIDE.md](docs/docs/TESTING_GUIDE.md) for detailed examples.
+**New:** For complex features with multiple categories or scenarios (e.g., keyword blocking with 50+ rules), use the "Special Testing Instructions" field to guide the LLM to generate specific test cases for each category. See [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for detailed examples.
 
 ### 4) LLM Prompt That Returns Structured JSON
 
