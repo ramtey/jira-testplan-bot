@@ -61,7 +61,7 @@ When AC/testing info is missing or unclear, prompt the user to fill in:
 
 The UI displays an "Additional Testing Context" form after fetching a ticket, with all fields optional. The form highlights recommended fields when description quality is weak.
 
-**New:** For complex features with multiple categories or scenarios (e.g., keyword blocking with 50+ rules), use the "Special Testing Instructions" field to guide the LLM to generate specific test cases for each category. See [TESTING_GUIDE.md](TESTING_GUIDE.md) for detailed examples.
+**New:** For complex features with multiple categories or scenarios (e.g., keyword blocking with 50+ rules), use the "Special Testing Instructions" field to guide the LLM to generate specific test cases for each category. See [docs/docs/TESTING_GUIDE.md](docs/docs/TESTING_GUIDE.md) for detailed examples.
 
 ### 4) LLM Prompt That Returns Structured JSON
 
@@ -147,7 +147,7 @@ Make it usable immediately.
 
 ### Enhanced Test Plan Generation
 - **Smart multi-category detection**: Automatically generates specific test cases when tickets have multiple scenarios or rule categories
-- **Special Instructions field**: Guide the LLM for complex features (see [TESTING_GUIDE.md](TESTING_GUIDE.md))
+- **Special Instructions field**: Guide the LLM for complex features (see [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md))
 - **Better coverage**: Increased test case counts (2-5 happy path, 3-6 edge cases)
 - **Specific examples required**: LLM now uses concrete examples instead of generic placeholders
 
@@ -157,7 +157,7 @@ Make it usable immediately.
 - **Robust error handling**: Safe rendering even with malformed data
 
 ### Better Developer Experience
-- See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive usage examples
+- See [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for comprehensive usage examples
 - Template examples for different feature types (APIs, wizards, permissions, etc.)
 - Clear guidance on when to use Special Instructions
 
@@ -467,6 +467,7 @@ uv run pytest tests/ -v
 | Internal MVP Demo | ✅ Done |
 | LLM Enhancement with Dev Context (Phase 2) | ✅ Done |
 | Claude API Integration | ✅ Done |
+| LLM Prompt Enhancements (Risk-based priorities, Given-When-Then format) | ✅ Done |
 | Phase 3a Planning (GitHub API Integration) | To Do |
 | Phase 3b Planning (Visual & Video Context) | To Do |
 | Phase 3c Planning (Slack Bot Integration) | To Do |
@@ -643,12 +644,19 @@ Focus on testing all keyword categories mentioned.
 Test both hard block (racism) and soft block (FNF mentions) behaviors.
 ```
 
-See [TESTING_GUIDE.md](TESTING_GUIDE.md) for detailed guidance.
+See [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for detailed guidance.
 
 ### Export Tips
 - **Copy for Jira**: Use this for pasting directly into Jira comments - plain text with visual separators
 - **Copy as Markdown**: Use for GitHub issues, Slack, or other tools that support Markdown
 - **Download as .md**: Save for documentation, sharing via email, or version control
+
+## Documentation
+
+Additional documentation is available in the [`docs/`](docs/) folder:
+
+- **[Testing Guide](docs/TESTING_GUIDE.md)** - Detailed guide on using the "Special Testing Instructions" field for complex features
+- **[Prompt Improvements](docs/PROMPT_IMPROVEMENTS.md)** - Technical details on LLM prompt enhancements (risk-based priorities, Given-When-Then format, test data requirements)
 
 ## License
 
