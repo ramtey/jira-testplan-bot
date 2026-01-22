@@ -115,51 +115,92 @@ TICKET INFORMATION
 TEST PLAN REQUIREMENTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Generate a comprehensive test plan that ensures quality and prevents regressions.
+Generate a comprehensive, risk-based test plan that ensures quality and prevents regressions.
 
-**CRITICAL ANALYSIS FIRST:**
-Before generating test cases, analyze the ticket description to identify:
-1. **Categories/Groups**: Are there multiple categories, rule types, or scenarios mentioned? (e.g., "racism, fraud, FNF mentions, competitors" or "admin, user, guest roles")
-2. **Behavior Patterns**: Are there different behaviors for different types? (e.g., "block chat for X, allow continue for Y")
-3. **Specific Examples**: What concrete examples are provided in the description? (e.g., specific keywords, phrases, user types)
+**PHASE 1: CRITICAL ANALYSIS**
+Before generating test cases, thoroughly analyze the ticket to understand:
 
-**If multiple categories exist, you MUST:**
-- Create test cases covering representative examples from EACH category
-- Use the specific examples provided in the ticket description
-- Never create generic test cases like "test keyword blocking" - always use concrete examples like "test 'no section 8'"
-- If different behaviors exist (e.g., hard block vs soft block), test examples from each behavior type
+1. **Feature Scope & Complexity**:
+   - What is the primary functionality being added/changed?
+   - Is this frontend, backend, full-stack, or integration work?
+   - What user roles/personas are affected?
 
-**1. Happy Path Tests (3-5 cases minimum)**
-   - Cover the primary user flows and main functionality
-   - **If multiple categories/scenarios exist:** Create AT LEAST one happy path test demonstrating normal operation (no restrictions triggered)
-   - Write from the user's perspective (what they see/do)
-   - Use clear, actionable steps with SPECIFIC EXAMPLES from the ticket
-   - Each step must be concrete and verifiable
-   - Example: "Enter 'What are your office hours?' in chat" for normal conversation
+2. **Categories & Variations**:
+   - Are there multiple categories, rule types, or scenarios? (e.g., "admin/user/guest", "hard block/soft block")
+   - What specific examples are provided? (e.g., keywords, phrases, data values)
+   - Do different categories have different behaviors?
 
-**2. Edge Cases & Error Scenarios (6-10 cases minimum for multi-category features)**
-   **AUTOMATIC CATEGORY DETECTION:**
-   - Scan the ticket description for lists, categories, or groups of items
-   - If you find multiple categories (e.g., different keyword types, user roles, error conditions):
-     * Create AT LEAST 1-2 test cases per category using specific examples from the ticket
-     * Prioritize categories with the most detailed examples in the ticket
-   - If behavior differs by category (e.g., "block for X, allow continue for Y"):
-     * Create tests demonstrating EACH behavior type with specific examples
-
-   **ALWAYS INCLUDE:**
-   - Specific examples from the ticket description (not generic placeholders)
-   - Complete steps AND expected results for every test case
-   - Mixed/combined scenarios when applicable (e.g., "no section 8 families with kids")
-   - Case sensitivity tests when relevant (e.g., "NO SECTION 8" vs "no section 8")
-   - Boundary conditions and validation failures
-   - Error messages must be specific and observable
-
-**3. Regression Checklist (3-5 items)**
+3. **Risk Assessment**:
+   - What are the potential failure points? (authentication, data loss, payments, security)
    - What existing functionality could this break?
-   - Related features that must still work
-   - Critical user flows that should be retested
-   - Focus on high-risk areas mentioned in the ticket
-   - IMPORTANT: Make these specific to the feature being tested, not generic examples
+   - Are there security implications? (authentication, authorization, input validation, data exposure)
+
+4. **Test Data Requirements**:
+   - What types of accounts/users are needed? (admin, regular user, suspended account)
+   - What input variations should be tested? (valid, invalid, edge cases, malicious)
+   - Are there specific data states required? (empty database, full database, concurrent users)
+
+**PHASE 2: GENERATE TEST CASES**
+
+**1. Happy Path Tests (Quality over Quantity)**
+   - Cover PRIMARY user flows that deliver business value
+   - Focus on the most common, expected user journeys
+   - Use **Given-When-Then** format for clarity:
+     * Given: Initial state/preconditions (e.g., "Given user is logged in as admin")
+     * When: Action taken (e.g., "When user clicks 'Export Data' button")
+     * Then: Observable outcome (e.g., "Then CSV file downloads with 100 records")
+   - Use SPECIFIC EXAMPLES from the ticket (not generic placeholders)
+   - Mark priority: 🔴 Critical, 🟡 High, or 🟢 Medium
+
+**2. Edge Cases & Error Scenarios (Risk-Based)**
+   **Prioritize by risk and impact:**
+   - **Security Tests** (if applicable):
+     * Input validation (XSS: `<script>alert('test')</script>`, SQL injection: `' OR '1'='1`)
+     * Authentication/authorization bypass attempts
+     * Data exposure checks (ensure users can't access others' data)
+
+   - **Boundary Value Analysis**:
+     * Minimum/maximum values (e.g., 0 items, 1 item, max limit, max+1)
+     * Empty/null/undefined inputs
+     * Special characters and Unicode
+
+   - **Category Coverage** (if multiple categories exist):
+     * Test representative examples from EACH category mentioned in the ticket
+     * Test behavioral differences (e.g., "hard block" shows error, "soft block" shows warning)
+
+   - **Error Handling**:
+     * Network failures, timeouts, API errors
+     * Invalid user input with specific error messages
+     * Concurrent operations and race conditions
+
+   - **Integration Points**:
+     * API contracts (correct request/response format)
+     * Database transactions (data consistency, rollback on failure)
+     * Third-party service failures (graceful degradation)
+
+   **Format:** Use Given-When-Then, mark priority, include specific expected error messages
+
+**3. Integration & Backend Tests (if applicable)**
+   - API endpoint validation (request/response schemas, status codes)
+   - Database operations (CRUD operations, constraints, indexes)
+   - Service-to-service communication
+   - Background jobs and async operations
+   - Mark with 🔴 for critical data operations
+
+**4. Regression Checklist**
+   - Related features that MUST still work after this change
+   - Critical user flows that could be impacted
+   - High-traffic features that need extra validation
+   - Make these SPECIFIC to the ticket (not generic like "test login")
+
+**QUALITY STANDARDS:**
+- ✅ Write from user's perspective, not implementation details
+- ✅ Be specific and actionable (avoid vague "verify", "check", "test")
+- ✅ Each test case is independently executable
+- ✅ Expected results are observable and measurable
+- ✅ Prioritize tests by risk: authentication > payments > data integrity > UI polish
+- ✅ Include specific test data requirements (account types, input values)
+- ✅ Use concrete examples from the ticket, never generic placeholders
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT
@@ -170,43 +211,80 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
 {
   "happy_path": [
     {
-      "title": "Descriptive test case name (user-focused, specific action)",
+      "title": "User-focused test case name with specific action",
+      "priority": "critical|high|medium",
       "steps": [
-        "Step 1: Specific, actionable step",
-        "Step 2: Another concrete step",
-        "Step 3: Final step with observable action"
+        "Given: Initial state and preconditions (e.g., 'Given user is logged in as admin')",
+        "When: Specific action taken (e.g., 'When user clicks Export button')",
+        "Then: Observable outcome (e.g., 'Then CSV file downloads with 100 records')"
       ],
-      "expected": "Clear, measurable expected outcome (what the user sees/experiences)"
+      "expected": "Clear, measurable expected outcome",
+      "test_data": "Specific data requirements (e.g., 'admin account with 100+ records')"
     }
   ],
   "edge_cases": [
     {
-      "title": "Edge case or error scenario name",
+      "title": "Edge case or error scenario name (be specific)",
+      "priority": "critical|high|medium",
+      "category": "security|boundary|error_handling|integration|category_name",
       "steps": [
-        "Step 1: Setup the edge case condition",
-        "Step 2: Trigger the scenario"
+        "Given: Setup preconditions",
+        "When: Trigger edge case action",
+        "Then: Verify expected behavior"
       ],
-      "expected": "Expected behavior (error message, validation, graceful failure)"
+      "expected": "Specific expected behavior (include exact error messages when applicable)",
+      "test_data": "Required test data or inputs (e.g., 'invalid email: user@', SQL injection: \\' OR \\'1\\'=\\'1')"
+    }
+  ],
+  "integration_tests": [
+    {
+      "title": "Backend/API/integration test name",
+      "priority": "critical|high|medium",
+      "steps": [
+        "Given: System state",
+        "When: API call or service interaction",
+        "Then: Verify response/behavior"
+      ],
+      "expected": "Expected response, status code, or system behavior",
+      "test_data": "API request payload or required data"
     }
   ],
   "regression_checklist": [
-    "Specific existing feature to verify that's relevant to this ticket",
-    "Another related feature to validate"
+    "🔴 Critical: Specific existing feature that MUST work (e.g., 'User login with valid credentials')",
+    "🟡 High: Important related feature (e.g., 'Password reset email delivery')",
+    "🟢 Medium: Nice-to-have validation (e.g., 'Profile page loads correctly')"
   ]
 }
 
-**Quality Standards:**
-- Write test steps from the user's perspective (not technical implementation)
-- Be specific and actionable (avoid vague terms like "verify", "check", "test")
-- Each test case should be independently executable
-- Expected results must be observable and measurable
-- Prioritize tests that catch real bugs (not just checklist items)
+**IMPORTANT NOTES:**
+
+1. **Priority Levels**:
+   - "critical": Authentication, payments, data loss, security vulnerabilities
+   - "high": Core features, common user flows, data integrity
+   - "medium": Edge cases, rare scenarios, UI polish
+
+2. **Categories for edge_cases**:
+   - "security": XSS, SQL injection, authentication bypass, authorization
+   - "boundary": Min/max values, empty inputs, limits, special characters
+   - "error_handling": Network failures, invalid input, timeouts
+   - "integration": API contracts, database operations, third-party services
+   - Or use specific category names from the ticket (e.g., "hard_block", "soft_block")
+
+3. **Test Data Requirements**:
+   - Be SPECIFIC: "admin account with billing permissions" not just "admin user"
+   - Include exact invalid inputs: "email: user@" or "SQL: \\' OR \\'1\\'=\\'1"
+   - Mention required system states: "database with 10,000 records"
+
+4. **Integration Tests**:
+   - Only include if ticket involves backend, API, or integration work
+   - Focus on contracts, data flow, and service boundaries
+   - If purely frontend UI work, you may omit this section or keep it empty: "integration_tests": []
 
 **CRITICAL JSON FORMATTING RULES:**
-- ALL string arrays (regression_checklist, non_functional, assumptions, questions) MUST contain ONLY strings
-- NEVER include objects in string arrays
-- Example CORRECT: "non_functional": ["Response time under 500ms for keyword matching"]
-- Example WRONG: "non_functional": [{"type": "performance", "test": "..."}]
+- ALL arrays must contain either strings OR objects (never mixed)
+- Use correct priority values: "critical", "high", "medium" (lowercase)
+- Use Given-When-Then format in steps arrays
+- If integration_tests not applicable, return empty array: []
 
 Generate the test plan now:"""
         return prompt
@@ -259,6 +337,7 @@ class OllamaClient(LLMClient):
                     happy_path=test_plan_data.get("happy_path", []),
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
+                    integration_tests=test_plan_data.get("integration_tests", []),
                 )
 
         except httpx.ConnectError as e:
@@ -299,7 +378,7 @@ class ClaudeClient(LLMClient):
         prompt = self._build_prompt(ticket_key, summary, description, testing_context, development_info)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={
@@ -309,7 +388,7 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 4096,
+                        "max_tokens": 8192,
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.7,
                     },
@@ -332,14 +411,21 @@ class ClaudeClient(LLMClient):
                 try:
                     test_plan_data = json.loads(response_text)
                 except json.JSONDecodeError as e:
+                    # Log the problematic response for debugging
+                    print(f"DEBUG: Failed to parse JSON. Error: {e}")
+                    print(f"DEBUG: Response text (first 1000 chars): {response_text[:1000]}")
+                    print(f"DEBUG: Response text (around error): {response_text[max(0, e.pos-100):e.pos+100]}")
                     raise LLMError(
-                        f"Failed to parse JSON response from Claude: {e}"
+                        f"Failed to parse JSON response from Claude: {e}. "
+                        f"This usually happens with unescaped quotes in test case descriptions. "
+                        f"Response snippet: {response_text[max(0, e.pos-50):e.pos+50]}"
                     ) from e
 
                 return TestPlan(
                     happy_path=test_plan_data.get("happy_path", []),
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
+                    integration_tests=test_plan_data.get("integration_tests", []),
                 )
 
         except httpx.HTTPStatusError as e:

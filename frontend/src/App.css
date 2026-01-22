@@ -1142,3 +1142,77 @@ button:disabled {
     gap: 0.5rem;
   }
 }
+
+/* Test plan enhancements - Priority and category badges */
+.priority-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.priority-critical {
+  background: rgba(222, 53, 11, 0.15);
+  color: #de350b;
+  border: 1px solid rgba(222, 53, 11, 0.3);
+}
+
+.priority-high {
+  background: rgba(255, 153, 31, 0.15);
+  color: #ff991f;
+  border: 1px solid rgba(255, 153, 31, 0.3);
+}
+
+.priority-medium {
+  background: rgba(0, 135, 90, 0.15);
+  color: #00875a;
+  border: 1px solid rgba(0, 135, 90, 0.3);
+}
+
+.category-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: rgba(102, 126, 234, 0.15);
+  color: #667eea;
+  border: 1px solid rgba(102, 126, 234, 0.3);
+}
+
+.test-data {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--primary);
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+
+.test-data strong {
+  color: var(--primary);
+}
+
+/* Light theme adjustments for badges */
+@media (prefers-color-scheme: light) {
+  .priority-critical {
+    background: rgba(222, 53, 11, 0.1);
+  }
+
+  .priority-high {
+    background: rgba(255, 153, 31, 0.1);
+  }
+
+  .priority-medium {
+    background: rgba(0, 135, 90, 0.1);
+  }
+
+  .category-badge {
+    background: rgba(102, 126, 234, 0.1);
+  }
+}

@@ -80,6 +80,7 @@ class TestPlan:
     happy_path: list[dict]
     edge_cases: list[dict]
     regression_checklist: list[str]
+    integration_tests: list[dict] | None = None  # New: Optional integration tests
 
 
 # ============================================================================
