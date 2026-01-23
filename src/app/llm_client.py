@@ -34,8 +34,13 @@ class LLMClient(ABC):
         description: str | None,
         testing_context: dict,
         development_info: dict | None = None,
+        images: list[tuple[str, str]] | None = None,
     ) -> TestPlan:
-        """Generate a structured test plan from ticket data and context."""
+        """Generate a structured test plan from ticket data and context.
+
+        Args:
+            images: List of (base64_data, media_type) tuples for image analysis
+        """
         pass
 
     def _build_prompt(
@@ -45,11 +50,12 @@ class LLMClient(ABC):
         description: str | None,
         testing_context: dict,
         development_info: dict | None = None,
+        has_images: bool = False,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
         prompt = f"""You are an expert QA engineer with 10+ years of experience creating comprehensive test plans. Your role is to generate thorough, actionable test cases that catch bugs before they reach production.
 
-**Your Task:** Create a detailed test plan for the following Jira ticket.
+**Your Task:** Create a detailed test plan for the following Jira ticket{" (screenshots/mockups attached)" if has_images else ""}.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TICKET INFORMATION
@@ -61,6 +67,9 @@ TICKET INFORMATION
 **Description:**
 {description if description else "No description provided"}
 """
+
+        if has_images:
+            prompt += "\n**Note:** Screenshots or mockups are attached. Use them to understand the UI requirements and generate specific visual test cases.\n"
 
         # Add development information if available
         if development_info:
@@ -266,9 +275,16 @@ class OllamaClient(LLMClient):
         description: str | None,
         testing_context: dict,
         development_info: dict | None = None,
+        images: list[tuple[str, str]] | None = None,
     ) -> TestPlan:
         """Generate test plan using Ollama."""
-        prompt = self._build_prompt(ticket_key, summary, description, testing_context, development_info)
+        # Note: Ollama doesn't support vision yet, so images are ignored
+        if images:
+            print("Warning: Ollama does not support image analysis. Images will be ignored.")
+
+        prompt = self._build_prompt(
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images)
+        )
 
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
@@ -335,9 +351,33 @@ class ClaudeClient(LLMClient):
         description: str | None,
         testing_context: dict,
         development_info: dict | None = None,
+        images: list[tuple[str, str]] | None = None,
     ) -> TestPlan:
-        """Generate test plan using Claude API."""
-        prompt = self._build_prompt(ticket_key, summary, description, testing_context, development_info)
+        """Generate test plan using Claude API with optional image support."""
+        prompt = self._build_prompt(
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images)
+        )
+
+        # Build message content (text + images if provided)
+        content = []
+
+        # Add images first if available
+        if images:
+            for base64_data, media_type in images:
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64_data,
+                    },
+                })
+
+        # Add text prompt
+        content.append({
+            "type": "text",
+            "text": prompt,
+        })
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -351,7 +391,7 @@ class ClaudeClient(LLMClient):
                     json={
                         "model": self.model,
                         "max_tokens": 8192,
-                        "messages": [{"role": "user", "content": prompt}],
+                        "messages": [{"role": "user", "content": content}],
                         "temperature": 0.7,
                     },
                 )

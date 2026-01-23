@@ -6,7 +6,7 @@ import httpx
 from .adf_parser import extract_text_from_adf
 from .config import settings
 from .description_analyzer import analyze_description
-from .models import Commit, DevelopmentInfo, DescriptionAnalysis, JiraIssue, PullRequest
+from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, JiraIssue, PullRequest
 
 logger = logging.getLogger(__name__)
 
@@ -197,10 +197,59 @@ class JiraClient:
 
         return pull_requests
 
+    def _extract_image_attachments(self, attachments_data: list) -> list[Attachment]:
+        """Extract image attachments (PNG, JPG, JPEG, GIF) from Jira attachment data."""
+        IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/gif"}
+        MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20MB limit for Claude API
+
+        image_attachments = []
+        for attachment in attachments_data:
+            mime_type = attachment.get("mimeType", "").lower()
+            size = attachment.get("size", 0)
+
+            # Only include images within size limit
+            if mime_type in IMAGE_MIME_TYPES and size <= MAX_IMAGE_SIZE:
+                image_attachments.append(
+                    Attachment(
+                        filename=attachment.get("filename", ""),
+                        mime_type=mime_type,
+                        size=size,
+                        url=attachment.get("content", ""),
+                        thumbnail_url=attachment.get("thumbnail"),
+                    )
+                )
+
+        # Limit to first 3 images to avoid overwhelming the LLM
+        return image_attachments[:3]
+
+    async def download_image_as_base64(self, image_url: str) -> tuple[str, str] | None:
+        """
+        Download an image from Jira and return it as base64-encoded string.
+
+        Args:
+            image_url: URL of the image to download
+
+        Returns:
+            Tuple of (base64_data, media_type) or None if download fails
+        """
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(image_url, headers=self._headers())
+                response.raise_for_status()
+
+                # Encode image as base64
+                base64_data = base64.b64encode(response.content).decode("utf-8")
+                media_type = response.headers.get("content-type", "image/jpeg")
+
+                return (base64_data, media_type)
+        except Exception as e:
+            logger.warning(f"Failed to download image from {image_url}: {e}")
+            return None
+
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         # Ask Jira for fields we need + development info if available
-        params = {"fields": "summary,description,labels,issuetype", "expand": "renderedFields"}
+        params = {"fields": "summary,description,labels,issuetype,attachment", "expand": "renderedFields"}
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
@@ -239,6 +288,9 @@ class JiraClient:
         issue_id = data["id"]
         development_info = await self._get_development_info(issue_id, issue_key)
 
+        # Extract image attachments (PNG, JPG, JPEG, GIF)
+        attachments = self._extract_image_attachments(fields.get("attachment", []))
+
         return JiraIssue(
             key=data["key"],
             summary=summary,
@@ -247,6 +299,7 @@ class JiraClient:
             labels=labels,
             issue_type=issue_type,
             development_info=development_info,
+            attachments=attachments if attachments else None,
         )
 
     async def post_comment(self, issue_key: str, comment_text: str) -> dict:

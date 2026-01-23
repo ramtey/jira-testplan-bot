@@ -97,6 +97,11 @@ function App() {
     setTestPlan(null)
 
     try {
+      // Extract image URLs from attachments if available
+      const imageUrls = ticketData.attachments
+        ? ticketData.attachments.map(att => att.url)
+        : null
+
       const response = await fetch(`${API_BASE_URL}/generate-test-plan`, {
         method: 'POST',
         headers: {
@@ -112,6 +117,7 @@ function App() {
             specialInstructions: testingContext.specialInstructions,
           },
           development_info: ticketData.development_info,
+          image_urls: imageUrls,
         }),
         signal: controller.signal,
       })

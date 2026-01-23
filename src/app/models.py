@@ -56,6 +56,17 @@ class DevelopmentInfo:
 
 
 @dataclass
+class Attachment:
+    """Represents an attachment on a Jira issue."""
+
+    filename: str
+    mime_type: str
+    size: int  # bytes
+    url: str
+    thumbnail_url: str | None = None
+
+
+@dataclass
 class JiraIssue:
     """Represents a Jira issue with extracted data."""
 
@@ -66,6 +77,7 @@ class JiraIssue:
     labels: list[str]
     issue_type: str
     development_info: DevelopmentInfo | None = None
+    attachments: list[Attachment] | None = None
 
 
 # ============================================================================
@@ -97,6 +109,7 @@ class GenerateTestPlanRequest(BaseModel):
     issue_type: str
     testing_context: dict = {}
     development_info: dict | None = None
+    image_urls: list[str] | None = None  # URLs of images to download and analyze
 
 
 class PostCommentRequest(BaseModel):

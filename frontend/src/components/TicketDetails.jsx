@@ -116,6 +116,35 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription 
         )}
       </div>
 
+      {ticketData.attachments && ticketData.attachments.length > 0 && (
+        <div className="ticket-section">
+          <h3>📎 Image Attachments ({ticketData.attachments.length})</h3>
+          <div className="attachments-info">
+            <p className="info-note">
+              🖼️ Images will be analyzed by the LLM to generate UI-specific test cases
+            </p>
+            <div className="attachments-list">
+              {ticketData.attachments.map((attachment, index) => (
+                <div key={index} className="attachment-item">
+                  <span className="attachment-icon">🖼️</span>
+                  <a
+                    href={attachment.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="attachment-link"
+                  >
+                    {attachment.filename}
+                  </a>
+                  <span className="attachment-size">
+                    ({Math.round(attachment.size / 1024)} KB)
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <DevelopmentInfo developmentInfo={ticketData.development_info} />
     </div>
   )

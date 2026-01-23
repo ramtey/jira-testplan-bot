@@ -60,6 +60,11 @@ async def get_issue(issue_key: str):
                 "branches": issue.development_info.branches,
             }
 
+        # Serialize attachments if available
+        attachments_list = None
+        if issue.attachments:
+            attachments_list = [asdict(attachment) for attachment in issue.attachments]
+
         return {
             "key": issue.key,
             "summary": issue.summary,
@@ -74,6 +79,7 @@ async def get_issue(issue_key: str):
                 "word_count": issue.description_analysis.word_count,
             },
             "development_info": development_info_dict,
+            "attachments": attachments_list,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -101,6 +107,19 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         )
 
     try:
+        # Download images if provided
+        images = None
+        if request.image_urls:
+            jira = JiraClient()
+            images = []
+            for image_url in request.image_urls[:3]:  # Limit to 3 images
+                image_data = await jira.download_image_as_base64(image_url)
+                if image_data:
+                    images.append(image_data)
+
+            if not images:
+                images = None  # No images successfully downloaded
+
         llm = get_llm_client()
         test_plan = await llm.generate_test_plan(
             ticket_key=request.ticket_key,
@@ -108,6 +127,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             description=request.description,
             testing_context=request.testing_context,
             development_info=request.development_info,
+            images=images,
         )
 
         return {
