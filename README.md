@@ -152,7 +152,9 @@ Make it usable immediately.
 - **Specific examples required**: LLM now uses concrete examples instead of generic placeholders
 
 ### Improved Jira Integration
+- **Clickable ticket links**: Ticket numbers in the UI are clickable and open the Jira ticket in a new tab
 - **Clean Jira formatting**: Plain text format that pastes cleanly into Jira comments (no more wiki markup issues)
+- **Post to Jira button**: Directly post generated test plans as Jira comments with one click
 - **Better button UX**: Distinct colors for each export button (Green=Jira, Gray=Markdown, Blue=Download)
 - **Robust error handling**: Safe rendering even with malformed data
 
