@@ -248,3 +248,67 @@ class JiraClient:
             issue_type=issue_type,
             development_info=development_info,
         )
+
+    async def post_comment(self, issue_key: str, comment_text: str) -> dict:
+        """
+        Post a comment to a Jira issue.
+
+        Args:
+            issue_key: The Jira issue key (e.g., "PROJ-123")
+            comment_text: Plain text comment to post
+
+        Returns:
+            dict: Response from Jira API with comment ID and metadata
+
+        Raises:
+            JiraNotFoundError: If the issue doesn't exist
+            JiraAuthError: If authentication fails or permissions are insufficient
+            JiraConnectionError: If Jira is unreachable
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+
+        # Jira Cloud uses ADF (Atlassian Document Format) for comments
+        # Convert plain text to ADF format
+        payload = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": comment_text
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        headers = {
+            **self._headers(),
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(url, headers=headers, json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            raise JiraAuthError(
+                "Jira authentication failed (check email/token).", status_code=401
+            )
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden (check permissions for this issue).",
+                status_code=403,
+            )
+        r.raise_for_status()
+
+        return r.json()

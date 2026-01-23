@@ -11,7 +11,7 @@ from .jira_client import (
     JiraNotFoundError,
 )
 from .llm_client import LLMError, get_llm_client
-from .models import GenerateTestPlanRequest
+from .models import GenerateTestPlanRequest, PostCommentRequest
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
 
@@ -109,3 +109,27 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         }
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/jira/post-comment")
+async def post_comment(request: PostCommentRequest):
+    """
+    Post a comment to a Jira issue.
+
+    This endpoint posts the provided text as a comment on the specified Jira issue.
+    Typically used to post generated test plans back to the ticket.
+    """
+    jira = JiraClient()
+    try:
+        result = await jira.post_comment(request.issue_key, request.comment_text)
+        return {
+            "success": True,
+            "comment_id": result.get("id"),
+            "issue_key": request.issue_key,
+        }
+    except JiraNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))

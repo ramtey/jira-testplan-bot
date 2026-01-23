@@ -901,7 +901,7 @@ button:disabled {
   gap: 1rem;
 }
 
-.btn-copy {
+.btn-post-jira {
   padding: 1rem 2.5rem;
   background: var(--success);
   font-size: 1rem;
@@ -910,9 +910,14 @@ button:disabled {
   box-shadow: 0 4px 12px rgba(0, 135, 90, 0.3);
 }
 
-.btn-copy:hover:not(:disabled) {
+.btn-post-jira:hover:not(:disabled) {
   background: #007a52;
   box-shadow: 0 6px 16px rgba(0, 135, 90, 0.4);
+}
+
+.btn-post-jira:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .btn-copy-markdown {
@@ -960,7 +965,7 @@ button:disabled {
     flex-direction: column;
   }
 
-  .btn-copy,
+  .btn-post-jira,
   .btn-copy-markdown,
   .btn-download {
     width: 100%;

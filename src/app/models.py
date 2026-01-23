@@ -97,3 +97,10 @@ class GenerateTestPlanRequest(BaseModel):
     issue_type: str
     testing_context: dict = {}
     development_info: dict | None = None
+
+
+class PostCommentRequest(BaseModel):
+    """Request body for posting a comment to Jira."""
+
+    issue_key: str
+    comment_text: str

@@ -2,9 +2,14 @@
  * Display generated test plan with export options
  */
 
+import { useState } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001'
+
 function TestPlanDisplay({ testPlan, ticketData }) {
+  const [isPosting, setIsPosting] = useState(false)
+
   // Add safety check and logging
   if (!testPlan) {
     return <div className="ticket-section">No test plan data available</div>
@@ -20,11 +25,36 @@ function TestPlanDisplay({ testPlan, ticketData }) {
       .catch(() => alert('Failed to copy to clipboard'))
   }
 
-  const handleCopyJira = () => {
-    const jira = formatTestPlanAsJira(testPlan, ticketData)
-    navigator.clipboard.writeText(jira)
-      .then(() => alert('Test plan copied to clipboard in Jira format!'))
-      .catch(() => alert('Failed to copy to clipboard'))
+  const handlePostToJira = async () => {
+    setIsPosting(true)
+    try {
+      const jiraText = formatTestPlanAsJira(testPlan, ticketData)
+
+      const response = await fetch(`${API_BASE}/jira/post-comment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          issue_key: ticketData.key,
+          comment_text: jiraText,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || 'Failed to post to Jira')
+      }
+
+      const result = await response.json()
+      alert(`✅ Test plan posted successfully to ${ticketData.key}!`)
+      console.log('Posted comment ID:', result.comment_id)
+    } catch (error) {
+      console.error('Error posting to Jira:', error)
+      alert(`❌ Failed to post to Jira: ${error.message}`)
+    } finally {
+      setIsPosting(false)
+    }
   }
 
   const handleDownloadMarkdown = () => {
@@ -175,10 +205,11 @@ function TestPlanDisplay({ testPlan, ticketData }) {
       <div className="test-plan-actions">
         <button
           type="button"
-          onClick={handleCopyJira}
-          className="btn-copy"
+          onClick={handlePostToJira}
+          className="btn-post-jira"
+          disabled={isPosting}
         >
-          Copy for Jira
+          {isPosting ? 'Posting...' : 'Post to Jira'}
         </button>
         <button
           type="button"
