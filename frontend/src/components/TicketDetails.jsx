@@ -2,9 +2,12 @@
  * Display Jira ticket details and quality analysis
  */
 
+import { getJiraTicketUrl } from '../config'
 import DevelopmentInfo from './DevelopmentInfo'
 
 function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription }) {
+  const jiraTicketUrl = getJiraTicketUrl(ticketData.key)
+
   const getIssueTypeClass = (issueType) => {
     if (!issueType) return ''
     return issueType.toLowerCase()
@@ -26,7 +29,18 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription 
     <div className="ticket-details">
       <div className="ticket-header">
         <h2>
-          <span className="ticket-key">{ticketData.key}</span>
+          {jiraTicketUrl ? (
+            <a
+              href={jiraTicketUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ticket-key-link"
+            >
+              {ticketData.key}
+            </a>
+          ) : (
+            <span className="ticket-key">{ticketData.key}</span>
+          )}
           {ticketData.summary}
         </h2>
         <div className="ticket-meta">

@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import './App.css'
-import { API_BASE_URL } from './config'
+import { API_BASE_URL, fetchConfig } from './config'
 import { initialTestingContext, resetTestingContext } from './utils/stateHelpers'
 import TicketForm from './components/TicketForm'
 import TicketDetails from './components/TicketDetails'
@@ -25,6 +25,11 @@ function App() {
   const [testPlan, setTestPlan] = useState(null)
   const [planError, setPlanError] = useState(null)
   const [abortController, setAbortController] = useState(null)
+
+  // Fetch config on mount to get Jira base URL
+  useEffect(() => {
+    fetchConfig()
+  }, [])
 
   const handleFetchTicket = async (e) => {
     e.preventDefault()

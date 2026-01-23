@@ -402,6 +402,30 @@ button:disabled {
   letter-spacing: 0.5px;
 }
 
+.ticket-key-link {
+  display: inline-block;
+  background: var(--primary);
+  color: white;
+  padding: 0.375rem 1rem;
+  border-radius: 6px;
+  font-size: 0.9375rem;
+  margin-right: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.ticket-key-link:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px var(--shadow-lg);
+}
+
+.ticket-key-link:active {
+  transform: translateY(0);
+}
+
 .ticket-meta {
   display: flex;
   align-items: center;

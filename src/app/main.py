@@ -35,6 +35,16 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/config")
+def get_config():
+    """Get public configuration for frontend (Jira base URL for ticket links)."""
+    from .config import settings
+
+    return {
+        "jira_base_url": settings.jira_base_url,
+    }
+
+
 @app.get("/issue/{issue_key}")
 async def get_issue(issue_key: str):
     jira = JiraClient()
