@@ -6,7 +6,8 @@ import httpx
 from .adf_parser import extract_text_from_adf
 from .config import settings
 from .description_analyzer import analyze_description
-from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, JiraIssue, PullRequest
+from .github_client import GitHubClient
+from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraIssue, PullRequest
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ class JiraClient:
 
                     if pr_response.status_code == 200:
                         pr_data = pr_response.json()
-                        extracted_prs = self._extract_pull_requests(pr_data)
+                        extracted_prs = await self._extract_pull_requests(pr_data)
                         pull_requests.extend(extracted_prs)
 
         except (httpx.ConnectError, httpx.TimeoutException, Exception) as e:
@@ -177,23 +178,55 @@ class JiraClient:
 
         return branches
 
-    def _extract_pull_requests(self, pr_data: dict) -> list[PullRequest]:
-        """Extract pull request information from PR data."""
+    async def _extract_pull_requests(self, pr_data: dict) -> list[PullRequest]:
+        """
+        Extract pull request information from PR data.
+
+        If GitHub token is configured, enriches PRs with GitHub API data.
+        """
         pull_requests = []
         details = pr_data.get("detail", [])
+
+        # Initialize GitHub client if token is available
+        github_client = GitHubClient() if settings.github_token else None
 
         for detail in details:
             prs = detail.get("pullRequests", [])
             for pr in prs:
-                pull_requests.append(
-                    PullRequest(
-                        title=pr.get("name", ""),
-                        status=pr.get("status", "UNKNOWN"),
-                        url=pr.get("url"),
-                        source_branch=pr.get("source", {}).get("branch"),
-                        destination_branch=pr.get("destination", {}).get("branch"),
-                    )
+                pr_url = pr.get("url")
+
+                # Create basic PR object from Jira
+                pr_obj = PullRequest(
+                    title=pr.get("name", ""),
+                    status=pr.get("status", "UNKNOWN"),
+                    url=pr_url,
+                    source_branch=pr.get("source", {}).get("branch"),
+                    destination_branch=pr.get("destination", {}).get("branch"),
                 )
+
+                # Enrich with GitHub data if available
+                if github_client and pr_url and "github.com" in pr_url:
+                    try:
+                        gh_details = await github_client.fetch_pr_details(pr_url, include_patch=False)
+                        if gh_details:
+                            pr_obj.github_description = gh_details.description
+                            pr_obj.files_changed = [
+                                FileChange(
+                                    filename=fc.filename,
+                                    status=fc.status,
+                                    additions=fc.additions,
+                                    deletions=fc.deletions,
+                                    changes=fc.changes,
+                                )
+                                for fc in gh_details.files_changed
+                            ]
+                            pr_obj.total_additions = gh_details.total_additions
+                            pr_obj.total_deletions = gh_details.total_deletions
+                            logger.info(f"Enriched PR {pr_obj.title} with GitHub data: {len(gh_details.files_changed)} files changed")
+                    except Exception as e:
+                        logger.warning(f"Failed to enrich PR with GitHub data: {e}")
+
+                pull_requests.append(pr_obj)
 
         return pull_requests
 

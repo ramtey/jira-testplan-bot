@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None  # For Claude API (required when using Claude)
     ollama_base_url: str = "http://localhost:11434"  # Ollama server URL (only needed if using Ollama)
 
+    # GitHub (for PR diff fetching - Phase 3a)
+    github_token: str | None = None  # GitHub personal access token (optional - enables PR diff fetching)
+
     # App
     app_env: str = "local"
 

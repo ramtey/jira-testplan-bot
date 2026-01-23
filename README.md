@@ -180,6 +180,7 @@ src/
     main.py                 # FastAPI app entrypoint
     models.py               # Data models (Pydantic & dataclasses)
     jira_client.py          # Jira REST API client
+    github_client.py        # GitHub API client (Phase 3a - PR enrichment)
     adf_parser.py           # Atlassian Document Format parser
     description_analyzer.py # Description quality analyzer
     llm_client.py           # LLM abstraction layer (Claude + Ollama)
@@ -241,6 +242,7 @@ cp .env.example .env
    - `LLM_PROVIDER` - "claude" (recommended) or "ollama" (local)
    - `LLM_MODEL` - model name (e.g., "claude-3-5-sonnet-20241022" for Claude, "llama3.1" for Ollama)
    - `ANTHROPIC_API_KEY` - only if using Claude API
+   - `GITHUB_TOKEN` - (optional) GitHub Personal Access Token for Phase 3a PR enrichment
 
 ### Frontend Setup
 
@@ -470,7 +472,7 @@ uv run pytest tests/ -v
 | LLM Enhancement with Dev Context (Phase 2) | ✅ Done |
 | Claude API Integration | ✅ Done |
 | LLM Prompt Enhancements (Risk-based priorities, Given-When-Then format) | ✅ Done |
-| Phase 3a Planning (GitHub API Integration) | To Do |
+| Phase 3a (GitHub API Integration - PR Code Diffs) | ✅ Done |
 | Phase 3b Planning (Visual & Video Context) | To Do |
 | Phase 3c Planning (Slack Bot Integration) | To Do |
 
@@ -492,29 +494,25 @@ uv run pytest tests/ -v
 - ✅ Automatic risk area identification from commit patterns
 - ✅ Streamlined user input (only 2 fields: Acceptance Criteria + Special Instructions)
 
-**Future Enhancements (Phase 3a - GitHub Integration):**
-- **GitHub API Integration** for even richer context:
-  - Extract PR descriptions (often contain better acceptance criteria than Jira)
-  - Fetch actual code diffs and file changes
-  - Identify which modules/files were modified (e.g., "backend auth, frontend login, API routes")
-  - Pull PR comments and review discussions
+**Phase 3a Complete - GitHub PR Code Diffs:**
+- ✅ **GitHub API Integration** for richer test plan context:
+  - Fetch PR descriptions (often contain better acceptance criteria than Jira)
+  - Extract actual code diffs and file changes from PRs
+  - Identify which modules/files were modified with additions/deletions counts
   - Detect risk areas based on changed files (authentication, payment processing, etc.)
-- **Enhanced LLM Context**:
-  - Include file-level changes in LLM prompt
+- ✅ **Enhanced LLM Context**:
+  - Include file-level changes in LLM prompt (up to 15 most significant files)
   - Auto-detect testing scope from modified files
-  - Suggest specific test areas based on code changes
-  - Detect potential side effects from code dependencies
-- **Implementation Approach**:
+  - Generate specific test cases targeting modified files
+  - Provide code change statistics (+additions/-deletions)
+- ✅ **Implementation**:
   - Parse GitHub URLs from Jira's development info
-  - Use GitHub Personal Access Token for API authentication
+  - Use GitHub Personal Access Token for API authentication (optional, graceful degradation)
   - Fetch PR details: `GET /repos/{owner}/{repo}/pulls/{number}`
   - Fetch file changes: `GET /repos/{owner}/{repo}/pulls/{number}/files`
-  - Fetch commit details: `GET /repos/{owner}/{repo}/commits/{sha}`
-- **Benefits**:
-  - Reduce manual "Testing Context" input by 70%+ (already at 50%+ with Phase 2)
-  - Even more accurate test coverage based on actual file changes
-  - Precise risk area detection from modified code
-  - File-aware test case generation
+  - Works across multiple repositories (any GitHub repo accessible with the token)
+- ✅ **Backend-only enrichment**: Code changes sent to LLM but not displayed in UI for cleaner interface
+- 🔜 **Future enhancements**: PR review comments, commit-level diffs
 
 **Visual & Video Context Integration (Phase 3b):**
 - **Screenshot Upload Support**:

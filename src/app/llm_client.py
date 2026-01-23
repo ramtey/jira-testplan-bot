@@ -83,9 +83,46 @@ TICKET INFORMATION
             if pull_requests:
                 prompt += f"\n**Pull Requests ({len(pull_requests)}):**\n"
                 for pr in pull_requests:
-                    prompt += f"- {pr.get('title', 'Untitled PR')} (Status: {pr.get('status', 'UNKNOWN')})\n"
+                    prompt += f"- **{pr.get('title', 'Untitled PR')}** (Status: {pr.get('status', 'UNKNOWN')})\n"
                     if pr.get('source_branch'):
                         prompt += f"  Branch: {pr.get('source_branch')}\n"
+
+                    # Add GitHub PR description if available (Phase 3a)
+                    gh_desc = pr.get('github_description')
+                    if gh_desc:
+                        # Truncate long descriptions
+                        desc_preview = gh_desc[:300] + "..." if len(gh_desc) > 300 else gh_desc
+                        prompt += f"  PR Description: {desc_preview}\n"
+
+                    # Add code changes summary if available (Phase 3a)
+                    files_changed = pr.get('files_changed')
+                    if files_changed:
+                        total_additions = pr.get('total_additions', 0)
+                        total_deletions = pr.get('total_deletions', 0)
+                        prompt += f"  📊 Code Changes: {len(files_changed)} files modified (+{total_additions}/-{total_deletions})\n"
+
+                        # Show modified files (limit to 15 most significant)
+                        prompt += "  📁 Modified Files:\n"
+                        sorted_files = sorted(files_changed, key=lambda f: f.get('changes', 0), reverse=True)
+                        for file_change in sorted_files[:15]:
+                            filename = file_change.get('filename', 'unknown')
+                            status = file_change.get('status', 'modified')
+                            additions = file_change.get('additions', 0)
+                            deletions = file_change.get('deletions', 0)
+
+                            status_icon = {
+                                "added": "✨",
+                                "modified": "📝",
+                                "removed": "🗑️",
+                                "renamed": "📛",
+                            }.get(status, "📄")
+
+                            prompt += f"     {status_icon} {filename} (+{additions}/-{deletions})\n"
+
+                        if len(files_changed) > 15:
+                            prompt += f"     ... and {len(files_changed) - 15} more files\n"
+
+                        prompt += "\n"
 
             # Add commit information
             commits = development_info.get("commits", [])
@@ -108,9 +145,11 @@ TICKET INFORMATION
 
             prompt += "\n**Use this development context to:**\n"
             prompt += "- Infer what functionality was implemented from commit messages and PR titles\n"
-            prompt += "- Identify potential risk areas based on what code was changed\n"
-            prompt += "- Generate more specific test cases based on the actual implementation\n"
-            prompt += "- Focus testing on the areas that were modified\n"
+            prompt += "- Analyze the modified files to identify which components/modules were changed\n"
+            prompt += "- Identify potential risk areas based on the type and scope of code changes\n"
+            prompt += "- Generate specific test cases targeting the modified files and their dependencies\n"
+            prompt += "- Focus testing on high-risk areas (authentication, payments, data handling, etc.)\n"
+            prompt += "- Consider edge cases related to the specific code changes made\n"
 
         # Add user-provided context if available
         if testing_context.get("acceptanceCriteria"):

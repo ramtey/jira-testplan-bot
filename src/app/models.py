@@ -36,6 +36,17 @@ class Commit:
 
 
 @dataclass
+class FileChange:
+    """Represents a file change in a pull request."""
+
+    filename: str
+    status: str  # "added", "modified", "removed", "renamed"
+    additions: int
+    deletions: int
+    changes: int
+
+
+@dataclass
 class PullRequest:
     """Represents a pull request linked to a Jira issue."""
 
@@ -44,6 +55,11 @@ class PullRequest:
     url: str | None = None
     source_branch: str | None = None
     destination_branch: str | None = None
+    # GitHub enrichment (Phase 3a)
+    github_description: str | None = None
+    files_changed: list[FileChange] | None = None
+    total_additions: int | None = None
+    total_deletions: int | None = None
 
 
 @dataclass
