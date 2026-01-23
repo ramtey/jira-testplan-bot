@@ -102,7 +102,16 @@ Make it usable immediately.
 
 ## Recent Improvements
 
-### Issue Type Validation (Latest)
+### Priority-Based Test Ordering (Latest)
+- **Automatic test case ordering by priority**: All test cases are now automatically ordered by priority level within each section
+  - Critical priority tests appear first (authentication, payments, data loss, security)
+  - High priority tests appear second (core functionality, common flows, data integrity)
+  - Medium priority tests appear last (edge cases, rare scenarios, minor issues)
+  - Applies to: Happy Path, Edge Cases, and Integration Tests sections
+  - Enables better test execution prioritization and faster identification of critical issues
+  - LLM explicitly instructed to prioritize ordering over logical grouping
+
+### Issue Type Validation
 - **Smart issue type detection**: Automatically hides test plan generation for non-testable issue types
   - Disabled for: Epic, Spike, Sub-task (configurable)
   - Enabled for: Story, Task, Bug

@@ -288,15 +288,31 @@ Return ONLY valid JSON (no markdown, no code blocks):
   ]
 }
 
+**CRITICAL ORDERING REQUIREMENT - READ THIS FIRST:**
+YOU MUST ORDER ALL TEST CASES BY PRIORITY WITHIN EACH SECTION.
+This is NON-NEGOTIABLE. The order MUST be:
+  1. ALL "critical" priority tests FIRST
+  2. ALL "high" priority tests SECOND
+  3. ALL "medium" priority tests LAST
+
+Apply this ordering to: happy_path, edge_cases, AND integration_tests sections.
+DO NOT group tests by any other criteria (logical flow, dependencies, etc.).
+PRIORITY ORDER OVERRIDES ALL OTHER CONSIDERATIONS.
+
+Before generating each section, mentally sort your tests:
+- Step 1: Identify all critical tests → put them first
+- Step 2: Identify all high tests → put them after critical
+- Step 3: Identify all medium tests → put them last
+
 **RULES:**
 - Steps array should contain plain action descriptions without numbering (numbering will be added during display)
-- Priority values: "critical", "high", or "medium" (lowercase)
+- Priority values: "critical", "high", or "medium" (lowercase) - REQUIRED for all tests
 - Categories: "security", "boundary", "error_handling", "integration"
 - If integration_tests not needed, return empty array: []
 - Use specific examples from the ticket, never generic placeholders
 - All test_data should be concrete and specific
 
-Generate the test plan now:"""
+Generate the test plan now. Remember: SORT BY PRIORITY FIRST."""
         return prompt
 
 
