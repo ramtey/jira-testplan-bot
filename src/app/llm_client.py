@@ -112,179 +112,141 @@ TICKET INFORMATION
 
         prompt += """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TEST PLAN REQUIREMENTS
+GENERATE TEST PLAN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Generate a comprehensive, risk-based test plan that ensures quality and prevents regressions.
+Create a clear, actionable test plan organized by feature/component. Extract requirements from any format provided and focus on functional testing from a user perspective.
 
-**PHASE 1: CRITICAL ANALYSIS**
-Before generating test cases, thoroughly analyze the ticket to understand:
+**ADJUST SCOPE BASED ON COMPLEXITY:**
+Analyze the ticket complexity and adjust test coverage accordingly:
 
-1. **Feature Scope & Complexity**:
-   - What is the primary functionality being added/changed?
-   - Is this frontend, backend, full-stack, or integration work?
-   - What user roles/personas are affected?
+- **Simple Bug Fixes** (UI glitches, text changes, minor visual issues):
+  - 2-3 happy path tests (verify fix works in main scenarios)
+  - 2-3 edge cases (boundary conditions, theme switching)
+  - 3-5 regression items (related features still work)
+  - Skip integration tests unless system interaction is involved
 
-2. **Categories & Variations**:
-   - Are there multiple categories, rule types, or scenarios? (e.g., "admin/user/guest", "hard block/soft block")
-   - What specific examples are provided? (e.g., keywords, phrases, data values)
-   - Do different categories have different behaviors?
+- **Medium Features** (single component changes, API endpoints, form additions):
+  - 3-5 happy path tests (cover main user flows)
+  - 4-6 edge cases (error handling, validation, boundaries)
+  - 5-8 regression items (impacted areas)
+  - Include integration tests if APIs or multiple components involved
 
-3. **Risk Assessment**:
-   - What are the potential failure points? (authentication, data loss, payments, security)
-   - What existing functionality could this break?
-   - Are there security implications? (authentication, authorization, input validation, data exposure)
+- **Complex Features** (multi-system changes, new workflows, security features):
+  - 5-8 happy path tests (comprehensive flow coverage)
+  - 6-10 edge cases (security, concurrency, data integrity)
+  - 8-12 regression items (extensive impact analysis)
+  - Include integration tests for system interactions
 
-4. **Test Data Requirements**:
-   - What types of accounts/users are needed? (admin, regular user, suspended account)
-   - What input variations should be tested? (valid, invalid, edge cases, malicious)
-   - Are there specific data states required? (empty database, full database, concurrent users)
+**ORGANIZE TESTS BY FEATURE/COMPONENT:**
+Group related test cases logically by the feature or component they test.
 
-**PHASE 2: GENERATE TEST CASES**
+**INCLUDE THESE TEST TYPES:**
 
-**1. Happy Path Tests (Quality over Quantity)**
-   - Cover PRIMARY user flows that deliver business value
-   - Focus on the most common, expected user journeys
-   - Use **Given-When-Then** format for clarity:
-     * Given: Initial state/preconditions (e.g., "Given user is logged in as admin")
-     * When: Action taken (e.g., "When user clicks 'Export Data' button")
-     * Then: Observable outcome (e.g., "Then CSV file downloads with 100 records")
-   - Use SPECIFIC EXAMPLES from the ticket (not generic placeholders)
-   - Mark priority: 🔴 Critical, 🟡 High, or 🟢 Medium
+1. **Positive Scenarios (Happy Path)**
+   - Test the main user flow with valid inputs
+   - Cover the most common expected user actions
+   - Use specific examples from the ticket (not generic placeholders)
 
-**2. Edge Cases & Error Scenarios (Risk-Based)**
-   **Prioritize by risk and impact:**
-   - **Security Tests** (if applicable):
-     * Input validation (XSS: `<script>alert('test')</script>`, SQL injection: `' OR '1'='1`)
-     * Authentication/authorization bypass attempts
-     * Data exposure checks (ensure users can't access others' data)
+2. **Negative Scenarios (Error Handling)**
+   - Test with invalid inputs, missing data, unauthorized access
+   - Verify proper error messages are shown
+   - Include specific examples: invalid email formats, wrong passwords, etc.
 
-   - **Boundary Value Analysis**:
-     * Minimum/maximum values (e.g., 0 items, 1 item, max limit, max+1)
-     * Empty/null/undefined inputs
-     * Special characters and Unicode
+3. **Edge Cases (Boundary Conditions)**
+   - Test minimum/maximum values (0 items, 1 item, max limit, max+1)
+   - Test empty states (empty lists, no data, blank fields)
+   - Test special characters and unusual inputs
 
-   - **Category Coverage** (if multiple categories exist):
-     * Test representative examples from EACH category mentioned in the ticket
-     * Test behavioral differences (e.g., "hard block" shows error, "soft block" shows warning)
+4. **Integration Scenarios**
+   - Test when multiple features interact together
+   - Test data flow between components
+   - Only include if multiple systems/features are involved
 
-   - **Error Handling**:
-     * Network failures, timeouts, API errors
-     * Invalid user input with specific error messages
-     * Concurrent operations and race conditions
+5. **Reset/Clear Functionality**
+   - Test any reset, clear, or undo operations
+   - Verify data is properly cleared/restored
 
-   - **Integration Points**:
-     * API contracts (correct request/response format)
-     * Database transactions (data consistency, rollback on failure)
-     * Third-party service failures (graceful degradation)
+**FORMAT EACH TEST AS: ACTION → EXPECTED RESULT**
+Each test should include:
+- Clear action steps (what the user does)
+- Expected result (what should happen)
+- Specific test data when needed
 
-   **Format:** Use Given-When-Then, mark priority, include specific expected error messages
+**GUIDELINES:**
+- Write from the user's perspective (avoid technical implementation details)
+- Be specific and actionable (use concrete examples)
+- Each test should be independently executable
+- Include data validation testing when applicable
+- Identify ambiguities or missing information when present
+- Prioritize tests: critical > high > medium
 
-**3. Integration & Backend Tests (if applicable)**
-   - API endpoint validation (request/response schemas, status codes)
-   - Database operations (CRUD operations, constraints, indexes)
-   - Service-to-service communication
-   - Background jobs and async operations
-   - Mark with 🔴 for critical data operations
-
-**4. Regression Checklist**
-   - Related features that MUST still work after this change
-   - Critical user flows that could be impacted
-   - High-traffic features that need extra validation
-   - Make these SPECIFIC to the ticket (not generic like "test login")
-
-**QUALITY STANDARDS:**
-- ✅ Write from user's perspective, not implementation details
-- ✅ Be specific and actionable (avoid vague "verify", "check", "test")
-- ✅ Each test case is independently executable
-- ✅ Expected results are observable and measurable
-- ✅ Prioritize tests by risk: authentication > payments > data integrity > UI polish
-- ✅ Include specific test data requirements (account types, input values)
-- ✅ Use concrete examples from the ticket, never generic placeholders
+**PRIORITY LEVELS:**
+- "critical": Authentication, payments, data loss, security issues
+- "high": Core functionality, common user flows, data integrity
+- "medium": Edge cases, rare scenarios, minor issues
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
+Return ONLY valid JSON (no markdown, no code blocks):
 
 {
   "happy_path": [
     {
-      "title": "User-focused test case name with specific action",
+      "title": "Clear test name describing the action",
       "priority": "critical|high|medium",
       "steps": [
-        "Given: Initial state and preconditions (e.g., 'Given user is logged in as admin')",
-        "When: Specific action taken (e.g., 'When user clicks Export button')",
-        "Then: Observable outcome (e.g., 'Then CSV file downloads with 100 records')"
+        "First action step",
+        "Second action step",
+        "Third action step"
       ],
-      "expected": "Clear, measurable expected outcome",
-      "test_data": "Specific data requirements (e.g., 'admin account with 100+ records')"
+      "expected": "What should happen (observable result)",
+      "test_data": "Specific data needed (e.g., 'admin user with email test@example.com')"
     }
   ],
   "edge_cases": [
     {
-      "title": "Edge case or error scenario name (be specific)",
+      "title": "Clear test name for edge case or error scenario",
       "priority": "critical|high|medium",
-      "category": "security|boundary|error_handling|integration|category_name",
+      "category": "security|boundary|error_handling|integration",
       "steps": [
-        "Given: Setup preconditions",
-        "When: Trigger edge case action",
-        "Then: Verify expected behavior"
+        "Setup step",
+        "Action that triggers edge case",
+        "Verification step"
       ],
-      "expected": "Specific expected behavior (include exact error messages when applicable)",
-      "test_data": "Required test data or inputs (e.g., 'invalid email: user@', SQL injection: \\' OR \\'1\\'=\\'1')"
+      "expected": "Expected behavior (include error messages if applicable)",
+      "test_data": "Specific edge case data (e.g., 'empty string', 'max+1 value: 101')"
     }
   ],
   "integration_tests": [
     {
-      "title": "Backend/API/integration test name",
+      "title": "Test name for feature interaction or API test",
       "priority": "critical|high|medium",
       "steps": [
-        "Given: System state",
-        "When: API call or service interaction",
-        "Then: Verify response/behavior"
+        "Setup multiple components",
+        "Action involving multiple features",
+        "Verify interaction"
       ],
-      "expected": "Expected response, status code, or system behavior",
-      "test_data": "API request payload or required data"
+      "expected": "Expected interaction result",
+      "test_data": "Data needed for integration test"
     }
   ],
   "regression_checklist": [
-    "🔴 Critical: Specific existing feature that MUST work (e.g., 'User login with valid credentials')",
-    "🟡 High: Important related feature (e.g., 'Password reset email delivery')",
-    "🟢 Medium: Nice-to-have validation (e.g., 'Profile page loads correctly')"
+    "🔴 Critical feature that must still work (be specific)",
+    "🟡 Important related feature",
+    "🟢 Additional validation item"
   ]
 }
 
-**IMPORTANT NOTES:**
-
-1. **Priority Levels**:
-   - "critical": Authentication, payments, data loss, security vulnerabilities
-   - "high": Core features, common user flows, data integrity
-   - "medium": Edge cases, rare scenarios, UI polish
-
-2. **Categories for edge_cases**:
-   - "security": XSS, SQL injection, authentication bypass, authorization
-   - "boundary": Min/max values, empty inputs, limits, special characters
-   - "error_handling": Network failures, invalid input, timeouts
-   - "integration": API contracts, database operations, third-party services
-   - Or use specific category names from the ticket (e.g., "hard_block", "soft_block")
-
-3. **Test Data Requirements**:
-   - Be SPECIFIC: "admin account with billing permissions" not just "admin user"
-   - Include exact invalid inputs: "email: user@" or "SQL: \\' OR \\'1\\'=\\'1"
-   - Mention required system states: "database with 10,000 records"
-
-4. **Integration Tests**:
-   - Only include if ticket involves backend, API, or integration work
-   - Focus on contracts, data flow, and service boundaries
-   - If purely frontend UI work, you may omit this section or keep it empty: "integration_tests": []
-
-**CRITICAL JSON FORMATTING RULES:**
-- ALL arrays must contain either strings OR objects (never mixed)
-- Use correct priority values: "critical", "high", "medium" (lowercase)
-- Use Given-When-Then format in steps arrays
-- If integration_tests not applicable, return empty array: []
+**RULES:**
+- Steps array should contain plain action descriptions without numbering (numbering will be added during display)
+- Priority values: "critical", "high", or "medium" (lowercase)
+- Categories: "security", "boundary", "error_handling", "integration"
+- If integration_tests not needed, return empty array: []
+- Use specific examples from the ticket, never generic placeholders
+- All test_data should be concrete and specific
 
 Generate the test plan now:"""
         return prompt
