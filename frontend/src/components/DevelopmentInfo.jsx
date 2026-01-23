@@ -2,7 +2,10 @@
  * Display development information (commits, PRs, branches) for a Jira ticket
  */
 
+import { useState } from 'react'
+
 function DevelopmentInfo({ developmentInfo }) {
+  const [isExpanded, setIsExpanded] = useState(false)
   if (!developmentInfo) {
     return (
       <div className="ticket-section">
@@ -35,67 +38,91 @@ function DevelopmentInfo({ developmentInfo }) {
     return ''
   }
 
+  // Build summary text for collapsed state
+  const buildSummary = () => {
+    const parts = []
+    if (hasPullRequests) parts.push(`${developmentInfo.pull_requests.length} PR${developmentInfo.pull_requests.length !== 1 ? 's' : ''}`)
+    if (hasCommits) parts.push(`${developmentInfo.commits.length} commit${developmentInfo.commits.length !== 1 ? 's' : ''}`)
+    if (hasBranches) parts.push(`${developmentInfo.branches.length} branch${developmentInfo.branches.length !== 1 ? 'es' : ''}`)
+    return parts.join(', ')
+  }
+
   return (
     <div className="ticket-section">
-      <h3>Development Activity</h3>
+      <div
+        className="collapsible-header"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <h3>
+          <span className={`collapse-icon ${isExpanded ? 'expanded' : ''}`}>▶</span>
+          Development Activity
+        </h3>
+        {!isExpanded && (
+          <span className="collapse-summary">{buildSummary()} • Click to expand</span>
+        )}
+      </div>
 
-      {hasPullRequests && (
-        <div className="dev-subsection">
-          <h4>Pull Requests ({developmentInfo.pull_requests.length})</h4>
-          <div className="dev-list">
-            {developmentInfo.pull_requests.map((pr, index) => (
-              <div key={index} className="dev-item pr-item">
-                <div className="dev-item-header">
-                  {pr.url ? (
-                    <a href={pr.url} target="_blank" rel="noopener noreferrer" className="dev-link">
-                      {pr.title}
-                    </a>
-                  ) : (
-                    <span className="dev-title">{pr.title}</span>
-                  )}
-                  <span className={`pr-status ${getPRStatusClass(pr.status)}`}>
-                    {pr.status}
-                  </span>
-                </div>
-                {(pr.source_branch || pr.destination_branch) && (
-                  <div className="pr-branches">
-                    {pr.source_branch && (
-                      <span className="branch-info">
-                        <span className="branch-label">From:</span>
-                        <code className="branch-name">{pr.source_branch}</code>
+      {isExpanded && (
+        <div className="collapsible-content">
+          {hasPullRequests && (
+            <div className="dev-subsection">
+              <h4>Pull Requests ({developmentInfo.pull_requests.length})</h4>
+              <div className="dev-list">
+                {developmentInfo.pull_requests.map((pr, index) => (
+                  <div key={index} className="dev-item pr-item">
+                    <div className="dev-item-header">
+                      {pr.url ? (
+                        <a href={pr.url} target="_blank" rel="noopener noreferrer" className="dev-link">
+                          {pr.title}
+                        </a>
+                      ) : (
+                        <span className="dev-title">{pr.title}</span>
+                      )}
+                      <span className={`pr-status ${getPRStatusClass(pr.status)}`}>
+                        {pr.status}
                       </span>
-                    )}
-                    {pr.destination_branch && (
-                      <span className="branch-info">
-                        <span className="branch-label">To:</span>
-                        <code className="branch-name">{pr.destination_branch}</code>
-                      </span>
+                    </div>
+                    {(pr.source_branch || pr.destination_branch) && (
+                      <div className="pr-branches">
+                        {pr.source_branch && (
+                          <span className="branch-info">
+                            <span className="branch-label">From:</span>
+                            <code className="branch-name">{pr.source_branch}</code>
+                          </span>
+                        )}
+                        {pr.destination_branch && (
+                          <span className="branch-info">
+                            <span className="branch-label">To:</span>
+                            <code className="branch-name">{pr.destination_branch}</code>
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            </div>
+          )}
 
-      {hasCommits && (
-        <div className="dev-subsection">
-          <h4>Commits</h4>
-          <div className="commit-summary">
-            <span className="commit-count">{developmentInfo.commits.length} commit{developmentInfo.commits.length !== 1 ? 's' : ''} linked to this ticket</span>
-          </div>
-        </div>
-      )}
+          {hasCommits && (
+            <div className="dev-subsection">
+              <h4>Commits</h4>
+              <div className="commit-summary">
+                <span className="commit-count">{developmentInfo.commits.length} commit{developmentInfo.commits.length !== 1 ? 's' : ''} linked to this ticket</span>
+              </div>
+            </div>
+          )}
 
-      {hasBranches && (
-        <div className="dev-subsection">
-          <h4>Branches ({developmentInfo.branches.length})</h4>
-          <div className="branches-list">
-            {developmentInfo.branches.map((branch, index) => (
-              <code key={index} className="branch-tag">{branch}</code>
-            ))}
-          </div>
+          {hasBranches && (
+            <div className="dev-subsection">
+              <h4>Branches ({developmentInfo.branches.length})</h4>
+              <div className="branches-list">
+                {developmentInfo.branches.map((branch, index) => (
+                  <code key={index} className="branch-tag">{branch}</code>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

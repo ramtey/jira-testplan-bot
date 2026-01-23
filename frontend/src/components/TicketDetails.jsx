@@ -2,10 +2,12 @@
  * Display Jira ticket details and quality analysis
  */
 
+import { useState } from 'react'
 import { getJiraTicketUrl } from '../config'
 import DevelopmentInfo from './DevelopmentInfo'
 
 function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription }) {
+  const [isAttachmentsExpanded, setIsAttachmentsExpanded] = useState(false)
   const jiraTicketUrl = getJiraTicketUrl(ticketData.key)
 
   const getIssueTypeClass = (issueType) => {
@@ -118,30 +120,46 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription 
 
       {ticketData.attachments && ticketData.attachments.length > 0 && (
         <div className="ticket-section">
-          <h3>📎 Image Attachments ({ticketData.attachments.length})</h3>
-          <div className="attachments-info">
-            <p className="info-note">
-              🖼️ Images will be analyzed by the LLM to generate UI-specific test cases
-            </p>
-            <div className="attachments-list">
-              {ticketData.attachments.map((attachment, index) => (
-                <div key={index} className="attachment-item">
-                  <span className="attachment-icon">🖼️</span>
-                  <a
-                    href={attachment.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="attachment-link"
-                  >
-                    {attachment.filename}
-                  </a>
-                  <span className="attachment-size">
-                    ({Math.round(attachment.size / 1024)} KB)
-                  </span>
-                </div>
-              ))}
-            </div>
+          <div
+            className="collapsible-header"
+            onClick={() => setIsAttachmentsExpanded(!isAttachmentsExpanded)}
+          >
+            <h3>
+              <span className={`collapse-icon ${isAttachmentsExpanded ? 'expanded' : ''}`}>▶</span>
+              📎 Image Attachments ({ticketData.attachments.length})
+            </h3>
+            {!isAttachmentsExpanded && (
+              <span className="collapse-summary">Click to expand</span>
+            )}
           </div>
+
+          {isAttachmentsExpanded && (
+            <div className="collapsible-content">
+              <div className="attachments-info">
+                <p className="info-note">
+                  🖼️ Images will be analyzed by the LLM to generate UI-specific test cases
+                </p>
+                <div className="attachments-list">
+                  {ticketData.attachments.map((attachment, index) => (
+                    <div key={index} className="attachment-item">
+                      <span className="attachment-icon">🖼️</span>
+                      <a
+                        href={attachment.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="attachment-link"
+                      >
+                        {attachment.filename}
+                      </a>
+                      <span className="attachment-size">
+                        ({Math.round(attachment.size / 1024)} KB)
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
