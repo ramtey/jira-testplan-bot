@@ -102,7 +102,21 @@ Make it usable immediately.
 
 ## Recent Improvements
 
-### Priority-Based Test Ordering (Latest)
+### Jira Comment Management (Latest)
+- **Smart comment replacement**: Test plans posted to Jira are now automatically updated instead of creating duplicates
+  - First post creates a new comment with unique marker `🤖 Generated Test Plan`
+  - Subsequent posts find and replace the existing test plan comment
+  - User feedback shows "updated" vs "posted" status
+  - Prevents comment clutter when regenerating test plans
+  - Falls back to creating new comment if detection fails
+
+### ADF Parser Fix
+- **Fixed UUID extraction bug**: Removed incorrect extraction of internal Jira node IDs from descriptions
+  - UUIDs like `53025c34-9388-4fcf-bf18-3c532e14a36f` no longer appear in extracted text
+  - Only actual text content is extracted from Atlassian Document Format
+  - Cleaner, more readable descriptions in UI and LLM context
+
+### Priority-Based Test Ordering
 - **Automatic test case ordering by priority**: All test cases are now automatically ordered by priority level within each section
   - Critical priority tests appear first (authentication, payments, data loss, security)
   - High priority tests appear second (core functionality, common flows, data integrity)

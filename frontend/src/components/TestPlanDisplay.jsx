@@ -47,8 +47,9 @@ function TestPlanDisplay({ testPlan, ticketData }) {
       }
 
       const result = await response.json()
-      alert(`✅ Test plan posted successfully to ${ticketData.key}!`)
-      console.log('Posted comment ID:', result.comment_id)
+      const action = result.updated ? 'updated' : 'posted'
+      alert(`✅ Test plan ${action} successfully on ${ticketData.key}!`)
+      console.log('Comment ID:', result.comment_id, 'Updated:', result.updated)
     } catch (error) {
       console.error('Error posting to Jira:', error)
       alert(`❌ Failed to post to Jira: ${error.message}`)

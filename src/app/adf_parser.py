@@ -83,9 +83,3 @@ def _extract_text_recursive(node: dict | list | str, text_parts: list[str]) -> N
     # For other node types, just process content
     elif "content" in node:
         _extract_text_recursive(node["content"], text_parts)
-
-    # Also check for attrs that might contain text
-    if "attrs" in node and isinstance(node["attrs"], dict):
-        for value in node["attrs"].values():
-            if isinstance(value, str):
-                text_parts.append(value)

@@ -337,7 +337,10 @@ class JiraClient:
 
     async def post_comment(self, issue_key: str, comment_text: str) -> dict:
         """
-        Post a comment to a Jira issue.
+        Post a comment to a Jira issue, or update existing test plan comment if found.
+
+        This method checks for existing test plan comments (identified by marker text)
+        and updates them instead of creating duplicates when regenerating test plans.
 
         Args:
             issue_key: The Jira issue key (e.g., "PROJ-123")
@@ -345,6 +348,106 @@ class JiraClient:
 
         Returns:
             dict: Response from Jira API with comment ID and metadata
+                  (includes "updated": true if existing comment was updated)
+
+        Raises:
+            JiraNotFoundError: If the issue doesn't exist
+            JiraAuthError: If authentication fails or permissions are insufficient
+            JiraConnectionError: If Jira is unreachable
+        """
+        # Add unique marker to identify test plan comments
+        # Using a marker that won't be visible to users but can be detected
+        marker = "🤖 Generated Test Plan"
+        marked_text = f"{marker}\n\n{comment_text}"
+
+        # Check if there's already a test plan comment to update
+        try:
+            existing_comments = await self.get_comments(issue_key)
+
+            # Find existing test plan comment by looking for our marker
+            for comment in existing_comments:
+                # Extract text from ADF format
+                body = comment.get("body", {})
+                if body.get("type") == "doc":
+                    content = body.get("content", [])
+                    # Check first paragraph for marker
+                    if content and len(content) > 0:
+                        first_para = content[0]
+                        if first_para.get("type") == "paragraph":
+                            para_content = first_para.get("content", [])
+                            if para_content and len(para_content) > 0:
+                                text = para_content[0].get("text", "")
+                                if marker in text:
+                                    # Found existing test plan comment - update it
+                                    comment_id = comment.get("id")
+                                    logger.info(f"Updating existing test plan comment {comment_id} on {issue_key}")
+                                    result = await self.update_comment(issue_key, comment_id, marked_text)
+                                    result["updated"] = True
+                                    return result
+        except Exception as e:
+            # If fetching/checking existing comments fails, fall back to creating new
+            logger.warning(f"Failed to check for existing comments on {issue_key}: {e}")
+
+        # No existing test plan comment found - create new one
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+
+        # Jira Cloud uses ADF (Atlassian Document Format) for comments
+        # Convert plain text to ADF format
+        payload = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": marked_text
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        headers = {
+            **self._headers(),
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(url, headers=headers, json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            raise JiraAuthError(
+                "Jira authentication failed (check email/token).", status_code=401
+            )
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden (check permissions for this issue).",
+                status_code=403,
+            )
+        r.raise_for_status()
+
+        result = r.json()
+        result["updated"] = False
+        return result
+
+    async def get_comments(self, issue_key: str) -> list[dict]:
+        """
+        Fetch all comments for a Jira issue.
+
+        Args:
+            issue_key: The Jira issue key (e.g., "PROJ-123")
+
+        Returns:
+            list[dict]: List of comment objects from Jira API
 
         Raises:
             JiraNotFoundError: If the issue doesn't exist
@@ -352,6 +455,47 @@ class JiraClient:
             JiraConnectionError: If Jira is unreachable
         """
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers())
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            raise JiraAuthError(
+                "Jira authentication failed (check email/token).", status_code=401
+            )
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden (check permissions for this issue).",
+                status_code=403,
+            )
+        r.raise_for_status()
+
+        response_data = r.json()
+        return response_data.get("comments", [])
+
+    async def update_comment(self, issue_key: str, comment_id: str, comment_text: str) -> dict:
+        """
+        Update an existing comment on a Jira issue.
+
+        Args:
+            issue_key: The Jira issue key (e.g., "PROJ-123")
+            comment_id: The ID of the comment to update
+            comment_text: Plain text comment to replace with
+
+        Returns:
+            dict: Response from Jira API with updated comment metadata
+
+        Raises:
+            JiraNotFoundError: If the issue or comment doesn't exist
+            JiraAuthError: If authentication fails or permissions are insufficient
+            JiraConnectionError: If Jira is unreachable
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment/{comment_id}"
 
         # Jira Cloud uses ADF (Atlassian Document Format) for comments
         # Convert plain text to ADF format
@@ -380,19 +524,19 @@ class JiraClient:
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                r = await client.post(url, headers=headers, json=payload)
+                r = await client.put(url, headers=headers, json=payload)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
 
         if r.status_code == 404:
-            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+            raise JiraNotFoundError(f"Comment not found: {comment_id} on issue {issue_key}")
         if r.status_code == 401:
             raise JiraAuthError(
                 "Jira authentication failed (check email/token).", status_code=401
             )
         if r.status_code == 403:
             raise JiraAuthError(
-                "Jira access forbidden (check permissions for this issue).",
+                "Jira access forbidden (check permissions for this comment).",
                 status_code=403,
             )
         r.raise_for_status()
