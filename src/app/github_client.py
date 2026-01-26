@@ -57,6 +57,14 @@ class PRDetails:
     comments: list[PRComment]
 
 
+@dataclass
+class RepositoryContext:
+    """Repository documentation and context for test plan generation."""
+
+    readme_content: str | None = None
+    test_examples: list[str] | None = None  # Paths to example test files
+
+
 class GitHubClient:
     """Client for interacting with GitHub API."""
 
@@ -295,3 +303,118 @@ class GitHubClient:
             summary += f"... and {len(pr_details.files_changed) - 20} more files\n"
 
         return summary
+
+    async def fetch_repository_context(self, pr_url: str) -> RepositoryContext | None:
+        """
+        Fetch repository documentation and context from GitHub.
+
+        Args:
+            pr_url: GitHub PR URL (used to identify the repository)
+
+        Returns:
+            RepositoryContext object or None if fetch fails
+        """
+        if not self.token:
+            logger.warning("GitHub token not configured - skipping repository context fetch")
+            return None
+
+        parsed = self._parse_github_url(pr_url)
+        if not parsed:
+            return None
+
+        owner, repo, _ = parsed
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                # Fetch README.md
+                readme_content = await self._fetch_file_content(client, owner, repo, "README.md")
+
+                # Find test file examples
+                test_examples = await self._find_test_files(client, owner, repo)
+
+                return RepositoryContext(
+                    readme_content=readme_content,
+                    test_examples=test_examples,
+                )
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch repository context: {e}")
+            return None
+
+    async def _fetch_file_content(self, client: httpx.AsyncClient, owner: str, repo: str, file_path: str) -> str | None:
+        """
+        Fetch content of a specific file from the repository.
+
+        Args:
+            client: HTTP client to use
+            owner: Repository owner
+            repo: Repository name
+            file_path: Path to the file in the repository
+
+        Returns:
+            File content as string or None if not found
+        """
+        try:
+            # Try main branch first
+            for branch in ["main", "master"]:
+                url = f"{self.base_url}/repos/{owner}/{repo}/contents/{file_path}?ref={branch}"
+                response = await client.get(url, headers=self._headers())
+
+                if response.status_code == 200:
+                    data = response.json()
+                    # GitHub returns base64-encoded content
+                    import base64
+                    content = base64.b64decode(data.get("content", "")).decode("utf-8")
+                    logger.info(f"Fetched {file_path} from {owner}/{repo}")
+                    return content
+
+            logger.info(f"File {file_path} not found in {owner}/{repo}")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch {file_path}: {e}")
+            return None
+
+    async def _find_test_files(self, client: httpx.AsyncClient, owner: str, repo: str) -> list[str]:
+        """
+        Find test files in the repository to learn testing patterns.
+
+        Args:
+            client: HTTP client to use
+            owner: Repository owner
+            repo: Repository name
+
+        Returns:
+            List of test file paths (limited to 5 examples)
+        """
+        test_patterns = [
+            "__tests__",
+            "tests",
+            "test",
+            "spec",
+        ]
+
+        test_files = []
+
+        try:
+            # Search for test files using GitHub search API
+            # Limit to common test file extensions
+            query = f"repo:{owner}/{repo} extension:test OR extension:spec OR path:tests OR path:__tests__"
+            search_url = f"{self.base_url}/search/code?q={query}&per_page=5"
+
+            response = await client.get(search_url, headers=self._headers())
+
+            if response.status_code == 200:
+                data = response.json()
+                items = data.get("items", [])
+
+                for item in items[:5]:  # Limit to 5 examples
+                    test_files.append(item.get("path", ""))
+
+                if test_files:
+                    logger.info(f"Found {len(test_files)} test file examples in {owner}/{repo}")
+
+        except Exception as e:
+            logger.warning(f"Failed to find test files: {e}")
+
+        return test_files

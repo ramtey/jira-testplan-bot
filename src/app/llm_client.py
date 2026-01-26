@@ -71,6 +71,26 @@ TICKET INFORMATION
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups are attached. Use them to understand the UI requirements and generate specific visual test cases.\n"
 
+        # Add repository context if available (Phase 4: Repository Documentation)
+        if development_info and development_info.get("repository_context"):
+            repo_context = development_info["repository_context"]
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "PROJECT DOCUMENTATION\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+            readme = repo_context.get("readme_content")
+            if readme:
+                # Include README (truncate if very long)
+                readme_preview = readme[:2000] + "..." if len(readme) > 2000 else readme
+                prompt += f"\n**README.md:**\n{readme_preview}\n"
+
+            test_examples = repo_context.get("test_examples")
+            if test_examples:
+                prompt += f"\n**Test File Examples Found:**\n"
+                for test_file in test_examples[:5]:
+                    prompt += f"- {test_file}\n"
+                prompt += "\nUse these test patterns and project documentation to generate specific test cases that match this project's structure and conventions.\n"
+
         # Add development information if available
         if development_info:
             prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -166,6 +186,9 @@ TICKET INFORMATION
                     prompt += f"- {branch}\n"
 
             prompt += "\n**Use this development context to:**\n"
+            prompt += "- Understand the project structure and architecture from the README documentation\n"
+            prompt += "- Use project-specific terminology, UI component names, and navigation patterns from the documentation\n"
+            prompt += "- Generate test steps with actual screen names, button labels, and menu items (not generic placeholders)\n"
             prompt += "- Infer what functionality was implemented from commit messages and PR titles\n"
             prompt += "- Analyze the modified files to identify which components/modules were changed\n"
             prompt += "- Extract edge cases and gotchas mentioned in PR comments and code review discussions\n"

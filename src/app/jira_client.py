@@ -7,7 +7,7 @@ from .adf_parser import extract_text_from_adf
 from .config import settings
 from .description_analyzer import analyze_description
 from .github_client import GitHubClient
-from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraIssue, PRComment, PullRequest
+from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraIssue, PRComment, PullRequest, RepositoryContext
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +137,25 @@ class JiraClient:
         if not commits and not pull_requests and not branches:
             return None
 
+        # Fetch repository context from the first GitHub PR (Phase 4)
+        repository_context = None
+        github_client = GitHubClient() if settings.github_token else None
+        if github_client:
+            for pr in pull_requests:
+                if pr.url and "github.com" in pr.url:
+                    try:
+                        repository_context = await github_client.fetch_repository_context(pr.url)
+                        if repository_context:
+                            logger.info("Fetched repository context (README, test examples)")
+                            break  # Only fetch once from the first GitHub PR
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch repository context: {e}")
+
         return DevelopmentInfo(
-            commits=commits, pull_requests=pull_requests, branches=branches
+            commits=commits,
+            pull_requests=pull_requests,
+            branches=branches,
+            repository_context=repository_context,
         )
 
     def _extract_commits(self, repo_data: dict) -> list[Commit]:

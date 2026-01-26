@@ -74,12 +74,21 @@ class PullRequest:
 
 
 @dataclass
+class RepositoryContext:
+    """Repository documentation and context for test plan generation."""
+
+    readme_content: str | None = None
+    test_examples: list[str] | None = None  # Paths to example test files
+
+
+@dataclass
 class DevelopmentInfo:
     """Development information (commits, PRs, branches) for a Jira issue."""
 
     commits: list[Commit]
     pull_requests: list[PullRequest]
     branches: list[str]
+    repository_context: RepositoryContext | None = None  # Repository documentation
 
 
 @dataclass
