@@ -28,7 +28,7 @@ function TestPlanDisplay({ testPlan, ticketData }) {
   const handlePostToJira = async () => {
     setIsPosting(true)
     try {
-      const jiraText = formatTestPlanAsJira(testPlan, ticketData)
+      const jiraText = formatTestPlanAsJira(testPlan)
 
       const response = await fetch(`${API_BASE}/jira/post-comment`, {
         method: 'POST',

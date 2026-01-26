@@ -95,11 +95,8 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
   return markdown
 }
 
-export const formatTestPlanAsJira = (plan, ticketData) => {
-  let jira = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
-  jira += `TEST PLAN: ${ticketData.key}\n`
-  jira += `${ticketData.summary}\n`
-  jira += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`
+export const formatTestPlanAsJira = (plan) => {
+  let jira = ''
 
   if (plan.happy_path && plan.happy_path.length > 0) {
     jira += '✅ HAPPY PATH TEST CASES\n\n'
