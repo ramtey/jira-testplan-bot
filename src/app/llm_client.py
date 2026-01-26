@@ -189,27 +189,49 @@ Analyze the ticket complexity and adjust test coverage accordingly:
 **ORGANIZE TESTS BY FEATURE/COMPONENT:**
 Group related test cases logically by the feature or component they test.
 
+**AVOID REDUNDANCY - CRITICAL RULE:**
+DO NOT create separate test cases that test the same user flow from different angles. Instead, create ONE comprehensive test case that validates multiple aspects together.
+
+❌ BAD - Redundant tests:
+  - Test 1: "User clicks button and modal appears"
+  - Test 2: "Modal posts to correct API endpoint"
+  - Test 3: "API response includes correct user context"
+
+✅ GOOD - Single comprehensive test:
+  - Test 1: "User clicks button, modal appears, posts to correct API endpoint with proper context"
+
+Combine related validations when they're part of the same user flow. Only create separate tests when:
+- Testing different user paths (thumbs up vs thumbs down)
+- Testing different entry points (task completion vs chat completion)
+- Testing truly independent functionality
+
+**Before adding a test case, ask yourself:** "Does another test already cover this user flow?"
+If yes, enhance that existing test instead of creating a new one.
+
 **INCLUDE THESE TEST TYPES:**
 
 1. **Positive Scenarios (Happy Path)**
-   - Test the main user flow with valid inputs
-   - Cover the most common expected user actions
+   - Test complete user flows from start to finish
+   - VALIDATE MULTIPLE ASPECTS IN ONE TEST: UI behavior, API correctness, AND data integrity
+   - Each test should be a comprehensive end-to-end validation, not just a UI check
    - Use specific examples from the ticket (not generic placeholders)
 
-2. **Negative Scenarios (Error Handling)**
+2. **Negative Scenarios (Error Handling)** - ONLY for error/edge cases
    - Test with invalid inputs, missing data, unauthorized access
-   - Verify proper error messages are shown
+   - Verify proper error messages and recovery mechanisms
    - Include specific examples: invalid email formats, wrong passwords, etc.
+   - These should test DIFFERENT scenarios, not the same flow with valid data
 
-3. **Edge Cases (Boundary Conditions)**
-   - Test minimum/maximum values (0 items, 1 item, max limit, max+1)
-   - Test empty states (empty lists, no data, blank fields)
-   - Test special characters and unusual inputs
+3. **Edge Cases (Boundary Conditions)** - ONLY for boundaries and unusual inputs
+   - Test minimum/maximum values, empty states, special characters
+   - Focus on input validation and boundary handling
+   - Do NOT duplicate happy path flows here
 
-4. **Integration Scenarios**
-   - Test when multiple features interact together
-   - Test data flow between components
-   - Only include if multiple systems/features are involved
+4. **Integration Scenarios** - ONLY when testing multi-system interactions
+   - Use ONLY when testing interactions between separate systems/services
+   - Do NOT use for standard features where UI calls a single API
+   - Examples: Cross-service data flow, third-party integrations, microservice communication
+   - If it's just "frontend → single backend API → database", that's a normal flow (use happy_path)
 
 5. **Reset/Clear Functionality**
    - Test any reset, clear, or undo operations
@@ -235,6 +257,31 @@ Each test should include:
 - "medium": Edge cases, rare scenarios, minor issues
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE - GOOD TEST ORGANIZATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**Scenario:** User feedback feature that posts to Slack
+
+✅ CORRECT - 2 comprehensive tests in happy_path:
+  1. "Complete thumbs up feedback flow with API validation"
+     - Covers: UI modal appears → comment box displays → posts to correct endpoint → verifies Slack message contains user context
+  2. "Complete thumbs down feedback flow with API validation"
+     - Covers: UI modal appears → comment box displays → posts to correct endpoint → verifies Slack message contains user context
+
+❌ INCORRECT - 6 redundant tests split across sections:
+  Happy path:
+    1. "Thumbs up displays comment box"
+    2. "Thumbs down displays comment box"
+  Edge cases:
+    3. "Thumbs up posts to Slack"
+    4. "Thumbs down posts to Slack"
+  Integration tests:
+    5. "Thumbs up uses correct API endpoint"
+    6. "Thumbs down uses correct API endpoint"
+
+The second approach tests the same flows 3 times each - wasteful and redundant!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -243,15 +290,17 @@ Return ONLY valid JSON (no markdown, no code blocks):
 {
   "happy_path": [
     {
-      "title": "Clear test name describing the action",
+      "title": "Comprehensive test name covering the complete flow",
       "priority": "critical|high|medium",
       "steps": [
         "First action step",
-        "Second action step",
-        "Third action step"
+        "Second action step - verify intermediate state",
+        "Third action step",
+        "Fourth step - verify API correctness",
+        "Fifth step - verify data integrity and context"
       ],
-      "expected": "What should happen (observable result)",
-      "test_data": "Specific data needed (e.g., 'admin user with email test@example.com')"
+      "expected": "Complete expected outcome covering UI behavior, API correctness, and data validation",
+      "test_data": "All specific data needed for this comprehensive test"
     }
   ],
   "edge_cases": [
