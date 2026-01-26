@@ -124,6 +124,28 @@ TICKET INFORMATION
 
                         prompt += "\n"
 
+                    # Add PR comments if available (Phase 3b)
+                    comments = pr.get('comments')
+                    if comments:
+                        prompt += f"  💬 PR Discussion ({len(comments)} comments):\n"
+                        # Show most recent/relevant comments (limit to 10)
+                        for comment in comments[:10]:
+                            author = comment.get('author', 'unknown')
+                            body = comment.get('body', '')
+                            comment_type = comment.get('comment_type', 'conversation')
+
+                            # Truncate long comments
+                            body_preview = body[:200] + "..." if len(body) > 200 else body
+
+                            # Format differently for review comments (they have file context)
+                            icon = "📝" if comment_type == "review_comment" else "💬"
+                            prompt += f"     {icon} @{author}: {body_preview}\n"
+
+                        if len(comments) > 10:
+                            prompt += f"     ... and {len(comments) - 10} more comments\n"
+
+                        prompt += "\n"
+
             # Add commit information
             commits = development_info.get("commits", [])
             if commits:
@@ -146,6 +168,8 @@ TICKET INFORMATION
             prompt += "\n**Use this development context to:**\n"
             prompt += "- Infer what functionality was implemented from commit messages and PR titles\n"
             prompt += "- Analyze the modified files to identify which components/modules were changed\n"
+            prompt += "- Extract edge cases and gotchas mentioned in PR comments and code review discussions\n"
+            prompt += "- Identify concerns, bugs, or scenarios discussed by developers during code review\n"
             prompt += "- Identify potential risk areas based on the type and scope of code changes\n"
             prompt += "- Generate specific test cases targeting the modified files and their dependencies\n"
             prompt += "- Focus testing on high-risk areas (authentication, payments, data handling, etc.)\n"

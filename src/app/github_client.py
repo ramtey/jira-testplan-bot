@@ -32,6 +32,16 @@ class FileChange:
 
 
 @dataclass
+class PRComment:
+    """Represents a comment on a pull request."""
+
+    author: str
+    body: str
+    created_at: str
+    comment_type: str  # "conversation" or "review_comment"
+
+
+@dataclass
 class PRDetails:
     """Detailed PR information from GitHub."""
 
@@ -44,6 +54,7 @@ class PRDetails:
     total_additions: int
     total_deletions: int
     total_changes: int
+    comments: list[PRComment]
 
 
 class GitHubClient:
@@ -90,13 +101,75 @@ class GitHubClient:
         logger.warning(f"Failed to parse GitHub PR URL: {pr_url}")
         return None
 
-    async def fetch_pr_details(self, pr_url: str, include_patch: bool = False) -> PRDetails | None:
+    async def _fetch_pr_comments(self, client: httpx.AsyncClient, owner: str, repo: str, pr_number: int) -> list[PRComment]:
+        """
+        Fetch all comments for a PR (conversation + review comments).
+
+        Args:
+            client: HTTP client to use
+            owner: Repository owner
+            repo: Repository name
+            pr_number: PR number
+
+        Returns:
+            List of PRComment objects
+        """
+        comments = []
+
+        try:
+            # Fetch conversation comments (uses issues API since PRs are issues)
+            issues_comments_url = f"{self.base_url}/repos/{owner}/{repo}/issues/{pr_number}/comments"
+            conversation_response = await client.get(issues_comments_url, headers=self._headers())
+
+            if conversation_response.status_code == 200:
+                conversation_data = conversation_response.json()
+                for comment in conversation_data:
+                    comments.append(
+                        PRComment(
+                            author=comment.get("user", {}).get("login", "unknown"),
+                            body=comment.get("body", ""),
+                            created_at=comment.get("created_at", ""),
+                            comment_type="conversation",
+                        )
+                    )
+
+            # Fetch review comments (line-specific comments)
+            review_comments_url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+            review_response = await client.get(review_comments_url, headers=self._headers())
+
+            if review_response.status_code == 200:
+                review_data = review_response.json()
+                for comment in review_data:
+                    # Include file path context for review comments
+                    body = comment.get("body", "")
+                    file_path = comment.get("path", "")
+                    if file_path:
+                        body = f"[{file_path}] {body}"
+
+                    comments.append(
+                        PRComment(
+                            author=comment.get("user", {}).get("login", "unknown"),
+                            body=body,
+                            created_at=comment.get("created_at", ""),
+                            comment_type="review_comment",
+                        )
+                    )
+
+            logger.info(f"Fetched {len(comments)} comments for PR #{pr_number}")
+            return comments
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch PR comments: {e}")
+            return []
+
+    async def fetch_pr_details(self, pr_url: str, include_patch: bool = False, include_comments: bool = True) -> PRDetails | None:
         """
         Fetch detailed PR information from GitHub.
 
         Args:
             pr_url: GitHub PR URL
             include_patch: Whether to include the actual diff patch (can be large)
+            include_comments: Whether to fetch PR comments (conversation + review comments)
 
         Returns:
             PRDetails object or None if fetch fails
@@ -149,6 +222,11 @@ class GitHubClient:
                         )
                     )
 
+                # Fetch PR comments if requested
+                comments = []
+                if include_comments:
+                    comments = await self._fetch_pr_comments(client, owner, repo, pr_number)
+
                 return PRDetails(
                     number=pr_data.get("number"),
                     title=pr_data.get("title", ""),
@@ -159,6 +237,7 @@ class GitHubClient:
                     total_additions=total_additions,
                     total_deletions=total_deletions,
                     total_changes=total_additions + total_deletions,
+                    comments=comments,
                 )
 
         except httpx.HTTPStatusError as e:

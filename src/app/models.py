@@ -47,6 +47,16 @@ class FileChange:
 
 
 @dataclass
+class PRComment:
+    """Represents a comment on a pull request."""
+
+    author: str
+    body: str
+    created_at: str
+    comment_type: str  # "conversation" or "review_comment"
+
+
+@dataclass
 class PullRequest:
     """Represents a pull request linked to a Jira issue."""
 
@@ -60,6 +70,7 @@ class PullRequest:
     files_changed: list[FileChange] | None = None
     total_additions: int | None = None
     total_deletions: int | None = None
+    comments: list[PRComment] | None = None
 
 
 @dataclass

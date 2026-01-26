@@ -7,7 +7,7 @@ from .adf_parser import extract_text_from_adf
 from .config import settings
 from .description_analyzer import analyze_description
 from .github_client import GitHubClient
-from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraIssue, PullRequest
+from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraIssue, PRComment, PullRequest
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ class JiraClient:
                 # Enrich with GitHub data if available
                 if github_client and pr_url and "github.com" in pr_url:
                     try:
-                        gh_details = await github_client.fetch_pr_details(pr_url, include_patch=False)
+                        gh_details = await github_client.fetch_pr_details(pr_url, include_patch=False, include_comments=True)
                         if gh_details:
                             pr_obj.github_description = gh_details.description
                             pr_obj.files_changed = [
@@ -222,7 +222,19 @@ class JiraClient:
                             ]
                             pr_obj.total_additions = gh_details.total_additions
                             pr_obj.total_deletions = gh_details.total_deletions
-                            logger.info(f"Enriched PR {pr_obj.title} with GitHub data: {len(gh_details.files_changed)} files changed")
+                            pr_obj.comments = [
+                                PRComment(
+                                    author=comment.author,
+                                    body=comment.body,
+                                    created_at=comment.created_at,
+                                    comment_type=comment.comment_type,
+                                )
+                                for comment in gh_details.comments
+                            ]
+                            logger.info(
+                                f"Enriched PR {pr_obj.title} with GitHub data: "
+                                f"{len(gh_details.files_changed)} files changed, {len(gh_details.comments)} comments"
+                            )
                     except Exception as e:
                         logger.warning(f"Failed to enrich PR with GitHub data: {e}")
 

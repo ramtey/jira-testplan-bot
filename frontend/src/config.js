@@ -3,7 +3,7 @@
  */
 
 // API base URL - can be overridden with VITE_API_URL environment variable
-export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 // Fetch config from backend (including Jira base URL)
 let jiraBaseUrl = null
