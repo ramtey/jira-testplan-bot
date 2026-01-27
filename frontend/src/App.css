@@ -1312,14 +1312,12 @@ button:disabled {
   cursor: pointer;
   user-select: none;
   padding: 0.5rem 0;
-  transition: background 0.2s ease;
+  transition: opacity 0.2s ease;
   border-radius: 4px;
 }
 
 .collapsible-header:hover {
-  background: rgba(102, 126, 234, 0.05);
-  padding-left: 0.5rem;
-  padding-right: 0.5rem;
+  opacity: 0.9;
 }
 
 .collapsible-header h3 {
