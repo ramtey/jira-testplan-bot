@@ -4,8 +4,9 @@
 
 import { useState } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
+import { API_BASE_URL } from '../config'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001'
+const API_BASE = API_BASE_URL
 
 function TestPlanDisplay({ testPlan, ticketData }) {
   const [isPosting, setIsPosting] = useState(false)
