@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # GitHub (for PR diff fetching - Phase 3a)
     github_token: str | None = None  # GitHub personal access token (optional - enables PR diff fetching)
 
+    # Figma (for design context - Phase 5)
+    figma_token: str | None = None  # Figma personal access token (optional - enables design context)
+
     # App
     app_env: str = "local"
 

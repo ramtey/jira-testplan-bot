@@ -1,11 +1,13 @@
 import base64
 import logging
+import re
 
 import httpx
 
 from .adf_parser import extract_text_from_adf
 from .config import settings
 from .description_analyzer import analyze_description
+from .figma_client import FigmaClient
 from .github_client import GitHubClient
 from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraIssue, PRComment, PullRequest, RepositoryContext
 
@@ -295,6 +297,34 @@ class JiraClient:
 
         return pull_requests
 
+    def _extract_figma_url(self, description: str) -> str | None:
+        """
+        Extract Figma URL from ticket description.
+
+        Looks for URLs like:
+        - https://www.figma.com/file/{key}/...
+        - https://figma.com/design/{key}/...
+        - https://www.figma.com/proto/{key}/...
+
+        Args:
+            description: Ticket description text
+
+        Returns:
+            First Figma URL found, or None
+        """
+        try:
+            # Match Figma URLs
+            pattern = r"https?://(?:www\.)?figma\.com/(file|design|proto)/[A-Za-z0-9]+[^\s]*"
+            match = re.search(pattern, description)
+            if match:
+                figma_url = match.group(0)
+                logger.info(f"Found Figma URL in description: {figma_url}")
+                return figma_url
+            return None
+        except Exception as e:
+            logger.warning(f"Error extracting Figma URL: {e}")
+            return None
+
     def _extract_image_attachments(self, attachments_data: list) -> list[Attachment]:
         """Extract image attachments (PNG, JPG, JPEG, GIF) from Jira attachment data."""
         IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/gif"}
@@ -385,6 +415,29 @@ class JiraClient:
         # This is optional and non-blocking - if it fails, we continue without it
         issue_id = data["id"]
         development_info = await self._get_development_info(issue_id, issue_key)
+
+        # Extract Figma URL from description and fetch design context (Phase 5)
+        if description_str and settings.figma_token:
+            figma_url = self._extract_figma_url(description_str)
+            if figma_url:
+                try:
+                    figma_client = FigmaClient()
+                    figma_context = await figma_client.fetch_file_context(figma_url)
+                    if figma_context and development_info:
+                        development_info.figma_context = figma_context
+                        logger.info(f"Enriched with Figma design context: {figma_context.file_name}")
+                    elif figma_context and not development_info:
+                        # Create DevelopmentInfo with just Figma context
+                        development_info = DevelopmentInfo(
+                            commits=[],
+                            pull_requests=[],
+                            branches=[],
+                            repository_context=None,
+                            figma_context=figma_context,
+                        )
+                        logger.info(f"Added Figma design context: {figma_context.file_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch Figma context: {e}")
 
         # Extract image attachments (PNG, JPG, JPEG, GIF)
         attachments = self._extract_image_attachments(fields.get("attachment", []))

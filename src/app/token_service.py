@@ -464,6 +464,127 @@ class TokenHealthService:
                 last_checked=last_checked,
             )
 
+    async def validate_figma_token(self) -> TokenStatus:
+        """
+        Validate Figma personal access token.
+
+        Returns:
+            TokenStatus with validation result
+        """
+        service_name = "Figma"
+        last_checked = datetime.now()
+
+        if not settings.figma_token:
+            return TokenStatus(
+                service_name=service_name,
+                is_valid=False,
+                is_required=False,  # Optional service
+                error_type=TokenErrorType.MISSING,
+                error_message="Figma token not configured (optional). Set FIGMA_TOKEN for design context.",
+                help_url="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens",
+                last_checked=last_checked,
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    "https://api.figma.com/v1/me",
+                    headers={"X-FIGMA-TOKEN": settings.figma_token},
+                )
+
+                if response.status_code == 200:
+                    user_data = response.json()
+                    return TokenStatus(
+                        service_name=service_name,
+                        is_valid=True,
+                        is_required=False,
+                        error_type=TokenErrorType.VALID,
+                        last_checked=last_checked,
+                        details={
+                            "user_email": user_data.get("email"),
+                            "user_handle": user_data.get("handle"),
+                        },
+                    )
+                elif response.status_code == 401:
+                    return TokenStatus(
+                        service_name=service_name,
+                        is_valid=False,
+                        is_required=False,
+                        error_type=TokenErrorType.INVALID,
+                        error_message="Figma token is invalid. Please generate a new token.",
+                        help_url="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens",
+                        last_checked=last_checked,
+                    )
+                elif response.status_code == 403:
+                    error_text = response.text.lower()
+                    if "rate limit" in error_text:
+                        return TokenStatus(
+                            service_name=service_name,
+                            is_valid=True,  # Token is valid, just rate limited
+                            is_required=False,
+                            error_type=TokenErrorType.RATE_LIMITED,
+                            error_message="Figma API rate limit exceeded (100 req/min). Wait and try again.",
+                            last_checked=last_checked,
+                        )
+                    else:
+                        return TokenStatus(
+                            service_name=service_name,
+                            is_valid=False,
+                            is_required=False,
+                            error_type=TokenErrorType.INSUFFICIENT_PERMISSIONS,
+                            error_message="Figma token lacks required permissions.",
+                            help_url="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens",
+                            last_checked=last_checked,
+                        )
+                elif response.status_code == 429:
+                    return TokenStatus(
+                        service_name=service_name,
+                        is_valid=True,  # Token is valid, just rate limited
+                        is_required=False,
+                        error_type=TokenErrorType.RATE_LIMITED,
+                        error_message="Figma API rate limit exceeded (100 req/min).",
+                        last_checked=last_checked,
+                    )
+                else:
+                    return TokenStatus(
+                        service_name=service_name,
+                        is_valid=False,
+                        is_required=False,
+                        error_type=TokenErrorType.SERVICE_UNAVAILABLE,
+                        error_message=f"Figma API returned unexpected status {response.status_code}.",
+                        last_checked=last_checked,
+                    )
+
+        except httpx.ConnectError as e:
+            return TokenStatus(
+                service_name=service_name,
+                is_valid=False,
+                is_required=False,
+                error_type=TokenErrorType.SERVICE_UNAVAILABLE,
+                error_message="Cannot connect to Figma API. Check network.",
+                last_checked=last_checked,
+                details={"error": str(e)},
+            )
+        except httpx.TimeoutException:
+            return TokenStatus(
+                service_name=service_name,
+                is_valid=False,
+                is_required=False,
+                error_type=TokenErrorType.SERVICE_UNAVAILABLE,
+                error_message=f"Figma API connection timed out after {self.timeout}s.",
+                last_checked=last_checked,
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error validating Figma token: {e}")
+            return TokenStatus(
+                service_name=service_name,
+                is_valid=False,
+                is_required=False,
+                error_type=TokenErrorType.SERVICE_UNAVAILABLE,
+                error_message=f"Unexpected error: {str(e)}",
+                last_checked=last_checked,
+            )
+
     async def validate_all_tokens(self) -> list[TokenStatus]:
         """
         Validate all configured API tokens.
@@ -478,6 +599,7 @@ class TokenHealthService:
             self.validate_jira_token(),
             self.validate_github_token(),
             self.validate_anthropic_token(),
+            self.validate_figma_token(),
             return_exceptions=True,
         )
 

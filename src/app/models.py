@@ -82,6 +82,37 @@ class RepositoryContext:
 
 
 @dataclass
+class FigmaFrame:
+    """Represents a frame or page in a Figma file."""
+
+    name: str
+    type: str  # "FRAME", "COMPONENT", "PAGE", etc.
+    node_id: str | None = None
+    description: str | None = None
+
+
+@dataclass
+class FigmaComponent:
+    """Represents a component in a Figma file."""
+
+    name: str
+    description: str | None
+    component_set_name: str | None = None  # For variants
+
+
+@dataclass
+class FigmaContext:
+    """Figma design context for test plan generation."""
+
+    file_name: str
+    file_key: str
+    last_modified: str | None = None
+    frames: list[FigmaFrame] | None = None  # Top-level frames/pages
+    components: list[FigmaComponent] | None = None  # Reusable components
+    version: str | None = None  # File version info
+
+
+@dataclass
 class DevelopmentInfo:
     """Development information (commits, PRs, branches) for a Jira issue."""
 
@@ -89,6 +120,7 @@ class DevelopmentInfo:
     pull_requests: list[PullRequest]
     branches: list[str]
     repository_context: RepositoryContext | None = None  # Repository documentation
+    figma_context: FigmaContext | None = None  # Figma design context
 
 
 @dataclass

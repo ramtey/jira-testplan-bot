@@ -100,6 +100,41 @@ TICKET INFORMATION
                     prompt += f"- {test_file}\n"
                 prompt += "\nUse these test patterns and project documentation to generate specific test cases that match this project's structure and conventions.\n"
 
+        # Add Figma design context if available (Phase 5)
+        if development_info and development_info.get("figma_context"):
+            figma_context = development_info["figma_context"]
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "DESIGN SPECIFICATIONS (FIGMA)\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += f"\n**Design File:** {figma_context.get('file_name')}\n"
+
+            # Add frames/screens (limit to 30)
+            frames = figma_context.get("frames", [])
+            if frames:
+                prompt += f"\n**Screens/Frames ({len(frames)}):**\n"
+                for frame in frames[:30]:
+                    frame_name = frame.get("name") if isinstance(frame, dict) else frame.name
+                    frame_type = frame.get("type", "FRAME") if isinstance(frame, dict) else frame.type
+                    prompt += f"- {frame_name} ({frame_type})\n"
+
+            # Add components (limit to 20)
+            components = figma_context.get("components", [])
+            if components:
+                prompt += f"\n**UI Components ({len(components)}):**\n"
+                for comp in components[:20]:
+                    comp_name = comp.get("name") if isinstance(comp, dict) else comp.name
+                    comp_desc = comp.get("description") if isinstance(comp, dict) else comp.description
+                    comp_info = f"- {comp_name}"
+                    if comp_desc:
+                        comp_info += f": {comp_desc}"
+                    prompt += comp_info + "\n"
+
+            prompt += "\n**Use this design context to:**\n"
+            prompt += "- Reference actual screen names and UI component names from Figma\n"
+            prompt += "- Generate UI-specific test cases using exact component names\n"
+            prompt += "- Create visual validation tests for each screen/frame\n"
+            prompt += "- Ensure test steps match the design specifications\n"
+
         # Add development information if available
         if development_info:
             prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
