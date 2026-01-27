@@ -263,9 +263,14 @@ cp .env.example .env
    - `JIRA_EMAIL`
    - `JIRA_API_TOKEN`
    - `LLM_PROVIDER` - "claude" (recommended) or "ollama" (local)
-   - `LLM_MODEL` - model name (e.g., "claude-3-5-sonnet-20241022" for Claude, "llama3.1" for Ollama)
+   - `LLM_MODEL` - model name (e.g., "claude-sonnet-4-5-20250929" for Claude, "llama3.1" for Ollama)
    - `ANTHROPIC_API_KEY` - only if using Claude API
-   - `GITHUB_TOKEN` - (optional) GitHub Personal Access Token for Phase 3a PR enrichment
+   - `GITHUB_TOKEN` - (optional) GitHub Personal Access Token for Phase 3a+3b+4 features:
+     - Phase 3a: PR code diffs and file changes
+     - Phase 3b: PR comments and review discussions
+     - Phase 4: Repository documentation (README.md) and test file examples
+     - **Important**: Token must be authorized for SAML SSO if your organization uses it
+     - **Scopes needed**: `repo` (full control of private repositories)
 
 ### Frontend Setup
 
@@ -319,6 +324,45 @@ You have two options for the LLM provider:
 #### Switching Providers
 
 To switch between providers, just update `LLM_PROVIDER` in your `.env` file. No code changes needed!
+
+### GitHub Token Setup (Optional - for Enhanced Context)
+
+The `GITHUB_TOKEN` enables Phase 3a, 3b, and 4 features that significantly improve test plan quality:
+- Phase 3a: PR code diffs and file changes
+- Phase 3b: PR comments and review discussions
+- Phase 4: Repository documentation (README.md) and test file examples
+
+**Without GitHub token**: Test plans still work but use only Jira data (basic PR titles and commits)
+**With GitHub token**: Test plans include specific project terminology, data structures, and implementation details
+
+#### Create GitHub Personal Access Token
+
+1. Go to [GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)](https://github.com/settings/tokens)
+2. Click "Generate new token (classic)"
+3. Give it a descriptive name (e.g., "jira-testplan-bot")
+4. Select scopes:
+   - ✅ `repo` (Full control of private repositories)
+5. Click "Generate token"
+6. Copy the token (starts with `ghp_`)
+7. Add to your `.env` file:
+   ```
+   GITHUB_TOKEN=ghp_your_token_here
+   ```
+
+#### SAML SSO Authorization (Required for Enterprise Organizations)
+
+If your organization uses SAML SSO (most companies do), you must authorize the token:
+
+1. Go to [GitHub Settings → Personal access tokens](https://github.com/settings/tokens)
+2. Find your newly created token in the list
+3. Click "Configure SSO" next to the token
+4. Click "Authorize" next to your organization name (e.g., `skyslope`)
+5. Confirm the authorization
+
+**Troubleshooting**: If you see "Resource protected by organization SAML enforcement" errors in logs:
+- Your token needs SSO authorization
+- Follow steps above to authorize the token for your organization
+- Restart the backend server after authorization
 
 ## Run the Application
 
@@ -496,7 +540,8 @@ uv run pytest tests/ -v
 | Claude API Integration | ✅ Done |
 | LLM Prompt Enhancements (Risk-based priorities, Given-When-Then format) | ✅ Done |
 | Phase 3a (GitHub API Integration - PR Code Diffs) | ✅ Done |
-| Phase 3b Planning (Visual & Video Context) | To Do |
+| Phase 3b (GitHub PR Comments & Review Discussions) | ✅ Done |
+| Phase 4 (Repository Documentation Context) | ✅ Done |
 | Phase 3c Planning (Slack Bot Integration) | To Do |
 
 ## Post-MVP Considerations (Phase 3+)
@@ -535,9 +580,52 @@ uv run pytest tests/ -v
   - Fetch file changes: `GET /repos/{owner}/{repo}/pulls/{number}/files`
   - Works across multiple repositories (any GitHub repo accessible with the token)
 - ✅ **Backend-only enrichment**: Code changes sent to LLM but not displayed in UI for cleaner interface
-- 🔜 **Future enhancements**: PR review comments, commit-level diffs
 
-**Visual & Video Context Integration (Phase 3b):**
+**Phase 3b Complete - GitHub PR Comments & Discussions:**
+- ✅ **PR Conversation Comments**:
+  - Fetch discussion comments from PR conversation threads
+  - Capture developer discussions about implementation decisions
+  - Extract edge cases and concerns mentioned in comments
+- ✅ **PR Review Comments**:
+  - Fetch line-specific code review comments
+  - Include file context for review comments (e.g., "[auth.js] Comment text")
+  - Capture QA and code quality concerns from reviewers
+- ✅ **Enhanced LLM Context**:
+  - Include up to 10 most recent comments in LLM prompt
+  - Extract testing insights from developer discussions
+  - Identify edge cases and gotchas mentioned during code review
+  - Use review feedback to generate more comprehensive test cases
+- ✅ **Implementation**:
+  - Fetch conversation comments: `GET /repos/{owner}/{repo}/issues/{number}/comments`
+  - Fetch review comments: `GET /repos/{owner}/{repo}/pulls/{number}/comments`
+  - Combine both comment types with appropriate icons and context
+  - Graceful handling when PR has no comments
+
+**Phase 4 Complete - Repository Documentation Context:**
+- ✅ **README.md Integration**:
+  - Automatically fetch README.md from repository's main branch
+  - Include first 2000 characters in LLM prompt for project context
+  - Understand project structure, architecture, and terminology
+  - Use project-specific UI component names and navigation patterns
+- ✅ **Test File Examples**:
+  - Search for test files in repository (*.test.*, *.spec.*, __tests__, tests/)
+  - Show LLM existing test patterns and conventions
+  - Generate test cases that match project's testing style
+- ✅ **Benefits**:
+  - Test steps use **specific terminology** instead of generic placeholders
+  - References actual screen names, button labels, menu items from README
+  - Understands project architecture and tech stack
+  - Generates test data matching real data structures from documentation
+- ✅ **Example Impact**:
+  - **Before**: "Navigate to a feature that generates a PDF document"
+  - **After**: "Generate a seller net sheet PDF with titleAgentInfo set to null"
+- ✅ **Implementation**:
+  - Fetch README: `GET /repos/{owner}/{repo}/contents/README.md`
+  - Search test files: `GET /search/code?q=repo:{owner}/{repo} extension:test OR path:tests`
+  - Graceful degradation if README not found or no test files exist
+  - Truncate long READMEs to avoid token limits
+
+**Visual & Video Context Integration (Future):**
 - **Screenshot Upload Support**:
   - Accept 1-2 images (PNG/JPG) in testing context form
   - Pass images to Claude API (multimodal vision capabilities)
