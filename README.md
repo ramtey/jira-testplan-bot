@@ -102,9 +102,19 @@ Make it usable immediately.
 
 ## Recent Improvements
 
-### Token Health Monitoring (Latest)
+### Figma Design Context Integration (Latest)
+- **Automatic design specification enrichment**: Test plans now include actual UI component and screen names from Figma
+  - Automatically extracts Figma URLs from Jira ticket descriptions (no manual input needed)
+  - Fetches design file metadata, frames/screens (up to 50), and UI components (up to 30)
+  - Enriches LLM prompt with actual design element names for UI-specific test cases
+  - Supports `/file/`, `/design/`, and `/proto/` URL formats
+  - Optional feature with graceful degradation (works without token)
+  - Token validation integrated into health monitoring system
+  - Example: Test cases reference "Login Screen" frame and "Email Input" component instead of generic "login page" and "input field"
+
+### Token Health Monitoring
 - **Comprehensive API token validation system**: Proactive monitoring and expiration detection for all API services
-  - Centralized `TokenHealthService` validates Jira, GitHub, and Claude tokens
+  - Centralized `TokenHealthService` validates Jira, GitHub, Claude, and Figma tokens
   - New `/health/tokens` API endpoint provides detailed status for each service
   - Enhanced error handling distinguishes between expired, invalid, rate-limited, and missing tokens
   - Frontend `TokenStatus` widget displays real-time status with visual indicators (✅/❌/ℹ️)
@@ -216,6 +226,7 @@ src/
     models.py               # Data models (Pydantic & dataclasses)
     jira_client.py          # Jira REST API client
     github_client.py        # GitHub API client (Phase 3a - PR enrichment)
+    figma_client.py         # Figma API client (Phase 5 - Design context)
     token_service.py        # Token health monitoring service
     adf_parser.py           # Atlassian Document Format parser
     description_analyzer.py # Description quality analyzer
@@ -620,6 +631,7 @@ uv run pytest tests/ -v
 | Phase 3a (GitHub API Integration - PR Code Diffs) | ✅ Done |
 | Phase 3b (GitHub PR Comments & Review Discussions) | ✅ Done |
 | Phase 4 (Repository Documentation Context) | ✅ Done |
+| Phase 5 (Figma Design Context Integration) | ✅ Done |
 | Phase 3c Planning (Slack Bot Integration) | To Do |
 
 ## Post-MVP Considerations (Phase 3+)
@@ -703,6 +715,13 @@ uv run pytest tests/ -v
   - Graceful degradation if README not found or no test files exist
   - Truncate long READMEs to avoid token limits
 
+**Figma Design Context Integration (Phase 5 - Complete):**
+- ✅ **Automatic Figma URL extraction from ticket descriptions**
+- ✅ **Design file metadata, frames/screens, and UI components**
+- ✅ **Test plans include actual component and screen names from Figma**
+- ✅ **Token validation and health monitoring**
+- See "Recent Improvements" section above for details
+
 **Visual & Video Context Integration (Future):**
 - **Screenshot Upload Support**:
   - Accept 1-2 images (PNG/JPG) in testing context form
@@ -729,8 +748,7 @@ uv run pytest tests/ -v
 - **Implementation Approach**:
   - Frontend: Add file upload component for screenshots
   - Frontend: Add textarea for Loom transcript paste (or URL for future API integration)
-  - Backend: Extend TestingContext model with `screenshots`, `loom_transcript`, `figma_notes`
-  - Backend: Create `github_client.py` to fetch PR descriptions and comments
+  - Backend: Extend TestingContext model with `screenshots`, `loom_transcript`
   - LLM: Update prompt to include visual and video context
   - LLM: Use Claude's vision API for screenshot analysis
 - **Benefits**:
