@@ -1,6 +1,20 @@
 # jira-testplan-bot
 
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
+![React](https://img.shields.io/badge/react-18.3-blue.svg)
+
 Generate a structured QA test plan from a Jira ticket using the ticket's title/description and user-provided supplemental testing info when Acceptance Criteria (AC) or key testing details are missing.
+
+## 🔒 Security Notice
+
+**IMPORTANT: Never commit your `.env` file!** It contains sensitive API tokens.
+
+- Always copy `.env.example` to `.env` and fill in your own credentials
+- Never share your `.env` file or commit it to version control
+- The `.env` file is already in `.gitignore` - do not remove it
+- Rotate your API tokens immediately if accidentally exposed
+- Each user/deployment needs their own API tokens (Jira, Claude, GitHub, Figma)
 
 ## MVP Goal
 
@@ -395,7 +409,7 @@ If your organization uses SAML SSO (most companies do), you must authorize the t
 1. Go to [GitHub Settings → Personal access tokens](https://github.com/settings/tokens)
 2. Find your newly created token in the list
 3. Click "Configure SSO" next to the token
-4. Click "Authorize" next to your organization name (e.g., `skyslope`)
+4. Click "Authorize" next to your organization name (e.g., `your-organization`)
 5. Confirm the authorization
 
 **Troubleshooting**: If you see "Resource protected by organization SAML enforcement" errors in logs:
@@ -585,10 +599,93 @@ Returns structured test plan JSON with sections: `happy_path`, `edge_cases`, `re
 
 **Note:** LLM errors now distinguish between expired, invalid, and rate-limited tokens with specific remediation guidance.
 
+## Deploying for Public/Team Use
+
+If you're deploying this tool for others to use (not just yourself), consider these important points:
+
+### Authentication & Authorization
+
+**Current state:** The application has **no built-in authentication layer**. Anyone with access to the frontend URL can use your API tokens.
+
+**For production deployment:**
+1. **Add authentication** (OAuth, SSO, basic auth) to protect the application
+2. **Per-user token management**: Allow each user to configure their own API tokens instead of sharing one `.env` file
+3. **Consider JumpCloud SSO** or similar enterprise SSO solutions for team deployments
+4. **Restrict network access** using firewalls, VPNs, or IP whitelisting if deploying internally
+
+### API Token Management
+
+**Development/Personal Use:**
+- Use your own `.env` file with your personal API tokens
+- Keep `.env` file secure and never commit it
+
+**Team/Public Deployment:**
+- **Do NOT share your personal API tokens** with others
+- Each user should obtain their own API tokens:
+  - **Jira**: Personal API token from their Jira account
+  - **Claude (Anthropic)**: API key from their company's Anthropic account or personal account
+  - **GitHub** (optional): Personal access token authorized for SSO if applicable
+  - **Figma** (optional): Personal access token from their Figma account
+- **Production option**: Use a secrets manager (AWS Secrets Manager, HashiCorp Vault, Azure Key Vault) instead of `.env` files
+- **Shared service account option**: Create dedicated service accounts for Jira/GitHub/Figma (not recommended for personal API keys like Claude)
+
+### Security Considerations
+
+1. **CORS Configuration**: Currently configured for development (`*` allowed). Update FastAPI CORS settings for production:
+   ```python
+   # In src/app/main.py, update origins list:
+   origins = [
+       "https://your-production-domain.com",
+       "https://your-internal-domain.company.com"
+   ]
+   ```
+
+2. **HTTPS**: Always use HTTPS in production, never HTTP for API token transmission
+
+3. **Rate Limiting**: Consider adding rate limiting to prevent API abuse (especially important for Claude API costs)
+
+4. **Audit Logging**: Add logging for who generates test plans and when (useful for team deployments)
+
+5. **Token Rotation**: Implement a policy for regular API token rotation
+
+### Deployment Options
+
+**Option 1: Personal Use (Current)**
+- Run locally on your machine
+- Use your personal API tokens
+- No additional security needed
+
+**Option 2: Internal Team Deployment**
+- Deploy on internal server (Docker, Kubernetes, VM)
+- Add SSO/OAuth authentication layer
+- Each team member uses their own tokens OR use shared service account tokens
+- Restrict network access to internal network only
+
+**Option 3: Public SaaS (Future)**
+- Requires significant security enhancements
+- Multi-tenant architecture with per-user token storage
+- Encrypted token storage in database
+- Payment integration (Claude API costs)
+- Terms of service and privacy policy
+- Regular security audits
+
+### Cost Considerations
+
+- **Claude API**: Pay-per-use (tokens consumed). Monitor costs if deploying for teams.
+- **Ollama**: Free but requires local GPU/CPU resources
+- **GitHub API**: Free tier has rate limits (5,000 requests/hour for authenticated requests)
+- **Jira API**: Usually included with Jira subscription
+- **Figma API**: Free tier available (check current limits)
+
+**Recommendation for teams**: Start with internal deployment using SSO and individual user tokens before considering public deployment.
+
 ## Environments & Secrets
 
-- Never commit `.env`
-- Use `.env.example` as the template
+- **Never commit `.env`** - it contains sensitive API tokens
+- Use `.env.example` as the template for creating your own `.env`
+- Each environment (development, staging, production) should have its own `.env` file with separate credentials
+- **Before making a repository public**: Rotate all API tokens in your `.env` file as a security best practice
+- Store production secrets in a secrets manager (AWS Secrets Manager, HashiCorp Vault, etc.) rather than `.env` files
 
 ## Testing Strategy
 
