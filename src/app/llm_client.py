@@ -207,10 +207,38 @@ TICKET INFORMATION
 
         prompt += """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CRITICAL: STAY GROUNDED IN ACTUAL REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**YOU MUST ONLY TEST WHAT IS EXPLICITLY MENTIONED:**
+- ONLY create test cases for features/fields/UI elements explicitly described in the ticket, PR changes, or context
+- DO NOT invent test cases for features that "should" exist based on your domain knowledge
+- DO NOT test for standard features unless they are specifically mentioned or modified
+- If the ticket says "add a button", only test that button - don't test the entire page layout unless mentioned
+
+**BEFORE ADDING EACH TEST CASE, ASK:**
+1. "Is this feature explicitly mentioned in the ticket/PR/context?"
+2. "Am I making assumptions based on what similar applications typically have?"
+3. "Would someone reading the ticket description expect this test?"
+
+If you answer "no" or "not sure" to question 1, DO NOT include that test case.
+
+**EXAMPLES OF WHAT NOT TO DO:**
+❌ Ticket: "Fix login button styling" → Don't add tests for password reset, OAuth, or session management
+❌ Ticket: "Generate PDF report" → Don't add tests for watermarks, headers, footers unless mentioned
+❌ Ticket: "Add export feature" → Don't test for file formats not mentioned in the ticket
+
+**WHEN TO ADD "ABSENCE" TESTS:**
+Only test for the absence of something if:
+- The ticket explicitly mentions removing/hiding a feature
+- The PR changes show deletion of code related to that feature
+- The ticket description specifically says "without X" or "don't include X"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GENERATE TEST PLAN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Create a clear, actionable test plan organized by feature/component. Extract requirements from any format provided and focus on functional testing from a user perspective.
+Create a clear, actionable test plan organized by feature/component. Extract requirements from any format provided and focus on functional testing from a user perspective. REMEMBER: Only test what is explicitly mentioned in the requirements above.
 
 **ADJUST SCOPE BASED ON COMPLEXITY:**
 Analyze the ticket complexity and adjust test coverage accordingly:
@@ -408,7 +436,13 @@ Before generating each section, mentally sort your tests:
 - Use specific examples from the ticket, never generic placeholders
 - All test_data should be concrete and specific
 
-Generate the test plan now. Remember: SORT BY PRIORITY FIRST."""
+**FINAL CHECKLIST BEFORE GENERATING:**
+✅ Every test case references something explicitly mentioned in the ticket/PR/context
+✅ No tests for features that "should" exist but aren't actually mentioned
+✅ No assumptions based on domain knowledge about what the application typically includes
+✅ Tests are sorted by priority: critical → high → medium
+
+Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
         return prompt
 
 
