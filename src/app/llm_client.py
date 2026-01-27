@@ -235,6 +235,7 @@ TICKET INFORMATION
             prompt += "- Generate test steps with actual screen names, button labels, and menu items (not generic placeholders)\n"
             prompt += "- Infer what functionality was implemented from commit messages and PR titles\n"
             prompt += "- Analyze the modified files to identify which components/modules were changed\n"
+            prompt += "- **FILTER OUT build-time changes**: Ignore ESLint configs, TypeScript configs, build tool settings, CI configs - focus ONLY on runtime code (UI components, API logic, business logic, data models)\n"
             prompt += "- Extract edge cases and gotchas mentioned in PR comments and code review discussions\n"
             prompt += "- Identify concerns, bugs, or scenarios discussed by developers during code review\n"
             prompt += "- Identify potential risk areas based on the type and scope of code changes\n"
@@ -279,6 +280,42 @@ Only test for the absence of something if:
 - The ticket description specifically says "without X" or "don't include X"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ WHAT NOT TO TEST - BUILD-TIME vs RUNTIME
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**DO NOT CREATE TEST CASES FOR BUILD-TIME TOOLS OR CONFIGURATION:**
+These are automatically validated by CI/build pipelines and don't require manual testing:
+
+❌ ESLint configuration changes (eslint.config.js, .eslintrc, flat configs)
+❌ Prettier/formatting configs
+❌ TypeScript configuration (tsconfig.json compiler options)
+❌ Build tool configs (webpack, vite, rollup, babel, esbuild)
+❌ Package manager configs (package.json scripts, lockfiles, .npmrc)
+❌ CI/CD pipeline configs (.github/workflows, .gitlab-ci.yml, Jenkinsfile)
+❌ Development tooling (husky, lint-staged, commitlint)
+❌ Test framework configs (jest.config.js, vitest.config.js)
+
+**Why?** These fail the build automatically if broken. Manual testing adds no value.
+
+**ONLY TEST RUNTIME BEHAVIOR:**
+✅ App UI and functionality
+✅ API endpoints and responses
+✅ User authentication and authorization
+✅ Data processing and validation
+✅ Third-party integrations
+✅ Performance and responsiveness
+✅ Mobile/web app behavior on devices
+
+**FOR SDK/DEPENDENCY UPDATES SPECIFICALLY:**
+Focus on compatibility regression testing:
+- Does the app still build and run?
+- Do existing features still work with the new SDK version?
+- Are there breaking changes from the SDK changelog that affect the app?
+
+DO NOT test the features of the SDK itself - assume the SDK maintainers tested it.
+DO NOT test that the build tools work - the build process itself validates this.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GENERATE TEST PLAN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -286,6 +323,14 @@ Create a clear, actionable test plan organized by feature/component. Extract req
 
 **ADJUST SCOPE BASED ON COMPLEXITY:**
 Analyze the ticket complexity and adjust test coverage accordingly:
+
+- **SDK/Dependency Updates** (React 18→19, Node 18→20, Expo 52→53, library upgrades):
+  - 3-4 happy path tests (app launches, core flows work with new SDK version)
+  - 2-4 edge cases (breaking changes from SDK changelog/migration guide)
+  - 4-6 regression items (existing features unaffected by upgrade)
+  - Focus on COMPATIBILITY testing, not testing SDK features themselves
+  - DO NOT test build tools (ESLint, TypeScript configs, bundler settings)
+  - Example: "App launches on iOS with Expo SDK 53" NOT "ESLint v9 validates code"
 
 - **Simple Bug Fixes** (UI glitches, text changes, minor visual issues):
   - 2-3 happy path tests (verify fix works in main scenarios)

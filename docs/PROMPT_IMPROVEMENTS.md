@@ -4,6 +4,76 @@
 
 Enhanced the LLM prompt for generating higher-quality, more actionable test plans based on industry best practices and real-world QA workflows.
 
+## Latest Update: Build-Time vs Runtime Filtering (2026-01-27)
+
+### Problem
+Test plans were generating test cases for build-time tools and configurations that don't require manual testing:
+- ESLint configuration changes
+- TypeScript compiler options
+- Build tool configs (webpack, vite, babel)
+- CI/CD pipeline configurations
+
+**Example issue**: An SDK update ticket (Expo SDK 52→53) included "App handles ESLint v9 flat config validation without breaking builds" as an edge case test, even though ESLint validation is automatic in the build pipeline.
+
+### Solution
+Added three key improvements to the prompt:
+
+#### 1. "What NOT to Test" Section
+New explicit section listing build-time tools to exclude:
+- ESLint, Prettier, TypeScript configs
+- Build tools (webpack, vite, rollup, babel, esbuild)
+- Package manager configs (package.json scripts, lockfiles)
+- CI/CD configs (.github/workflows, .gitlab-ci.yml)
+- Development tooling (husky, lint-staged, commitlint)
+- Test framework configs (jest.config.js, vitest.config.js)
+
+**Key message**: "These fail the build automatically if broken. Manual testing adds no value."
+
+#### 2. SDK/Dependency Update Guidance
+Added specific category for SDK and library upgrades in the complexity analysis:
+- Reduced test scope: 3-4 happy path (vs 5-8 for complex features)
+- 2-4 edge cases focusing on breaking changes from changelog
+- 4-6 regression items ensuring existing features still work
+- Explicit instruction: "DO NOT test build tools (ESLint, TypeScript configs, bundler settings)"
+- Example provided: "App launches on iOS with Expo SDK 53" NOT "ESLint v9 validates code"
+
+**Focus**: Compatibility and regression testing, not testing SDK features themselves.
+
+#### 3. Development Context Filtering
+Enhanced the "Use this development context" section with explicit filtering:
+- New bullet point: "**FILTER OUT build-time changes**: Ignore ESLint configs, TypeScript configs, build tool settings, CI configs - focus ONLY on runtime code (UI components, API logic, business logic, data models)"
+- Ensures LLM analyzes PR file changes intelligently, skipping non-runtime files
+
+### Impact
+- ✅ **Eliminates irrelevant tests**: No more ESLint/build tool test cases
+- ✅ **Focused SDK update testing**: Reduced scope from 20+ tests to 10-14 targeted tests
+- ✅ **Better test quality**: Tests focus on actual user-facing behavior
+- ✅ **Faster generation**: Fewer test cases to generate = faster response times
+- ✅ **Lower costs**: Fewer tokens generated = reduced API costs
+
+### Example Before/After
+
+**Before (SK-1872 - Expo SDK Update):**
+```
+Edge Case:
+- "App handles ESLint v9 flat config validation without breaking builds"
+
+Regression:
+- "ESLint validation passes with new v9 flat config"
+```
+
+**After (SK-1872 - Expo SDK Update):**
+```
+Happy Path:
+- "Development build runs successfully with Expo SDK 53 on iOS device"
+- "Authentication flow works correctly after React Native upgrade"
+
+Edge Case:
+- "App handles iOS SDK version check for App Store submission"
+```
+
+---
+
 ## Key Improvements
 
 ### 1. Risk-Based Prioritization ⭐

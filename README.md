@@ -102,7 +102,21 @@ Make it usable immediately.
 
 ## Recent Improvements
 
-### Figma Design Context Integration (Latest)
+### Smart Test Scope Filtering (Latest)
+- **Build-time vs Runtime distinction**: Test plans now intelligently filter out build-time tools and configurations
+  - Automatically skips test cases for ESLint, TypeScript configs, build tools, CI/CD configs, and development tooling
+  - Focuses testing on actual runtime behavior (app UI, APIs, authentication, data processing)
+  - Clear guidance: "These fail the build automatically if broken. Manual testing adds no value."
+- **SDK/Dependency Update optimization**: Specialized handling for SDK and library upgrades
+  - Reduced test scope: 3-4 happy path tests (vs 5-8 for complex features)
+  - Focus on compatibility and regression testing, not testing SDK features themselves
+  - Example: "App launches with Expo SDK 53" instead of "ESLint v9 validates code"
+- **Development context filtering**: When analyzing PR file changes, automatically filters out non-runtime files
+  - Ignores ESLint configs, TypeScript configs, build tool settings, and CI configs
+  - Focuses only on runtime code: UI components, API logic, business logic, data models
+- **Impact**: Eliminates irrelevant test cases for infrastructure tickets, reduces test plan generation time, and improves test quality
+
+### Figma Design Context Integration
 - **Automatic design specification enrichment**: Test plans now include actual UI component and screen names from Figma
   - Automatically extracts Figma URLs from Jira ticket descriptions (no manual input needed)
   - Fetches design file metadata, frames/screens (up to 50), and UI components (up to 30)
