@@ -16,7 +16,7 @@ Test plans were generating test cases for build-time tools and configurations th
 **Example issue**: An SDK update ticket (Expo SDK 52→53) included "App handles ESLint v9 flat config validation without breaking builds" as an edge case test, even though ESLint validation is automatic in the build pipeline.
 
 ### Solution
-Added three key improvements to the prompt:
+Added four key improvements to the prompt:
 
 #### 1. "What NOT to Test" Section
 New explicit section listing build-time tools to exclude:
@@ -44,8 +44,15 @@ Enhanced the "Use this development context" section with explicit filtering:
 - New bullet point: "**FILTER OUT build-time changes**: Ignore ESLint configs, TypeScript configs, build tool settings, CI configs - focus ONLY on runtime code (UI components, API logic, business logic, data models)"
 - Ensures LLM analyzes PR file changes intelligently, skipping non-runtime files
 
+#### 4. Regression Checklist Filtering
+Added explicit rules for regression checklists to exclude build-time validations:
+- **DO NOT include**: TypeScript compilation, ESLint validation, build success, App Store upload checks
+- **ONLY include**: Runtime behaviors that can be manually tested (authentication, navigation, data operations, animations)
+- **Key message**: "Build-time checks fail automatically if broken. Regression checklists are for manually verifying existing features still work."
+
 ### Impact
 - ✅ **Eliminates irrelevant tests**: No more ESLint/build tool test cases
+- ✅ **Cleaner regression checklists**: No build-time validations (TypeScript, ESLint, build success)
 - ✅ **Focused SDK update testing**: Reduced scope from 20+ tests to 10-14 targeted tests
 - ✅ **Better test quality**: Tests focus on actual user-facing behavior
 - ✅ **Faster generation**: Fewer test cases to generate = faster response times
@@ -70,6 +77,13 @@ Happy Path:
 
 Edge Case:
 - "App handles iOS SDK version check for App Store submission"
+
+Regression (cleaned):
+- "User authentication (login, sign-up, Apple Sign-In) works without errors"
+- "Core navigation between tabs functions correctly"
+- "All animated components render without visual glitches"
+
+(Removed: "TypeScript compilation completes without errors", "App builds successfully with iOS 26 SDK")
 ```
 
 ---

@@ -501,6 +501,25 @@ Return ONLY valid JSON (no markdown, no code blocks):
   ]
 }
 
+**REGRESSION CHECKLIST RULES:**
+The regression checklist must contain ONLY runtime behaviors that can be manually tested.
+
+❌ DO NOT INCLUDE build-time validations:
+- "TypeScript compilation completes without errors"
+- "ESLint validation passes"
+- "Build succeeds with [SDK/tool version]"
+- "App can be uploaded to App Store/Play Store"
+- "No console warnings during build"
+
+✅ ONLY INCLUDE runtime behaviors:
+- "User authentication works correctly"
+- "Navigation between screens functions properly"
+- "Data saves and loads correctly"
+- "Animations render smoothly"
+- "API endpoints return expected data"
+
+**Why?** Build-time checks fail automatically if broken. Regression checklists are for manually verifying existing features still work.
+
 **CRITICAL ORDERING REQUIREMENT - READ THIS FIRST:**
 YOU MUST ORDER ALL TEST CASES BY PRIORITY WITHIN EACH SECTION.
 This is NON-NEGOTIABLE. The order MUST be:
