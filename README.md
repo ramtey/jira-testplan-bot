@@ -102,7 +102,19 @@ Make it usable immediately.
 
 ## Recent Improvements
 
-### Jira Comment Management (Latest)
+### Token Health Monitoring (Latest)
+- **Comprehensive API token validation system**: Proactive monitoring and expiration detection for all API services
+  - Centralized `TokenHealthService` validates Jira, GitHub, and Claude tokens
+  - New `/health/tokens` API endpoint provides detailed status for each service
+  - Enhanced error handling distinguishes between expired, invalid, rate-limited, and missing tokens
+  - Frontend `TokenStatus` widget displays real-time status with visual indicators (✅/❌/ℹ️)
+  - Auto-refreshes every 5 minutes with manual refresh option
+  - Shows detailed error messages with direct links to token management pages
+  - Displays authenticated user details when tokens are valid
+  - Extensible architecture for easy addition of new services (Slack, OpenAI, etc.)
+  - Better user experience: Clear remediation steps and help URLs for token issues
+
+### Jira Comment Management
 - **Smart comment replacement**: Test plans posted to Jira are now automatically updated instead of creating duplicates
   - First post creates a new comment with unique marker `🤖 Generated Test Plan`
   - Subsequent posts find and replace the existing test plan comment
@@ -204,6 +216,7 @@ src/
     models.py               # Data models (Pydantic & dataclasses)
     jira_client.py          # Jira REST API client
     github_client.py        # GitHub API client (Phase 3a - PR enrichment)
+    token_service.py        # Token health monitoring service
     adf_parser.py           # Atlassian Document Format parser
     description_analyzer.py # Description quality analyzer
     llm_client.py           # LLM abstraction layer (Claude + Ollama)
@@ -220,6 +233,7 @@ frontend/
       DevelopmentInfo.jsx   # Development activity display (PRs, commits, branches)
       TestingContextForm.jsx # Testing context input form
       TestPlanDisplay.jsx   # Test plan rendering & export
+      TokenStatus.jsx       # API token health status widget
     utils/
       stateHelpers.js       # State management utilities
       markdown.js           # Markdown formatting utilities
@@ -395,6 +409,66 @@ http://127.0.0.1:8000/health
 http://127.0.0.1:8000/docs
 ```
 
+### Check API token health
+
+```
+GET http://127.0.0.1:8000/health/tokens
+```
+
+Returns health status for all configured API tokens:
+
+```json
+{
+  "services": [
+    {
+      "service_name": "Jira",
+      "is_valid": true,
+      "is_required": true,
+      "error_type": "valid",
+      "error_message": null,
+      "help_url": "https://support.atlassian.com/...",
+      "last_checked": "2026-01-27T10:30:00.000Z",
+      "details": {
+        "user_email": "user@example.com",
+        "user_name": "John Doe"
+      }
+    },
+    {
+      "service_name": "GitHub",
+      "is_valid": true,
+      "is_required": false,
+      "error_type": "valid",
+      "error_message": null,
+      "help_url": "https://github.com/settings/tokens",
+      "last_checked": "2026-01-27T10:30:00.000Z",
+      "details": {
+        "user_login": "johndoe"
+      }
+    },
+    {
+      "service_name": "Claude (Anthropic)",
+      "is_valid": false,
+      "is_required": true,
+      "error_type": "expired",
+      "error_message": "Anthropic API authentication failed. Your API key may be expired or revoked. Get a new key at https://console.anthropic.com/settings/keys",
+      "help_url": "https://console.anthropic.com/settings/keys",
+      "last_checked": "2026-01-27T10:30:00.000Z",
+      "details": null
+    }
+  ],
+  "overall_health": false
+}
+```
+
+**Error types:**
+- `valid` - Token is valid and working
+- `missing` - Token not configured in .env
+- `invalid` - Token is invalid or incorrectly formatted
+- `expired` - Token has expired and needs renewal
+- `rate_limited` - API rate limit exceeded (token is valid)
+- `insufficient_permissions` - Token lacks required permissions
+- `service_unavailable` - Service is unreachable or timed out
+
 ### Fetch a Jira issue
 
 ```
@@ -445,9 +519,11 @@ Returns JSON:
 | Status | Meaning |
 |--------|---------|
 | 404 | Issue not found |
-| 401 | Jira authentication failed |
-| 403 | Jira access forbidden (permissions) |
+| 401 | Jira authentication failed (token expired or invalid) |
+| 403 | Jira access forbidden (insufficient permissions) |
 | 502 | Jira unreachable or timed out |
+
+**Note:** Error messages now distinguish between expired and invalid tokens, with direct links to token management pages.
 
 ### Generate a test plan
 
@@ -480,7 +556,9 @@ Returns structured test plan JSON with sections: `happy_path`, `edge_cases`, `re
 
 | Status | Meaning |
 |--------|---------|
-| 503 | LLM service unavailable (Claude API error, or Ollama not running) |
+| 503 | LLM service unavailable (Claude API error, token expired/invalid, or Ollama not running) |
+
+**Note:** LLM errors now distinguish between expired, invalid, and rate-limited tokens with specific remediation guidance.
 
 ## Environments & Secrets
 

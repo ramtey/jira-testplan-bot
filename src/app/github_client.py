@@ -19,6 +19,23 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 
+class GitHubAuthError(Exception):
+    """Raised when GitHub returns 401 or 403 auth-related errors."""
+
+    def __init__(self, message: str, status_code: int, error_type: str = "invalid") -> None:
+        """
+        Initialize GitHubAuthError.
+
+        Args:
+            message: Error message
+            status_code: HTTP status code (401 or 403)
+            error_type: Type of error - "invalid", "expired", "insufficient_permissions", "rate_limited"
+        """
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_type = error_type
+
+
 @dataclass
 class FileChange:
     """Represents a file change in a pull request."""
@@ -87,6 +104,51 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
+
+    def _parse_auth_error(self, response: httpx.Response) -> tuple[str, str]:
+        """
+        Parse authentication error from GitHub response.
+
+        Returns:
+            Tuple of (error_message, error_type)
+        """
+        error_msg = ""
+        try:
+            error_data = response.json()
+            error_msg = error_data.get("message", "")
+        except Exception:
+            pass
+
+        # Detect specific error types
+        if response.status_code == 401:
+            if "Bad credentials" in error_msg:
+                return (
+                    "GitHub token is invalid. Please generate a new Personal Access Token at https://github.com/settings/tokens",
+                    "invalid"
+                )
+            elif "token" in error_msg.lower() and "expired" in error_msg.lower():
+                return (
+                    "GitHub token has expired. Please generate a new Personal Access Token at https://github.com/settings/tokens",
+                    "expired"
+                )
+            else:
+                return (
+                    "GitHub authentication failed. Check your GITHUB_TOKEN in .env",
+                    "invalid"
+                )
+        elif response.status_code == 403:
+            if "rate limit" in error_msg.lower():
+                return (
+                    "GitHub API rate limit exceeded. Wait and try again later.",
+                    "rate_limited"
+                )
+            else:
+                return (
+                    "GitHub token lacks required permissions. Ensure 'repo' scope is enabled at https://github.com/settings/tokens",
+                    "insufficient_permissions"
+                )
+        else:
+            return (f"GitHub API error: {error_msg}", "invalid")
 
     def _parse_github_url(self, pr_url: str) -> tuple[str, str, int] | None:
         """

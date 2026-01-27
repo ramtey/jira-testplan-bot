@@ -12,6 +12,7 @@ from .jira_client import (
 )
 from .llm_client import LLMError, get_llm_client
 from .models import GenerateTestPlanRequest, PostCommentRequest
+from .token_service import token_health_service
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
 
@@ -33,6 +34,49 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/tokens")
+async def check_tokens():
+    """
+    Check health status of all API tokens.
+
+    Returns detailed status for:
+    - Jira API Token (required)
+    - GitHub Personal Access Token (optional)
+    - Anthropic/Claude API Key (required when using Claude provider)
+
+    Each token status includes:
+    - service_name: Name of the service
+    - is_valid: Whether the token is valid
+    - is_required: Whether this service is required
+    - error_type: Type of error if invalid (expired, invalid, missing, etc.)
+    - error_message: Detailed error message
+    - help_url: URL for generating/managing the token
+    - last_checked: Timestamp of the check
+    """
+    token_statuses = await token_health_service.validate_all_tokens()
+
+    # Convert to dict for JSON response
+    services = []
+    for status in token_statuses:
+        services.append({
+            "service_name": status.service_name,
+            "is_valid": status.is_valid,
+            "is_required": status.is_required,
+            "error_type": status.error_type.value if status.error_type else None,
+            "error_message": status.error_message,
+            "help_url": status.help_url,
+            "last_checked": status.last_checked.isoformat() if status.last_checked else None,
+            "details": status.details,
+        })
+
+    return {
+        "services": services,
+        "overall_health": all(
+            s.is_valid or not s.is_required for s in token_statuses
+        ),  # Overall health is OK if all required services are valid
+    }
 
 
 @app.get("/config")

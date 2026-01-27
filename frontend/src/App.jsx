@@ -6,6 +6,7 @@ import TicketForm from './components/TicketForm'
 import TicketDetails from './components/TicketDetails'
 import TestingContextForm from './components/TestingContextForm'
 import TestPlanDisplay from './components/TestPlanDisplay'
+import TokenStatus from './components/TokenStatus'
 
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
@@ -155,6 +156,8 @@ function App() {
       </header>
 
       <main className="app-main">
+        <TokenStatus />
+
         <TicketForm
           issueKey={issueKey}
           setIssueKey={setIssueKey}

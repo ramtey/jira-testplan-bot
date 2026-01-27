@@ -15,9 +15,18 @@ logger = logging.getLogger(__name__)
 class JiraAuthError(Exception):
     """Raised when Jira returns 401 or 403."""
 
-    def __init__(self, message: str, status_code: int) -> None:
+    def __init__(self, message: str, status_code: int, error_type: str = "invalid") -> None:
+        """
+        Initialize JiraAuthError.
+
+        Args:
+            message: Error message
+            status_code: HTTP status code (401 or 403)
+            error_type: Type of error - "invalid", "expired", "insufficient_permissions"
+        """
         super().__init__(message)
         self.status_code = status_code
+        self.error_type = error_type
 
 
 class JiraNotFoundError(Exception):
@@ -36,6 +45,33 @@ class JiraClient:
 
         auth_bytes = f"{self.email}:{self.token}".encode("utf-8")
         self._auth_header = base64.b64encode(auth_bytes).decode("utf-8")
+
+    def _parse_auth_error(self, response: httpx.Response) -> tuple[str, str]:
+        """
+        Parse authentication error from Jira response.
+
+        Returns:
+            Tuple of (error_message, error_type)
+        """
+        error_msg = ""
+        try:
+            error_data = response.json()
+            if error_data.get("errorMessages"):
+                error_msg = error_data["errorMessages"][0]
+        except Exception:
+            pass
+
+        # Detect if token is expired vs invalid
+        if "expired" in error_msg.lower():
+            return (
+                "Jira API token has expired. Please generate a new token at https://id.atlassian.com/manage-profile/security/api-tokens",
+                "expired"
+            )
+        else:
+            return (
+                "Jira authentication failed. Your API token or email may be invalid. Check JIRA_EMAIL and JIRA_API_TOKEN in .env",
+                "invalid"
+            )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -322,13 +358,13 @@ class JiraClient:
         if r.status_code == 404:
             raise JiraNotFoundError(f"Issue not found: {issue_key}")
         if r.status_code == 401:
-            raise JiraAuthError(
-                "Jira authentication failed (check email/token).", status_code=401
-            )
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
         if r.status_code == 403:
             raise JiraAuthError(
-                "Jira access forbidden (check permissions for this issue).",
+                "Jira access forbidden. Check permissions for this issue or verify your account has proper access.",
                 status_code=403,
+                error_type="insufficient_permissions",
             )
         r.raise_for_status()
 
@@ -454,13 +490,13 @@ class JiraClient:
         if r.status_code == 404:
             raise JiraNotFoundError(f"Issue not found: {issue_key}")
         if r.status_code == 401:
-            raise JiraAuthError(
-                "Jira authentication failed (check email/token).", status_code=401
-            )
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
         if r.status_code == 403:
             raise JiraAuthError(
-                "Jira access forbidden (check permissions for this issue).",
+                "Jira access forbidden. Check permissions for this issue or verify your account has proper access.",
                 status_code=403,
+                error_type="insufficient_permissions",
             )
         r.raise_for_status()
 
@@ -494,13 +530,13 @@ class JiraClient:
         if r.status_code == 404:
             raise JiraNotFoundError(f"Issue not found: {issue_key}")
         if r.status_code == 401:
-            raise JiraAuthError(
-                "Jira authentication failed (check email/token).", status_code=401
-            )
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
         if r.status_code == 403:
             raise JiraAuthError(
-                "Jira access forbidden (check permissions for this issue).",
+                "Jira access forbidden. Check permissions for this issue or verify your account has proper access.",
                 status_code=403,
+                error_type="insufficient_permissions",
             )
         r.raise_for_status()
 
@@ -560,13 +596,13 @@ class JiraClient:
         if r.status_code == 404:
             raise JiraNotFoundError(f"Comment not found: {comment_id} on issue {issue_key}")
         if r.status_code == 401:
-            raise JiraAuthError(
-                "Jira authentication failed (check email/token).", status_code=401
-            )
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
         if r.status_code == 403:
             raise JiraAuthError(
-                "Jira access forbidden (check permissions for this comment).",
+                "Jira access forbidden. Check permissions for this comment or verify your account has proper access.",
                 status_code=403,
+                error_type="insufficient_permissions",
             )
         r.raise_for_status()
 

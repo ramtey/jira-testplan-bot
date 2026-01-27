@@ -20,7 +20,16 @@ from .models import TestPlan
 class LLMError(Exception):
     """Base exception for LLM-related errors."""
 
-    pass
+    def __init__(self, message: str, error_type: str = "service_unavailable") -> None:
+        """
+        Initialize LLMError.
+
+        Args:
+            message: Error message
+            error_type: Type of error - "invalid", "expired", "rate_limited", "service_unavailable"
+        """
+        super().__init__(message)
+        self.error_type = error_type
 
 
 class LLMClient(ABC):
@@ -493,7 +502,8 @@ class OllamaClient(LLMClient):
                     test_plan_data = json.loads(response_text)
                 except json.JSONDecodeError as e:
                     raise LLMError(
-                        f"Failed to parse JSON response from Ollama: {e}"
+                        f"Failed to parse JSON response from Ollama: {e}",
+                        error_type="service_unavailable"
                     ) from e
 
                 return TestPlan(
@@ -505,15 +515,18 @@ class OllamaClient(LLMClient):
 
         except httpx.ConnectError as e:
             raise LLMError(
-                f"Failed to connect to Ollama at {self.base_url}. Is Ollama running? Error: {e}"
+                f"Failed to connect to Ollama at {self.base_url}. Is Ollama running? Error: {e}",
+                error_type="service_unavailable"
             ) from e
         except httpx.TimeoutException as e:
             raise LLMError(
-                f"Ollama request timed out after 300s. Try a smaller model or increase timeout. Error: {e}"
+                f"Ollama request timed out after 300s. Try a smaller model or increase timeout. Error: {e}",
+                error_type="service_unavailable"
             ) from e
         except httpx.HTTPStatusError as e:
             raise LLMError(
-                f"Ollama returned error status {e.response.status_code}: {e.response.text}"
+                f"Ollama returned error status {e.response.status_code}: {e.response.text}",
+                error_type="service_unavailable"
             ) from e
 
 
@@ -523,7 +536,8 @@ class ClaudeClient(LLMClient):
     def __init__(self):
         if not settings.anthropic_api_key:
             raise LLMError(
-                "ANTHROPIC_API_KEY not set. Please add it to your .env file to use Claude."
+                "ANTHROPIC_API_KEY not set. Please add it to your .env file to use Claude.",
+                error_type="invalid"
             )
 
         self.api_key = settings.anthropic_api_key
@@ -605,7 +619,8 @@ class ClaudeClient(LLMClient):
                     raise LLMError(
                         f"Failed to parse JSON response from Claude: {e}. "
                         f"This usually happens with unescaped quotes in test case descriptions. "
-                        f"Response snippet: {response_text[max(0, e.pos-50):e.pos+50]}"
+                        f"Response snippet: {response_text[max(0, e.pos-50):e.pos+50]}",
+                        error_type="service_unavailable"
                     ) from e
 
                 return TestPlan(
@@ -617,14 +632,35 @@ class ClaudeClient(LLMClient):
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
+                # Try to parse error message
+                error_msg = ""
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get("error", {}).get("message", "")
+                except Exception:
+                    pass
+
+                if "invalid" in error_msg.lower():
+                    raise LLMError(
+                        "Anthropic API key is invalid. Please check your ANTHROPIC_API_KEY in .env or generate a new key at https://console.anthropic.com/settings/keys",
+                        error_type="invalid"
+                    ) from e
+                else:
+                    raise LLMError(
+                        "Anthropic API authentication failed. Your API key may be expired or revoked. Get a new key at https://console.anthropic.com/settings/keys",
+                        error_type="expired"
+                    ) from e
+            elif e.response.status_code == 429:
                 raise LLMError(
-                    "Claude API authentication failed. Check your ANTHROPIC_API_KEY."
+                    "Anthropic API rate limit exceeded. Please wait and try again.",
+                    error_type="rate_limited"
                 ) from e
             raise LLMError(
-                f"Claude API returned error status {e.response.status_code}: {e.response.text}"
+                f"Claude API returned error status {e.response.status_code}: {e.response.text}",
+                error_type="service_unavailable"
             ) from e
         except httpx.TimeoutException as e:
-            raise LLMError(f"Claude API request timed out: {e}") from e
+            raise LLMError(f"Claude API request timed out: {e}", error_type="service_unavailable") from e
 
 
 def get_llm_client() -> LLMClient:
@@ -645,5 +681,6 @@ def get_llm_client() -> LLMClient:
         return ClaudeClient()
     else:
         raise LLMError(
-            f"Unsupported LLM provider: {provider}. Use 'ollama' or 'claude'."
+            f"Unsupported LLM provider: {provider}. Use 'ollama' or 'claude'.",
+            error_type="invalid"
         )
