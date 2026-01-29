@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # LLM configuration
     llm_provider: str = "claude"  # "claude" (recommended) or "ollama"
-    llm_model: str = "claude-3-5-sonnet-20241022"  # For Claude: claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219; For Ollama: llama3.1, qwen2.5, etc.
+    llm_model: str = "claude-opus-4-5-20251101"  # For Claude: claude-opus-4-5-20251101, claude-sonnet-4-5-20250929; For Ollama: llama3.1, qwen2.5, etc.
     anthropic_api_key: str | None = None  # For Claude API (required when using Claude)
     ollama_base_url: str = "http://localhost:11434"  # Ollama server URL (only needed if using Ollama)
 

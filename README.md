@@ -199,7 +199,7 @@ Make it usable immediately.
   - Identifies risk areas from commit patterns (e.g., "authentication", "payment")
   - Focuses testing on modified areas
 - **Streamlined user input**: Reduced form fields to only essential items (Acceptance Criteria + Special Instructions)
-- **Claude API integration**: Using Claude 3.5 Sonnet for:
+- **Claude API integration**: Using Claude Opus 4.5 for:
   - 5-10x faster response times (5-10 seconds vs 30-60+ seconds)
   - Superior quality test plans with better context understanding
   - More reliable JSON formatting
@@ -316,7 +316,7 @@ cp .env.example .env
    - `JIRA_EMAIL`
    - `JIRA_API_TOKEN`
    - `LLM_PROVIDER` - "claude" (recommended) or "ollama" (local)
-   - `LLM_MODEL` - model name (e.g., "claude-sonnet-4-5-20250929" for Claude, "llama3.1" for Ollama)
+   - `LLM_MODEL` - model name (e.g., "claude-opus-4-5-20251101" for Claude, "llama3.1" for Ollama)
    - `ANTHROPIC_API_KEY` - only if using Claude API
    - `GITHUB_TOKEN` - (optional) GitHub Personal Access Token for Phase 3a+3b+4 features:
      - Phase 3a: PR code diffs and file changes
@@ -349,7 +349,7 @@ You have two options for the LLM provider:
 2. In your `.env`, set:
    ```
    LLM_PROVIDER=claude
-   LLM_MODEL=claude-3-5-sonnet-20241022
+   LLM_MODEL=claude-opus-4-5-20251101
    ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
    ```
 
