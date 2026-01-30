@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "jira-testplan-bot": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/path/to/jira-testplan-bot",
+        "run",
+        "testplan-mcp"
+      ],
+      "env": {
+        "JIRA_BASE_URL": "https://your-company.atlassian.net",
+        "JIRA_EMAIL": "your-email@company.com",
+        "JIRA_API_TOKEN": "your-jira-api-token",
+        "ANTHROPIC_API_KEY": "sk-ant-api03-your-key",
+        "GITHUB_TOKEN": "ghp_your-github-token",
+        "FIGMA_TOKEN": "figd_your-figma-token",
+        "LLM_PROVIDER": "claude",
+        "LLM_MODEL": "claude-opus-4-5-20251101"
+      }
+    }
+  }
+}

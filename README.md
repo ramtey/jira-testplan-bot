@@ -25,6 +25,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 **Features:**
 - Web UI with dark/light theme support
 - CLI tool for terminal-native workflows
+- MCP server for Claude desktop integration
 - Multiple export formats (Markdown, Jira, JSON)
 - Token health monitoring and validation
 - Post test plans directly to Jira comments
@@ -216,6 +217,44 @@ The CLI supports environment variables for automation. Example GitHub Actions wo
     JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
+
+## MCP Server - Claude Skill Integration
+
+Use the test plan generator directly within Claude desktop app using natural language.
+
+### Quick Setup
+
+1. **Add to Claude desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "jira-testplan-bot": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/jira-testplan-bot", "run", "testplan-mcp"],
+      "env": {
+        "JIRA_BASE_URL": "https://company.atlassian.net",
+        "JIRA_EMAIL": "your-email@company.com",
+        "JIRA_API_TOKEN": "your-token",
+        "ANTHROPIC_API_KEY": "sk-ant-api03-...",
+        "GITHUB_TOKEN": "ghp_...",
+        "FIGMA_TOKEN": "figd_..."
+      }
+    }
+  }
+}
+```
+
+2. **Restart Claude desktop**
+
+### Usage
+
+Once configured, use natural language in Claude:
+- "Fetch PROJ-123 from Jira"
+- "Generate a test plan for PROJ-456"
+- "Check my API token health"
+
+See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshooting.
 
 ## Web UI API Endpoints
 
