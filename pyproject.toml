@@ -1,7 +1,7 @@
 [project]
 name = "jira-testplan-bot"
 version = "0.1.0"
-description = "Add your description here"
+description = "Generate structured QA test plans from Jira tickets using AI"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,4 +12,20 @@ dependencies = [
     "pydantic-settings>=2.12.0",
     "python-dotenv>=1.2.1",
     "uvicorn[standard]>=0.38.0",
+    "typer>=0.9.0",
+    "rich>=13.7.0",
+    "pyyaml>=6.0",
 ]
+
+[project.scripts]
+testplan = "src.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.uv]
+package = true

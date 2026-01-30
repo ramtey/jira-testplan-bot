@@ -10,410 +10,107 @@ Generate a structured QA test plan from a Jira ticket using the ticket's title/d
 
 **IMPORTANT: Never commit your `.env` file!** It contains sensitive API tokens.
 
-- Always copy `.env.example` to `.env` and fill in your own credentials
-- Never share your `.env` file or commit it to version control
-- The `.env` file is already in `.gitignore` - do not remove it
-- Rotate your API tokens immediately if accidentally exposed
-- Each user/deployment needs their own API tokens (Jira, Claude, GitHub, Figma)
+- Copy `.env.example` to `.env` and fill in your credentials
+- The `.env` file is in `.gitignore` - keep it there
+- Each user needs their own API tokens (Jira, Claude, GitHub, Figma)
 
-## MVP Goal
+## Overview
 
-Provide a simple UI where a tester can enter a Jira ticket key, fetch ticket details, fill in missing context, and generate a structured, high-quality test plan that can be copied and used immediately.
+Generate structured QA test plans from Jira tickets by automatically analyzing:
+- Ticket details and development activity (commits, PRs, branches)
+- GitHub PR code changes, comments, and repository documentation
+- Figma design specifications (when available)
+- Repository test patterns and conventions
 
-### Non-goal (MVP)
+**Features:**
+- Web UI with dark/light theme support
+- CLI tool for terminal-native workflows
+- Multiple export formats (Markdown, Jira, JSON)
+- Token health monitoring and validation
+- Post test plans directly to Jira comments
 
-Writing the test plan back into Jira (comment/custom field). This can be a Phase 2+ enhancement.
+## Key Features
 
-## MVP Features
+### Intelligent Context Analysis
+- **Automatic context gathering**: Fetches ticket details, PRs, commits, code changes, and repository docs
+- **Figma integration**: Extracts actual UI component names from design files for specific test cases
+- **Smart filtering**: Focuses on runtime behavior, ignoring build-time configs (ESLint, TypeScript, etc.)
+- **Priority ordering**: Critical tests first, edge cases last
 
-### 1) Jira Integration (Read)
+### Development Integration
+- **GitHub enrichment**: PR code diffs, review comments, and repository documentation
+- **Jira development data**: Commits, branches, and PR statuses with clickable links
+- **Token health monitoring**: Real-time validation with expiration warnings
 
-Fetch source data used for test plan generation.
-
-- [x] Fetch Jira issue summary/title and description
-- [x] Extract readable text from Jira description (best-effort; Jira often returns rich text)
-- [x] Display a clear message when description/AC is missing or weak
-- [x] **Fetch development activity** (commits, pull requests, branches) linked to the ticket
-- [x] Display development information in the UI for additional context
-- [x] Handle errors gracefully:
-  - Ticket not found (404)
-  - Auth failure / permissions (401/403)
-  - Jira downtime/rate limiting (502)
-
-### 2) UI: Ticket Input + Fetch + Review
-
-Provide a lightweight workflow for testers.
-
-- [x] Input field for Jira issue key (e.g., ABC-123)
-- [x] "Fetch Ticket" button
-- [x] Display:
-  - Title
-  - Description/AC (extracted text)
-  - Labels
-  - Issue type (color-coded: Story=green, Bug=red, Spike=blue, Task=light blue, Epic=purple)
-  - **Development Activity** section showing:
-    - Pull requests with status badges (MERGED, OPEN, etc.) and branch information
-    - Commit count (e.g., "27 commits linked to this ticket")
-    - Branch names
-- [x] Clear loading state + friendly errors
-- [x] Collapsible description (show more/less for long descriptions)
-- [x] Dark/Light theme support (follows system preference)
-
-### 3) Automatic Test Plan Generation
-
-Generate comprehensive test plans automatically from available context.
-
-The system automatically analyzes and uses:
-
-- [x] Jira ticket title, description, and labels
-- [x] Development activity (commits, PRs, branches)
-- [x] Pull request code changes and file modifications
-- [x] PR comments and review discussions
-- [x] Repository documentation (README.md)
-- [x] Existing test file patterns
-- [x] Figma design context (when available)
-
-No user input is required - simply fetch a ticket and click "Generate Test Plan".
-
-### 4) LLM Prompt That Returns Structured JSON
-
-Generate test plan suggestions reliably.
-
-- [x] Prompt the LLM using:
-  - Jira title + extracted description/AC
-  - Development activity and code changes
-  - Repository documentation and test patterns
-- [x] Require structured JSON output using a fixed schema
-- [x] Validate the JSON response (fail gracefully if invalid)
-- [x] Abstraction layer supporting multiple LLM providers (Claude, Ollama)
-- [x] Easy provider switching via .env configuration
-- [x] Enhanced prompts that automatically detect and handle multi-category scenarios
-
-**MVP Output Schema:**
-
-```json
-{
-  "happy_path": [{ "title": "", "steps": [], "expected": "" }],
-  "edge_cases": [{ "title": "", "steps": [], "expected": "" }],
-  "regression_checklist": []
-}
-```
-
-### 5) Present Test Plan in UI + Export
-
-Make it usable immediately.
-
-- [x] Render the plan in readable sections:
-  - Happy Path (3-5 test cases)
-  - Edge Cases (6-15+ test cases)
-  - Regression Checklist (3-5 items)
-- [x] "Copy for Jira" button (plain text format optimized for Jira comments)
-- [x] "Copy as Markdown" button (universal Markdown format)
-- [x] "Download as .md" button
-- [x] Distinct button colors for easy identification (Green=Jira, Gray=Markdown, Blue=Download)
-
-## Recent Improvements
-
-### Smart Test Scope Filtering (Latest)
-- **Build-time vs Runtime distinction**: Test plans now intelligently filter out build-time tools and configurations
-  - Automatically skips test cases for ESLint, TypeScript configs, build tools, CI/CD configs, and development tooling
-  - Focuses testing on actual runtime behavior (app UI, APIs, authentication, data processing)
-  - Clear guidance: "These fail the build automatically if broken. Manual testing adds no value."
-- **SDK/Dependency Update optimization**: Specialized handling for SDK and library upgrades
-  - Reduced test scope: 3-4 happy path tests (vs 5-8 for complex features)
-  - Focus on compatibility and regression testing, not testing SDK features themselves
-  - Example: "App launches with Expo SDK 53" instead of "ESLint v9 validates code"
-- **Development context filtering**: When analyzing PR file changes, automatically filters out non-runtime files
-  - Ignores ESLint configs, TypeScript configs, build tool settings, and CI configs
-  - Focuses only on runtime code: UI components, API logic, business logic, data models
-- **Impact**: Eliminates irrelevant test cases for infrastructure tickets, reduces test plan generation time, and improves test quality
-
-### Figma Design Context Integration
-- **Automatic design specification enrichment**: Test plans now include actual UI component and screen names from Figma
-  - Automatically extracts Figma URLs from Jira ticket descriptions (no manual input needed)
-  - Fetches design file metadata, frames/screens (up to 50), and UI components (up to 30)
-  - Enriches LLM prompt with actual design element names for UI-specific test cases
-  - Supports `/file/`, `/design/`, and `/proto/` URL formats
-  - Optional feature with graceful degradation (works without token)
-  - Token validation integrated into health monitoring system
-  - Example: Test cases reference "Login Screen" frame and "Email Input" component instead of generic "login page" and "input field"
-
-### Token Health Monitoring
-- **Comprehensive API token validation system**: Proactive monitoring and expiration detection for all API services
-  - Centralized `TokenHealthService` validates Jira, GitHub, Claude, and Figma tokens
-  - New `/health/tokens` API endpoint provides detailed status for each service
-  - Enhanced error handling distinguishes between expired, invalid, rate-limited, and missing tokens
-  - Frontend `TokenStatus` widget displays real-time status with visual indicators (✅/❌/ℹ️)
-  - Auto-refreshes every 5 minutes with manual refresh option
-  - Shows detailed error messages with direct links to token management pages
-  - Displays authenticated user details when tokens are valid
-  - Extensible architecture for easy addition of new services (Slack, OpenAI, etc.)
-  - Better user experience: Clear remediation steps and help URLs for token issues
-
-### Jira Comment Management
-- **Smart comment replacement**: Test plans posted to Jira are now automatically updated instead of creating duplicates
-  - First post creates a new comment with unique marker `🤖 Generated Test Plan`
-  - Subsequent posts find and replace the existing test plan comment
-  - User feedback shows "updated" vs "posted" status
-  - Prevents comment clutter when regenerating test plans
-  - Falls back to creating new comment if detection fails
-
-### ADF Parser Fix
-- **Fixed UUID extraction bug**: Removed incorrect extraction of internal Jira node IDs from descriptions
-  - UUIDs like `53025c34-9388-4fcf-bf18-3c532e14a36f` no longer appear in extracted text
-  - Only actual text content is extracted from Atlassian Document Format
-  - Cleaner, more readable descriptions in UI and LLM context
-
-### Priority-Based Test Ordering
-- **Automatic test case ordering by priority**: All test cases are now automatically ordered by priority level within each section
-  - Critical priority tests appear first (authentication, payments, data loss, security)
-  - High priority tests appear second (core functionality, common flows, data integrity)
-  - Medium priority tests appear last (edge cases, rare scenarios, minor issues)
-  - Applies to: Happy Path, Edge Cases, and Integration Tests sections
-  - Enables better test execution prioritization and faster identification of critical issues
-  - LLM explicitly instructed to prioritize ordering over logical grouping
-
-### Issue Type Validation
-- **Smart issue type detection**: Automatically hides test plan generation for non-testable issue types
-  - Disabled for: Epic, Spike, Sub-task (configurable)
-  - Enabled for: Story, Task, Bug
-  - Frontend shows friendly info message for non-testable types
-  - Backend validates issue type and returns clear error if bypassed
-  - Hybrid approach: Better UX + security validation
-
-### Test Plan Output Optimization
-- **Streamlined test plan structure**: Removed non-actionable sections for cleaner, more focused output
-  - Removed: Non-functional tests, Assumptions, Questions for PM/Dev
-  - Kept only: Happy Path, Edge Cases, Regression Checklist
-  - Result: ~30% faster generation, 100% actionable content for testers
-  - Lower API costs due to fewer tokens generated
-- **Improved test plan quality**: Focus on concrete, executable test cases without speculative content
-
-### LLM Integration with Development Context (Phase 2 Complete)
-- **Intelligent test plan generation** using development activity:
-  - LLM now receives commit messages, PR titles, and branch names from Jira
-  - Automatically infers implementation details from development work
-  - Generates more specific test cases based on actual code changes
-  - Identifies risk areas from commit patterns (e.g., "authentication", "payment")
-  - Focuses testing on modified areas
-- **Zero user input required**: Test plans generate automatically from ticket and development context
-- **Claude API integration**: Using Claude Opus 4.5 for:
-  - 5-10x faster response times (5-10 seconds vs 30-60+ seconds)
-  - Superior quality test plans with better context understanding
-  - More reliable JSON formatting
-  - Better utilization of development information
-
-### Development Activity Tracking (Phase 1 Complete)
-- **Automatic fetching of development data** from Jira's dev-status API:
-  - Pull requests with titles, status (MERGED, OPEN, DECLINED), URLs, and branch information
-  - Commit messages and counts (e.g., "27 commits linked")
-  - Branch names associated with the ticket
-- **Visual display in UI** with:
-  - Clickable PR titles linking directly to GitHub/Bitbucket
-  - Color-coded status badges (green for merged/open, orange for declined/closed)
-  - Professional card-based layout with hover effects
-  - Responsive design for mobile and desktop
-- **Non-blocking integration**: Development info fetch won't fail ticket loading if unavailable
-- **Multi-platform support**: Works with GitHub, Bitbucket (Stash), and other Git integrations
-
-### Enhanced Test Plan Generation
-- **Smart multi-category detection**: Automatically generates specific test cases when tickets have multiple scenarios or rule categories
-- **Special Instructions field**: Guide the LLM for complex features (see [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md))
-- **Better coverage**: Increased test case counts (2-5 happy path, 3-6 edge cases)
-- **Specific examples required**: LLM now uses concrete examples instead of generic placeholders
-
-### Improved Jira Integration
-- **Clickable ticket links**: Ticket numbers in the UI are clickable and open the Jira ticket in a new tab
-- **Clean Jira formatting**: Plain text format that pastes cleanly into Jira comments (no more wiki markup issues)
-- **Post to Jira button**: Directly post generated test plans as Jira comments with one click
-- **Better button UX**: Distinct colors for each export button (Green=Jira, Gray=Markdown, Blue=Download)
-- **Robust error handling**: Safe rendering even with malformed data
-
-### Better Developer Experience
-- See [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for comprehensive usage examples
-- Template examples for different feature types (APIs, wizards, permissions, etc.)
-- Clear guidance on when to use Special Instructions
+### Test Plan Generation
+- **Claude Opus 4.5**: Fast (5-10s), high-quality test plans with structured JSON output
+- **Smart comment management**: Updates existing Jira comments instead of creating duplicates
+- **Multiple export formats**: Markdown, Jira-formatted text, or JSON
+- **Issue type validation**: Only generates plans for testable types (Story, Bug, Task)
 
 ## Tech Stack
 
-- **Backend:** Python + FastAPI
-- **Frontend:** React with Vite
-- **LLM:** Claude API (Anthropic, recommended) or Ollama (local, free) - switchable via config
-- **HTTP Client:** httpx
-- **Config:** Pydantic Settings + `.env` locally; secrets manager later
-- **Deployment (Phase 2):** Internal hosting + JumpCloud SSO
+**Backend:** Python, FastAPI, httpx
+**Frontend:** React, Vite
+**LLM:** Claude API (Anthropic) or Ollama
+**CLI:** Typer, Rich, PyYAML
 
 ## Project Structure
 
-```
-src/
-  app/
-    main.py                 # FastAPI app entrypoint
-    models.py               # Data models (Pydantic & dataclasses)
-    jira_client.py          # Jira REST API client
-    github_client.py        # GitHub API client (Phase 3a - PR enrichment)
-    figma_client.py         # Figma API client (Phase 5 - Design context)
-    token_service.py        # Token health monitoring service
-    adf_parser.py           # Atlassian Document Format parser
-    description_analyzer.py # Description quality analyzer
-    llm_client.py           # LLM abstraction layer (Claude + Ollama)
-    config.py               # Environment configuration
-frontend/
-  src/
-    App.jsx                 # Main React app component
-    App.css                 # Styles with dark/light theme
-    config.js               # Frontend configuration (API URL)
-    main.jsx                # React app entry point
-    components/
-      TicketForm.jsx        # Jira ticket input form
-      TicketDetails.jsx     # Ticket display & quality analysis
-      DevelopmentInfo.jsx   # Development activity display (PRs, commits, branches)
-      TestingContextForm.jsx # Testing context input form
-      TestPlanDisplay.jsx   # Test plan rendering & export
-      TokenStatus.jsx       # API token health status widget
-    utils/
-      stateHelpers.js       # State management utilities
-      markdown.js           # Markdown formatting utilities
-tests/
-  test_manual.py            # Unit tests for ADF parser & analyzer
-  test_api_mock.py          # API endpoint tests with mocks
-  test_llm.py               # LLM integration test
-  run_tests.py              # Simple test runner
-```
+- `src/app/` - Backend (FastAPI, Jira/GitHub/Figma clients, LLM integration)
+- `src/cli/` - CLI tool (Typer, configuration management)
+- `frontend/` - React web UI with Vite
+- `tests/` - Unit and integration tests
 
 ## Prerequisites
 
-- Python 3.11+ recommended
-- Node.js 20.19+ or 22.12+ (for frontend)
-- uv installed
-
-### Install uv
-
-```bash
-pip install uv
-```
+- Python 3.11+
+- Node.js 20+ (for web UI)
+- `uv` package manager: `pip install uv`
 
 ## Setup
 
 ### Backend Setup
 
-1. Install dependencies:
-
 ```bash
 uv sync
-```
-
-2. Create your local env file:
-
-```bash
 cp .env.example .env
+# Edit .env with your API tokens
 ```
 
-3. Fill in `.env` values (do not commit `.env`):
-   - `JIRA_BASE_URL`
-   - `JIRA_EMAIL`
-   - `JIRA_API_TOKEN`
-   - `LLM_PROVIDER` - "claude" (recommended) or "ollama" (local)
-   - `LLM_MODEL` - model name (e.g., "claude-opus-4-5-20251101" for Claude, "llama3.1" for Ollama)
-   - `ANTHROPIC_API_KEY` - only if using Claude API
-   - `GITHUB_TOKEN` - (optional) GitHub Personal Access Token for Phase 3a+3b+4 features:
-     - Phase 3a: PR code diffs and file changes
-     - Phase 3b: PR comments and review discussions
-     - Phase 4: Repository documentation (README.md) and test file examples
-     - **Important**: Token must be authorized for SAML SSO if your organization uses it
-     - **Scopes needed**: `repo` (full control of private repositories)
+Required: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `ANTHROPIC_API_KEY`
+Optional: `GITHUB_TOKEN`, `FIGMA_TOKEN`
 
 ### Frontend Setup
 
-1. Navigate to frontend directory:
-
 ```bash
 cd frontend
-```
-
-2. Install dependencies:
-
-```bash
 npm install
 ```
 
-### LLM Setup (Choose One)
+### LLM Setup
 
-You have two options for the LLM provider:
-
-#### Option 1: Claude API (Anthropic) - Recommended
-
-1. Get API key from [https://console.anthropic.com/](https://console.anthropic.com/)
-2. In your `.env`, set:
+**Using Claude API** (recommended):
+1. Get API key from [console.anthropic.com](https://console.anthropic.com/)
+2. Add to `.env`:
    ```
    LLM_PROVIDER=claude
    LLM_MODEL=claude-opus-4-5-20251101
-   ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
+   ANTHROPIC_API_KEY=sk-ant-api03-...
    ```
 
-**Test it:** `uv run python tests/test_llm.py`
+**Alternative**: Ollama (local, free) - set `LLM_PROVIDER=ollama` and `LLM_MODEL=llama3.1` in `.env`
 
-**Benefits:**
-- 5-10x faster response times (5-10 seconds vs 30-60+ seconds)
-- Superior quality test plans with better context understanding
-- More reliable JSON formatting
-- Better utilization of development information
+### GitHub Token Setup (Optional)
 
-#### Option 2: Ollama (Local, Free) - Alternative for Development
+Enables PR code diffs, review comments, and repository documentation for better test plans.
 
-1. Install Ollama from [https://ollama.com/download](https://ollama.com/download)
-2. Start Ollama server: `ollama serve`
-3. Pull a model: `ollama pull llama3.1`
-4. In your `.env`, set:
-   ```
-   LLM_PROVIDER=ollama
-   LLM_MODEL=llama3.1
-   ```
+1. Go to [GitHub Settings → Tokens](https://github.com/settings/tokens)
+2. Generate new token with `repo` scope
+3. Add to `.env`: `GITHUB_TOKEN=ghp_...`
+4. **If using enterprise**: Authorize SSO for your organization
 
-**Test it:** `uv run python tests/test_llm.py`
-
-#### Switching Providers
-
-To switch between providers, just update `LLM_PROVIDER` in your `.env` file. No code changes needed!
-
-### GitHub Token Setup (Optional - for Enhanced Context)
-
-The `GITHUB_TOKEN` enables Phase 3a, 3b, and 4 features that significantly improve test plan quality:
-- Phase 3a: PR code diffs and file changes
-- Phase 3b: PR comments and review discussions
-- Phase 4: Repository documentation (README.md) and test file examples
-
-**Without GitHub token**: Test plans still work but use only Jira data (basic PR titles and commits)
-**With GitHub token**: Test plans include specific project terminology, data structures, and implementation details
-
-#### Create GitHub Personal Access Token
-
-1. Go to [GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)](https://github.com/settings/tokens)
-2. Click "Generate new token (classic)"
-3. Give it a descriptive name (e.g., "jira-testplan-bot")
-4. Select scopes:
-   - ✅ `repo` (Full control of private repositories)
-5. Click "Generate token"
-6. Copy the token (starts with `ghp_`)
-7. Add to your `.env` file:
-   ```
-   GITHUB_TOKEN=ghp_your_token_here
-   ```
-
-#### SAML SSO Authorization (Required for Enterprise Organizations)
-
-If your organization uses SAML SSO (most companies do), you must authorize the token:
-
-1. Go to [GitHub Settings → Personal access tokens](https://github.com/settings/tokens)
-2. Find your newly created token in the list
-3. Click "Configure SSO" next to the token
-4. Click "Authorize" next to your organization name (e.g., `your-organization`)
-5. Confirm the authorization
-
-**Troubleshooting**: If you see "Resource protected by organization SAML enforcement" errors in logs:
-- Your token needs SSO authorization
-- Follow steps above to authorize the token for your organization
-- Restart the backend server after authorization
+Without GitHub token, test plans use only Jira data (basic PR titles and commits).
 
 ## Run the Application
 
@@ -434,530 +131,175 @@ npm run dev
 
 Frontend runs on: `http://localhost:5173`
 
-### Health check
+## CLI Usage (Alternative to Web UI)
 
-```
-http://127.0.0.1:8000/health
-```
+The CLI provides a fast, terminal-native way to generate test plans without running the web server.
 
-### API docs (Swagger)
+### Installation
 
-```
-http://127.0.0.1:8000/docs
-```
-
-### Check API token health
-
-```
-GET http://127.0.0.1:8000/health/tokens
+**For teams** (one-liner install):
+```bash
+curl -sSL https://raw.githubusercontent.com/your-org/jira-testplan-bot/main/install.sh | bash
 ```
 
-Returns health status for all configured API tokens:
-
-```json
-{
-  "services": [
-    {
-      "service_name": "Jira",
-      "is_valid": true,
-      "is_required": true,
-      "error_type": "valid",
-      "error_message": null,
-      "help_url": "https://support.atlassian.com/...",
-      "last_checked": "2026-01-27T10:30:00.000Z",
-      "details": {
-        "user_email": "user@example.com",
-        "user_name": "John Doe"
-      }
-    },
-    {
-      "service_name": "GitHub",
-      "is_valid": true,
-      "is_required": false,
-      "error_type": "valid",
-      "error_message": null,
-      "help_url": "https://github.com/settings/tokens",
-      "last_checked": "2026-01-27T10:30:00.000Z",
-      "details": {
-        "user_login": "johndoe"
-      }
-    },
-    {
-      "service_name": "Claude (Anthropic)",
-      "is_valid": false,
-      "is_required": true,
-      "error_type": "expired",
-      "error_message": "Anthropic API authentication failed. Your API key may be expired or revoked. Get a new key at https://console.anthropic.com/settings/keys",
-      "help_url": "https://console.anthropic.com/settings/keys",
-      "last_checked": "2026-01-27T10:30:00.000Z",
-      "details": null
-    }
-  ],
-  "overall_health": false
-}
+**Or install directly** (if you have `uv`):
+```bash
+uv tool install git+https://github.com/your-org/jira-testplan-bot.git
 ```
 
-**Error types:**
-- `valid` - Token is valid and working
-- `missing` - Token not configured in .env
-- `invalid` - Token is invalid or incorrectly formatted
-- `expired` - Token has expired and needs renewal
-- `rate_limited` - API rate limit exceeded (token is valid)
-- `insufficient_permissions` - Token lacks required permissions
-- `service_unavailable` - Service is unreachable or timed out
-
-### Fetch a Jira issue
-
-```
-GET http://127.0.0.1:8000/issue/{issue_key}
+**For local development**:
+```bash
+git clone https://github.com/your-org/jira-testplan-bot.git
+cd jira-testplan-bot
+uv sync
+uv run testplan --help
 ```
 
-Returns JSON:
+**Update later**: `uv tool upgrade testplan`
 
-```json
-{
-  "key": "PROJ-123",
-  "summary": "Issue title",
-  "description": "Issue description text (extracted from ADF format)",
-  "labels": ["security", "user-management"],
-  "issue_type": "Story",
-  "description_quality": {
-    "has_description": true,
-    "is_weak": false,
-    "warnings": [],
-    "char_count": 245,
-    "word_count": 42
-  },
-  "development_info": {
-    "commits": [
-      {
-        "message": "Add password reset endpoint",
-        "author": "John Doe",
-        "date": "2026-01-05T10:55:58.000-0800",
-        "url": "https://github.com/owner/repo/commit/abc123"
-      }
-    ],
-    "pull_requests": [
-      {
-        "title": "SK-1782: Implement password reset",
-        "status": "MERGED",
-        "url": "https://github.com/owner/repo/pull/456",
-        "source_branch": "feature/SK-1782-password-reset",
-        "destination_branch": "main"
-      }
-    ],
-    "branches": ["feature/SK-1782-password-reset"]
-  }
-}
+### Configuration
+
+**Interactive setup** (recommended):
+```bash
+testplan setup
 ```
 
-**Error responses:**
-
-| Status | Meaning |
-|--------|---------|
-| 404 | Issue not found |
-| 401 | Jira authentication failed (token expired or invalid) |
-| 403 | Jira access forbidden (insufficient permissions) |
-| 502 | Jira unreachable or timed out |
-
-**Note:** Error messages now distinguish between expired and invalid tokens, with direct links to token management pages.
-
-### Generate a test plan
-
-```
-POST http://127.0.0.1:8000/generate-test-plan
+**Import from .env file**:
+```bash
+testplan config import .env
 ```
 
-Request body:
-
-```json
-{
-  "ticket_key": "PROJ-123",
-  "summary": "Add password reset functionality",
-  "description": "Users should be able to reset their password via email...",
-  "issue_type": "Story",
-  "testing_context": {},
-  "development_info": {
-    "commits": [...],
-    "pull_requests": [...],
-    "branches": [...]
-  }
-}
+**Or use environment variables** (for CI/CD):
+```bash
+export JIRA_BASE_URL="https://your-company.atlassian.net"
+export JIRA_EMAIL="your-email@company.com"
+export JIRA_API_TOKEN="your-token"
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+export GITHUB_TOKEN="ghp_..."  # optional
+export FIGMA_TOKEN="figd_..."  # optional
 ```
 
-Returns structured test plan JSON with sections: `happy_path`, `edge_cases`, `regression_checklist`, `non_functional`, `assumptions`, `questions`.
+Config is stored at `~/.config/jira-testplan/config.yaml` with environment variable fallback.
 
-**Error responses:**
+### Usage
 
-| Status | Meaning |
-|--------|---------|
-| 503 | LLM service unavailable (Claude API error, token expired/invalid, or Ollama not running) |
+```bash
+# Check API token health
+testplan health
 
-**Note:** LLM errors now distinguish between expired, invalid, and rate-limited tokens with specific remediation guidance.
+# Generate test plan
+testplan generate PROJ-123
 
-## Deploying for Public/Team Use
+# Post directly to Jira
+testplan generate PROJ-123 --post-to-jira
 
-If you're deploying this tool for others to use (not just yourself), consider these important points:
+# Save to file or copy to clipboard
+testplan generate PROJ-123 -o plan.md
+testplan generate PROJ-123 --copy
 
-### Authentication & Authorization
+# Batch processing
+testplan generate PROJ-123 PROJ-124 PROJ-125
 
-**Current state:** The application has **no built-in authentication layer**. Anyone with access to the frontend URL can use your API tokens.
+# Output formats: markdown (default), jira, json
+testplan generate PROJ-123 --format json
+```
 
-**For production deployment:**
-1. **Add authentication** (OAuth, SSO, basic auth) to protect the application
-2. **Per-user token management**: Allow each user to configure their own API tokens instead of sharing one `.env` file
-3. **Consider JumpCloud SSO** or similar enterprise SSO solutions for team deployments
-4. **Restrict network access** using firewalls, VPNs, or IP whitelisting if deploying internally
+### CI/CD Integration
 
-### API Token Management
+The CLI supports environment variables for automation. Example GitHub Actions workflow:
 
-**Development/Personal Use:**
-- Use your own `.env` file with your personal API tokens
-- Keep `.env` file secure and never commit it
+```yaml
+- name: Generate test plan
+  run: testplan generate $TICKET --post-to-jira
+  env:
+    JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+    JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
 
-**Team/Public Deployment:**
-- **Do NOT share your personal API tokens** with others
-- Each user should obtain their own API tokens:
-  - **Jira**: Personal API token from their Jira account
-  - **Claude (Anthropic)**: API key from their company's Anthropic account or personal account
-  - **GitHub** (optional): Personal access token authorized for SSO if applicable
-  - **Figma** (optional): Personal access token from their Figma account
-- **Production option**: Use a secrets manager (AWS Secrets Manager, HashiCorp Vault, Azure Key Vault) instead of `.env` files
-- **Shared service account option**: Create dedicated service accounts for Jira/GitHub/Figma (not recommended for personal API keys like Claude)
+## Web UI API Endpoints
 
-### Security Considerations
+- **Health check**: `GET /health`
+- **API docs**: `/docs` (Swagger UI)
+- **Token health**: `GET /health/tokens` - Validates all API tokens
+- **Fetch issue**: `GET /issue/{issue_key}` - Returns ticket with development info
+- **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON
 
-1. **CORS Configuration**: Currently configured for development (`*` allowed). Update FastAPI CORS settings for production:
-   ```python
-   # In src/app/main.py, update origins list:
-   origins = [
-       "https://your-production-domain.com",
-       "https://your-internal-domain.company.com"
-   ]
-   ```
+See `/docs` for detailed API documentation and schemas.
 
-2. **HTTPS**: Always use HTTPS in production, never HTTP for API token transmission
+## Team Deployment
 
-3. **Rate Limiting**: Consider adding rate limiting to prevent API abuse (especially important for Claude API costs)
+### Security Requirements
 
-4. **Audit Logging**: Add logging for who generates test plans and when (useful for team deployments)
-
-5. **Token Rotation**: Implement a policy for regular API token rotation
+**Current state:** No built-in authentication. For team deployment:
+- Add authentication (OAuth, SSO) to protect the application
+- Each user should use their own API tokens (never share)
+- Use HTTPS in production
+- Update CORS settings in `src/app/main.py` for production domains
+- Consider using a secrets manager (AWS Secrets Manager, HashiCorp Vault)
 
 ### Deployment Options
 
-**Option 1: Personal Use (Current)**
-- Run locally on your machine
-- Use your personal API tokens
-- No additional security needed
+1. **Personal Use**: Run locally with your own tokens
+2. **Internal Team**: Deploy on internal server with SSO + network restrictions
+3. **Public SaaS**: Requires multi-tenant architecture, encrypted token storage, and payment integration
 
-**Option 2: Internal Team Deployment**
-- Deploy on internal server (Docker, Kubernetes, VM)
-- Add SSO/OAuth authentication layer
-- Each team member uses their own tokens OR use shared service account tokens
-- Restrict network access to internal network only
+### Cost Monitoring
 
-**Option 3: Public SaaS (Future)**
-- Requires significant security enhancements
-- Multi-tenant architecture with per-user token storage
-- Encrypted token storage in database
-- Payment integration (Claude API costs)
-- Terms of service and privacy policy
-- Regular security audits
+Monitor Claude API usage (pay-per-token). GitHub API has rate limits (5,000/hour). Jira and Figma are typically included with subscriptions.
 
-### Cost Considerations
+## Secrets Management
 
-- **Claude API**: Pay-per-use (tokens consumed). Monitor costs if deploying for teams.
-- **Ollama**: Free but requires local GPU/CPU resources
-- **GitHub API**: Free tier has rate limits (5,000 requests/hour for authenticated requests)
-- **Jira API**: Usually included with Jira subscription
-- **Figma API**: Free tier available (check current limits)
+- Never commit `.env` - it's in `.gitignore`
+- Use `.env.example` as a template
+- Rotate tokens before making the repository public
+- For production, use a secrets manager (AWS Secrets Manager, Vault, etc.)
 
-**Recommendation for teams**: Start with internal deployment using SSO and individual user tokens before considering public deployment.
-
-## Environments & Secrets
-
-- **Never commit `.env`** - it contains sensitive API tokens
-- Use `.env.example` as the template for creating your own `.env`
-- Each environment (development, staging, production) should have its own `.env` file with separate credentials
-- **Before making a repository public**: Rotate all API tokens in your `.env` file as a security best practice
-- Store production secrets in a secrets manager (AWS Secrets Manager, HashiCorp Vault, etc.) rather than `.env` files
-
-## Testing Strategy
-
-### Run tests
-
-Quick test with dummy data (no dependencies):
+## Testing
 
 ```bash
+# Unit tests
 uv run python tests/run_tests.py
-```
 
-Test LLM integration:
-
-```bash
+# LLM integration
 uv run python tests/test_llm.py
-```
 
-Run full test suite with pytest (optional):
-
-```bash
-uv add --dev pytest pytest-asyncio
+# Full test suite (optional)
 uv run pytest tests/ -v
 ```
 
-### Unit tests
+## Status
 
-- Jira client (mock responses)
-- ADF parser (text extraction)
-- Description analyzer (quality detection)
-- LLM client (mock LLM responses)
-- JSON schema validation
-- Formatter/export (later)
+**Current:** Phase 5 complete (Figma integration, GitHub enrichment, token monitoring)
+**Next:** Slack bot integration (Phase 3c)
 
-### End-to-end testing
+## Roadmap
 
-- Fetch → validate ticket → gather user inputs → LLM → render → copy/export
-- Use a dedicated Jira test project (or safe test tickets) to avoid production impact
+### Completed
+- ✅ Jira integration with development activity tracking
+- ✅ GitHub PR code diffs, comments, and repository docs
+- ✅ Figma design context integration
+- ✅ Token health monitoring
+- ✅ Smart comment management in Jira
+- ✅ Priority-based test ordering
 
-## Timeline and Milestones
+### Future Enhancements
+- **Slack Bot**: `/testplan TICKET-123` command for quick generation
+- **Screenshot Analysis**: Claude vision API for UI mockup testing
+- **Test Plan History**: Save and compare previous generations
+- **Quality Feedback**: Thumbs up/down to improve prompts
+- **Test Tool Integration**: TestRail, Zephyr, etc.
+- **Custom Templates**: Per-team or per-project prompt templates
 
-| Milestone | Status |
-|-----------|--------|
-| Initial Setup (Repo, basic API + UI skeleton) | ✅ Done |
-| Jira Read Integration Complete | ✅ Done |
-| UI Fetch + Display Ticket | ✅ Done |
-| Gap Detection + User Input Form | ✅ Done |
-| LLM Integration + Backend Endpoint | ✅ Done |
-| UI Test Plan Rendering + Copy/Export | ✅ Done |
-| Development Activity Integration (Phase 1) | ✅ Done |
-| Internal MVP Demo | ✅ Done |
-| LLM Enhancement with Dev Context (Phase 2) | ✅ Done |
-| Claude API Integration | ✅ Done |
-| LLM Prompt Enhancements (Risk-based priorities, Given-When-Then format) | ✅ Done |
-| Phase 3a (GitHub API Integration - PR Code Diffs) | ✅ Done |
-| Phase 3b (GitHub PR Comments & Review Discussions) | ✅ Done |
-| Phase 4 (Repository Documentation Context) | ✅ Done |
-| Phase 5 (Figma Design Context Integration) | ✅ Done |
-| Phase 3c Planning (Slack Bot Integration) | To Do |
+## Usage Tips
 
-## Post-MVP Considerations (Phase 3+)
-
-### Jira Integration Enhancements
-- "Post back to Jira" as a button (manual write) before automation
-- AI-powered context extraction from similar tickets
-- Fetch related tickets to include in test plan context
-
-### Enhanced Version Control Integration (Phase 3)
-
-**Current State (Phase 1-2 Complete):**
-- ✅ Fetch commit messages, PR titles, and branch names from Jira
-- ✅ Display development activity in UI with clickable links
-- ✅ Show commit counts and PR statuses
-- ✅ **Pass development info to LLM** for intelligent test plan generation
-- ✅ LLM infers implementation details from commits and PR titles
-- ✅ Automatic risk area identification from commit patterns
-- ✅ Zero user input required - automatic generation from available context
-
-**Phase 3a Complete - GitHub PR Code Diffs:**
-- ✅ **GitHub API Integration** for richer test plan context:
-  - Fetch PR descriptions (often contain better acceptance criteria than Jira)
-  - Extract actual code diffs and file changes from PRs
-  - Identify which modules/files were modified with additions/deletions counts
-  - Detect risk areas based on changed files (authentication, payment processing, etc.)
-- ✅ **Enhanced LLM Context**:
-  - Include file-level changes in LLM prompt (up to 15 most significant files)
-  - Auto-detect testing scope from modified files
-  - Generate specific test cases targeting modified files
-  - Provide code change statistics (+additions/-deletions)
-- ✅ **Implementation**:
-  - Parse GitHub URLs from Jira's development info
-  - Use GitHub Personal Access Token for API authentication (optional, graceful degradation)
-  - Fetch PR details: `GET /repos/{owner}/{repo}/pulls/{number}`
-  - Fetch file changes: `GET /repos/{owner}/{repo}/pulls/{number}/files`
-  - Works across multiple repositories (any GitHub repo accessible with the token)
-- ✅ **Backend-only enrichment**: Code changes sent to LLM but not displayed in UI for cleaner interface
-
-**Phase 3b Complete - GitHub PR Comments & Discussions:**
-- ✅ **PR Conversation Comments**:
-  - Fetch discussion comments from PR conversation threads
-  - Capture developer discussions about implementation decisions
-  - Extract edge cases and concerns mentioned in comments
-- ✅ **PR Review Comments**:
-  - Fetch line-specific code review comments
-  - Include file context for review comments (e.g., "[auth.js] Comment text")
-  - Capture QA and code quality concerns from reviewers
-- ✅ **Enhanced LLM Context**:
-  - Include up to 10 most recent comments in LLM prompt
-  - Extract testing insights from developer discussions
-  - Identify edge cases and gotchas mentioned during code review
-  - Use review feedback to generate more comprehensive test cases
-- ✅ **Implementation**:
-  - Fetch conversation comments: `GET /repos/{owner}/{repo}/issues/{number}/comments`
-  - Fetch review comments: `GET /repos/{owner}/{repo}/pulls/{number}/comments`
-  - Combine both comment types with appropriate icons and context
-  - Graceful handling when PR has no comments
-
-**Phase 4 Complete - Repository Documentation Context:**
-- ✅ **README.md Integration**:
-  - Automatically fetch README.md from repository's main branch
-  - Include first 2000 characters in LLM prompt for project context
-  - Understand project structure, architecture, and terminology
-  - Use project-specific UI component names and navigation patterns
-- ✅ **Test File Examples**:
-  - Search for test files in repository (*.test.*, *.spec.*, __tests__, tests/)
-  - Show LLM existing test patterns and conventions
-  - Generate test cases that match project's testing style
-- ✅ **Benefits**:
-  - Test steps use **specific terminology** instead of generic placeholders
-  - References actual screen names, button labels, menu items from README
-  - Understands project architecture and tech stack
-  - Generates test data matching real data structures from documentation
-- ✅ **Example Impact**:
-  - **Before**: "Navigate to a feature that generates a PDF document"
-  - **After**: "Generate a seller net sheet PDF with titleAgentInfo set to null"
-- ✅ **Implementation**:
-  - Fetch README: `GET /repos/{owner}/{repo}/contents/README.md`
-  - Search test files: `GET /search/code?q=repo:{owner}/{repo} extension:test OR path:tests`
-  - Graceful degradation if README not found or no test files exist
-  - Truncate long READMEs to avoid token limits
-
-**Figma Design Context Integration (Phase 5 - Complete):**
-- ✅ **Automatic Figma URL extraction from ticket descriptions**
-- ✅ **Design file metadata, frames/screens, and UI components**
-- ✅ **Test plans include actual component and screen names from Figma**
-- ✅ **Token validation and health monitoring**
-- See "Recent Improvements" section above for details
-
-**Visual & Video Context Integration (Future):**
-- **Screenshot Upload Support**:
-  - Accept 1-2 images (PNG/JPG) from Jira attachments
-  - Pass images to Claude API (multimodal vision capabilities)
-  - Generate visual test cases based on UI mockups
-  - Compare expected design vs actual screenshots
-  - Identify visual differences and generate specific UI test scenarios
-- **Loom Transcript Integration**:
-  - Support Loom video transcript text input (pasted by user)
-  - Automatic transcript extraction via Loom API or third-party scrapers (Apify)
-  - Parse video context for implementation details and acceptance criteria
-  - Extract visual demonstrations and user flows from video content
-  - **Challenge**: Loom's official API focuses on recording SDK, not transcript access
-  - **Workaround Options**:
-    - Manual paste: User copies transcript from Loom UI (SRT download available)
-    - Third-party APIs: Apify actors for automated transcript extraction
-    - Future: Direct Loom API integration if transcript endpoint becomes available
-- **GitHub PR Description Fetching**:
-  - Fetch full PR descriptions from GitHub API (not just titles from Jira)
-  - Extract detailed implementation notes often missing from Jira tickets
-  - Parse PR comments and code review discussions
-  - Identify acceptance criteria mentioned in PR descriptions
-  - **Benefits**: PR descriptions typically contain better technical context than Jira
-- **Implementation Approach**:
-  - Frontend: Add file upload component for screenshots
-  - Frontend: Add textarea for Loom transcript paste (or URL for future API integration)
-  - Backend: Extend TestingContext model with `screenshots`, `loom_transcript`
-  - LLM: Update prompt to include visual and video context
-  - LLM: Use Claude's vision API for screenshot analysis
-- **Benefits**:
-  - Catch visual regressions and UI implementation differences
-  - Leverage video demos for better test coverage
-  - Extract requirements from multiple sources (Jira + PR + video + design)
-  - Reduce miscommunication from poorly written tickets
-
-**Slack Bot Integration (Phase 3c):**
-- **Quick Test Plan Generation via Slash Command**:
-  - Slash command: `/testplan TICKET-123` generates plan without leaving Slack
-  - Auto-fetch ticket details and development info from Jira
-  - Generate test plan using existing backend logic (no manual context input)
-  - Post formatted plan directly in Slack channel (visible to team)
-  - Supports basic special instructions: `/testplan SK-1234 special: Test all keyword categories`
-- **Interactive Slack UI**:
-  - Formatted output using Slack Block Kit (collapsible sections, rich formatting)
-  - Action buttons:
-    - "📋 View Full Plan" - Links to web UI with full details
-    - "✨ Add Context & Regenerate" - Opens Slack modal for acceptance criteria input
-    - "💬 Discuss in Thread" - Encourages team collaboration
-  - Status updates: "⏳ Generating..." → "✅ Test plan ready"
-- **Use Cases**:
-  - **Quick wins**: Well-written tickets with good descriptions (~30% of tickets)
-  - **Team collaboration**: Share plans in channels for immediate feedback
-  - **Discovery**: Increases tool adoption without requiring web UI access
-  - **Triage**: Quick assessment of testing scope during sprint planning
-- **Implementation Approach**:
-  - Create Slack App at api.slack.com with slash command configuration
-  - New FastAPI endpoints:
-    - `POST /slack/commands` - Handle slash command invocations
-    - `POST /slack/interactions` - Handle button clicks and modal submissions
-  - Slack signature verification for security
-  - Reuse existing `generate_test_plan` logic (same backend, different client)
-  - Format test plans as Slack Block Kit messages with collapsible sections
-  - Store bot token and signing secret in environment config
-- **Benefits**:
-  - **Lower friction**: Generate plans without context switching
-  - **Increased adoption**: Visible in Slack, easy to discover and use
-  - **Team visibility**: Plans shared in channels for discussion
-  - **Hybrid workflow**: Simple tickets via Slack, complex tickets via web UI
-  - **Same quality**: Uses identical LLM prompts and Jira integration as web UI
-- **Limitations (by design)**:
-  - No screenshot upload (use web UI for visual context)
-  - Limited context input (basic special instructions only)
-  - Text-only formatting (no rich PR cards like web UI)
-  - Best for tickets with decent descriptions (fallback to web UI for poor tickets)
-- **Estimated Effort**: 4-6 hours for MVP (slash command + basic formatting)
-
-### Quality & Feedback
-- Feedback loop (thumbs up/down per plan) to improve prompts
-- Analytics dashboard showing test plan usage and quality metrics
-- A/B testing different prompts to optimize output quality
-
-### Test Plan History & Reusability
-- **Saved history of generated plans** with full audit trail:
-  - Store ticket key, timestamp, generated test plan, and source context used
-  - View history of test plans for a specific ticket
-  - Compare test plans across different versions/iterations
-  - Export history as CSV or JSON
-- **AI learning from past patterns**:
-  - Learn from previously generated test plans
-  - Identify common patterns for similar ticket types (e.g., "Auth Flow", "Payment Feature", "UI Changes")
-  - Improve suggestions based on team feedback
-- **Search and filter history**:
-  - Search by ticket key, date range, or keywords
-  - Filter by ticket type, labels, or team member
-  - Bookmark favorite test plans for quick reference
-
-### Advanced Features
-- Batch processing: Generate test plans for multiple tickets at once
-- Integration with test management tools (TestRail, Zephyr, etc.)
-- Custom LLM prompt templates per team or project
-- Automated test case generation from test plans
-- Link to existing test automation frameworks
-
-## Tips for Best Results
-
-### Fully Automatic Test Plan Generation
-Just enter the Jira ticket key and click "Generate Test Plan". The system automatically:
-- **Fetches development activity** from Jira (commits, PRs, branches)
-- **Analyzes implementation details** from commit messages and PR titles
-- **Extracts code changes** from pull requests (file modifications, additions/deletions)
-- **Reviews PR discussions** and code review comments
-- **Reads repository documentation** (README.md) for project-specific terminology
-- **Identifies risk areas** from code change patterns
-- **Detects behavior patterns** from ticket description (e.g., block vs allow continue)
-- **Extracts Figma design context** when design URLs are present
-- Generates comprehensive test coverage (3-5 happy path, 6-10 edge cases for complex features)
-
-**No user input required - the system uses all available context to generate high-quality test plans!**
-
-### Export Tips
-- **Copy for Jira**: Use this for pasting directly into Jira comments - plain text with visual separators
-- **Copy as Markdown**: Use for GitHub issues, Slack, or other tools that support Markdown
-- **Download as .md**: Save for documentation, sharing via email, or version control
+- **Automatic generation**: Just enter a ticket key - the system fetches all context automatically
+- **Export formats**: Use Jira format for comments, Markdown for GitHub/Slack, JSON for programmatic use
+- **GitHub token recommended**: Adds project-specific terminology and implementation details to test plans
 
 ## Documentation
 
-Additional documentation is available in the [`docs/`](docs/) folder:
-
-- **[Prompt Improvements](docs/PROMPT_IMPROVEMENTS.md)** - Technical details on LLM prompt enhancements (risk-based priorities, Given-When-Then format, test data requirements)
+See [`docs/PROMPT_IMPROVEMENTS.md`](docs/PROMPT_IMPROVEMENTS.md) for LLM prompt engineering details.
 
 ## License
 
