@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import './App.css'
 import { API_BASE_URL, fetchConfig } from './config'
-import { initialTestingContext, resetTestingContext } from './utils/stateHelpers'
 import TicketForm from './components/TicketForm'
 import TicketDetails from './components/TicketDetails'
 import TestingContextForm from './components/TestingContextForm'
@@ -17,9 +16,6 @@ function App() {
   const [error, setError] = useState(null)
   const [ticketData, setTicketData] = useState(null)
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
-
-  // Testing context form state
-  const [testingContext, setTestingContext] = useState(initialTestingContext)
 
   // Test plan generation state
   const [generatingPlan, setGeneratingPlan] = useState(false)
@@ -44,7 +40,6 @@ function App() {
     setError(null)
     setTicketData(null)
     setIsDescriptionExpanded(false)
-    setTestingContext(resetTestingContext())
     setTestPlan(null)
     setPlanError(null)
 
@@ -70,16 +65,8 @@ function App() {
     setTicketData(null)
     setError(null)
     setIsDescriptionExpanded(false)
-    setTestingContext(resetTestingContext())
     setTestPlan(null)
     setPlanError(null)
-  }
-
-  const handleContextChange = (field, value) => {
-    setTestingContext(prev => ({
-      ...prev,
-      [field]: value
-    }))
   }
 
   const toggleDescription = () => {
@@ -113,10 +100,7 @@ function App() {
           summary: ticketData.summary,
           description: ticketData.description,
           issue_type: ticketData.issue_type,
-          testing_context: {
-            acceptanceCriteria: testingContext.acceptanceCriteria,
-            specialInstructions: testingContext.specialInstructions,
-          },
+          testing_context: {},
           development_info: ticketData.development_info,
           image_urls: imageUrls,
         }),
@@ -192,9 +176,6 @@ function App() {
             ) : (
               <>
                 <TestingContextForm
-                  ticketData={ticketData}
-                  testingContext={testingContext}
-                  onContextChange={handleContextChange}
                   onGenerateTestPlan={handleGenerateTestPlan}
                   onStopGeneration={handleStopGeneration}
                   generatingPlan={generatingPlan}

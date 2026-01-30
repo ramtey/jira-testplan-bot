@@ -4,7 +4,7 @@
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![React](https://img.shields.io/badge/react-18.3-blue.svg)
 
-Generate a structured QA test plan from a Jira ticket using the ticket's title/description and user-provided supplemental testing info when Acceptance Criteria (AC) or key testing details are missing.
+Generate a structured QA test plan from a Jira ticket using the ticket's title/description and linked development activity (commits, PRs, code changes).
 
 ## 🔒 Security Notice
 
@@ -59,23 +59,21 @@ Provide a lightweight workflow for testers.
 - [x] Collapsible description (show more/less for long descriptions)
 - [x] Dark/Light theme support (follows system preference)
 
-### 3) Gap Detection + User-Supplied Testing Context
+### 3) Automatic Test Plan Generation
 
-Improve output quality when Jira ticket content is incomplete.
+Generate comprehensive test plans automatically from available context.
 
-When AC/testing info is missing or unclear, prompt the user to fill in:
+The system automatically analyzes and uses:
 
-- [x] Acceptance Criteria (if missing)
-- [x] Test data notes (accounts, roles, sample data)
-- [x] Environments (staging/prod flags, feature flags)
-- [x] Roles/permissions involved
-- [x] Out of scope / assumptions
-- [x] Known risk areas / impacted modules
-- [x] Special Testing Instructions (for complex multi-category scenarios)
+- [x] Jira ticket title, description, and labels
+- [x] Development activity (commits, PRs, branches)
+- [x] Pull request code changes and file modifications
+- [x] PR comments and review discussions
+- [x] Repository documentation (README.md)
+- [x] Existing test file patterns
+- [x] Figma design context (when available)
 
-The UI displays an "Additional Testing Context" form after fetching a ticket, with all fields optional. The form highlights recommended fields when description quality is weak.
-
-**New:** For complex features with multiple categories or scenarios (e.g., keyword blocking with 50+ rules), use the "Special Testing Instructions" field to guide the LLM to generate specific test cases for each category. See [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for detailed examples.
+No user input is required - simply fetch a ticket and click "Generate Test Plan".
 
 ### 4) LLM Prompt That Returns Structured JSON
 
@@ -83,8 +81,8 @@ Generate test plan suggestions reliably.
 
 - [x] Prompt the LLM using:
   - Jira title + extracted description/AC
-  - User-provided testing context
-  - Special instructions for complex scenarios
+  - Development activity and code changes
+  - Repository documentation and test patterns
 - [x] Require structured JSON output using a fixed schema
 - [x] Validate the JSON response (fail gracefully if invalid)
 - [x] Abstraction layer supporting multiple LLM providers (Claude, Ollama)
@@ -198,7 +196,7 @@ Make it usable immediately.
   - Generates more specific test cases based on actual code changes
   - Identifies risk areas from commit patterns (e.g., "authentication", "payment")
   - Focuses testing on modified areas
-- **Streamlined user input**: Reduced form fields to only essential items (Acceptance Criteria + Special Instructions)
+- **Zero user input required**: Test plans generate automatically from ticket and development context
 - **Claude API integration**: Using Claude Opus 4.5 for:
   - 5-10x faster response times (5-10 seconds vs 30-60+ seconds)
   - Superior quality test plans with better context understanding
@@ -577,14 +575,12 @@ Request body:
   "ticket_key": "PROJ-123",
   "summary": "Add password reset functionality",
   "description": "Users should be able to reset their password via email...",
-  "testing_context": {
-    "acceptanceCriteria": "Given a user clicks 'Forgot Password'...",
-    "testDataNotes": "Test with valid and invalid emails",
-    "environments": "Staging and production",
-    "rolesPermissions": "Any authenticated user",
-    "outOfScope": "SSO password reset",
-    "riskAreas": "Email delivery, token generation",
-    "specialInstructions": "Test with specific examples for each error scenario"
+  "issue_type": "Story",
+  "testing_context": {},
+  "development_info": {
+    "commits": [...],
+    "pull_requests": [...],
+    "branches": [...]
   }
 }
 ```
@@ -749,7 +745,7 @@ uv run pytest tests/ -v
 
 ### Jira Integration Enhancements
 - "Post back to Jira" as a button (manual write) before automation
-- Auto-populate testing context from previous similar tickets
+- AI-powered context extraction from similar tickets
 - Fetch related tickets to include in test plan context
 
 ### Enhanced Version Control Integration (Phase 3)
@@ -761,7 +757,7 @@ uv run pytest tests/ -v
 - ✅ **Pass development info to LLM** for intelligent test plan generation
 - ✅ LLM infers implementation details from commits and PR titles
 - ✅ Automatic risk area identification from commit patterns
-- ✅ Streamlined user input (only 2 fields: Acceptance Criteria + Special Instructions)
+- ✅ Zero user input required - automatic generation from available context
 
 **Phase 3a Complete - GitHub PR Code Diffs:**
 - ✅ **GitHub API Integration** for richer test plan context:
@@ -835,7 +831,7 @@ uv run pytest tests/ -v
 
 **Visual & Video Context Integration (Future):**
 - **Screenshot Upload Support**:
-  - Accept 1-2 images (PNG/JPG) in testing context form
+  - Accept 1-2 images (PNG/JPG) from Jira attachments
   - Pass images to Claude API (multimodal vision capabilities)
   - Generate visual test cases based on UI mockups
   - Compare expected design vs actual screenshots
@@ -916,14 +912,14 @@ uv run pytest tests/ -v
 
 ### Test Plan History & Reusability
 - **Saved history of generated plans** with full audit trail:
-  - Store ticket key, timestamp, generated test plan, and testing context used
+  - Store ticket key, timestamp, generated test plan, and source context used
   - View history of test plans for a specific ticket
   - Compare test plans across different versions/iterations
   - Export history as CSV or JSON
-- **Reusable testing context templates**:
-  - Save common testing context combinations as templates
-  - Quick-load templates for similar ticket types (e.g., "Auth Flow", "Payment Feature", "UI Changes")
-  - Share templates across team members
+- **AI learning from past patterns**:
+  - Learn from previously generated test plans
+  - Identify common patterns for similar ticket types (e.g., "Auth Flow", "Payment Feature", "UI Changes")
+  - Improve suggestions based on team feedback
 - **Search and filter history**:
   - Search by ticket key, date range, or keywords
   - Filter by ticket type, labels, or team member
@@ -938,31 +934,19 @@ uv run pytest tests/ -v
 
 ## Tips for Best Results
 
-### Start Simple - Let the System Work
-Just enter the Jira ticket key and click "Generate Test Plan". The enhanced system automatically:
+### Fully Automatic Test Plan Generation
+Just enter the Jira ticket key and click "Generate Test Plan". The system automatically:
 - **Fetches development activity** from Jira (commits, PRs, branches)
 - **Analyzes implementation details** from commit messages and PR titles
+- **Extracts code changes** from pull requests (file modifications, additions/deletions)
+- **Reviews PR discussions** and code review comments
+- **Reads repository documentation** (README.md) for project-specific terminology
 - **Identifies risk areas** from code change patterns
-- Detects multiple categories in the ticket description
-- Identifies behavior patterns (e.g., block vs allow continue)
-- Extracts specific examples from the ticket
+- **Detects behavior patterns** from ticket description (e.g., block vs allow continue)
+- **Extracts Figma design context** when design URLs are present
 - Generates comprehensive test coverage (3-5 happy path, 6-10 edge cases for complex features)
 
-**With Phase 2 complete, the system now generates smarter test plans with minimal input!**
-
-### When to Use Special Instructions
-Only use the **Special Testing Instructions** field if:
-- The automatic generation missed critical test scenarios
-- You need to emphasize specific priorities not clear from the ticket
-- The ticket structure is unusual
-
-Keep it simple - a few sentences is enough:
-```
-Focus on testing all keyword categories mentioned.
-Test both hard block (racism) and soft block (FNF mentions) behaviors.
-```
-
-See [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for detailed guidance.
+**No user input required - the system uses all available context to generate high-quality test plans!**
 
 ### Export Tips
 - **Copy for Jira**: Use this for pasting directly into Jira comments - plain text with visual separators
@@ -973,7 +957,6 @@ See [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for detailed guidance.
 
 Additional documentation is available in the [`docs/`](docs/) folder:
 
-- **[Testing Guide](docs/TESTING_GUIDE.md)** - Detailed guide on using the "Special Testing Instructions" field for complex features
 - **[Prompt Improvements](docs/PROMPT_IMPROVEMENTS.md)** - Technical details on LLM prompt enhancements (risk-based priorities, Given-When-Then format, test data requirements)
 
 ## License
