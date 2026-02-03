@@ -18,6 +18,7 @@ Generate a structured QA test plan from a Jira ticket using the ticket's title/d
 
 Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Ticket details and development activity (commits, PRs, branches)
+- Jira comments with testing discussions and suggested scenarios
 - GitHub PR code changes, comments, and repository documentation
 - Figma design specifications (when available)
 - Repository test patterns and conventions
@@ -34,6 +35,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 
 ### Intelligent Context Analysis
 - **Automatic context gathering**: Fetches ticket details, PRs, commits, code changes, and repository docs
+- **Smart comment analysis**: Extracts testing-related Jira comments (test scenarios, edge cases, QA discussions)
 - **Figma integration**: Extracts actual UI component names from design files for specific test cases
 - **Smart filtering**: Focuses on runtime behavior, ignoring build-time configs (ESLint, TypeScript, etc.)
 - **Priority ordering**: Critical tests first, edge cases last

@@ -109,6 +109,11 @@ async def get_issue(issue_key: str):
         if issue.attachments:
             attachments_list = [asdict(attachment) for attachment in issue.attachments]
 
+        # Serialize comments if available
+        comments_list = None
+        if issue.comments:
+            comments_list = [asdict(comment) for comment in issue.comments]
+
         return {
             "key": issue.key,
             "summary": issue.summary,
@@ -124,6 +129,7 @@ async def get_issue(issue_key: str):
             },
             "development_info": development_info_dict,
             "attachments": attachments_list,
+            "comments": comments_list,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -172,6 +178,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             testing_context=request.testing_context,
             development_info=request.development_info,
             images=images,
+            comments=request.comments,
         )
 
         return {

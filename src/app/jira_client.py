@@ -9,7 +9,7 @@ from .config import settings
 from .description_analyzer import analyze_description
 from .figma_client import FigmaClient
 from .github_client import GitHubClient
-from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraIssue, PRComment, PullRequest, RepositoryContext
+from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraComment, JiraIssue, PRComment, PullRequest, RepositoryContext
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +350,89 @@ class JiraClient:
         # Limit to first 3 images to avoid overwhelming the LLM
         return image_attachments[:3]
 
+    def _filter_testing_comments(self, comments_data: list[dict]) -> list[JiraComment]:
+        """
+        Filter comments for testing-related content using smart keyword matching.
+
+        Hybrid approach:
+        1. Fetch last 10 comments (reasonable window)
+        2. Filter for testing-related keywords
+        3. Take top 3 matches
+        4. If fewer than 3 matches, include latest comments up to 3 total
+
+        Excludes comments created by this tool (identified by marker).
+
+        Args:
+            comments_data: List of comment objects from Jira API
+
+        Returns:
+            List of up to 3 JiraComment objects most relevant to testing
+        """
+        # Marker used to identify comments created by this tool
+        BOT_MARKER = "🤖 Generated Test Plan"
+
+        # Testing-related keywords to search for
+        TESTING_KEYWORDS = [
+            'test', 'testing', 'qa', 'quality', 'verify', 'validation', 'validate',
+            'scenario', 'edge case', 'check', 'reproduce', 'steps to', 'regression',
+            'acceptance criteria', 'expected behavior', 'actual behavior', 'bug',
+            'defect', 'issue', 'problem', 'fails', 'passes', 'coverage'
+        ]
+
+        # Take last 10 comments (most recent)
+        recent_comments = comments_data[-10:] if len(comments_data) > 10 else comments_data
+
+        parsed_comments = []
+        testing_related = []
+
+        for comment_data in recent_comments:
+            # Extract author
+            author_info = comment_data.get('author', {})
+            author = author_info.get('displayName', author_info.get('emailAddress', 'Unknown'))
+
+            # Extract and parse comment body from ADF format
+            body_adf = comment_data.get('body', {})
+            body_text = extract_text_from_adf(body_adf)
+
+            if not body_text:
+                continue
+
+            # Skip comments created by this tool (to avoid circular references)
+            if BOT_MARKER in body_text:
+                continue
+
+            # Extract timestamps
+            created = comment_data.get('created', '')
+            updated = comment_data.get('updated')
+
+            # Create JiraComment object
+            jira_comment = JiraComment(
+                author=author,
+                body=body_text,
+                created=created,
+                updated=updated
+            )
+
+            parsed_comments.append(jira_comment)
+
+            # Check if comment contains testing keywords
+            body_lower = body_text.lower()
+            if any(keyword in body_lower for keyword in TESTING_KEYWORDS):
+                testing_related.append(jira_comment)
+
+        # Return top 3 testing-related comments, or latest 3 if fewer matches
+        if len(testing_related) >= 3:
+            return testing_related[:3]
+        elif testing_related:
+            # Have some testing comments but fewer than 3
+            # Fill remaining slots with latest non-testing comments
+            remaining_slots = 3 - len(testing_related)
+            other_comments = [c for c in parsed_comments if c not in testing_related]
+            return testing_related + other_comments[:remaining_slots]
+        else:
+            # No testing keywords found, return latest 3 comments
+            return parsed_comments[:3]
+
     async def download_image_as_base64(self, image_url: str) -> tuple[str, str] | None:
         """
         Download an image from Jira and return it as base64-encoded string.
@@ -442,6 +525,18 @@ class JiraClient:
         # Extract image attachments (PNG, JPG, JPEG, GIF)
         attachments = self._extract_image_attachments(fields.get("attachment", []))
 
+        # Fetch and filter comments for testing-related content
+        filtered_comments = None
+        try:
+            comments_data = await self.get_comments(issue_key)
+            if comments_data:
+                filtered_comments = self._filter_testing_comments(comments_data)
+                if filtered_comments:
+                    logger.info(f"Found {len(filtered_comments)} relevant comments for {issue_key}")
+        except Exception as e:
+            # Non-critical - continue without comments if fetching fails
+            logger.warning(f"Failed to fetch comments for {issue_key}: {e}")
+
         return JiraIssue(
             key=data["key"],
             summary=summary,
@@ -451,6 +546,7 @@ class JiraClient:
             issue_type=issue_type,
             development_info=development_info,
             attachments=attachments if attachments else None,
+            comments=filtered_comments if filtered_comments else None,
         )
 
     async def post_comment(self, issue_key: str, comment_text: str) -> dict:

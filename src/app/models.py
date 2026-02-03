@@ -124,6 +124,16 @@ class DevelopmentInfo:
 
 
 @dataclass
+class JiraComment:
+    """Represents a comment on a Jira issue."""
+
+    author: str
+    body: str  # Plain text extracted from ADF
+    created: str
+    updated: str | None = None
+
+
+@dataclass
 class Attachment:
     """Represents an attachment on a Jira issue."""
 
@@ -146,6 +156,7 @@ class JiraIssue:
     issue_type: str
     development_info: DevelopmentInfo | None = None
     attachments: list[Attachment] | None = None
+    comments: list[JiraComment] | None = None  # Filtered testing-related comments
 
 
 # ============================================================================
@@ -178,6 +189,7 @@ class GenerateTestPlanRequest(BaseModel):
     testing_context: dict = {}
     development_info: dict | None = None
     image_urls: list[str] | None = None  # URLs of images to download and analyze
+    comments: list[dict] | None = None  # Filtered testing-related Jira comments
 
 
 class PostCommentRequest(BaseModel):

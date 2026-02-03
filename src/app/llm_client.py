@@ -44,11 +44,13 @@ class LLMClient(ABC):
         testing_context: dict,
         development_info: dict | None = None,
         images: list[tuple[str, str]] | None = None,
+        comments: list[dict] | None = None,
     ) -> TestPlan:
         """Generate a structured test plan from ticket data and context.
 
         Args:
             images: List of (base64_data, media_type) tuples for image analysis
+            comments: List of filtered testing-related Jira comments
         """
         pass
 
@@ -60,6 +62,7 @@ class LLMClient(ABC):
         testing_context: dict,
         development_info: dict | None = None,
         has_images: bool = False,
+        comments: list[dict] | None = None,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
         prompt = f"""You are an expert QA engineer with 10+ years of experience creating comprehensive test plans. Your role is to generate thorough, actionable test cases that catch bugs before they reach production.
@@ -76,6 +79,30 @@ TICKET INFORMATION
 **Description:**
 {description if description else "No description provided"}
 """
+
+        # Add Jira comments if available
+        if comments:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "JIRA COMMENTS (TESTING-RELATED)\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += f"\nThe following {len(comments)} comment(s) from the Jira ticket contain testing discussions, edge cases, or scenarios:\n\n"
+
+            for i, comment in enumerate(comments, 1):
+                author = comment.get('author', 'Unknown')
+                body = comment.get('body', '')
+                created = comment.get('created', '')
+
+                # Truncate very long comments
+                body_preview = body[:500] + "..." if len(body) > 500 else body
+
+                prompt += f"**Comment {i} by {author}** (Posted: {created[:10] if created else 'Unknown date'}):\n"
+                prompt += f"{body_preview}\n\n"
+
+            prompt += "**Use these comments to:**\n"
+            prompt += "- Incorporate manually suggested test scenarios and edge cases\n"
+            prompt += "- Address specific concerns or questions raised about testing\n"
+            prompt += "- Include validation steps mentioned in the discussions\n"
+            prompt += "- Consider any reproduction steps or test data mentioned\n\n"
 
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups are attached. Use them to understand the UI requirements and generate specific visual test cases.\n"
@@ -569,6 +596,7 @@ class OllamaClient(LLMClient):
         testing_context: dict,
         development_info: dict | None = None,
         images: list[tuple[str, str]] | None = None,
+        comments: list[dict] | None = None,
     ) -> TestPlan:
         """Generate test plan using Ollama."""
         # Note: Ollama doesn't support vision yet, so images are ignored
@@ -576,7 +604,7 @@ class OllamaClient(LLMClient):
             print("Warning: Ollama does not support image analysis. Images will be ignored.")
 
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images)
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments
         )
 
         try:
@@ -650,10 +678,11 @@ class ClaudeClient(LLMClient):
         testing_context: dict,
         development_info: dict | None = None,
         images: list[tuple[str, str]] | None = None,
+        comments: list[dict] | None = None,
     ) -> TestPlan:
         """Generate test plan using Claude API with optional image support."""
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images)
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments
         )
 
         # Build message content (text + images if provided)
