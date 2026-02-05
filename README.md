@@ -18,6 +18,8 @@ Generate a structured QA test plan from a Jira ticket using the ticket's title/d
 
 Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Ticket details and development activity (commits, PRs, branches)
+- **Parent ticket context** (for sub-tasks: Epic/Story descriptions, Figma designs, images)
+- **Linked ticket dependencies** (blocks, blocked by, causes, caused by)
 - Jira comments with testing discussions and suggested scenarios
 - GitHub PR code changes, comments, and repository documentation
 - Figma design specifications (when available)
@@ -30,11 +32,22 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Multiple export formats (Markdown, Jira, JSON)
 - Token health monitoring and validation
 - Post test plans directly to Jira comments
+- **Parent ticket awareness** for sub-tasks to understand broader feature context
 
 ## Key Features
 
 ### Intelligent Context Analysis
 - **Automatic context gathering**: Fetches ticket details, PRs, commits, code changes, and repository docs
+- **Parent ticket awareness**: Automatically fetches parent Epic/Story context for sub-tasks, including:
+  - Parent descriptions and business requirements
+  - Figma designs attached to parent tickets
+  - Design mockups/screenshots from parent
+  - Overall feature context that sub-tasks lack
+- **Linked ticket dependencies**: Automatically fetches blocking and dependency relationships:
+  - Issues this ticket blocks (test thoroughly - others depend on this)
+  - Issues blocking this ticket (prerequisites that must be resolved first)
+  - Root cause issues (for bugs - ensures actual cause is fixed)
+  - Downstream issues this ticket may cause (validate no regressions)
 - **Smart comment analysis**: Extracts testing-related Jira comments (test scenarios, edge cases, QA discussions)
 - **Figma integration**: Extracts actual UI component names from design files for specific test cases
 - **Smart filtering**: Focuses on runtime behavior, ignoring build-time configs (ESLint, TypeScript, etc.)
@@ -311,7 +324,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Phase 5 complete (Figma integration, GitHub enrichment, token monitoring)
+**Current:** Phase 7 complete (Linked ticket dependencies for dependency context)
 **Next:** Slack bot integration (Phase 3c)
 
 ## Roadmap
@@ -323,6 +336,8 @@ uv run pytest tests/ -v
 - ✅ Token health monitoring
 - ✅ Smart comment management in Jira
 - ✅ Priority-based test ordering
+- ✅ **Parent ticket context**: Sub-tasks now include parent Epic/Story context with design resources
+- ✅ **Linked ticket dependencies**: Automatically fetches blocking/blocked-by relationships for dependency-aware testing
 
 ### Future Enhancements
 - **Slack Bot**: `/testplan TICKET-123` command for quick generation
@@ -335,8 +350,109 @@ uv run pytest tests/ -v
 ## Usage Tips
 
 - **Automatic generation**: Just enter a ticket key - the system fetches all context automatically
+- **Sub-tasks get parent context**: Design specs (Figma, images) from parent Epics/Stories are automatically included
 - **Export formats**: Use Jira format for comments, Markdown for GitHub/Slack, JSON for programmatic use
 - **GitHub token recommended**: Adds project-specific terminology and implementation details to test plans
+
+## Parent Ticket Context (Phase 6)
+
+When generating test plans for sub-tasks, the system automatically fetches context from the parent Epic or Story. This is especially valuable because design resources are often attached to parent tickets rather than individual sub-tasks.
+
+### What Gets Fetched from Parent Tickets
+
+- **Parent description**: Business requirements and acceptance criteria
+- **Figma designs**: Design specifications linked in parent descriptions
+- **Image attachments**: Mockups, screenshots, and design images attached to parent
+- **Parent metadata**: Issue type, labels, and summary for broader context
+
+### How It Works
+
+1. System detects if ticket is a sub-task with a parent
+2. Fetches full parent ticket data (one additional API call)
+3. Extracts Figma URLs from parent description
+4. Downloads Figma design context if available
+5. Includes parent images (up to 2 from parent, 2 from sub-task = max 4 total)
+6. LLM receives both sub-task AND parent context
+
+### Benefits
+
+- **Better context**: Sub-tasks tested with full feature understanding
+- **Design access**: Parent-level Figma links and mockups now available
+- **Business alignment**: Test plans validate parent-level requirements
+- **No extra config**: Works automatically when parent exists
+
+### Example
+
+**Without Parent Context:**
+- Sub-task: "Add email validation to form"
+- Test plan: Only validates technical implementation
+
+**With Parent Context:**
+- Sub-task: "Add email validation to form"
+- Parent: "Redesign registration flow" (with Figma designs)
+- Test plan: Validates technical implementation AND design requirements from parent Figma
+
+## Linked Ticket Dependencies (Phase 7)
+
+When generating test plans, the system automatically fetches and analyzes linked tickets to understand dependencies. This provides horizontal dependency context to complement the vertical parent hierarchy.
+
+### What Link Types Are Fetched
+
+The system focuses on high-value link types that directly impact testing:
+
+1. **"Blocks"**: Issues this ticket blocks
+   - Downstream work depends on this being correct
+   - Test thoroughly to prevent breaking dependent tickets
+
+2. **"Is Blocked By"**: Issues blocking this ticket
+   - Prerequisites that must be resolved first
+   - Understand API contracts and dependencies
+
+3. **"Causes"**: Issues this ticket may cause
+   - Validate fixes don't introduce regressions
+   - Test related areas carefully
+
+4. **"Is Caused By"**: Root cause issues
+   - Ensure the actual cause is fixed, not just symptoms
+   - Particularly valuable for bug tickets
+
+### How It Works
+
+1. System fetches issue links from Jira API
+2. Parses link types and directions (inward vs outward)
+3. Filters for relevant link types (blocks, causes)
+4. Fetches basic details for each linked issue (max 5 per type)
+5. LLM receives linked context with clear relationship labels
+
+### Benefits
+
+- **Dependency awareness**: Know what must be done first
+- **Impact analysis**: Understand what depends on this work
+- **Better prioritization**: Test critical paths more thoroughly
+- **Root cause validation**: Ensure bugs are truly fixed
+- **Regression prevention**: Validate fixes don't break related tickets
+
+### Example
+
+**Scenario:**
+- PROJ-101: "Implement Stripe integration" (Status: Done)
+- PROJ-102: "Add payment UI" (blocked by PROJ-101)
+
+**When testing PROJ-102:**
+- System detects "blocked by PROJ-101"
+- Fetches PROJ-101 details (API endpoints, data models)
+- LLM generates test plan that validates integration with PROJ-101's API
+- Test plan includes prerequisites: "Verify PROJ-101 Stripe API is available"
+
+**Another Scenario:**
+- Bug PROJ-200: "Login fails on mobile"
+- Root cause: PROJ-150 "Session timeout too short"
+
+**When testing the fix:**
+- System detects "caused by PROJ-150"
+- Fetches root cause context
+- Test plan validates both symptom AND root cause are fixed
+- Includes test: "Verify session timeout increased (root cause from PROJ-150)"
 
 ## Documentation
 

@@ -9,7 +9,7 @@ from .config import settings
 from .description_analyzer import analyze_description
 from .figma_client import FigmaClient
 from .github_client import GitHubClient
-from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraComment, JiraIssue, PRComment, PullRequest, RepositoryContext
+from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraComment, JiraIssue, LinkedIssue, LinkedIssues, ParentIssue, PRComment, PullRequest, RepositoryContext
 
 logger = logging.getLogger(__name__)
 
@@ -457,10 +457,174 @@ class JiraClient:
             logger.warning(f"Failed to download image from {image_url}: {e}")
             return None
 
+    async def _get_parent_issue(self, issue_key: str) -> ParentIssue | None:
+        """
+        Fetch parent issue with description, attachments, and Figma context.
+
+        This method fetches the full parent ticket to extract design resources
+        (Figma links, image attachments) that are often stored at the parent level
+        rather than on individual sub-tasks.
+
+        Note: Does not recursively fetch the parent's parent to avoid deep nesting.
+
+        Args:
+            issue_key: The parent issue key (e.g., "PROJ-123")
+
+        Returns:
+            ParentIssue object with all resources, or None if fetch fails
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        params = {
+            "fields": "summary,description,labels,issuetype,attachment",
+            "expand": "renderedFields"
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+                r.raise_for_status()
+
+                data = r.json()
+                fields = data.get("fields", {})
+
+                # Extract description
+                description = fields.get("description")
+                description_str = extract_text_from_adf(description)
+
+                # Extract image attachments from parent
+                parent_attachments = self._extract_image_attachments(
+                    fields.get("attachment", [])
+                )
+
+                # Extract Figma URL from parent description and fetch context
+                figma_context = None
+                if description_str and settings.figma_token:
+                    figma_url = self._extract_figma_url(description_str)
+                    if figma_url:
+                        try:
+                            figma_client = FigmaClient()
+                            figma_context = await figma_client.fetch_file_context(figma_url)
+                            if figma_context:
+                                logger.info(
+                                    f"Fetched Figma context from parent {issue_key}: "
+                                    f"{figma_context.file_name}"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch parent Figma context: {e}")
+
+                return ParentIssue(
+                    key=data["key"],
+                    summary=fields.get("summary", ""),
+                    description=description_str if description_str else None,
+                    issue_type=fields.get("issuetype", {}).get("name", ""),
+                    labels=fields.get("labels", []),
+                    attachments=parent_attachments if parent_attachments else None,
+                    figma_context=figma_context,
+                )
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch parent issue {issue_key}: {e}")
+            return None
+
+    async def _get_linked_issues(self, issue_links_data: list[dict], current_issue_key: str) -> LinkedIssues | None:
+        """
+        Fetch and parse linked issues focusing on blocking relationships.
+
+        Jira link types we care about:
+        - "Blocks" / "is blocked by": Direct dependency relationships
+        - "Causes" / "is caused by": Root cause relationships
+
+        Args:
+            issue_links_data: Raw issuelinks data from Jira API
+            current_issue_key: The key of the current issue (to determine direction)
+
+        Returns:
+            LinkedIssues object with categorized links, or None if no relevant links
+        """
+        MAX_LINKS_PER_TYPE = 5  # Limit to prevent overwhelming the LLM
+
+        blocks_list = []
+        blocked_by_list = []
+        causes_list = []
+        caused_by_list = []
+
+        # Parse issue links
+        for link in issue_links_data:
+            link_type_data = link.get("type", {})
+            link_name = link_type_data.get("name", "").lower()
+
+            # Determine direction: inward means current issue is the target
+            # outward means current issue is the source
+            inward_issue = link.get("inwardIssue")
+            outward_issue = link.get("outwardIssue")
+
+            # Process "Blocks" relationships
+            if "block" in link_name:
+                if outward_issue:
+                    # Current issue blocks the outward issue
+                    blocks_list.append(self._parse_linked_issue(outward_issue, "blocks"))
+                if inward_issue:
+                    # Current issue is blocked by the inward issue
+                    blocked_by_list.append(self._parse_linked_issue(inward_issue, "is_blocked_by"))
+
+            # Process "Causes" relationships
+            elif "cause" in link_name:
+                if outward_issue:
+                    # Current issue causes the outward issue
+                    causes_list.append(self._parse_linked_issue(outward_issue, "causes"))
+                if inward_issue:
+                    # Current issue is caused by the inward issue
+                    caused_by_list.append(self._parse_linked_issue(inward_issue, "is_caused_by"))
+
+        # Limit each type to MAX_LINKS_PER_TYPE
+        blocks_list = blocks_list[:MAX_LINKS_PER_TYPE]
+        blocked_by_list = blocked_by_list[:MAX_LINKS_PER_TYPE]
+        causes_list = causes_list[:MAX_LINKS_PER_TYPE]
+        caused_by_list = caused_by_list[:MAX_LINKS_PER_TYPE]
+
+        # Return None if no relevant links found
+        if not any([blocks_list, blocked_by_list, causes_list, caused_by_list]):
+            return None
+
+        return LinkedIssues(
+            blocks=blocks_list if blocks_list else None,
+            blocked_by=blocked_by_list if blocked_by_list else None,
+            causes=causes_list if causes_list else None,
+            caused_by=caused_by_list if caused_by_list else None,
+        )
+
+    def _parse_linked_issue(self, issue_data: dict, link_type: str) -> LinkedIssue:
+        """
+        Parse a linked issue from Jira API data.
+
+        Args:
+            issue_data: Issue data from the issuelinks response
+            link_type: Type of link ("blocks", "is_blocked_by", etc.)
+
+        Returns:
+            LinkedIssue object
+        """
+        fields = issue_data.get("fields", {})
+
+        # Extract description and truncate if too long
+        description_adf = fields.get("description")
+        description_str = extract_text_from_adf(description_adf) if description_adf else None
+        if description_str and len(description_str) > 500:
+            description_str = description_str[:500] + "..."
+
+        return LinkedIssue(
+            key=issue_data.get("key", ""),
+            summary=fields.get("summary", ""),
+            description=description_str,
+            issue_type=fields.get("issuetype", {}).get("name", "Unknown"),
+            link_type=link_type,
+            status=fields.get("status", {}).get("name"),
+        )
+
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         # Ask Jira for fields we need + development info if available
-        params = {"fields": "summary,description,labels,issuetype,attachment", "expand": "renderedFields"}
+        params = {"fields": "summary,description,labels,issuetype,attachment,parent,issuelinks", "expand": "renderedFields"}
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
@@ -537,6 +701,43 @@ class JiraClient:
             # Non-critical - continue without comments if fetching fails
             logger.warning(f"Failed to fetch comments for {issue_key}: {e}")
 
+        # Fetch parent issue if it exists (for sub-tasks)
+        # Parent tickets often contain design resources (Figma links, images) that sub-tasks lack
+        parent_issue = None
+        parent_data = fields.get("parent")
+        if parent_data:
+            parent_key = parent_data.get("key")
+            if parent_key:
+                logger.info(f"Fetching parent issue {parent_key} for additional context")
+                parent_issue = await self._get_parent_issue(parent_key)
+                if parent_issue:
+                    resources = []
+                    if parent_issue.figma_context:
+                        resources.append(f"Figma: {parent_issue.figma_context.file_name}")
+                    if parent_issue.attachments:
+                        resources.append(f"{len(parent_issue.attachments)} images")
+                    if resources:
+                        logger.info(f"Parent {parent_key} has: {', '.join(resources)}")
+
+        # Fetch linked issues (blocks, blocked by, causes, caused by)
+        # These provide horizontal dependency context to complement parent hierarchy
+        linked_issues = None
+        issue_links = fields.get("issuelinks", [])
+        if issue_links:
+            linked_issues = await self._get_linked_issues(issue_links, issue_key)
+            if linked_issues:
+                link_summary = []
+                if linked_issues.blocks:
+                    link_summary.append(f"blocks {len(linked_issues.blocks)}")
+                if linked_issues.blocked_by:
+                    link_summary.append(f"blocked by {len(linked_issues.blocked_by)}")
+                if linked_issues.causes:
+                    link_summary.append(f"causes {len(linked_issues.causes)}")
+                if linked_issues.caused_by:
+                    link_summary.append(f"caused by {len(linked_issues.caused_by)}")
+                if link_summary:
+                    logger.info(f"{issue_key} has links: {', '.join(link_summary)}")
+
         return JiraIssue(
             key=data["key"],
             summary=summary,
@@ -547,6 +748,8 @@ class JiraClient:
             development_info=development_info,
             attachments=attachments if attachments else None,
             comments=filtered_comments if filtered_comments else None,
+            parent=parent_issue,
+            linked_issues=linked_issues,
         )
 
     async def post_comment(self, issue_key: str, comment_text: str) -> dict:

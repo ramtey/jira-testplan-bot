@@ -145,6 +145,41 @@ class Attachment:
 
 
 @dataclass
+class ParentIssue:
+    """Represents the parent issue of a sub-task with design resources."""
+
+    key: str
+    summary: str
+    description: str | None
+    issue_type: str
+    labels: list[str]
+    attachments: list[Attachment] | None = None  # Images from parent ticket
+    figma_context: FigmaContext | None = None    # Figma designs from parent ticket
+
+
+@dataclass
+class LinkedIssue:
+    """Represents a linked issue (blocks, is blocked by, etc.)."""
+
+    key: str
+    summary: str
+    description: str | None
+    issue_type: str
+    link_type: str  # "blocks", "is_blocked_by", "causes", "is_caused_by", etc.
+    status: str | None = None  # Current status of the linked issue
+
+
+@dataclass
+class LinkedIssues:
+    """Container for all linked issues, organized by link type."""
+
+    blocks: list[LinkedIssue] | None = None  # Issues this ticket blocks
+    blocked_by: list[LinkedIssue] | None = None  # Issues blocking this ticket
+    causes: list[LinkedIssue] | None = None  # Issues this ticket causes
+    caused_by: list[LinkedIssue] | None = None  # Issues that caused this ticket
+
+
+@dataclass
 class JiraIssue:
     """Represents a Jira issue with extracted data."""
 
@@ -157,6 +192,8 @@ class JiraIssue:
     development_info: DevelopmentInfo | None = None
     attachments: list[Attachment] | None = None
     comments: list[JiraComment] | None = None  # Filtered testing-related comments
+    parent: ParentIssue | None = None  # Parent ticket context with design resources
+    linked_issues: LinkedIssues | None = None  # Linked tickets (blocks, blocked by, etc.)
 
 
 # ============================================================================
@@ -190,6 +227,8 @@ class GenerateTestPlanRequest(BaseModel):
     development_info: dict | None = None
     image_urls: list[str] | None = None  # URLs of images to download and analyze
     comments: list[dict] | None = None  # Filtered testing-related Jira comments
+    parent_info: dict | None = None  # Parent ticket context (key, summary, description, resources)
+    linked_info: dict | None = None  # Linked issues (blocks, blocked_by, causes, caused_by)
 
 
 class PostCommentRequest(BaseModel):

@@ -114,6 +114,36 @@ async def get_issue(issue_key: str):
         if issue.comments:
             comments_list = [asdict(comment) for comment in issue.comments]
 
+        # Serialize parent info if available
+        parent_info_dict = None
+        if issue.parent:
+            parent_info_dict = {
+                "key": issue.parent.key,
+                "summary": issue.parent.summary,
+                "description": issue.parent.description,
+                "issue_type": issue.parent.issue_type,
+                "labels": issue.parent.labels,
+            }
+            # Include parent attachments if available
+            if issue.parent.attachments:
+                parent_info_dict["attachments"] = [asdict(att) for att in issue.parent.attachments]
+            # Include parent Figma context if available
+            if issue.parent.figma_context:
+                parent_info_dict["figma_context"] = asdict(issue.parent.figma_context)
+
+        # Serialize linked issues if available
+        linked_info_dict = None
+        if issue.linked_issues:
+            linked_info_dict = {}
+            if issue.linked_issues.blocks:
+                linked_info_dict["blocks"] = [asdict(link) for link in issue.linked_issues.blocks]
+            if issue.linked_issues.blocked_by:
+                linked_info_dict["blocked_by"] = [asdict(link) for link in issue.linked_issues.blocked_by]
+            if issue.linked_issues.causes:
+                linked_info_dict["causes"] = [asdict(link) for link in issue.linked_issues.causes]
+            if issue.linked_issues.caused_by:
+                linked_info_dict["caused_by"] = [asdict(link) for link in issue.linked_issues.caused_by]
+
         return {
             "key": issue.key,
             "summary": issue.summary,
@@ -130,6 +160,8 @@ async def get_issue(issue_key: str):
             "development_info": development_info_dict,
             "attachments": attachments_list,
             "comments": comments_list,
+            "parent": parent_info_dict,
+            "linked_issues": linked_info_dict,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -179,6 +211,8 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             development_info=request.development_info,
             images=images,
             comments=request.comments,
+            parent_info=request.parent_info,
+            linked_info=request.linked_info,
         )
 
         return {

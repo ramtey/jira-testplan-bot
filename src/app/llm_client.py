@@ -45,6 +45,8 @@ class LLMClient(ABC):
         development_info: dict | None = None,
         images: list[tuple[str, str]] | None = None,
         comments: list[dict] | None = None,
+        parent_info: dict | None = None,
+        linked_info: dict | None = None,
     ) -> TestPlan:
         """Generate a structured test plan from ticket data and context.
 
@@ -63,6 +65,8 @@ class LLMClient(ABC):
         development_info: dict | None = None,
         has_images: bool = False,
         comments: list[dict] | None = None,
+        parent_info: dict | None = None,
+        linked_info: dict | None = None,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
         prompt = f"""You are an expert QA engineer with 10+ years of experience creating comprehensive test plans. Your role is to generate thorough, actionable test cases that catch bugs before they reach production.
@@ -79,6 +83,112 @@ TICKET INFORMATION
 **Description:**
 {description if description else "No description provided"}
 """
+
+        # Add parent ticket context if available
+        if parent_info:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "PARENT TICKET CONTEXT\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += f"\n**This is a sub-task of:** {parent_info.get('key')} - {parent_info.get('summary')}\n"
+            prompt += f"**Parent Type:** {parent_info.get('issue_type')}\n"
+
+            parent_desc = parent_info.get('description')
+            if parent_desc:
+                # Truncate parent description if too long
+                desc_preview = parent_desc[:1000] + "..." if len(parent_desc) > 1000 else parent_desc
+                prompt += f"\n**Parent Description:**\n{desc_preview}\n"
+
+            # Highlight parent resources
+            parent_resources = []
+            if parent_info.get('figma_context'):
+                figma = parent_info['figma_context']
+                parent_resources.append(f"📐 Figma design: {figma.get('file_name')}")
+            if parent_info.get('attachments'):
+                attachment_count = len(parent_info['attachments'])
+                parent_resources.append(f"🖼️ {attachment_count} design image{'s' if attachment_count > 1 else ''}")
+
+            if parent_resources:
+                prompt += f"\n**Parent Resources:**\n"
+                for resource in parent_resources:
+                    prompt += f"- {resource}\n"
+
+            prompt += "\n**Use parent context to:**\n"
+            prompt += "- Understand the overall feature/epic this sub-task contributes to\n"
+            prompt += "- Align test scenarios with parent-level business requirements and acceptance criteria\n"
+            prompt += "- Use design specifications from parent Figma files and mockups\n"
+            prompt += "- Validate that this sub-task fulfills its role in the broader feature\n"
+            prompt += "- Consider integration points with other sub-tasks under the same parent\n"
+
+        # Add linked issues context if available
+        if linked_info:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "LINKED ISSUES (DEPENDENCIES)\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+            # Show blocked_by issues (highest priority - these must be done first)
+            blocked_by = linked_info.get('blocked_by', [])
+            if blocked_by:
+                prompt += f"\n**⛔ Blocked By ({len(blocked_by)} issue{'s' if len(blocked_by) > 1 else ''}):**\n"
+                prompt += "This ticket CANNOT be tested until these are resolved:\n\n"
+                for issue in blocked_by:
+                    prompt += f"- **{issue.get('key')}**: {issue.get('summary')}\n"
+                    if issue.get('status'):
+                        prompt += f"  Status: {issue.get('status')}\n"
+                    if issue.get('description'):
+                        desc_preview = issue['description'][:200] + "..." if len(issue['description']) > 200 else issue['description']
+                        prompt += f"  Description: {desc_preview}\n"
+                    prompt += "\n"
+
+            # Show blocks issues (test carefully - don't break downstream work)
+            blocks = linked_info.get('blocks', [])
+            if blocks:
+                prompt += f"\n**🔒 Blocks ({len(blocks)} issue{'s' if len(blocks) > 1 else ''}):**\n"
+                prompt += "This ticket blocks these downstream tickets - test thoroughly:\n\n"
+                for issue in blocks:
+                    prompt += f"- **{issue.get('key')}**: {issue.get('summary')}\n"
+                    if issue.get('status'):
+                        prompt += f"  Status: {issue.get('status')}\n"
+                    if issue.get('description'):
+                        desc_preview = issue['description'][:200] + "..." if len(issue['description']) > 200 else issue['description']
+                        prompt += f"  Description: {desc_preview}\n"
+                    prompt += "\n"
+
+            # Show caused_by issues (root cause context)
+            caused_by = linked_info.get('caused_by', [])
+            if caused_by:
+                prompt += f"\n**🐛 Caused By ({len(caused_by)} issue{'s' if len(caused_by) > 1 else ''}):**\n"
+                prompt += "Root cause issues that led to this ticket:\n\n"
+                for issue in caused_by:
+                    prompt += f"- **{issue.get('key')}**: {issue.get('summary')}\n"
+                    if issue.get('description'):
+                        desc_preview = issue['description'][:200] + "..." if len(issue['description']) > 200 else issue['description']
+                        prompt += f"  Description: {desc_preview}\n"
+                    prompt += "\n"
+
+            # Show causes issues (validate the fix doesn't cause downstream issues)
+            causes = linked_info.get('causes', [])
+            if causes:
+                prompt += f"\n**⚠️ Causes ({len(causes)} issue{'s' if len(causes) > 1 else ''}):**\n"
+                prompt += "This ticket may cause these issues - validate fixes don't regress:\n\n"
+                for issue in causes:
+                    prompt += f"- **{issue.get('key')}**: {issue.get('summary')}\n"
+                    if issue.get('description'):
+                        desc_preview = issue['description'][:200] + "..." if len(issue['description']) > 200 else issue['description']
+                        prompt += f"  Description: {desc_preview}\n"
+                    prompt += "\n"
+
+            prompt += "**Use linked issues to:**\n"
+            if blocked_by:
+                prompt += "- ⚠️ CRITICAL: Validate that blocking issues are resolved before testing\n"
+                prompt += "- Understand prerequisites and API contracts from blocking tickets\n"
+            if blocks:
+                prompt += "- Test thoroughly - downstream work depends on this being correct\n"
+                prompt += "- Consider how changes might affect dependent tickets\n"
+            if caused_by:
+                prompt += "- Ensure the root cause is actually fixed, not just symptoms\n"
+            if causes:
+                prompt += "- Validate that fixes don't introduce regressions in related areas\n"
+            prompt += "- Test integration points between this ticket and linked dependencies\n"
 
         # Add Jira comments if available
         if comments:
@@ -597,6 +707,8 @@ class OllamaClient(LLMClient):
         development_info: dict | None = None,
         images: list[tuple[str, str]] | None = None,
         comments: list[dict] | None = None,
+        parent_info: dict | None = None,
+        linked_info: dict | None = None,
     ) -> TestPlan:
         """Generate test plan using Ollama."""
         # Note: Ollama doesn't support vision yet, so images are ignored
@@ -604,7 +716,7 @@ class OllamaClient(LLMClient):
             print("Warning: Ollama does not support image analysis. Images will be ignored.")
 
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info
         )
 
         try:
@@ -679,10 +791,12 @@ class ClaudeClient(LLMClient):
         development_info: dict | None = None,
         images: list[tuple[str, str]] | None = None,
         comments: list[dict] | None = None,
+        parent_info: dict | None = None,
+        linked_info: dict | None = None,
     ) -> TestPlan:
         """Generate test plan using Claude API with optional image support."""
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info
         )
 
         # Build message content (text + images if provided)
