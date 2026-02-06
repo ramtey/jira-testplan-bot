@@ -487,9 +487,16 @@ class JiraClient:
                 data = r.json()
                 fields = data.get("fields", {})
 
-                # Extract description
+                # Extract description with error handling for malformed ADF
                 description = fields.get("description")
-                description_str = extract_text_from_adf(description)
+                description_str = None
+                try:
+                    description_str = extract_text_from_adf(description)
+                except Exception as e:
+                    logger.warning(f"Failed to parse ADF description for parent {issue_key}: {e}")
+                    # Try to extract raw text as fallback
+                    if description and isinstance(description, dict):
+                        description_str = str(description.get("text", ""))[:500]  # First 500 chars
 
                 # Extract image attachments from parent
                 parent_attachments = self._extract_image_attachments(
@@ -522,11 +529,26 @@ class JiraClient:
                     figma_context=figma_context,
                 )
 
+        except httpx.HTTPStatusError as e:
+            # Handle specific HTTP errors with appropriate messages
+            if e.response.status_code == 404:
+                logger.warning(f"Parent issue {issue_key} not found (404)")
+            elif e.response.status_code == 403:
+                logger.warning(f"Access denied to parent issue {issue_key} (403)")
+            elif e.response.status_code == 401:
+                logger.error(f"Authentication failed when fetching parent issue {issue_key} (401)")
+            else:
+                logger.warning(f"HTTP error {e.response.status_code} fetching parent issue {issue_key}")
+            return None
+        except httpx.TimeoutException:
+            logger.warning(f"Timeout while fetching parent issue {issue_key}")
+            return None
         except Exception as e:
-            logger.warning(f"Failed to fetch parent issue {issue_key}: {e}")
+            # Catch-all for unexpected errors
+            logger.error(f"Unexpected error fetching parent issue {issue_key}: {type(e).__name__}: {e}")
             return None
 
-    async def _get_linked_issues(self, issue_links_data: list[dict], current_issue_key: str) -> LinkedIssues | None:
+    async def _get_linked_issues(self, issue_links_data: list[dict]) -> LinkedIssues | None:
         """
         Fetch and parse linked issues focusing on blocking relationships.
 
@@ -536,11 +558,13 @@ class JiraClient:
 
         Args:
             issue_links_data: Raw issuelinks data from Jira API
-            current_issue_key: The key of the current issue (to determine direction)
 
         Returns:
             LinkedIssues object with categorized links, or None if no relevant links
         """
+        # Early return if no links
+        if not issue_links_data:
+            return None
         MAX_LINKS_PER_TYPE = 5  # Limit to prevent overwhelming the LLM
 
         blocks_list = []
@@ -582,39 +606,59 @@ class JiraClient:
         causes_list = causes_list[:MAX_LINKS_PER_TYPE]
         caused_by_list = caused_by_list[:MAX_LINKS_PER_TYPE]
 
-        # Return None if no relevant links found
+        # Return None if no relevant links found at all
         if not any([blocks_list, blocked_by_list, causes_list, caused_by_list]):
             return None
 
+        # Always use lists (even if empty) for consistency
+        # This makes the API predictable - consumers can always iterate without None checks
         return LinkedIssues(
-            blocks=blocks_list if blocks_list else None,
-            blocked_by=blocked_by_list if blocked_by_list else None,
-            causes=causes_list if causes_list else None,
-            caused_by=caused_by_list if caused_by_list else None,
+            blocks=blocks_list,
+            blocked_by=blocked_by_list,
+            causes=causes_list,
+            caused_by=caused_by_list,
         )
 
-    def _parse_linked_issue(self, issue_data: dict, link_type: str) -> LinkedIssue:
+    def _parse_linked_issue(self, issue_data: dict | None, link_type: str) -> LinkedIssue:
         """
         Parse a linked issue from Jira API data.
 
         Args:
-            issue_data: Issue data from the issuelinks response
+            issue_data: Issue data from the issuelinks response (can be None if link is malformed)
             link_type: Type of link ("blocks", "is_blocked_by", etc.)
 
         Returns:
             LinkedIssue object
         """
+        # Handle None or malformed issue data
+        if not issue_data:
+            logger.warning(f"Received None or empty issue_data for link_type: {link_type}")
+            return LinkedIssue(
+                key="UNKNOWN",
+                summary="Unknown Issue (malformed link data)",
+                description=None,
+                issue_type="Unknown",
+                link_type=link_type,
+                status=None,
+            )
+
         fields = issue_data.get("fields", {})
 
         # Extract description and truncate if too long
         description_adf = fields.get("description")
-        description_str = extract_text_from_adf(description_adf) if description_adf else None
-        if description_str and len(description_str) > 500:
-            description_str = description_str[:500] + "..."
+        description_str = None
+        if description_adf:
+            try:
+                description_str = extract_text_from_adf(description_adf)
+                if description_str and len(description_str) > 500:
+                    description_str = description_str[:500] + "..."
+            except Exception as e:
+                logger.warning(f"Failed to extract description from linked issue: {e}")
+                description_str = None
 
         return LinkedIssue(
-            key=issue_data.get("key", ""),
-            summary=fields.get("summary", ""),
+            key=issue_data.get("key", "UNKNOWN"),
+            summary=fields.get("summary", "Unknown"),
             description=description_str,
             issue_type=fields.get("issuetype", {}).get("name", "Unknown"),
             link_type=link_type,
@@ -707,9 +751,13 @@ class JiraClient:
         parent_data = fields.get("parent")
         if parent_data:
             parent_key = parent_data.get("key")
-            if parent_key:
+            # Validate parent_key is not None and not empty string
+            if parent_key and isinstance(parent_key, str) and parent_key.strip():
                 logger.info(f"Fetching parent issue {parent_key} for additional context")
                 parent_issue = await self._get_parent_issue(parent_key)
+            elif parent_key is not None:
+                # Log if we received an invalid parent key
+                logger.warning(f"Invalid parent key received: '{parent_key}' (type: {type(parent_key).__name__})")
                 if parent_issue:
                     resources = []
                     if parent_issue.figma_context:
@@ -724,7 +772,7 @@ class JiraClient:
         linked_issues = None
         issue_links = fields.get("issuelinks", [])
         if issue_links:
-            linked_issues = await self._get_linked_issues(issue_links, issue_key)
+            linked_issues = await self._get_linked_issues(issue_links)
             if linked_issues:
                 link_summary = []
                 if linked_issues.blocks:

@@ -10,11 +10,32 @@ Switch providers by changing LLM_PROVIDER in .env
 
 import json
 from abc import ABC, abstractmethod
+from dataclasses import is_dataclass
+from typing import Any
 
 import httpx
 
 from .config import settings
 from .models import TestPlan
+
+
+def _safe_get(obj: dict | Any, key: str, default: Any = None) -> Any:
+    """
+    Safely get a value from either a dict or a dataclass instance.
+
+    Args:
+        obj: Either a dictionary or a dataclass instance
+        key: The key/attribute name to access
+        default: Default value if key doesn't exist
+
+    Returns:
+        The value from the object, or default if not found
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    elif is_dataclass(obj):
+        return getattr(obj, key, default)
+    return default
 
 
 class LLMError(Exception):
@@ -102,7 +123,8 @@ TICKET INFORMATION
             parent_resources = []
             if parent_info.get('figma_context'):
                 figma = parent_info['figma_context']
-                parent_resources.append(f"📐 Figma design: {figma.get('file_name')}")
+                file_name = _safe_get(figma, 'file_name', 'Unknown')
+                parent_resources.append(f"📐 Figma design: {file_name}")
             if parent_info.get('attachments'):
                 attachment_count = len(parent_info['attachments'])
                 parent_resources.append(f"🖼️ {attachment_count} design image{'s' if attachment_count > 1 else ''}")
@@ -243,24 +265,25 @@ TICKET INFORMATION
             prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             prompt += "DESIGN SPECIFICATIONS (FIGMA)\n"
             prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            prompt += f"\n**Design File:** {figma_context.get('file_name')}\n"
+            file_name = _safe_get(figma_context, 'file_name', 'Unknown')
+            prompt += f"\n**Design File:** {file_name}\n"
 
             # Add frames/screens (limit to 30)
-            frames = figma_context.get("frames", [])
+            frames = _safe_get(figma_context, "frames", [])
             if frames:
                 prompt += f"\n**Screens/Frames ({len(frames)}):**\n"
                 for frame in frames[:30]:
-                    frame_name = frame.get("name") if isinstance(frame, dict) else frame.name
-                    frame_type = frame.get("type", "FRAME") if isinstance(frame, dict) else frame.type
+                    frame_name = _safe_get(frame, "name", "Unknown")
+                    frame_type = _safe_get(frame, "type", "FRAME")
                     prompt += f"- {frame_name} ({frame_type})\n"
 
             # Add components (limit to 20)
-            components = figma_context.get("components", [])
+            components = _safe_get(figma_context, "components", [])
             if components:
                 prompt += f"\n**UI Components ({len(components)}):**\n"
                 for comp in components[:20]:
-                    comp_name = comp.get("name") if isinstance(comp, dict) else comp.name
-                    comp_desc = comp.get("description") if isinstance(comp, dict) else comp.description
+                    comp_name = _safe_get(comp, "name", "Unknown")
+                    comp_desc = _safe_get(comp, "description", None)
                     comp_info = f"- {comp_name}"
                     if comp_desc:
                         comp_info += f": {comp_desc}"

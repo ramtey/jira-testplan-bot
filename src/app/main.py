@@ -169,6 +169,22 @@ async def get_issue(issue_key: str):
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except JiraConnectionError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    except (TypeError, ValueError, AttributeError) as e:
+        # Handle serialization errors (asdict() failures, malformed dataclasses, etc.)
+        import logging
+        logging.error(f"Serialization error for issue {issue_key}: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to serialize issue data: {type(e).__name__}"
+        )
+    except Exception as e:
+        # Catch-all for unexpected errors
+        import logging
+        logging.error(f"Unexpected error fetching issue {issue_key}: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while fetching the issue"
+        )
 
 
 @app.post("/generate-test-plan")
@@ -248,3 +264,11 @@ async def post_comment(request: PostCommentRequest):
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except JiraConnectionError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        # Catch-all for unexpected errors
+        import logging
+        logging.error(f"Unexpected error posting comment to {request.issue_key}: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while posting the comment"
+        )
