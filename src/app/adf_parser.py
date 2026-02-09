@@ -37,6 +37,9 @@ def _extract_text_recursive(node: dict | list | str, text_parts: list[str]) -> N
     """
     Recursively traverse ADF structure and extract text content.
 
+    Ignores strikethrough text (text with "strike" mark) since it indicates
+    removed or deprecated content that shouldn't be included in test plans.
+
     Args:
         node: Current ADF node (dict, list, or string)
         text_parts: Accumulator list for extracted text
@@ -53,9 +56,15 @@ def _extract_text_recursive(node: dict | list | str, text_parts: list[str]) -> N
     if not isinstance(node, dict):
         return
 
-    # Extract text from "text" field if present
+    # Extract text from "text" field if present, but skip strikethrough text
     if "text" in node:
-        text_parts.append(node["text"])
+        # Check if text has strikethrough mark
+        marks = node.get("marks", [])
+        has_strikethrough = any(mark.get("type") == "strike" for mark in marks)
+
+        # Only include text if it's not strikethrough
+        if not has_strikethrough:
+            text_parts.append(node["text"])
 
     # Handle specific node types that might need special formatting
     node_type = node.get("type")
