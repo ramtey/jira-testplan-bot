@@ -102,6 +102,8 @@ async def get_issue(issue_key: str):
                 "commits": [asdict(commit) for commit in issue.development_info.commits],
                 "pull_requests": [asdict(pr) for pr in issue.development_info.pull_requests],
                 "branches": issue.development_info.branches,
+                "repository_context": asdict(issue.development_info.repository_context) if issue.development_info.repository_context else None,
+                "figma_context": asdict(issue.development_info.figma_context) if issue.development_info.figma_context else None,
             }
 
         # Serialize attachments if available

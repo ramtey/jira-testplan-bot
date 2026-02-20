@@ -369,6 +369,10 @@ TICKET INFORMATION
                             prompt += f"     ... and {len(comments) - 10} more comments\n"
 
                         prompt += "\n"
+                        prompt += "  ⚠️ REQUIRED: Generate specific test cases from the PR discussion above:\n"
+                        prompt += "     - Each concern or question raised by a reviewer → create a test case that validates it\n"
+                        prompt += "     - Each edge case or gotcha mentioned → create a test case that exercises it\n"
+                        prompt += "     - Each bug or unexpected behavior noted → create a test case that catches regression\n"
 
             # Add commit information
             commits = development_info.get("commits", [])

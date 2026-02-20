@@ -103,6 +103,9 @@ function App() {
           testing_context: {},
           development_info: ticketData.development_info,
           image_urls: imageUrls,
+          comments: ticketData.comments || null,
+          parent_info: ticketData.parent || null,
+          linked_info: ticketData.linked_issues || null,
         }),
         signal: controller.signal,
       })

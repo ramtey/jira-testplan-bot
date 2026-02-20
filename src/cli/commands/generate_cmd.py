@@ -159,6 +159,33 @@ def generate(
                 if issue.development_info:
                     development_info = asdict(issue.development_info)
 
+                # Prepare Jira comments
+                comments = None
+                if issue.comments:
+                    comments = [asdict(c) for c in issue.comments]
+
+                # Prepare parent info
+                parent_info = None
+                if issue.parent:
+                    parent_info = asdict(issue.parent)
+
+                # Prepare linked issues info
+                linked_info = None
+                if issue.linked_issues:
+                    linked_info = asdict(issue.linked_issues)
+
+                # Download image attachments
+                images = None
+                if issue.attachments:
+                    jira_client = JiraClient()
+                    images = []
+                    for attachment in issue.attachments[:3]:
+                        image_data = asyncio.run(jira_client.download_image_as_base64(attachment.url))
+                        if image_data:
+                            images.append(image_data)
+                    if not images:
+                        images = None
+
                 # Generate test plan
                 llm_client = get_llm_client()
                 test_plan = asyncio.run(
@@ -168,6 +195,10 @@ def generate(
                         description=issue.description or "",
                         testing_context={},
                         development_info=development_info,
+                        images=images,
+                        comments=comments,
+                        parent_info=parent_info,
+                        linked_info=linked_info,
                     )
                 )
 
