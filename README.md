@@ -26,7 +26,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Repository test patterns and conventions
 
 **Features:**
-- Web UI with dark/light theme support
+- Web UI for browser-based workflows
 - CLI tool for terminal-native workflows
 - MCP server for Claude desktop integration
 - Multiple export formats (Markdown, Jira, JSON)
