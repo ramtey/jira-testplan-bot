@@ -67,6 +67,29 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="post_test_plan_to_jira",
+            description=(
+                "Post a test plan as a comment to a Jira ticket. "
+                "If a test plan comment already exists on the ticket (from a previous run), "
+                "it will be updated instead of creating a duplicate. "
+                "Use this after generate_test_plan to save the plan directly to the Jira ticket."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticket_key": {
+                        "type": "string",
+                        "description": "Jira ticket key (e.g., PROJ-123, ABC-456)",
+                    },
+                    "test_plan": {
+                        "type": "string",
+                        "description": "The test plan content to post as a comment",
+                    },
+                },
+                "required": ["ticket_key", "test_plan"],
+            },
+        ),
+        Tool(
             name="check_token_health",
             description=(
                 "Check the health status of all configured API tokens "
@@ -92,6 +115,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         return await _fetch_jira_ticket(arguments["ticket_key"])
     elif name == "generate_test_plan":
         return await _generate_test_plan(arguments["ticket_key"])
+    elif name == "post_test_plan_to_jira":
+        return await _post_test_plan_to_jira(arguments["ticket_key"], arguments["test_plan"])
     elif name == "check_token_health":
         return await _check_token_health()
     else:
@@ -259,6 +284,40 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         return [TextContent(
             type="text",
             text=f"❌ Error generating test plan: {e}"
+        )]
+
+
+async def _post_test_plan_to_jira(ticket_key: str, test_plan: str) -> list[TextContent]:
+    """Post a test plan as a comment to a Jira ticket."""
+    try:
+        jira_client = JiraClient()
+        result = await jira_client.post_comment(ticket_key, test_plan)
+
+        if result.get("updated"):
+            return [TextContent(
+                type="text",
+                text=f"✅ Test plan updated on {ticket_key} (comment ID: {result.get('id')})"
+            )]
+        else:
+            return [TextContent(
+                type="text",
+                text=f"✅ Test plan posted to {ticket_key} (comment ID: {result.get('id')})"
+            )]
+
+    except JiraNotFoundError:
+        return [TextContent(
+            type="text",
+            text=f"❌ Ticket not found: {ticket_key}\n\nPlease check the ticket key and try again."
+        )]
+    except JiraAuthError as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ Jira authentication failed: {e}\n\nCheck your JIRA_API_TOKEN environment variable."
+        )]
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ Error posting test plan: {e}"
         )]
 
 
