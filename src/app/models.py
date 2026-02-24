@@ -79,6 +79,8 @@ class RepositoryContext:
 
     readme_content: str | None = None
     test_examples: list[str] | None = None  # Paths to example test files
+    testid_reference: str | None = None     # Auto-generated testID map (from .agents/skills/simulator-testing/references/testid-reference.md)
+    screen_guide: str | None = None         # Screen navigation guide (from .agents/skills/simulator-testing/references/screen-guide.md)
 
 
 @dataclass

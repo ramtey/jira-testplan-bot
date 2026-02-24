@@ -147,6 +147,9 @@ venv.bak/
 # Claude desktop config with real credentials
 claude_desktop_config.json
 
+# Claude Code - local-only permission overrides (machine-specific)
+.claude/settings.local.json
+
 # Spyder project settings
 .spyderproject
 .spyproject

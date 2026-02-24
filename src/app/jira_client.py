@@ -444,7 +444,7 @@ class JiraClient:
             Tuple of (base64_data, media_type) or None if download fails
         """
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
                 response = await client.get(image_url, headers=self._headers())
                 response.raise_for_status()
 

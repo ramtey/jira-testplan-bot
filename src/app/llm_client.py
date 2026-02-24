@@ -259,6 +259,41 @@ TICKET INFORMATION
                     prompt += f"- {test_file}\n"
                 prompt += "\nUse these test patterns and project documentation to generate specific test cases that match this project's structure and conventions.\n"
 
+        # Add UI/simulator testing context if available.
+        # These files are present on repos that use the simulator-testing skill pattern
+        # (e.g. agent-calculator). Silently skipped for repos that don't have them.
+        if development_info and development_info.get("repository_context"):
+            repo_context = development_info["repository_context"]
+            screen_guide = repo_context.get("screen_guide")
+            testid_reference = repo_context.get("testid_reference")
+
+            if screen_guide or testid_reference:
+                prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                prompt += "UI NAVIGATION CONTEXT\n"
+                prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                prompt += "\nThis app has stable testID identifiers on every interactive element. "
+                prompt += "Use these in your test steps instead of generic descriptions.\n"
+                prompt += "Example: write 'tap `price-input`' not 'tap the price field'.\n"
+
+                if screen_guide:
+                    # Include the navigation structure + first portion of screen descriptions.
+                    # The full guide can be long; 4000 chars covers the structure overview
+                    # and the most-tested screens.
+                    guide_preview = screen_guide[:4000] + "\n...(truncated)" if len(screen_guide) > 4000 else screen_guide
+                    prompt += f"\n**Screen Navigation Guide:**\n{guide_preview}\n"
+
+                if testid_reference:
+                    # Full reference maps every testID to its screen.
+                    # 5000 chars covers the vast majority of screens.
+                    ref_preview = testid_reference[:5000] + "\n...(truncated)" if len(testid_reference) > 5000 else testid_reference
+                    prompt += f"\n**Available TestIDs by Screen:**\n{ref_preview}\n"
+
+                prompt += "\n**Rules when using this context:**\n"
+                prompt += "- Reference testIDs with backticks in action steps: `button-testid`\n"
+                prompt += "- Only reference testIDs that appear in the list above\n"
+                prompt += "- Use exact screen names from the guide for navigation steps\n"
+                prompt += "- If a flow requires screens not in the guide, describe them generically\n"
+
         # Add Figma design context if available (Phase 5)
         if development_info and development_info.get("figma_context"):
             figma_context = development_info["figma_context"]

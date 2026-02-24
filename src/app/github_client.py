@@ -80,6 +80,8 @@ class RepositoryContext:
 
     readme_content: str | None = None
     test_examples: list[str] | None = None  # Paths to example test files
+    testid_reference: str | None = None     # Auto-generated testID map (from .agents/skills/simulator-testing/references/testid-reference.md)
+    screen_guide: str | None = None         # Screen navigation guide (from .agents/skills/simulator-testing/references/screen-guide.md)
 
 
 class GitHubClient:
@@ -394,9 +396,28 @@ class GitHubClient:
                 # Find test file examples
                 test_examples = await self._find_test_files(client, owner, repo)
 
+                # Fetch simulator/UI testing context if present in this repo.
+                # These files are created by the simulator-testing skill pattern.
+                # Returns None silently for repos that don't use this convention.
+                testid_reference = await self._fetch_file_content(
+                    client, owner, repo,
+                    ".agents/skills/simulator-testing/references/testid-reference.md",
+                )
+                screen_guide = await self._fetch_file_content(
+                    client, owner, repo,
+                    ".agents/skills/simulator-testing/references/screen-guide.md",
+                )
+
+                if testid_reference:
+                    logger.info(f"Fetched testID reference from {owner}/{repo}")
+                if screen_guide:
+                    logger.info(f"Fetched screen guide from {owner}/{repo}")
+
                 return RepositoryContext(
                     readme_content=readme_content,
                     test_examples=test_examples,
+                    testid_reference=testid_reference,
+                    screen_guide=screen_guide,
                 )
 
         except Exception as e:
