@@ -44,6 +44,7 @@ class FileChange:
     additions: int
     deletions: int
     changes: int
+    patch: str | None = None  # Diff patch for runtime source files (config/tooling excluded)
 
 
 @dataclass

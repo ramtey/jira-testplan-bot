@@ -13,6 +13,31 @@ from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, Fi
 
 logger = logging.getLogger(__name__)
 
+# Directories whose files are never worth diffing (generated, tooling, agent config)
+_SKIP_PATCH_DIRS = frozenset({'.agents', '.claude', '.cursor', 'scripts', 'tooling', 'node_modules'})
+# File extensions that are runtime source code
+_RUNTIME_EXTENSIONS = ('.tsx', '.ts', '.jsx', '.js', '.py', '.swift', '.kt')
+# Substrings in a filename that indicate it's a config/tooling file, not runtime code
+_CONFIG_INDICATORS = ('config.', 'eslint', 'tsconfig', 'vite.', 'webpack.', 'jest.', 'vitest.', 'rollup.')
+
+
+def _is_patchable_file(filename: str) -> bool:
+    """Return True for runtime source files worth including diff patches for.
+
+    Excludes config files, tooling, generated docs, and test infrastructure
+    so the LLM only sees diffs that describe actual feature behaviour changes.
+    """
+    parts = filename.lower().split('/')
+    if parts[0] in _SKIP_PATCH_DIRS:
+        return False
+    basename = parts[-1]
+    for indicator in _CONFIG_INDICATORS:
+        if indicator in basename:
+            return False
+    if any(basename.endswith(s) for s in ('.test.ts', '.test.tsx', '.spec.ts', '.spec.tsx', '.test.js')):
+        return False
+    return basename.endswith(_RUNTIME_EXTENSIONS)
+
 
 class JiraAuthError(Exception):
     """Raised when Jira returns 401 or 403."""
@@ -262,7 +287,7 @@ class JiraClient:
                 # Enrich with GitHub data if available
                 if github_client and pr_url and "github.com" in pr_url:
                     try:
-                        gh_details = await github_client.fetch_pr_details(pr_url, include_patch=False, include_comments=True)
+                        gh_details = await github_client.fetch_pr_details(pr_url, include_patch=True, include_comments=True)
                         if gh_details:
                             pr_obj.github_description = gh_details.description
                             pr_obj.files_changed = [
@@ -272,6 +297,9 @@ class JiraClient:
                                     additions=fc.additions,
                                     deletions=fc.deletions,
                                     changes=fc.changes,
+                                    # Only keep the patch for runtime source files;
+                                    # config/tooling diffs add noise without value.
+                                    patch=fc.patch if (fc.patch and _is_patchable_file(fc.filename)) else None,
                                 )
                                 for fc in gh_details.files_changed
                             ]

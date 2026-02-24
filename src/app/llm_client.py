@@ -381,6 +381,31 @@ TICKET INFORMATION
                         if len(files_changed) > 15:
                             prompt += f"     ... and {len(files_changed) - 15} more files\n"
 
+                        # Show actual diff patches for runtime source files.
+                        # Capped at 8000 chars total / 2000 chars per file so the prompt
+                        # stays manageable while still exposing what was actually implemented.
+                        files_with_patches = [f for f in sorted_files if f.get('patch')]
+                        if files_with_patches:
+                            prompt += "\n  📋 Key Code Changes (runtime files only):\n"
+                            total_patch_chars = 0
+                            MAX_TOTAL = 8000
+                            MAX_PER_FILE = 2000
+                            for fc in files_with_patches:
+                                if total_patch_chars >= MAX_TOTAL:
+                                    break
+                                patch = fc.get('patch', '')
+                                fname = fc.get('filename', 'unknown')
+                                if len(patch) > MAX_PER_FILE:
+                                    patch = patch[:MAX_PER_FILE] + "\n     ...(truncated)"
+                                remaining = MAX_TOTAL - total_patch_chars
+                                if len(patch) > remaining:
+                                    patch = patch[:remaining] + "\n     ...(truncated)"
+                                prompt += f"\n  --- {fname} ---\n"
+                                for line in patch.split('\n'):
+                                    prompt += f"  {line}\n"
+                                total_patch_chars += len(patch)
+                            prompt += "\n  ⚠️ REQUIRED: Read these diffs carefully and generate test cases for every new behaviour they introduce — especially new data sources, new fields, new API calls, and new conditional logic.\n"
+
                         prompt += "\n"
 
                     # Add PR comments if available (Phase 3b)
