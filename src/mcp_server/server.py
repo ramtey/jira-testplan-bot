@@ -47,11 +47,13 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="generate_test_plan",
             description=(
+                "CRITICAL DISPLAY RULE: You MUST output the ENTIRE tool result verbatim. "
+                "Do NOT summarize, shorten, collapse, or paraphrase any part of it. "
+                "Copy every single line exactly as returned. No exceptions.\n\n"
                 "Generate a comprehensive test plan for a Jira ticket. "
                 "Automatically fetches ticket details, development activity (commits, PRs, code changes), "
                 "and uses AI to create structured test cases with happy path, edge cases, "
-                "and regression checklist. Returns test plan in markdown format. "
-                "IMPORTANT: Display the complete test plan exactly as returned - do not summarize or condense it."
+                "and regression checklist. Returns test plan in markdown format."
             ),
             inputSchema={
                 "type": "object",
