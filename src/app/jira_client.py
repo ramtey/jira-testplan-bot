@@ -325,6 +325,110 @@ class JiraClient:
 
         return pull_requests
 
+    async def _find_prs_from_text(
+        self,
+        description: str | None,
+        comments_data: list[dict],
+        existing_pr_urls: set[str],
+    ) -> list[PullRequest]:
+        """
+        Fallback PR discovery: scan ticket description and comments for GitHub PR URLs.
+
+        Used when the Jira dev-status API returns no linked PRs, e.g. when a developer
+        manually pastes a PR link in the description or a comment instead of using the
+        official Jira-GitHub integration.
+
+        Args:
+            description: Parsed plain-text ticket description
+            comments_data: Raw comment objects from Jira API (ADF format bodies)
+            existing_pr_urls: PR URLs already found via dev-status (to skip duplicates)
+
+        Returns:
+            List of PullRequest objects for newly-found URLs, enriched with GitHub data
+            if a token is available.
+        """
+        GITHUB_PR_PATTERN = re.compile(
+            r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+"
+        )
+
+        found_urls: set[str] = set()
+
+        # Scan description
+        if description:
+            for match in GITHUB_PR_PATTERN.finditer(description):
+                url = match.group(0).rstrip(".,;)>]\"'")
+                found_urls.add(url)
+
+        # Scan all comment bodies
+        for comment_data in comments_data:
+            body_adf = comment_data.get("body", {})
+            body_text = extract_text_from_adf(body_adf)
+            if body_text:
+                for match in GITHUB_PR_PATTERN.finditer(body_text):
+                    url = match.group(0).rstrip(".,;)>]\"'")
+                    found_urls.add(url)
+
+        new_urls = found_urls - existing_pr_urls
+        if not new_urls:
+            return []
+
+        github_client = GitHubClient() if settings.github_token else None
+        pull_requests = []
+
+        for pr_url in new_urls:
+            pr_obj = PullRequest(
+                title=pr_url,  # fallback; overwritten below if GitHub enrichment succeeds
+                status="UNKNOWN",
+                url=pr_url,
+            )
+
+            if github_client:
+                try:
+                    gh_details = await github_client.fetch_pr_details(
+                        pr_url, include_patch=True, include_comments=True
+                    )
+                    if gh_details:
+                        pr_obj.title = gh_details.title or pr_url
+                        if gh_details.merged:
+                            pr_obj.status = "MERGED"
+                        elif gh_details.state == "open":
+                            pr_obj.status = "OPEN"
+                        else:
+                            pr_obj.status = "DECLINED"
+                        pr_obj.github_description = gh_details.description
+                        pr_obj.files_changed = [
+                            FileChange(
+                                filename=fc.filename,
+                                status=fc.status,
+                                additions=fc.additions,
+                                deletions=fc.deletions,
+                                changes=fc.changes,
+                                patch=fc.patch if (fc.patch and _is_patchable_file(fc.filename)) else None,
+                            )
+                            for fc in gh_details.files_changed
+                        ]
+                        pr_obj.total_additions = gh_details.total_additions
+                        pr_obj.total_deletions = gh_details.total_deletions
+                        pr_obj.comments = [
+                            PRComment(
+                                author=comment.author,
+                                body=comment.body,
+                                created_at=comment.created_at,
+                                comment_type=comment.comment_type,
+                            )
+                            for comment in gh_details.comments
+                        ]
+                        logger.info(
+                            f"Enriched text-linked PR '{pr_obj.title}': "
+                            f"{len(gh_details.files_changed)} files changed"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to enrich text-linked PR {pr_url}: {e}")
+
+            pull_requests.append(pr_obj)
+
+        return pull_requests
+
     def _extract_figma_url(self, description: str) -> str | None:
         """
         Extract Figma URL from ticket description.
@@ -762,6 +866,7 @@ class JiraClient:
         attachments = self._extract_image_attachments(fields.get("attachment", []))
 
         # Fetch and filter comments for testing-related content
+        comments_data: list[dict] = []  # kept for text-based PR scanning below
         filtered_comments = None
         try:
             comments_data = await self.get_comments(issue_key)
@@ -772,6 +877,27 @@ class JiraClient:
         except Exception as e:
             # Non-critical - continue without comments if fetching fails
             logger.warning(f"Failed to fetch comments for {issue_key}: {e}")
+
+        # Fallback PR discovery: scan description and comments for GitHub PR URLs.
+        # Catches PRs pasted as plain links in text when Jira-GitHub integration is absent.
+        existing_pr_urls = {
+            pr.url
+            for pr in (development_info.pull_requests if development_info else [])
+            if pr.url
+        }
+        text_linked_prs = await self._find_prs_from_text(
+            description_str, comments_data, existing_pr_urls
+        )
+        if text_linked_prs:
+            if development_info:
+                development_info.pull_requests.extend(text_linked_prs)
+            else:
+                development_info = DevelopmentInfo(
+                    commits=[],
+                    pull_requests=text_linked_prs,
+                    branches=[],
+                )
+            logger.info(f"Found {len(text_linked_prs)} text-linked PR(s) for {issue_key}")
 
         # Fetch parent issue if it exists (for sub-tasks)
         # Parent tickets often contain design resources (Figma links, images) that sub-tasks lack

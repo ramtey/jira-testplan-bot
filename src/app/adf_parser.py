@@ -69,6 +69,15 @@ def _extract_text_recursive(node: dict | list | str, text_parts: list[str]) -> N
     # Handle specific node types that might need special formatting
     node_type = node.get("type")
 
+    # Smart links: Jira converts pasted URLs into inlineCard/blockCard nodes.
+    # The URL lives in attrs.url — it is never in a "text" field, so we must
+    # handle it explicitly or the URL is silently dropped.
+    if node_type in ("inlineCard", "blockCard"):
+        url = node.get("attrs", {}).get("url")
+        if url:
+            text_parts.append(url)
+        return
+
     # Add line break after paragraphs and headings
     if node_type in ("paragraph", "heading", "codeBlock"):
         # Process content first
