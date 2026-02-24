@@ -215,10 +215,6 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         output = [
             "📋 **COMPLETE TEST PLAN** - Display this entire document without summarizing",
             "",
-            f"# Test Plan: {issue.key}",
-            "",
-            f"**Ticket:** {issue.summary}",
-            "",
         ]
 
         # Happy Path
