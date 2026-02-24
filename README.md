@@ -54,7 +54,8 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Priority ordering**: Critical tests first, edge cases last
 
 ### Development Integration
-- **GitHub enrichment**: PR code diffs, review comments, and repository documentation
+- **GitHub enrichment**: PR code diffs (actual source changes injected into LLM context), review comments, and repository documentation
+- **Simulator test context**: Automatically pulls testID references and screen guides from `.agents/skills/simulator-testing/references/` in the target repo (when present), so Claude references real UI test IDs in generated test steps
 - **Jira development data**: Commits, branches, and PR statuses with clickable links
 - **Token health monitoring**: Real-time validation with expiration warnings
 
@@ -267,6 +268,7 @@ Use the test plan generator directly within Claude desktop app using natural lan
 Once configured, use natural language in Claude:
 - "Fetch PROJ-123 from Jira"
 - "Generate a test plan for PROJ-456"
+- "Generate a test plan for PROJ-456 and post it to Jira"
 - "Check my API token health"
 
 See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshooting.
