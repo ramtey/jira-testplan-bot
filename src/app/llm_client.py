@@ -631,6 +631,12 @@ Each test should include:
 - Expected result (what should happen)
 - Specific test data when needed
 
+**CRITICAL: STEP ORDERING RULES**
+- Steps must be in the exact sequential order a user would perform them in the UI
+- Form submission/action buttons (`calculate`, `submit`, `confirm`, `save`, etc.) MUST always come AFTER all required inputs have been filled in
+- Never place an action button tap in the middle of filling out a form — fill ALL inputs first, then tap the action button
+- Think through the complete user flow before writing steps: enter all inputs → then trigger the action
+
 **GUIDELINES:**
 - Write from the user's perspective (avoid technical implementation details)
 - Be specific and actionable (use concrete examples)
