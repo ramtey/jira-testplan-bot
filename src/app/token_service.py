@@ -71,7 +71,7 @@ class TokenHealthService:
                 is_valid=False,
                 is_required=True,
                 error_type=TokenErrorType.MISSING,
-                error_message="Jira credentials not configured. Please set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN in .env",
+                error_message="Jira credentials not configured. Please set JIRA_URL, JIRA_USERNAME, and JIRA_API_TOKEN in .env",
                 help_url="https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/",
                 last_checked=last_checked,
             )

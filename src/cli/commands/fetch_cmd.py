@@ -48,8 +48,8 @@ def fetch(
     # Set environment variables for Jira client
     import os
 
-    os.environ["JIRA_BASE_URL"] = config.jira_url or ""
-    os.environ["JIRA_EMAIL"] = config.jira_email or ""
+    os.environ["JIRA_URL"] = config.jira_url or ""
+    os.environ["JIRA_USERNAME"] = config.jira_email or ""
     os.environ["JIRA_API_TOKEN"] = config.jira_token or ""
 
     # Fetch ticket

@@ -360,8 +360,8 @@ async def _check_token_health() -> list[TextContent]:
 def _validate_environment():
     """Validate that required environment variables are set."""
     required_vars = {
-        "JIRA_BASE_URL": "Jira base URL (e.g., https://company.atlassian.net)",
-        "JIRA_EMAIL": "Jira account email",
+        "JIRA_URL": "Jira base URL (e.g., https://company.atlassian.net)",
+        "JIRA_USERNAME": "Jira account email",
         "JIRA_API_TOKEN": "Jira API token",
         "ANTHROPIC_API_KEY": "Anthropic/Claude API key",
     }

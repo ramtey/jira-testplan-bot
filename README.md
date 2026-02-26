@@ -95,7 +95,7 @@ cp .env.example .env
 # Edit .env with your API tokens
 ```
 
-Required: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `ANTHROPIC_API_KEY`
+Required: `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`, `ANTHROPIC_API_KEY`
 Optional: `GITHUB_TOKEN`, `FIGMA_TOKEN`
 
 ### Frontend Setup
@@ -188,8 +188,8 @@ testplan config import .env
 
 **Or use environment variables** (for CI/CD):
 ```bash
-export JIRA_BASE_URL="https://your-company.atlassian.net"
-export JIRA_EMAIL="your-email@company.com"
+export JIRA_URL="https://your-company.atlassian.net"
+export JIRA_USERNAME="your-email@company.com"
 export JIRA_API_TOKEN="your-token"
 export ANTHROPIC_API_KEY="sk-ant-api03-..."
 export GITHUB_TOKEN="ghp_..."  # optional
@@ -229,7 +229,8 @@ The CLI supports environment variables for automation. Example GitHub Actions wo
 - name: Generate test plan
   run: testplan generate $TICKET --post-to-jira
   env:
-    JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+    JIRA_URL: ${{ secrets.JIRA_URL }}
+    JIRA_USERNAME: ${{ secrets.JIRA_USERNAME }}
     JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -249,8 +250,8 @@ Use the test plan generator directly within Claude desktop app using natural lan
       "command": "uv",
       "args": ["--directory", "/path/to/jira-testplan-bot", "run", "testplan-mcp"],
       "env": {
-        "JIRA_BASE_URL": "https://company.atlassian.net",
-        "JIRA_EMAIL": "your-email@company.com",
+        "JIRA_URL": "https://company.atlassian.net",
+        "JIRA_USERNAME": "your-email@company.com",
         "JIRA_API_TOKEN": "your-token",
         "ANTHROPIC_API_KEY": "sk-ant-api03-...",
         "GITHUB_TOKEN": "ghp_...",

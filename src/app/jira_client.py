@@ -96,7 +96,7 @@ class JiraClient:
             )
         else:
             return (
-                "Jira authentication failed. Your API token or email may be invalid. Check JIRA_EMAIL and JIRA_API_TOKEN in .env",
+                "Jira authentication failed. Your API token or email may be invalid. Check JIRA_USERNAME and JIRA_API_TOKEN in .env",
                 "invalid"
             )
 

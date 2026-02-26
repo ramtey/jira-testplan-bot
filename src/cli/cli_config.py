@@ -55,8 +55,8 @@ class ConfigManager:
         # Apply environment variable fallback for missing values
         # Map config keys to environment variable names
         env_mapping = {
-            "jira_url": "JIRA_BASE_URL",
-            "jira_email": "JIRA_EMAIL",
+            "jira_url": "JIRA_URL",
+            "jira_email": "JIRA_USERNAME",
             "jira_token": "JIRA_API_TOKEN",
             "anthropic_key": "ANTHROPIC_API_KEY",
             "github_token": "GITHUB_TOKEN",
@@ -118,8 +118,8 @@ class ConfigManager:
 
         # Map environment variable names to config keys
         env_to_config = {
-            "JIRA_BASE_URL": "jira_url",
-            "JIRA_EMAIL": "jira_email",
+            "JIRA_URL": "jira_url",
+            "JIRA_USERNAME": "jira_email",
             "JIRA_API_TOKEN": "jira_token",
             "ANTHROPIC_API_KEY": "anthropic_key",
             "GITHUB_TOKEN": "github_token",

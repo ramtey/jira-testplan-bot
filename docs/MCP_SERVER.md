@@ -71,8 +71,8 @@ uv sync
         "testplan-mcp"
       ],
       "env": {
-        "JIRA_BASE_URL": "https://your-company.atlassian.net",
-        "JIRA_EMAIL": "your-email@company.com",
+        "JIRA_URL": "https://your-company.atlassian.net",
+        "JIRA_USERNAME": "your-email@company.com",
         "JIRA_API_TOKEN": "your-jira-api-token",
         "ANTHROPIC_API_KEY": "sk-ant-api03-your-anthropic-key",
         "GITHUB_TOKEN": "ghp_your-github-token",
@@ -135,11 +135,11 @@ then generate a test plan focusing on edge cases.
 2. Ensure environment variables are set correctly
 3. Restart Claude desktop after making changes
 
-### "JIRA_BASE_URL not set" error
+### "JIRA_URL not set" error
 
 **Solution:** Make sure all required environment variables are in the config:
-- `JIRA_BASE_URL`
-- `JIRA_EMAIL`
+- `JIRA_URL`
+- `JIRA_USERNAME`
 - `JIRA_API_TOKEN`
 - `ANTHROPIC_API_KEY`
 
@@ -182,8 +182,8 @@ Get-Content -Path "$env:APPDATA\Claude\logs\mcp*.log" -Wait
 
 ### Required Environment Variables
 
-- `JIRA_BASE_URL`: Your Jira instance URL (e.g., https://company.atlassian.net)
-- `JIRA_EMAIL`: Your Jira account email
+- `JIRA_URL`: Your Jira instance URL (e.g., https://company.atlassian.net)
+- `JIRA_USERNAME`: Your Jira account email
 - `JIRA_API_TOKEN`: Jira API token
 - `ANTHROPIC_API_KEY`: Anthropic API key for Claude
 
