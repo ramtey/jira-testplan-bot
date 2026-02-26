@@ -66,8 +66,8 @@ class JiraConnectionError(Exception):
 
 class JiraClient:
     def __init__(self) -> None:
-        self.base_url = settings.jira_base_url.rstrip("/")
-        self.email = settings.jira_email
+        self.base_url = settings.jira_url.rstrip("/")
+        self.email = settings.jira_username
         self.token = settings.jira_api_token
 
         auth_bytes = f"{self.email}:{self.token}".encode("utf-8")

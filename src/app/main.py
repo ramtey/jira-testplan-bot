@@ -85,7 +85,7 @@ def get_config():
     from .config import settings
 
     return {
-        "jira_base_url": settings.jira_base_url,
+        "jira_base_url": settings.jira_url,
     }
 
 

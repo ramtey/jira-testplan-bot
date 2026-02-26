@@ -65,7 +65,7 @@ class TokenHealthService:
         last_checked = datetime.now()
 
         # Check if token is configured
-        if not settings.jira_api_token or not settings.jira_email or not settings.jira_base_url:
+        if not settings.jira_api_token or not settings.jira_username or not settings.jira_url:
             return TokenStatus(
                 service_name=service_name,
                 is_valid=False,
@@ -79,12 +79,12 @@ class TokenHealthService:
         try:
             # Test API call - get current user (lightweight endpoint)
             import base64
-            auth_bytes = f"{settings.jira_email}:{settings.jira_api_token}".encode("utf-8")
+            auth_bytes = f"{settings.jira_username}:{settings.jira_api_token}".encode("utf-8")
             auth_header = base64.b64encode(auth_bytes).decode("utf-8")
 
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
-                    f"{settings.jira_base_url.rstrip('/')}/rest/api/2/myself",
+                    f"{settings.jira_url.rstrip('/')}/rest/api/2/myself",
                     headers={
                         "Authorization": f"Basic {auth_header}",
                         "Content-Type": "application/json",
@@ -158,7 +158,7 @@ class TokenHealthService:
                 is_valid=False,
                 is_required=True,
                 error_type=TokenErrorType.SERVICE_UNAVAILABLE,
-                error_message=f"Cannot connect to Jira at {settings.jira_base_url}. Check URL and network.",
+                error_message=f"Cannot connect to Jira at {settings.jira_url}. Check URL and network.",
                 last_checked=last_checked,
                 details={"error": str(e)},
             )
