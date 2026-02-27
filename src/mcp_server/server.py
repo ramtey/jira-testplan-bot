@@ -53,7 +53,10 @@ async def list_tools() -> list[Tool]:
                 "Generate a comprehensive test plan for a Jira ticket. "
                 "Automatically fetches ticket details, development activity (commits, PRs, code changes), "
                 "and uses AI to create structured test cases with happy path, edge cases, "
-                "and regression checklist. Returns test plan in markdown format."
+                "and regression checklist. Returns test plan in markdown format.\n\n"
+                "The result includes a pre-formatted Jira comment block between "
+                "'--- JIRA COMMENT START ---' and '--- JIRA COMMENT END ---' markers. "
+                "When posting to Jira, extract and pass ONLY that block verbatim."
             ),
             inputSchema={
                 "type": "object",
@@ -72,7 +75,11 @@ async def list_tools() -> list[Tool]:
                 "Post a test plan as a comment to a Jira ticket. "
                 "If a test plan comment already exists on the ticket (from a previous run), "
                 "it will be updated instead of creating a duplicate. "
-                "Use this after generate_test_plan to save the plan directly to the Jira ticket."
+                "Use this after generate_test_plan to save the plan directly to the Jira ticket.\n\n"
+                "CRITICAL: The test_plan parameter must contain ONLY the exact text found between "
+                "the '--- JIRA COMMENT START ---' and '--- JIRA COMMENT END ---' markers in the "
+                "generate_test_plan output. Do NOT add any title, ticket name, header, preamble, "
+                "or commentary. Extract and pass that block verbatim."
             ),
             inputSchema={
                 "type": "object",
@@ -83,7 +90,11 @@ async def list_tools() -> list[Tool]:
                     },
                     "test_plan": {
                         "type": "string",
-                        "description": "The test plan content to post as a comment",
+                        "description": (
+                            "The exact text between '--- JIRA COMMENT START ---' and "
+                            "'--- JIRA COMMENT END ---' from generate_test_plan output. "
+                            "No headers, no preamble, no extra text."
+                        ),
                     },
                 },
                 "required": ["ticket_key", "test_plan"],
@@ -186,6 +197,81 @@ async def _fetch_jira_ticket(ticket_key: str) -> list[TextContent]:
         )]
 
 
+def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
+    """Format test plan identically to the UI's formatTestPlanAsJira() function."""
+    jira = ""
+
+    if test_plan_dict.get("happy_path"):
+        jira += "✅ HAPPY PATH TEST CASES\n\n"
+        for index, test in enumerate(test_plan_dict["happy_path"]):
+            jira += f"{index + 1}. {test['title']}"
+            if test.get("priority"):
+                priority = test["priority"]
+                emoji = "🔴" if priority == "critical" else "🟡" if priority == "high" else "🟢"
+                jira += f" {emoji} {priority.upper()}"
+            jira += "\n\n"
+            if test.get("steps"):
+                jira += "Steps:\n"
+                for step_index, step in enumerate(test["steps"]):
+                    jira += f"   {step_index + 1}. {step}\n"
+                jira += "\n"
+            if test.get("expected"):
+                jira += f"Expected Result: {test['expected']}\n\n"
+            if test.get("test_data"):
+                jira += f"Test Data: {test['test_data']}\n\n"
+            jira += "────────────────────────────────────────────\n\n"
+
+    if test_plan_dict.get("edge_cases"):
+        jira += "🔍 EDGE CASES & ERROR SCENARIOS\n\n"
+        for index, test in enumerate(test_plan_dict["edge_cases"]):
+            jira += f"{index + 1}. {test['title']}"
+            if test.get("priority"):
+                priority = test["priority"]
+                emoji = "🔴" if priority == "critical" else "🟡" if priority == "high" else "🟢"
+                jira += f" {emoji} {priority.upper()}"
+            if test.get("category"):
+                jira += f" [{test['category']}]"
+            jira += "\n\n"
+            if test.get("steps"):
+                jira += "Steps:\n"
+                for step_index, step in enumerate(test["steps"]):
+                    jira += f"   {step_index + 1}. {step}\n"
+                jira += "\n"
+            if test.get("expected"):
+                jira += f"Expected Result: {test['expected']}\n\n"
+            if test.get("test_data"):
+                jira += f"Test Data: {test['test_data']}\n\n"
+            jira += "────────────────────────────────────────────\n\n"
+
+    if test_plan_dict.get("integration_tests"):
+        jira += "🔗 INTEGRATION & BACKEND TESTS\n\n"
+        for index, test in enumerate(test_plan_dict["integration_tests"]):
+            jira += f"{index + 1}. {test['title']}"
+            if test.get("priority"):
+                priority = test["priority"]
+                emoji = "🔴" if priority == "critical" else "🟡" if priority == "high" else "🟢"
+                jira += f" {emoji} {priority.upper()}"
+            jira += "\n\n"
+            if test.get("steps"):
+                jira += "Steps:\n"
+                for step_index, step in enumerate(test["steps"]):
+                    jira += f"   {step_index + 1}. {step}\n"
+                jira += "\n"
+            if test.get("expected"):
+                jira += f"Expected Result: {test['expected']}\n\n"
+            if test.get("test_data"):
+                jira += f"Test Data: {test['test_data']}\n\n"
+            jira += "────────────────────────────────────────────\n\n"
+
+    if test_plan_dict.get("regression_checklist"):
+        jira += "🔄 REGRESSION CHECKLIST\n\n"
+        for item in test_plan_dict["regression_checklist"]:
+            jira += f"  • {item}\n"
+        jira += "\n"
+
+    return jira
+
+
 async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
     """Generate test plan for a Jira ticket."""
     try:
@@ -211,7 +297,10 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         # Convert to dict for formatting
         test_plan_dict = asdict(test_plan)
 
-        # Format as markdown
+        # Build Jira-formatted block (same as UI's formatTestPlanAsJira)
+        jira_text = _format_test_plan_for_jira(test_plan_dict)
+
+        # Build markdown display for Claude Desktop
         output = [
             "📋 **COMPLETE TEST PLAN** - Display this entire document without summarizing",
             "",
@@ -258,6 +347,10 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         output.append("---")
         output.append("")
         output.append("*Generated with Claude Opus 4.5*")
+        output.append("")
+        output.append("--- JIRA COMMENT START ---")
+        output.append(jira_text.rstrip())
+        output.append("--- JIRA COMMENT END ---")
 
         return [TextContent(type="text", text="\n".join(output))]
 
