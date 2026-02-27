@@ -66,6 +66,7 @@ class PullRequest:
     url: str | None = None
     source_branch: str | None = None
     destination_branch: str | None = None
+    repository: str | None = None  # e.g. "owner/repo" extracted from URL
     # GitHub enrichment (Phase 3a)
     github_description: str | None = None
     files_changed: list[FileChange] | None = None

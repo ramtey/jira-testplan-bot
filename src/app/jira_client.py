@@ -21,6 +21,16 @@ _RUNTIME_EXTENSIONS = ('.tsx', '.ts', '.jsx', '.js', '.py', '.swift', '.kt')
 _CONFIG_INDICATORS = ('config.', 'eslint', 'tsconfig', 'vite.', 'webpack.', 'jest.', 'vitest.', 'rollup.')
 
 
+def _extract_repo_from_url(url: str | None) -> str | None:
+    """Extract 'owner/repo' from a GitHub PR URL."""
+    if not url:
+        return None
+    match = re.match(r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/\d+", url)
+    if match:
+        return match.group(1)
+    return None
+
+
 def _is_patchable_file(filename: str) -> bool:
     """Return True for runtime source files worth including diff patches for.
 
@@ -282,6 +292,7 @@ class JiraClient:
                     url=pr_url,
                     source_branch=pr.get("source", {}).get("branch"),
                     destination_branch=pr.get("destination", {}).get("branch"),
+                    repository=_extract_repo_from_url(pr_url),
                 )
 
                 # Enrich with GitHub data if available
@@ -380,6 +391,7 @@ class JiraClient:
                 title=pr_url,  # fallback; overwritten below if GitHub enrichment succeeds
                 status="UNKNOWN",
                 url=pr_url,
+                repository=_extract_repo_from_url(pr_url),
             )
 
             if github_client:

@@ -71,13 +71,18 @@ function DevelopmentInfo({ developmentInfo }) {
                 {developmentInfo.pull_requests.map((pr, index) => (
                   <div key={index} className="dev-item pr-item">
                     <div className="dev-item-header">
-                      {pr.url ? (
-                        <a href={pr.url} target="_blank" rel="noopener noreferrer" className="dev-link">
-                          {pr.title}
-                        </a>
-                      ) : (
-                        <span className="dev-title">{pr.title}</span>
-                      )}
+                      <div className="pr-title-row">
+                        {pr.url ? (
+                          <a href={pr.url} target="_blank" rel="noopener noreferrer" className="dev-link">
+                            {pr.title}
+                          </a>
+                        ) : (
+                          <span className="dev-title">{pr.title}</span>
+                        )}
+                        {pr.repository && (
+                          <span className="pr-repo">{pr.repository}</span>
+                        )}
+                      </div>
                       <span className={`pr-status ${getPRStatusClass(pr.status)}`}>
                         {pr.status}
                       </span>
