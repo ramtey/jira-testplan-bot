@@ -497,6 +497,13 @@ If you answer "no" or "not sure" to question 1, DO NOT include that test case.
 ❌ Ticket: "Generate PDF report" → Don't add tests for watermarks, headers, footers unless mentioned
 ❌ Ticket: "Add export feature" → Don't test for file formats not mentioned in the ticket
 
+**DO NOT INVENT UI STATES OR OPTION VALUES:**
+- NEVER assume a dropdown/selector has an "undefined", "empty", or "null" state unless the ticket explicitly says so
+- NEVER test "leaving a field unselected" unless the ticket or context confirms the field can actually be empty (e.g. it has a placeholder like "Select an option" or the ticket mentions missing input handling)
+- NEVER invent option values (e.g. "Buyer", "Seller", "Split") for a selector unless those exact options are listed in the ticket, PR diff, or testID reference
+- If the ticket mentions a field/selector, only use the specific values explicitly named in the ticket description, acceptance criteria, or test data provided
+❌ Ticket: "Handle Transfer Tax payor selection" → Don't test "undefined" payor unless the ticket explicitly describes that state
+
 **WHEN TO ADD "ABSENCE" TESTS:**
 Only test for the absence of something if:
 - The ticket explicitly mentions removing/hiding a feature
