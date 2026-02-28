@@ -152,6 +152,8 @@ async def get_issue(issue_key: str):
             "description": issue.description,
             "labels": issue.labels,
             "issue_type": issue.issue_type,
+            "assignee": issue.assignee,
+            "assignee_history": issue.assignee_history,
             "description_quality": {
                 "has_description": issue.description_analysis.has_description,
                 "is_weak": issue.description_analysis.is_weak,

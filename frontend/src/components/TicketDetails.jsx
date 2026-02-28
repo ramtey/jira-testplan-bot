@@ -49,6 +49,21 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription 
           <span className={`issue-type ${getIssueTypeClass(ticketData.issue_type)}`}>
             {ticketData.issue_type}
           </span>
+          {ticketData.assignee_history && ticketData.assignee_history.length > 0 ? (
+            <div className="assignee-history">
+              {ticketData.assignee_history.map((name, index) => (
+                <span
+                  key={index}
+                  className={`assignee-tag${name === ticketData.assignee ? ' current' : ''}`}
+                  title={name === ticketData.assignee ? 'Current assignee' : 'Previously assigned'}
+                >
+                  👤 {name}
+                </span>
+              ))}
+            </div>
+          ) : ticketData.assignee ? (
+            <span className="assignee-tag current" title="Current assignee">👤 {ticketData.assignee}</span>
+          ) : null}
           {ticketData.labels && ticketData.labels.length > 0 && (
             <div className="labels">
               {ticketData.labels.map((label, index) => (

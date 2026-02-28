@@ -67,6 +67,7 @@ class PullRequest:
     source_branch: str | None = None
     destination_branch: str | None = None
     repository: str | None = None  # e.g. "owner/repo" extracted from URL
+    author: str | None = None  # PR author (GitHub login or Jira display name)
     # GitHub enrichment (Phase 3a)
     github_description: str | None = None
     files_changed: list[FileChange] | None = None
@@ -193,6 +194,8 @@ class JiraIssue:
     description_analysis: DescriptionAnalysis
     labels: list[str]
     issue_type: str
+    assignee: str | None = None  # Current Jira assignee display name
+    assignee_history: list[str] | None = None  # All unique people ever assigned (from changelog)
     development_info: DevelopmentInfo | None = None
     attachments: list[Attachment] | None = None
     comments: list[JiraComment] | None = None  # Filtered testing-related comments

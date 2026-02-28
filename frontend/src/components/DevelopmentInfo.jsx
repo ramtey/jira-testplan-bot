@@ -82,6 +82,9 @@ function DevelopmentInfo({ developmentInfo }) {
                         {pr.repository && (
                           <span className="pr-repo">{pr.repository}</span>
                         )}
+                        {pr.author && (
+                          <span className="pr-author">@{pr.author}</span>
+                        )}
                       </div>
                       <span className={`pr-status ${getPRStatusClass(pr.status)}`}>
                         {pr.status}

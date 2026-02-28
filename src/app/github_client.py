@@ -72,6 +72,7 @@ class PRDetails:
     total_deletions: int
     total_changes: int
     comments: list[PRComment]
+    author: str | None = None  # GitHub login of the PR author
 
 
 @dataclass
@@ -310,6 +311,7 @@ class GitHubClient:
                     total_deletions=total_deletions,
                     total_changes=total_additions + total_deletions,
                     comments=comments,
+                    author=pr_data.get("user", {}).get("login"),
                 )
 
         except httpx.HTTPStatusError as e:

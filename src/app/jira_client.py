@@ -286,6 +286,7 @@ class JiraClient:
                 pr_url = pr.get("url")
 
                 # Create basic PR object from Jira
+                jira_author = pr.get("author", {})
                 pr_obj = PullRequest(
                     title=pr.get("name", ""),
                     status=pr.get("status", "UNKNOWN"),
@@ -293,6 +294,7 @@ class JiraClient:
                     source_branch=pr.get("source", {}).get("branch"),
                     destination_branch=pr.get("destination", {}).get("branch"),
                     repository=_extract_repo_from_url(pr_url),
+                    author=jira_author.get("name") or jira_author.get("displayName") if isinstance(jira_author, dict) else None,
                 )
 
                 # Enrich with GitHub data if available
@@ -301,6 +303,8 @@ class JiraClient:
                         gh_details = await github_client.fetch_pr_details(pr_url, include_patch=True, include_comments=True)
                         if gh_details:
                             pr_obj.github_description = gh_details.description
+                            if gh_details.author:
+                                pr_obj.author = gh_details.author
                             pr_obj.files_changed = [
                                 FileChange(
                                     filename=fc.filename,
@@ -407,6 +411,8 @@ class JiraClient:
                             pr_obj.status = "OPEN"
                         else:
                             pr_obj.status = "DECLINED"
+                        if gh_details.author:
+                            pr_obj.author = gh_details.author
                         pr_obj.github_description = gh_details.description
                         pr_obj.files_changed = [
                             FileChange(
@@ -812,7 +818,7 @@ class JiraClient:
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         # Ask Jira for fields we need + development info if available
-        params = {"fields": "summary,description,labels,issuetype,attachment,parent,issuelinks", "expand": "renderedFields"}
+        params = {"fields": "summary,description,labels,issuetype,attachment,parent,issuelinks,assignee", "expand": "renderedFields,changelog"}
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
@@ -839,6 +845,22 @@ class JiraClient:
         description = fields.get("description")  # Jira Cloud often returns ADF (dict)
         labels = fields.get("labels", [])
         issue_type = fields.get("issuetype", {}).get("name", "Unknown")
+        assignee_field = fields.get("assignee") or {}
+        assignee = assignee_field.get("displayName") or assignee_field.get("emailAddress")
+
+        # Extract all unique assignees from changelog (ordered by first appearance)
+        assignee_history: list[str] = []
+        seen_assignees: set[str] = set()
+        for history in data.get("changelog", {}).get("histories", []):
+            for item in history.get("items", []):
+                if item.get("field") == "assignee":
+                    for name in (item.get("fromString"), item.get("toString")):
+                        if name and name not in seen_assignees:
+                            seen_assignees.add(name)
+                            assignee_history.append(name)
+        # Ensure current assignee is always included
+        if assignee and assignee not in seen_assignees:
+            assignee_history.append(assignee)
 
         # Extract readable text from ADF format
         description_str = extract_text_from_adf(description)
@@ -959,6 +981,8 @@ class JiraClient:
             description_analysis=analysis,
             labels=labels,
             issue_type=issue_type,
+            assignee=assignee,
+            assignee_history=assignee_history if assignee_history else None,
             development_info=development_info,
             attachments=attachments if attachments else None,
             comments=filtered_comments if filtered_comments else None,
