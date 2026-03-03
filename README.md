@@ -327,8 +327,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Phase 7 complete (Linked ticket dependencies for dependency context)
-**Next:** Slack bot integration (Phase 3c)
+**Current:** UI enrichment complete (assignee history, PR repo labels, PR authors)
 
 ## Roadmap
 
@@ -341,9 +340,11 @@ uv run pytest tests/ -v
 - ✅ Priority-based test ordering
 - ✅ **Parent ticket context**: Sub-tasks now include parent Epic/Story context with design resources
 - ✅ **Linked ticket dependencies**: Automatically fetches blocking/blocked-by relationships for dependency-aware testing
+- ✅ **PR repo label**: Each PR in Development Activity shows which repo it belongs to (`owner/repo`)
+- ✅ **PR author**: Each PR displays the GitHub author login
+- ✅ **Assignee history**: All unique people ever assigned to a ticket (from Jira changelog), with current assignee highlighted
 
 ### Future Enhancements
-- **Slack Bot**: `/testplan TICKET-123` command for quick generation
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
 - **Test Plan History**: Save and compare previous generations
 - **Quality Feedback**: Thumbs up/down to improve prompts
