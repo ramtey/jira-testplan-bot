@@ -828,7 +828,7 @@ class OllamaClient(LLMClient):
                         "prompt": prompt,
                         "format": "json",
                         "stream": False,
-                        "options": {"temperature": 0.7},
+                        "options": {"temperature": 0.1},
                     },
                 )
                 response.raise_for_status()
@@ -933,7 +933,7 @@ class ClaudeClient(LLMClient):
                         "model": self.model,
                         "max_tokens": 8192,
                         "messages": [{"role": "user", "content": content}],
-                        "temperature": 0.7,
+                        "temperature": 0.1,
                     },
                 )
                 response.raise_for_status()
