@@ -931,7 +931,7 @@ class ClaudeClient(LLMClient):
             )
 
         self.api_key = settings.anthropic_api_key
-        self.model = settings.llm_model or "claude-opus-4-5-20251101"
+        self.model = settings.llm_model or "claude-opus-4-6"
 
     async def generate_test_plan(
         self,
