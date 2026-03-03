@@ -901,6 +901,7 @@ SUBMIT_TEST_PLAN_TOOL = {
                         "category": {
                             "type": "string",
                             "enum": ["security", "boundary", "error_handling", "integration"],
+                            "description": "security: auth/permissions/data exposure. boundary: min/max values, empty inputs, limits. error_handling: invalid input, disabled states, UI feedback on failure, persistence/reset behavior. integration: cross-service or multi-system interactions.",
                         },
                     },
                 },
