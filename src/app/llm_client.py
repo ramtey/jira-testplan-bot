@@ -927,13 +927,20 @@ class ClaudeClient(LLMClient):
                     "https://api.anthropic.com/v1/messages",
                     headers={
                         "anthropic-version": "2023-06-01",
+                        "anthropic-beta": "prompt-caching-1",
                         "x-api-key": self.api_key,
                         "content-type": "application/json",
                     },
                     json={
                         "model": self.model,
                         "max_tokens": 8192,
-                        "system": SYSTEM_PROMPT,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
                         "messages": [{"role": "user", "content": content}],
                         "temperature": 0.1,
                     },
