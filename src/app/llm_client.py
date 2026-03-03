@@ -870,6 +870,55 @@ class OllamaClient(LLMClient):
             ) from e
 
 
+TEST_CASE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "priority": {"type": "string", "enum": ["critical", "high", "medium"]},
+        "steps": {"type": "array", "items": {"type": "string"}},
+        "expected": {"type": "string"},
+        "test_data": {"type": "string"},
+    },
+    "required": ["title", "priority", "steps", "expected"],
+}
+
+SUBMIT_TEST_PLAN_TOOL = {
+    "name": "submit_test_plan",
+    "description": "Submit the structured test plan with all test cases.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "happy_path": {
+                "type": "array",
+                "items": TEST_CASE_SCHEMA,
+            },
+            "edge_cases": {
+                "type": "array",
+                "items": {
+                    **TEST_CASE_SCHEMA,
+                    "properties": {
+                        **TEST_CASE_SCHEMA["properties"],
+                        "category": {
+                            "type": "string",
+                            "enum": ["security", "boundary", "error_handling", "integration"],
+                        },
+                    },
+                },
+            },
+            "integration_tests": {
+                "type": "array",
+                "items": TEST_CASE_SCHEMA,
+            },
+            "regression_checklist": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["happy_path", "edge_cases", "regression_checklist"],
+    },
+}
+
+
 class ClaudeClient(LLMClient):
     """Claude API client (Anthropic, paid)."""
 
@@ -927,7 +976,6 @@ class ClaudeClient(LLMClient):
                     "https://api.anthropic.com/v1/messages",
                     headers={
                         "anthropic-version": "2023-06-01",
-                        "anthropic-beta": "prompt-caching-1",
                         "x-api-key": self.api_key,
                         "content-type": "application/json",
                     },
@@ -943,36 +991,23 @@ class ClaudeClient(LLMClient):
                         ],
                         "messages": [{"role": "user", "content": content}],
                         "temperature": 0.1,
+                        "tools": [SUBMIT_TEST_PLAN_TOOL],
+                        "tool_choice": {"type": "tool", "name": "submit_test_plan"},
                     },
                 )
                 response.raise_for_status()
 
                 data = response.json()
-                response_text = data["content"][0]["text"]
-
-                # Claude may wrap JSON in markdown code blocks, so strip those
-                response_text = response_text.strip()
-                if response_text.startswith("```"):
-                    # Remove markdown code blocks
-                    response_text = response_text.split("```")[1]
-                    if response_text.startswith("json"):
-                        response_text = response_text[4:]
-                    response_text = response_text.strip()
-
-                # Parse JSON response
-                try:
-                    test_plan_data = json.loads(response_text)
-                except json.JSONDecodeError as e:
-                    # Log the problematic response for debugging
-                    print(f"DEBUG: Failed to parse JSON. Error: {e}")
-                    print(f"DEBUG: Response text (first 1000 chars): {response_text[:1000]}")
-                    print(f"DEBUG: Response text (around error): {response_text[max(0, e.pos-100):e.pos+100]}")
+                tool_block = next(
+                    (b for b in data["content"] if b.get("type") == "tool_use"),
+                    None,
+                )
+                if tool_block is None:
                     raise LLMError(
-                        f"Failed to parse JSON response from Claude: {e}. "
-                        f"This usually happens with unescaped quotes in test case descriptions. "
-                        f"Response snippet: {response_text[max(0, e.pos-50):e.pos+50]}",
-                        error_type="service_unavailable"
-                    ) from e
+                        "Claude did not return a tool_use block. Unexpected response format.",
+                        error_type="service_unavailable",
+                    )
+                test_plan_data = tool_block["input"]
 
                 return TestPlan(
                     happy_path=test_plan_data.get("happy_path", []),
