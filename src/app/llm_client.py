@@ -70,6 +70,19 @@ If you answer "no" or "not sure" to question 1 or 4, DO NOT include that test ca
 - If the ticket mentions a field/selector, only use the specific values explicitly named in the ticket description, acceptance criteria, or test data provided
 ❌ Ticket: "Handle Transfer Tax payor selection" → Don't test "undefined" payor unless the ticket explicitly describes that state
 
+**DO NOT INVENT FORM FIELDS:**
+- NEVER include a form field in test steps unless it is: (a) explicitly named in the ticket description, (b) visible in the testID reference or screen guide, or (c) confirmed in the PR diff
+- Domain knowledge about what fields "should" exist in a real-world form is NOT a valid reason to include a field
+- If you are not certain a field exists in this specific app, omit it
+❌ The app is a real-estate calculator → Don't add "City Transfer Tax" or other domain-typical fields unless they are listed in the testID reference or ticket description
+
+**SKIP OPTIONAL FIELDS WITH ACCEPTABLE DEFAULT VALUES:**
+- When writing form-filling steps, ONLY include a field if entering a value is necessary to execute the test
+- If a field has a default value that is acceptable for the scenario being tested, omit the step for that field entirely — do not instruct the tester to re-enter the default
+- Entering a default value adds noise and makes tests harder to read without adding any verification value
+❌ BAD: "Enter Seller Agent Fee: 3%" when 3% is the pre-populated default and the test is about VA-specific fees
+✅ GOOD: Skip that step — the default is fine and the test is not about agent fees
+
 **SCOPE INFERENCE FROM SECTION HEADINGS — CRITICAL:**
 When a ticket uses a shared heading like "Defaults – Buyer & Seller" and lists items underneath it, DO NOT automatically assume every item applies to both Buyer AND Seller, or to a specific one of them.
 
@@ -638,6 +651,8 @@ TICKET INFORMATION
                 prompt += "- Only reference testIDs that appear in the list above\n"
                 prompt += "- Use exact screen names from the guide for navigation steps\n"
                 prompt += "- If a flow requires screens not in the guide, describe them generically\n"
+                prompt += "- ⚠️ THE TESTID REFERENCE IS EXHAUSTIVE: every interactive element in the app has a testID listed above. If a form field or button does NOT appear in the reference, it does not exist in this app — do NOT invent steps for it, regardless of what domain knowledge suggests.\n"
+                prompt += "- ⚠️ FORM FIELD COMPLETENESS: when writing form-filling steps, cross-check EVERY field against the testID reference. If you cannot find a matching testID for a field you are about to include, omit that step entirely.\n"
 
         # Add Figma design context if available (Phase 5)
         if development_info and development_info.get("figma_context"):
@@ -964,6 +979,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                     if testid_reference:
                         ref_preview = testid_reference[:3000] + "\n...(truncated)" if len(testid_reference) > 3000 else testid_reference
                         prompt += f"\n**Available TestIDs:**\n{ref_preview}\n"
+                    prompt += "\n⚠️ THE TESTID REFERENCE IS EXHAUSTIVE: every interactive element has a testID listed above. If a form field does NOT appear in the reference, it does not exist in this app — do NOT invent steps for it.\n"
                 break
 
         # ── Final instructions ────────────────────────────────────────────────
