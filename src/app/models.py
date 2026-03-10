@@ -238,6 +238,27 @@ class GenerateTestPlanRequest(BaseModel):
     linked_info: dict | None = None  # Linked issues (blocks, blocked_by, causes, caused_by)
 
 
+class TicketInput(BaseModel):
+    """Individual ticket data for multi-ticket test plan generation."""
+
+    ticket_key: str
+    summary: str
+    description: str | None = None
+    issue_type: str
+    testing_context: dict = {}
+    development_info: dict | None = None
+    image_urls: list[str] | None = None
+    comments: list[dict] | None = None
+    parent_info: dict | None = None
+    linked_info: dict | None = None
+
+
+class MultiTicketGenerateRequest(BaseModel):
+    """Request body for generating a unified test plan from multiple related tickets."""
+
+    tickets: list[TicketInput]
+
+
 class PostCommentRequest(BaseModel):
     """Request body for posting a comment to Jira."""
 

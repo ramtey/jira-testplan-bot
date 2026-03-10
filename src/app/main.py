@@ -11,7 +11,7 @@ from .jira_client import (
     JiraNotFoundError,
 )
 from .llm_client import LLMError, get_llm_client
-from .models import GenerateTestPlanRequest, PostCommentRequest
+from .models import GenerateTestPlanRequest, MultiTicketGenerateRequest, PostCommentRequest
 from .token_service import token_health_service
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
@@ -237,6 +237,108 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
 
         return {
             "ticket_key": request.ticket_key,
+            "happy_path": test_plan.happy_path,
+            "edge_cases": test_plan.edge_cases,
+            "regression_checklist": test_plan.regression_checklist,
+            "integration_tests": test_plan.integration_tests or [],
+        }
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+def _check_tickets_share_context(tickets: list) -> bool:
+    """Return True if at least two tickets share a repository or an overlapping file."""
+    ticket_repos: list[set] = []
+    ticket_files: list[set] = []
+
+    for ticket in tickets:
+        dev_info = ticket.development_info if hasattr(ticket, "development_info") else None
+        if not dev_info:
+            continue
+        repos: set[str] = set()
+        files: set[str] = set()
+        for pr in dev_info.get("pull_requests", []):
+            if pr.get("repository"):
+                repos.add(pr["repository"])
+            for fc in pr.get("files_changed", []):
+                if fc.get("filename"):
+                    files.add(fc["filename"])
+        if repos or files:
+            ticket_repos.append(repos)
+            ticket_files.append(files)
+
+    if len(ticket_repos) < 2:
+        return False
+
+    for i in range(len(ticket_repos)):
+        for j in range(i + 1, len(ticket_repos)):
+            if ticket_repos[i] & ticket_repos[j]:
+                return True
+            if ticket_files[i] & ticket_files[j]:
+                return True
+
+    return False
+
+
+@app.post("/generate-test-plan/multi")
+async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
+    """
+    Generate a unified test plan for multiple related Jira tickets.
+
+    Tickets must share code changes (same repository or overlapping files).
+    Returns 422 with TICKETS_NO_SHARED_CONTEXT when no overlap is detected.
+    """
+    for ticket in request.tickets:
+        if ticket.issue_type in NON_TESTABLE_ISSUE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Test plans are not generated for {ticket.issue_type} issues ({ticket.ticket_key}).",
+            )
+
+    if not _check_tickets_share_context(request.tickets):
+        raise HTTPException(
+            status_code=422,
+            detail="TICKETS_NO_SHARED_CONTEXT",
+        )
+
+    try:
+        # Collect images from all tickets (cap at 3 total)
+        all_images: list | None = None
+        jira = JiraClient()
+        for ticket in request.tickets:
+            if ticket.image_urls and (all_images is None or len(all_images) < 3):
+                for url in ticket.image_urls:
+                    if all_images is not None and len(all_images) >= 3:
+                        break
+                    image_data = await jira.download_image_as_base64(url)
+                    if image_data:
+                        if all_images is None:
+                            all_images = []
+                        all_images.append(image_data)
+
+        tickets_data = [
+            {
+                "ticket_key": t.ticket_key,
+                "summary": t.summary,
+                "description": t.description,
+                "issue_type": t.issue_type,
+                "testing_context": t.testing_context,
+                "development_info": t.development_info,
+                "comments": t.comments,
+                "parent_info": t.parent_info,
+                "linked_info": t.linked_info,
+            }
+            for t in request.tickets
+        ]
+
+        llm = get_llm_client()
+        test_plan = await llm.generate_multi_ticket_test_plan(
+            tickets=tickets_data,
+            images=all_images,
+        )
+
+        return {
+            "ticket_keys": [t.ticket_key for t in request.tickets],
             "happy_path": test_plan.happy_path,
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,

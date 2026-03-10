@@ -915,6 +915,80 @@ button:disabled {
   color: var(--primary);
 }
 
+/* Multi-ticket badge in test plan header */
+.multi-ticket-badge {
+  margin-left: 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--primary-light, #e8f0fe);
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 999px;
+  padding: 0.15rem 0.65rem;
+  vertical-align: middle;
+  letter-spacing: 0.02em;
+}
+
+/* Multi-ticket list wrapper */
+.multi-ticket-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Multi-ticket posting panel */
+.multi-post-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.multi-post-label {
+  font-weight: 600;
+  color: var(--text-secondary, #555);
+  font-size: 0.9rem;
+}
+
+.multi-post-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary, #f8f9fa);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.multi-post-option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.multi-post-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.multi-post-key {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.post-state {
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.post-state.posting { color: var(--text-secondary, #888); }
+.post-state.done    { color: var(--success, #00875a); }
+.post-state.error   { color: var(--error, #de350b); }
+
 /* Test Plan Actions */
 .test-plan-actions {
   margin-top: 2rem;

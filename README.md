@@ -33,6 +33,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Token health monitoring and validation
 - Post test plans directly to Jira comments
 - **Parent ticket awareness** for sub-tasks to understand broader feature context
+- **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input)
 
 ## Key Features
 
@@ -281,6 +282,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Token health**: `GET /health/tokens` - Validates all API tokens
 - **Fetch issue**: `GET /issue/{issue_key}` - Returns ticket with development info
 - **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON
+- **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets (must share a repo or overlapping files; returns `422 TICKETS_NO_SHARED_CONTEXT` otherwise)
 
 See `/docs` for detailed API documentation and schemas.
 
@@ -343,6 +345,7 @@ uv run pytest tests/ -v
 - ✅ **PR repo label**: Each PR in Development Activity shows which repo it belongs to (`owner/repo`)
 - ✅ **PR author**: Each PR displays the GitHub author login
 - ✅ **Assignee history**: All unique people ever assigned to a ticket (from Jira changelog), with current assignee highlighted
+- ✅ **Multi-ticket test plans**: Enter comma-separated ticket keys (e.g. `PROJ-123, PROJ-456`) to generate one unified plan; requires shared repo or overlapping file changes
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
@@ -354,6 +357,7 @@ uv run pytest tests/ -v
 ## Usage Tips
 
 - **Automatic generation**: Just enter a ticket key - the system fetches all context automatically
+- **Multi-ticket mode**: Enter comma-separated keys (`PROJ-123, PROJ-456`) to combine related tickets into one plan; tickets must share a repository or overlapping changed files
 - **Sub-tasks get parent context**: Design specs (Figma, images) from parent Epics/Stories are automatically included
 - **Export formats**: Use Jira format for comments, Markdown for GitHub/Slack, JSON for programmatic use
 - **GitHub token recommended**: Adds project-specific terminology and implementation details to test plans

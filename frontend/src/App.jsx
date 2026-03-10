@@ -14,7 +14,9 @@ function App() {
   const [issueKey, setIssueKey] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [ticketData, setTicketData] = useState(null)
+
+  // ticketsData is always an array; single-ticket mode uses ticketsData[0]
+  const [ticketsData, setTicketsData] = useState([])
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
 
   // Test plan generation state
@@ -28,31 +30,58 @@ function App() {
     fetchConfig()
   }, [])
 
+  const isMultiTicket = ticketsData.length > 1
+  // For single-ticket backward-compat: expose first ticket as ticketData
+  const ticketData = ticketsData.length === 1 ? ticketsData[0] : null
+
   const handleFetchTicket = async (e) => {
     e.preventDefault()
 
-    if (!issueKey.trim()) {
+    const keys = issueKey
+      .split(',')
+      .map((k) => k.trim().toUpperCase())
+      .filter(Boolean)
+
+    if (keys.length === 0) {
       setError('Please enter a Jira issue key')
       return
     }
 
     setLoading(true)
     setError(null)
-    setTicketData(null)
+    setTicketsData([])
     setIsDescriptionExpanded(false)
     setTestPlan(null)
     setPlanError(null)
 
     try {
-      const response = await fetch(`${API_BASE_URL}/issue/${issueKey.trim()}`)
+      if (keys.length === 1) {
+        // ── Single ticket — existing flow unchanged ──────────────────────────
+        const response = await fetch(`${API_BASE_URL}/issue/${keys[0]}`)
+        if (!response.ok) {
+          const errorData = await response.json()
+          throw new Error(errorData.detail || 'Failed to fetch ticket')
+        }
+        const data = await response.json()
+        setTicketsData([data])
+      } else {
+        // ── Multiple tickets — fetch in parallel ─────────────────────────────
+        const responses = await Promise.all(
+          keys.map((k) => fetch(`${API_BASE_URL}/issue/${k}`))
+        )
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || 'Failed to fetch ticket')
+        const results = []
+        for (let i = 0; i < responses.length; i++) {
+          if (!responses[i].ok) {
+            const errorData = await responses[i].json()
+            throw new Error(
+              `Failed to fetch ${keys[i]}: ${errorData.detail || 'Unknown error'}`
+            )
+          }
+          results.push(await responses[i].json())
+        }
+        setTicketsData(results)
       }
-
-      const data = await response.json()
-      setTicketData(data)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -62,7 +91,7 @@ function App() {
 
   const handleClear = () => {
     setIssueKey('')
-    setTicketData(null)
+    setTicketsData([])
     setError(null)
     setIsDescriptionExpanded(false)
     setTestPlan(null)
@@ -74,9 +103,8 @@ function App() {
   }
 
   const handleGenerateTestPlan = async () => {
-    if (!ticketData) return
+    if (ticketsData.length === 0) return
 
-    // Create new AbortController for this request
     const controller = new AbortController()
     setAbortController(controller)
 
@@ -85,38 +113,73 @@ function App() {
     setTestPlan(null)
 
     try {
-      // Extract image URLs from attachments if available
-      const imageUrls = ticketData.attachments
-        ? ticketData.attachments.map(att => att.url)
-        : null
+      if (!isMultiTicket) {
+        // ── Single ticket — existing flow unchanged ────────────────────────
+        const td = ticketsData[0]
+        const imageUrls = td.attachments ? td.attachments.map((att) => att.url) : null
 
-      const response = await fetch(`${API_BASE_URL}/generate-test-plan`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ticket_key: ticketData.key,
-          summary: ticketData.summary,
-          description: ticketData.description,
-          issue_type: ticketData.issue_type,
-          testing_context: {},
-          development_info: ticketData.development_info,
-          image_urls: imageUrls,
-          comments: ticketData.comments || null,
-          parent_info: ticketData.parent || null,
-          linked_info: ticketData.linked_issues || null,
-        }),
-        signal: controller.signal,
-      })
+        const response = await fetch(`${API_BASE_URL}/generate-test-plan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ticket_key: td.key,
+            summary: td.summary,
+            description: td.description,
+            issue_type: td.issue_type,
+            testing_context: {},
+            development_info: td.development_info,
+            image_urls: imageUrls,
+            comments: td.comments || null,
+            parent_info: td.parent || null,
+            linked_info: td.linked_issues || null,
+          }),
+          signal: controller.signal,
+        })
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || 'Failed to generate test plan')
+        if (!response.ok) {
+          const errorData = await response.json()
+          throw new Error(errorData.detail || 'Failed to generate test plan')
+        }
+
+        const data = await response.json()
+        setTestPlan(data)
+      } else {
+        // ── Multi-ticket ───────────────────────────────────────────────────
+        const response = await fetch(`${API_BASE_URL}/generate-test-plan/multi`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tickets: ticketsData.map((td) => ({
+              ticket_key: td.key,
+              summary: td.summary,
+              description: td.description,
+              issue_type: td.issue_type,
+              testing_context: {},
+              development_info: td.development_info,
+              image_urls: td.attachments ? td.attachments.map((a) => a.url) : null,
+              comments: td.comments || null,
+              parent_info: td.parent || null,
+              linked_info: td.linked_issues || null,
+            })),
+          }),
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          const errorData = await response.json()
+          if (errorData.detail === 'TICKETS_NO_SHARED_CONTEXT') {
+            alert(
+              "These tickets don't share any code changes or repository context.\n\n" +
+                'Please select tickets with related development work (same repository or overlapping files changed).'
+            )
+            return
+          }
+          throw new Error(errorData.detail || 'Failed to generate test plan')
+        }
+
+        const data = await response.json()
+        setTestPlan(data)
       }
-
-      const data = await response.json()
-      setTestPlan(data)
     } catch (err) {
       if (err.name === 'AbortError') {
         setPlanError('Test plan generation was cancelled')
@@ -135,6 +198,11 @@ function App() {
     }
   }
 
+  // For multi-ticket: block generation if any ticket has a non-testable type
+  const nonTestableTicket = ticketsData.find((td) =>
+    NON_TESTABLE_ISSUE_TYPES.has(td.issue_type)
+  )
+
   return (
     <div className="app">
       <header className="app-header">
@@ -151,7 +219,7 @@ function App() {
           loading={loading}
           onSubmit={handleFetchTicket}
           onClear={handleClear}
-          hasTicketData={!!ticketData}
+          hasTicketData={ticketsData.length > 0}
         />
 
         {error && (
@@ -160,18 +228,35 @@ function App() {
           </div>
         )}
 
-        {ticketData && (
+        {ticketsData.length > 0 && (
           <>
-            <TicketDetails
-              ticketData={ticketData}
-              isDescriptionExpanded={isDescriptionExpanded}
-              onToggleDescription={toggleDescription}
-            />
+            {isMultiTicket ? (
+              // ── Multi-ticket: show a compact header per ticket ─────────────
+              <div className="multi-ticket-list">
+                {ticketsData.map((td, idx) => (
+                  <TicketDetails
+                    key={td.key}
+                    ticketData={td}
+                    isDescriptionExpanded={isDescriptionExpanded}
+                    onToggleDescription={toggleDescription}
+                    compact={true}
+                  />
+                ))}
+              </div>
+            ) : (
+              // ── Single ticket: original full view ──────────────────────────
+              <TicketDetails
+                ticketData={ticketData}
+                isDescriptionExpanded={isDescriptionExpanded}
+                onToggleDescription={toggleDescription}
+              />
+            )}
 
-            {NON_TESTABLE_ISSUE_TYPES.has(ticketData.issue_type) ? (
+            {nonTestableTicket ? (
               <div className="ticket-section">
                 <div className="alert alert-info">
-                  <strong>ℹ️ Note:</strong> Test plans are not generated for {ticketData.issue_type} tickets.
+                  <strong>ℹ️ Note:</strong> Test plans are not generated for{' '}
+                  {nonTestableTicket.issue_type} tickets ({nonTestableTicket.key}).
                   <br />
                   Test plan generation is available for Story, Task, and Bug issues only.
                 </div>
@@ -194,6 +279,7 @@ function App() {
                   <TestPlanDisplay
                     testPlan={testPlan}
                     ticketData={ticketData}
+                    ticketsData={isMultiTicket ? ticketsData : null}
                   />
                 )}
               </>

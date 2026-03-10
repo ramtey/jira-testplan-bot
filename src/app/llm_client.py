@@ -408,6 +408,22 @@ class LLMClient(ABC):
         """
         pass
 
+    @abstractmethod
+    async def generate_multi_ticket_test_plan(
+        self,
+        tickets: list[dict],
+        images: list[tuple[str, str]] | None = None,
+    ) -> TestPlan:
+        """Generate a unified test plan from multiple related tickets.
+
+        Args:
+            tickets: List of ticket dicts with keys: ticket_key, summary, description,
+                     issue_type, testing_context, development_info, comments,
+                     parent_info, linked_info
+            images: Combined image attachments from all tickets (up to 3)
+        """
+        pass
+
     def _build_prompt(
         self,
         ticket_key: str,
@@ -805,6 +821,167 @@ TICKET INFORMATION
 
         return prompt
 
+    def _build_multi_ticket_prompt(
+        self,
+        tickets: list[dict],
+        has_images: bool = False,
+    ) -> str:
+        """Build a combined prompt for multiple related tickets sharing code changes."""
+        ticket_keys = [t["ticket_key"] for t in tickets]
+        keys_str = ", ".join(ticket_keys)
+
+        prompt = f"""**Your Task:** Create a single, unified, deduplicated test plan covering the following related Jira tickets that share code changes: {keys_str}.{"  (screenshots/mockups attached)" if has_images else ""}
+
+Treat all tickets as parts of one combined feature. Do NOT produce separate test plans — generate ONE plan that covers the full scope.
+
+"""
+        # ── Per-ticket summaries ──────────────────────────────────────────────
+        for i, ticket in enumerate(tickets, 1):
+            ticket_key = ticket["ticket_key"]
+            summary = ticket["summary"]
+            description = ticket.get("description")
+
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += f"TICKET {i} OF {len(tickets)}: {ticket_key}\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            prompt += f"**Summary:** {summary}\n\n"
+            prompt += f"**Description:**\n{description if description else 'No description provided'}\n"
+
+            parent_info = ticket.get("parent_info")
+            if parent_info:
+                prompt += f"\n**Parent Ticket:** {parent_info.get('key')} — {parent_info.get('summary')}\n"
+
+            linked_info = ticket.get("linked_info")
+            if linked_info:
+                blocked_by = linked_info.get("blocked_by", [])
+                if blocked_by:
+                    prompt += f"**Blocked By:** {', '.join(b['key'] for b in blocked_by)}\n"
+
+            comments = ticket.get("comments")
+            if comments:
+                prompt += f"\n**Testing Comments ({len(comments)}):**\n"
+                for comment in comments[:3]:
+                    body = comment.get("body", "")
+                    body_preview = body[:300] + "..." if len(body) > 300 else body
+                    prompt += f"- @{comment.get('author', 'Unknown')}: {body_preview}\n"
+
+            prompt += "\n"
+
+        # ── Shared development activity ───────────────────────────────────────
+        tickets_with_dev = [t for t in tickets if t.get("development_info")]
+        if tickets_with_dev:
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "SHARED DEVELOPMENT ACTIVITY\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+            for ticket in tickets_with_dev:
+                dev_info = ticket["development_info"]
+                ticket_key = ticket["ticket_key"]
+                prompt += f"**{ticket_key} — Development:**\n"
+
+                pull_requests = dev_info.get("pull_requests", [])
+                for pr in pull_requests:
+                    prompt += f"- PR: **{pr.get('title', 'Untitled')}** ({pr.get('status', 'UNKNOWN')})\n"
+                    if pr.get("source_branch"):
+                        prompt += f"  Branch: {pr['source_branch']}\n"
+                    if pr.get("github_description"):
+                        desc = pr["github_description"]
+                        prompt += f"  PR Description: {desc[:200] + '...' if len(desc) > 200 else desc}\n"
+
+                    files_changed = pr.get("files_changed")
+                    if files_changed:
+                        total_add = pr.get("total_additions", 0)
+                        total_del = pr.get("total_deletions", 0)
+                        prompt += f"  📊 {len(files_changed)} files (+{total_add}/-{total_del})\n"
+                        sorted_files = sorted(files_changed, key=lambda f: f.get("changes", 0), reverse=True)
+                        prompt += "  📁 Files:\n"
+                        for fc in sorted_files[:10]:
+                            icon = {"added": "✨", "modified": "📝", "removed": "🗑️", "renamed": "📛"}.get(fc.get("status", ""), "📄")
+                            prompt += f"     {icon} {fc.get('filename', 'unknown')} (+{fc.get('additions', 0)}/-{fc.get('deletions', 0)})\n"
+                        if len(files_changed) > 10:
+                            prompt += f"     ... and {len(files_changed) - 10} more files\n"
+
+                        # Code diffs — smaller budget per ticket in multi-ticket mode
+                        files_with_patches = [f for f in sorted_files if f.get("patch")]
+                        if files_with_patches:
+                            prompt += "\n  📋 Key Code Changes:\n"
+                            total_patch_chars = 0
+                            MAX_TOTAL = 4000
+                            MAX_PER_FILE = 1000
+                            for fc in files_with_patches:
+                                if total_patch_chars >= MAX_TOTAL:
+                                    break
+                                patch = fc.get("patch", "")
+                                fname = fc.get("filename", "unknown")
+                                if len(patch) > MAX_PER_FILE:
+                                    patch = patch[:MAX_PER_FILE] + "\n     ...(truncated)"
+                                remaining = MAX_TOTAL - total_patch_chars
+                                if len(patch) > remaining:
+                                    patch = patch[:remaining] + "\n     ...(truncated)"
+                                prompt += f"\n  --- {fname} ---\n"
+                                for line in patch.split("\n"):
+                                    prompt += f"  {line}\n"
+                                total_patch_chars += len(patch)
+                            prompt += "\n  ⚠️ REQUIRED: Read these diffs and generate test cases for every new behaviour introduced.\n"
+
+                        prompt += "\n"
+
+                    pr_comments = pr.get("comments")
+                    if pr_comments:
+                        prompt += f"  💬 PR Discussion ({len(pr_comments)} comments):\n"
+                        for comment in pr_comments[:5]:
+                            body = comment.get("body", "")
+                            body_preview = body[:150] + "..." if len(body) > 150 else body
+                            icon = "📝" if comment.get("comment_type") == "review_comment" else "💬"
+                            prompt += f"     {icon} @{comment.get('author', 'unknown')}: {body_preview}\n"
+                        prompt += "\n"
+
+                commits = dev_info.get("commits", [])
+                if commits:
+                    prompt += f"  Commits ({len(commits)}):\n"
+                    for commit in commits[:5]:
+                        msg = commit.get("message", "No message").split("\n")[0]
+                        prompt += f"  - {msg}\n"
+
+                prompt += "\n"
+
+            # UI navigation context — use first ticket that has it
+            for ticket in tickets_with_dev:
+                dev_info = ticket["development_info"]
+                repo_context = dev_info.get("repository_context")
+                if not repo_context:
+                    continue
+                screen_guide = repo_context.get("screen_guide")
+                testid_reference = repo_context.get("testid_reference")
+                if screen_guide or testid_reference:
+                    prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    prompt += "UI NAVIGATION CONTEXT\n"
+                    prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    prompt += "\nThis app has stable testID identifiers. Use them in test steps instead of generic descriptions.\n"
+                    if screen_guide:
+                        guide_preview = screen_guide[:3000] + "\n...(truncated)" if len(screen_guide) > 3000 else screen_guide
+                        prompt += f"\n**Screen Navigation Guide:**\n{guide_preview}\n"
+                    if testid_reference:
+                        ref_preview = testid_reference[:3000] + "\n...(truncated)" if len(testid_reference) > 3000 else testid_reference
+                        prompt += f"\n**Available TestIDs:**\n{ref_preview}\n"
+                break
+
+        # ── Final instructions ────────────────────────────────────────────────
+        prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        prompt += "INSTRUCTIONS\n"
+        prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        prompt += "Generate ONE unified test plan that covers all tickets above:\n"
+        prompt += "- Treat all tickets as parts of a single combined feature\n"
+        prompt += "- Do NOT duplicate test cases — merge overlapping scenarios\n"
+        prompt += "- Prioritise integration tests that cover how the tickets interact\n"
+        prompt += "- Use shared development context to understand the full scope of changes\n"
+        prompt += "- **FILTER OUT build-time changes**: focus ONLY on runtime behaviour\n"
+
+        if has_images:
+            prompt += "\n**Note:** Screenshots or mockups from one or more tickets are attached. Use them for UI-specific test cases.\n"
+
+        return prompt
+
 
 class OllamaClient(LLMClient):
     """Ollama LLM client (local, free)."""
@@ -875,6 +1052,65 @@ class OllamaClient(LLMClient):
         except httpx.TimeoutException as e:
             raise LLMError(
                 f"Ollama request timed out after 300s. Try a smaller model or increase timeout. Error: {e}",
+                error_type="service_unavailable"
+            ) from e
+        except httpx.HTTPStatusError as e:
+            raise LLMError(
+                f"Ollama returned error status {e.response.status_code}: {e.response.text}",
+                error_type="service_unavailable"
+            ) from e
+
+    async def generate_multi_ticket_test_plan(
+        self,
+        tickets: list[dict],
+        images: list[tuple[str, str]] | None = None,
+    ) -> TestPlan:
+        """Generate a unified test plan for multiple related tickets using Ollama."""
+        if images:
+            print("Warning: Ollama does not support image analysis. Images will be ignored.")
+
+        prompt = self._build_multi_ticket_prompt(tickets, has_images=False)
+
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "format": "json",
+                        "stream": False,
+                        "options": {"temperature": 0.1},
+                    },
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                response_text = data.get("response", "")
+
+                try:
+                    test_plan_data = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    raise LLMError(
+                        f"Failed to parse JSON response from Ollama: {e}",
+                        error_type="service_unavailable"
+                    ) from e
+
+                return TestPlan(
+                    happy_path=test_plan_data.get("happy_path", []),
+                    edge_cases=test_plan_data.get("edge_cases", []),
+                    regression_checklist=test_plan_data.get("regression_checklist", []),
+                    integration_tests=test_plan_data.get("integration_tests", []),
+                )
+
+        except httpx.ConnectError as e:
+            raise LLMError(
+                f"Failed to connect to Ollama at {self.base_url}. Is Ollama running? Error: {e}",
+                error_type="service_unavailable"
+            ) from e
+        except httpx.TimeoutException as e:
+            raise LLMError(
+                f"Ollama request timed out after 300s. Error: {e}",
                 error_type="service_unavailable"
             ) from e
         except httpx.HTTPStatusError as e:
@@ -1049,6 +1285,105 @@ class ClaudeClient(LLMClient):
                 else:
                     raise LLMError(
                         "Anthropic API authentication failed. Your API key may be expired or revoked. Get a new key at https://console.anthropic.com/settings/keys",
+                        error_type="expired"
+                    ) from e
+            elif e.response.status_code == 429:
+                raise LLMError(
+                    "Anthropic API rate limit exceeded. Please wait and try again.",
+                    error_type="rate_limited"
+                ) from e
+            raise LLMError(
+                f"Claude API returned error status {e.response.status_code}: {e.response.text}",
+                error_type="service_unavailable"
+            ) from e
+        except httpx.TimeoutException as e:
+            raise LLMError(f"Claude API request timed out: {e}", error_type="service_unavailable") from e
+
+    async def generate_multi_ticket_test_plan(
+        self,
+        tickets: list[dict],
+        images: list[tuple[str, str]] | None = None,
+    ) -> TestPlan:
+        """Generate a unified test plan for multiple related tickets using Claude API."""
+        prompt = self._build_multi_ticket_prompt(tickets, has_images=bool(images))
+
+        content = []
+
+        if images:
+            for base64_data, media_type in images:
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64_data,
+                    },
+                })
+
+        content.append({"type": "text", "text": prompt})
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "anthropic-version": "2023-06-01",
+                        "x-api-key": self.api_key,
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 8192,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                        "messages": [{"role": "user", "content": content}],
+                        "temperature": 0.1,
+                        "tools": [SUBMIT_TEST_PLAN_TOOL],
+                        "tool_choice": {"type": "tool", "name": "submit_test_plan"},
+                    },
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                tool_block = next(
+                    (b for b in data["content"] if b.get("type") == "tool_use"),
+                    None,
+                )
+                if tool_block is None:
+                    raise LLMError(
+                        "Claude did not return a tool_use block. Unexpected response format.",
+                        error_type="service_unavailable",
+                    )
+                test_plan_data = tool_block["input"]
+
+                return TestPlan(
+                    happy_path=test_plan_data.get("happy_path", []),
+                    edge_cases=test_plan_data.get("edge_cases", []),
+                    regression_checklist=test_plan_data.get("regression_checklist", []),
+                    integration_tests=test_plan_data.get("integration_tests", []),
+                )
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                error_msg = ""
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get("error", {}).get("message", "")
+                except Exception:
+                    pass
+                if "invalid" in error_msg.lower():
+                    raise LLMError(
+                        "Anthropic API key is invalid.",
+                        error_type="invalid"
+                    ) from e
+                else:
+                    raise LLMError(
+                        "Anthropic API authentication failed.",
                         error_type="expired"
                     ) from e
             elif e.response.status_code == 429:
