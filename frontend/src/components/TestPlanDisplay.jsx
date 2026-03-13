@@ -3,7 +3,7 @@
  * Supports both single-ticket and multi-ticket posting.
  */
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 
@@ -65,6 +65,18 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
   // Single-ticket posting state (backward compat)
   const [isPosting, setIsPosting] = useState(false)
 
+  // Inline notifications (replaces alert())
+  const [postNotification, setPostNotification] = useState(null) // { type: 'success'|'error', message }
+  const [copyNotification, setCopyNotification] = useState(null)
+  const postTimerRef = useRef(null)
+  const copyTimerRef = useRef(null)
+
+  const showNotification = (setter, timerRef, type, message) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    setter({ type, message })
+    timerRef.current = setTimeout(() => setter(null), type === 'success' ? 3000 : 6000)
+  }
+
   if (!testPlan) {
     return <div className="ticket-section">No test plan data available</div>
   }
@@ -80,8 +92,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
     const markdown = formatTestPlanAsMarkdown(testPlan, primaryTicketData)
     navigator.clipboard
       .writeText(markdown)
-      .then(() => alert('Test plan copied to clipboard!'))
-      .catch(() => alert('Failed to copy to clipboard'))
+      .then(() => showNotification(setCopyNotification, copyTimerRef, 'success', 'Copied!'))
+      .catch(() => showNotification(setCopyNotification, copyTimerRef, 'error', 'Failed to copy'))
   }
 
   const handleDownloadMarkdown = () => {
@@ -122,11 +134,11 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
 
       const result = await response.json()
       const action = result.updated ? 'updated' : 'posted'
-      alert(`✅ Test plan ${action} successfully on ${ticketData.key}!`)
+      showNotification(setPostNotification, postTimerRef, 'success', `Test plan ${action} on ${ticketData.key}`)
       console.log('Comment ID:', result.comment_id, 'Updated:', result.updated)
     } catch (error) {
       console.error('Error posting to Jira:', error)
-      alert(`❌ Failed to post to Jira: ${error.message}`)
+      showNotification(setPostNotification, postTimerRef, 'error', error.message)
     } finally {
       setIsPosting(false)
     }
@@ -156,14 +168,14 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
     } catch (error) {
       console.error(`Error posting to ${issueKey}:`, error)
       setPostingStates((prev) => ({ ...prev, [issueKey]: 'error' }))
-      alert(`❌ Failed to post to ${issueKey}: ${error.message}`)
+      showNotification(setPostNotification, postTimerRef, 'error', `${issueKey}: ${error.message}`)
     }
   }
 
   const handlePostSelected = async () => {
     const keys = [...selectedKeys]
     if (keys.length === 0) {
-      alert('Select at least one ticket to post to.')
+      showNotification(setPostNotification, postTimerRef, 'error', 'Select at least one ticket')
       return
     }
     for (const key of keys) {
@@ -266,26 +278,44 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
             <button
               type="button"
               onClick={handlePostSelected}
-              className="btn-post-jira"
+              className={`btn-post-jira${postNotification ? ` btn-feedback--${postNotification.type}` : ''}`}
               disabled={isAnyPosting || selectedKeys.size === 0}
             >
-              {isAnyPosting ? 'Posting…' : `Post to Selected (${selectedKeys.size})`}
+              {isAnyPosting
+                ? 'Posting…'
+                : postNotification?.type === 'error'
+                ? `✗ ${postNotification.message}`
+                : `Post to Selected (${selectedKeys.size})`}
             </button>
           </div>
         ) : (
-          // ── Single-ticket post button (unchanged) ───────────────────────
+          // ── Single-ticket post button ────────────────────────────────────
           <button
             type="button"
             onClick={handlePostToJira}
-            className="btn-post-jira"
+            className={`btn-post-jira${postNotification ? ` btn-feedback--${postNotification.type}` : ''}`}
             disabled={isPosting}
           >
-            {isPosting ? 'Posting...' : 'Post to Jira'}
+            {isPosting
+              ? 'Posting...'
+              : postNotification?.type === 'success'
+              ? `✓ ${postNotification.message}`
+              : postNotification?.type === 'error'
+              ? `✗ ${postNotification.message}`
+              : 'Post to Jira'}
           </button>
         )}
 
-        <button type="button" onClick={handleCopyMarkdown} className="btn-copy-markdown">
-          Copy as Markdown
+        <button
+          type="button"
+          onClick={handleCopyMarkdown}
+          className={`btn-copy-markdown${copyNotification ? ` btn-feedback--${copyNotification.type}` : ''}`}
+        >
+          {copyNotification?.type === 'success'
+            ? `✓ ${copyNotification.message}`
+            : copyNotification?.type === 'error'
+            ? `✗ ${copyNotification.message}`
+            : 'Copy as Markdown'}
         </button>
         <button type="button" onClick={handleDownloadMarkdown} className="btn-download">
           Download as .md
