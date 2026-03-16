@@ -206,7 +206,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Jira Test Plan Bot</h1>
+        <h1><img src="/favicon.svg" alt="logo" style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle', marginRight: '0.4em' }} />Jira Test Plan Bot</h1>
         <p>Fetch Jira tickets and analyze description quality</p>
       </header>
 
@@ -233,7 +233,7 @@ function App() {
             {isMultiTicket ? (
               // ── Multi-ticket: show a compact header per ticket ─────────────
               <div className="multi-ticket-list">
-                {ticketsData.map((td, idx) => (
+                {ticketsData.map((td) => (
                   <TicketDetails
                     key={td.key}
                     ticketData={td}
