@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Clipboard body -->
+  <rect x="6" y="6" width="20" height="24" rx="3" fill="#0052CC"/>
+  <!-- Clipboard top clip -->
+  <rect x="11" y="4" width="10" height="4" rx="2" fill="#003B9B"/>
+  <!-- Letter J -->
+  <text x="8" y="22" font-family="Arial, sans-serif" font-weight="bold" font-size="15" fill="white">J</text>
+  <!-- Checkmark -->
+  <polyline points="17,21 20,24 26,16" stroke="#36B37E" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
