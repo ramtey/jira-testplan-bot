@@ -58,10 +58,16 @@ SYSTEM_PROMPT = """You are an expert QA engineer with 10+ years of experience cr
 
 If you answer "no" or "not sure" to question 1 or 4, DO NOT include that test case.
 
+**RESPECT EXPLICIT COUNTS AND ENUMERATIONS:**
+- If the ticket names a specific count (e.g., "13 new states") or provides an explicit list, generate test cases ONLY for the items in that list
+- DO NOT add items you believe should be in scope based on domain knowledge — even if they seem like obvious omissions
+- If you cannot identify all items from the ticket text, generate only for those explicitly named; do not fill in the gaps
+
 **EXAMPLES OF WHAT NOT TO DO:**
 ❌ Ticket: "Fix login button styling" → Don't add tests for password reset, OAuth, or session management
 ❌ Ticket: "Generate PDF report" → Don't add tests for watermarks, headers, footers unless mentioned
 ❌ Ticket: "Add export feature" → Don't test for file formats not mentioned in the ticket
+❌ Ticket: "Scale to 13 new states: AR, FL, HI..." → Don't add a 14th state not in the list
 
 **DO NOT INVENT UI STATES OR OPTION VALUES:**
 - NEVER assume a dropdown/selector has an "undefined", "empty", or "null" state unless the ticket explicitly says so
@@ -710,7 +716,7 @@ TICKET INFORMATION
                     gh_desc = pr.get('github_description')
                     if gh_desc:
                         # Truncate long descriptions
-                        desc_preview = gh_desc[:300] + "..." if len(gh_desc) > 300 else gh_desc
+                        desc_preview = gh_desc[:1500] + "..." if len(gh_desc) > 1500 else gh_desc
                         prompt += f"  PR Description: {desc_preview}\n"
 
                     # Add code changes summary if available (Phase 3a)
@@ -742,14 +748,14 @@ TICKET INFORMATION
                             prompt += f"     ... and {len(files_changed) - 15} more files\n"
 
                         # Show actual diff patches for runtime source files.
-                        # Capped at 8000 chars total / 2000 chars per file so the prompt
+                        # Capped at 16000 chars total / 4000 chars per file so the prompt
                         # stays manageable while still exposing what was actually implemented.
                         files_with_patches = [f for f in sorted_files if f.get('patch')]
                         if files_with_patches:
                             prompt += "\n  📋 Key Code Changes (runtime files only):\n"
                             total_patch_chars = 0
-                            MAX_TOTAL = 8000
-                            MAX_PER_FILE = 2000
+                            MAX_TOTAL = 16000
+                            MAX_PER_FILE = 4000
                             for fc in files_with_patches:
                                 if total_patch_chars >= MAX_TOTAL:
                                     break
@@ -921,8 +927,8 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                         if files_with_patches:
                             prompt += "\n  📋 Key Code Changes:\n"
                             total_patch_chars = 0
-                            MAX_TOTAL = 4000
-                            MAX_PER_FILE = 1000
+                            MAX_TOTAL = 8000
+                            MAX_PER_FILE = 2000
                             for fc in files_with_patches:
                                 if total_patch_chars >= MAX_TOTAL:
                                     break
