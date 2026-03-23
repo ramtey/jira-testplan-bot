@@ -3,6 +3,7 @@ from dataclasses import asdict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from .bug_lens_routes import router as bug_lens_router
 from .config import NON_TESTABLE_ISSUE_TYPES
 from .jira_client import (
     JiraAuthError,
@@ -15,6 +16,7 @@ from .models import GenerateTestPlanRequest, MultiTicketGenerateRequest, PostCom
 from .token_service import token_health_service
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
+app.include_router(bug_lens_router)
 
 # Configure CORS for frontend communication
 # NOTE: For production, update allow_origins to include your production URLs

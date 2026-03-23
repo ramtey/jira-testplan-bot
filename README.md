@@ -4,7 +4,7 @@
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![React](https://img.shields.io/badge/react-18.3-blue.svg)
 
-Generate a structured QA test plan from a Jira ticket using the ticket's title/description and linked development activity (commits, PRs, code changes).
+Generate structured QA test plans from Jira tickets, and analyze bug tickets to explain root cause, fix, and regression tests — using linked development activity (commits, PRs, code changes).
 
 ## 🔒 Security Notice
 
@@ -34,6 +34,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Post test plans directly to Jira comments
 - **Parent ticket awareness** for sub-tasks to understand broader feature context
 - **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input)
+- **Jira Bug Lens**: analyze bug tickets to explain root cause, fix, and suggest regression tests
 
 ## Key Features
 
@@ -65,6 +66,16 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
 - **Multiple export formats**: Markdown, Jira-formatted text, or JSON
 - **Issue type validation**: Only generates plans for testable types (Story, Bug, Task)
+
+### Jira Bug Lens
+Analyze bug tickets to go beyond the ticket description and into the code:
+- **Bug summary**: Plain-English explanation of what broke and what the user experienced
+- **Root cause**: Identifies the exact cause in the code, referencing specific files and logic (requires a linked PR with diffs)
+- **Fix explanation**: Describes what the merged PR changed to resolve the bug
+- **Regression tests**: Concrete, actionable test cases to prevent the bug from recurring
+- **Similar patterns**: Classes of related bugs to proactively look for in the codebase
+- **Multi-ticket support**: Analyze multiple related bug tickets together for a combined root cause analysis
+- Only shown for `Bug` issue type; automatically uses the same GitHub PR diff pipeline as test plan generation
 
 ## Tech Stack
 
@@ -283,6 +294,8 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Fetch issue**: `GET /issue/{issue_key}` - Returns ticket with development info
 - **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON
 - **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets (must share a repo or overlapping files; returns `422 TICKETS_NO_SHARED_CONTEXT` otherwise)
+- **Analyze bug**: `POST /bug-lens/analyze` - Root cause, fix explanation, and regression tests for a bug ticket
+- **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
 
 See `/docs` for detailed API documentation and schemas.
 
@@ -346,6 +359,7 @@ uv run pytest tests/ -v
 - ✅ **PR author**: Each PR displays the GitHub author login
 - ✅ **Assignee history**: All unique people ever assigned to a ticket (from Jira changelog), with current assignee highlighted
 - ✅ **Multi-ticket test plans**: Enter comma-separated ticket keys (e.g. `PROJ-123, PROJ-456`) to generate one unified plan; requires shared repo or overlapping file changes
+- ✅ **Jira Bug Lens**: Analyze bug tickets to explain root cause, fix, and suggest regression tests; supports multi-ticket analysis
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
@@ -358,6 +372,7 @@ uv run pytest tests/ -v
 
 - **Automatic generation**: Just enter a ticket key - the system fetches all context automatically
 - **Multi-ticket mode**: Enter comma-separated keys (`PROJ-123, PROJ-456`) to combine related tickets into one plan; tickets must share a repository or overlapping changed files
+- **Bug Lens**: For `Bug` tickets, an "Analyze Bug" button appears alongside "Generate Test Plan" — use it to get root cause, fix explanation, and regression tests grounded in the actual PR diff
 - **Sub-tasks get parent context**: Design specs (Figma, images) from parent Epics/Stories are automatically included
 - **Export formats**: Use Jira format for comments, Markdown for GitHub/Slack, JSON for programmatic use
 - **GitHub token recommended**: Adds project-specific terminology and implementation details to test plans

@@ -732,13 +732,31 @@ button:disabled {
   gap: 1rem;
 }
 
+/* Action buttons row (Generate Test Plan + Analyze Bug side by side) */
+.action-buttons {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.action-buttons-row {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
 .btn-generate {
-  padding: 1.25rem 3rem;
+  padding: 1rem 2rem;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-weight: 700;
-  min-width: 250px;
+  min-width: 190px;
   box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4);
 }
 
@@ -753,13 +771,28 @@ button:disabled {
   opacity: 0.7;
 }
 
+.btn-bug-lens {
+  background: linear-gradient(135deg, #f7971e 0%, #e05b00 100%);
+  box-shadow: 0 4px 16px rgba(247, 151, 30, 0.4);
+}
+
+.btn-bug-lens:hover:not(:disabled) {
+  background: linear-gradient(135deg, #e08810 0%, #c24d00 100%);
+  box-shadow: 0 6px 20px rgba(247, 151, 30, 0.5);
+}
+
+.btn-stop-bug {
+  background: linear-gradient(135deg, #e05b00 0%, #bf4000 100%);
+  box-shadow: 0 4px 16px rgba(224, 91, 0, 0.4);
+}
+
 .btn-stop {
-  padding: 1.25rem 3rem;
+  padding: 1rem 2rem;
   background: var(--error);
   color: white;
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-weight: 700;
-  min-width: 250px;
+  min-width: 190px;
   box-shadow: 0 4px 16px rgba(222, 53, 11, 0.4);
   display: flex;
   align-items: center;

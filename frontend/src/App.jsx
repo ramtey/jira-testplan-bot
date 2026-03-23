@@ -5,6 +5,7 @@ import TicketForm from './components/TicketForm'
 import TicketDetails from './components/TicketDetails'
 import TestingContextForm from './components/TestingContextForm'
 import TestPlanDisplay from './components/TestPlanDisplay'
+import BugAnalysisDisplay from './components/BugAnalysisDisplay'
 import TokenStatus from './components/TokenStatus'
 
 // Issue types that don't require test plans
@@ -24,6 +25,12 @@ function App() {
   const [testPlan, setTestPlan] = useState(null)
   const [planError, setPlanError] = useState(null)
   const [abortController, setAbortController] = useState(null)
+
+  // Bug Lens state
+  const [analyzingBug, setAnalyzingBug] = useState(false)
+  const [bugAnalysis, setBugAnalysis] = useState(null)
+  const [bugAnalysisError, setBugAnalysisError] = useState(null)
+  const [bugAbortController, setBugAbortController] = useState(null)
 
   // Fetch config on mount to get Jira base URL
   useEffect(() => {
@@ -53,6 +60,8 @@ function App() {
     setIsDescriptionExpanded(false)
     setTestPlan(null)
     setPlanError(null)
+    setBugAnalysis(null)
+    setBugAnalysisError(null)
 
     try {
       if (keys.length === 1) {
@@ -96,6 +105,8 @@ function App() {
     setIsDescriptionExpanded(false)
     setTestPlan(null)
     setPlanError(null)
+    setBugAnalysis(null)
+    setBugAnalysisError(null)
   }
 
   const toggleDescription = () => {
@@ -198,10 +209,87 @@ function App() {
     }
   }
 
+  const handleAnalyzeBug = async () => {
+    if (ticketsData.length === 0) return
+
+    const controller = new AbortController()
+    setBugAbortController(controller)
+    setAnalyzingBug(true)
+    setBugAnalysisError(null)
+    setBugAnalysis(null)
+    setTestPlan(null)
+    setPlanError(null)
+
+    try {
+      if (!isMultiTicket) {
+        const td = ticketsData[0]
+        const response = await fetch(`${API_BASE_URL}/bug-lens/analyze`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ticket_key: td.key,
+            summary: td.summary,
+            description: td.description,
+            issue_type: td.issue_type,
+            development_info: td.development_info,
+            comments: td.comments || null,
+            linked_info: td.linked_issues || null,
+          }),
+          signal: controller.signal,
+        })
+        if (!response.ok) {
+          const errorData = await response.json()
+          throw new Error(errorData.detail || 'Failed to analyze bug')
+        }
+        setBugAnalysis(await response.json())
+      } else {
+        const response = await fetch(`${API_BASE_URL}/bug-lens/analyze/multi`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tickets: ticketsData.map((td) => ({
+              ticket_key: td.key,
+              summary: td.summary,
+              description: td.description,
+              issue_type: td.issue_type,
+              development_info: td.development_info,
+              comments: td.comments || null,
+              linked_info: td.linked_issues || null,
+            })),
+          }),
+          signal: controller.signal,
+        })
+        if (!response.ok) {
+          const errorData = await response.json()
+          throw new Error(errorData.detail || 'Failed to analyze bugs')
+        }
+        setBugAnalysis(await response.json())
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        setBugAnalysisError('Bug analysis was cancelled')
+      } else {
+        setBugAnalysisError(err.message)
+      }
+    } finally {
+      setAnalyzingBug(false)
+      setBugAbortController(null)
+    }
+  }
+
+  const handleStopBugAnalysis = () => {
+    if (bugAbortController) {
+      bugAbortController.abort()
+    }
+  }
+
   // For multi-ticket: block generation if any ticket has a non-testable type
   const nonTestableTicket = ticketsData.find((td) =>
     NON_TESTABLE_ISSUE_TYPES.has(td.issue_type)
   )
+
+  // Only show Bug Lens if every fetched ticket is a Bug
+  const isBugTickets = ticketsData.length > 0 && ticketsData.every((td) => td.issue_type === 'Bug')
 
   return (
     <div className="app">
@@ -267,11 +355,21 @@ function App() {
                   onGenerateTestPlan={handleGenerateTestPlan}
                   onStopGeneration={handleStopGeneration}
                   generatingPlan={generatingPlan}
+                  onAnalyzeBug={handleAnalyzeBug}
+                  onStopBugAnalysis={handleStopBugAnalysis}
+                  analyzingBug={analyzingBug}
+                  showBugLens={isBugTickets}
                 />
 
                 {planError && (
                   <div className="alert alert-error">
                     <strong>Error:</strong> {planError}
+                  </div>
+                )}
+
+                {bugAnalysisError && (
+                  <div className="alert alert-error">
+                    <strong>Error:</strong> {bugAnalysisError}
                   </div>
                 )}
 
@@ -281,6 +379,10 @@ function App() {
                     ticketData={ticketData}
                     ticketsData={isMultiTicket ? ticketsData : null}
                   />
+                )}
+
+                {bugAnalysis && (
+                  <BugAnalysisDisplay analysis={bugAnalysis} />
                 )}
               </>
             )}

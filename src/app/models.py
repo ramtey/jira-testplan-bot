@@ -219,6 +219,23 @@ class TestPlan:
 
 
 # ============================================================================
+# Bug Lens models
+# ============================================================================
+
+
+@dataclass
+class BugAnalysis:
+    """Structured bug analysis output from LLM (Jira Bug Lens)."""
+
+    bug_summary: str                # Plain-English explanation of what the bug is
+    root_cause: str | None          # What in the code caused it
+    is_fixed: bool                  # Whether a merged PR exists for this bug
+    fix_explanation: str | None     # What the fix did (from diff); None if not yet fixed
+    regression_tests: list[str]     # Concrete test cases to prevent this bug recurring
+    similar_patterns: list[str]     # Classes of similar bugs to watch for
+
+
+# ============================================================================
 # API request/response models
 # ============================================================================
 
@@ -264,3 +281,22 @@ class PostCommentRequest(BaseModel):
 
     issue_key: str
     comment_text: str
+
+
+class BugAnalysisRequest(BaseModel):
+    """Request body for analyzing a single bug ticket (Jira Bug Lens)."""
+
+    ticket_key: str
+    summary: str
+    description: str | None = None
+    issue_type: str
+    development_info: dict | None = None
+    comments: list[dict] | None = None
+    parent_info: dict | None = None
+    linked_info: dict | None = None
+
+
+class MultiBugAnalysisRequest(BaseModel):
+    """Request body for analyzing multiple bug tickets together (Jira Bug Lens)."""
+
+    tickets: list[BugAnalysisRequest]

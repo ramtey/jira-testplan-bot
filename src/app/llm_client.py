@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 
 from .config import settings
-from .models import TestPlan
+from .models import BugAnalysis, TestPlan
 
 
 def _safe_get(obj: dict | Any, key: str, default: Any = None) -> Any:
@@ -436,6 +436,139 @@ class LLMClient(ABC):
             images: Combined image attachments from all tickets (up to 3)
         """
         pass
+
+    @abstractmethod
+    async def generate_bug_analysis(
+        self,
+        ticket_key: str,
+        summary: str,
+        description: str | None,
+        development_info: dict | None = None,
+        comments: list[dict] | None = None,
+        linked_info: dict | None = None,
+    ) -> BugAnalysis:
+        """Analyze a bug ticket and explain the bug, root cause, fix, and regression tests."""
+        pass
+
+    @abstractmethod
+    async def generate_multi_bug_analysis(
+        self,
+        tickets: list[dict],
+    ) -> BugAnalysis:
+        """Analyze multiple related bug tickets together and produce a combined analysis."""
+        pass
+
+    def _build_bug_analysis_prompt(self, tickets: list[dict]) -> str:
+        """Build the prompt for bug analysis (single or multi-ticket)."""
+        is_multi = len(tickets) > 1
+        keys_str = ", ".join(t["ticket_key"] for t in tickets)
+
+        if is_multi:
+            prompt = f"Analyze the following {len(tickets)} related bug tickets together: {keys_str}.\n\n"
+            prompt += "Produce a single combined analysis covering the shared root cause and fix.\n\n"
+        else:
+            ticket = tickets[0]
+            prompt = f"Analyze this bug ticket: {ticket['ticket_key']}\n\n"
+
+        for i, ticket in enumerate(tickets, 1):
+            ticket_key = ticket["ticket_key"]
+            summary = ticket["summary"]
+            description = ticket.get("description")
+            comments = ticket.get("comments")
+            linked_info = ticket.get("linked_info")
+            development_info = ticket.get("development_info")
+
+            if is_multi:
+                prompt += f"━━━ TICKET {i}: {ticket_key} ━━━\n"
+            else:
+                prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                prompt += "TICKET INFORMATION\n"
+                prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+            prompt += f"\n**Ticket:** {ticket_key}\n"
+            prompt += f"**Summary:** {summary}\n"
+            prompt += f"\n**Description:**\n{description if description else 'No description provided'}\n"
+
+            # Jira comments
+            if comments:
+                prompt += f"\n**Jira Comments ({len(comments)}):**\n"
+                for comment in comments[:5]:
+                    author = comment.get("author", "Unknown")
+                    body = comment.get("body", "")
+                    body_preview = body[:300] + "..." if len(body) > 300 else body
+                    prompt += f"- @{author}: {body_preview}\n"
+
+            # Linked issues (caused_by is most relevant for bugs)
+            if linked_info:
+                caused_by = linked_info.get("caused_by", [])
+                if caused_by:
+                    prompt += f"\n**Caused By:**\n"
+                    for issue in caused_by:
+                        prompt += f"- {issue.get('key')}: {issue.get('summary')}\n"
+
+            # Development info (PRs + diffs — the heart of the analysis)
+            if development_info:
+                pull_requests = development_info.get("pull_requests", [])
+                if pull_requests:
+                    prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    prompt += "PULL REQUESTS & CODE CHANGES\n"
+                    prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    for pr in pull_requests:
+                        status = pr.get("status", "UNKNOWN")
+                        merged = status.upper() in ("MERGED", "CLOSED")
+                        prompt += f"\n**PR:** {pr.get('title', 'Untitled')} — Status: {status}"
+                        if merged:
+                            prompt += " ✅ (merged — bug is fixed)"
+                        prompt += "\n"
+                        if pr.get("source_branch"):
+                            prompt += f"Branch: {pr['source_branch']}\n"
+                        if pr.get("github_description"):
+                            desc = pr["github_description"]
+                            prompt += f"PR Description: {desc[:1000] + '...' if len(desc) > 1000 else desc}\n"
+
+                        files_changed = pr.get("files_changed")
+                        if files_changed:
+                            sorted_files = sorted(files_changed, key=lambda f: f.get("changes", 0), reverse=True)
+                            prompt += f"\nFiles changed ({len(files_changed)}):\n"
+                            for fc in sorted_files[:15]:
+                                icon = {"added": "✨", "modified": "📝", "removed": "🗑️", "renamed": "📛"}.get(fc.get("status", ""), "📄")
+                                prompt += f"  {icon} {fc.get('filename', 'unknown')} (+{fc.get('additions', 0)}/-{fc.get('deletions', 0)})\n"
+
+                            files_with_patches = [f for f in sorted_files if f.get("patch")]
+                            if files_with_patches:
+                                prompt += "\nCode diffs (use these to identify root cause and explain the fix):\n"
+                                total_chars = 0
+                                MAX_TOTAL = 16000
+                                MAX_PER_FILE = 4000
+                                for fc in files_with_patches:
+                                    if total_chars >= MAX_TOTAL:
+                                        break
+                                    patch = fc.get("patch", "")
+                                    fname = fc.get("filename", "unknown")
+                                    if len(patch) > MAX_PER_FILE:
+                                        patch = patch[:MAX_PER_FILE] + "\n...(truncated)"
+                                    remaining = MAX_TOTAL - total_chars
+                                    if len(patch) > remaining:
+                                        patch = patch[:remaining] + "\n...(truncated)"
+                                    prompt += f"\n--- {fname} ---\n"
+                                    for line in patch.split("\n"):
+                                        prompt += f"  {line}\n"
+                                    total_chars += len(patch)
+
+                        pr_comments = pr.get("comments")
+                        if pr_comments:
+                            prompt += f"\nPR Discussion ({len(pr_comments)} comments):\n"
+                            for comment in pr_comments[:8]:
+                                body = comment.get("body", "")
+                                body_preview = body[:200] + "..." if len(body) > 200 else body
+                                icon = "📝" if comment.get("comment_type") == "review_comment" else "💬"
+                                prompt += f"  {icon} @{comment.get('author', 'unknown')}: {body_preview}\n"
+
+            prompt += "\n"
+
+        prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        prompt += "Now submit your bug analysis using the submit_bug_analysis tool.\n"
+        return prompt
 
     def _build_prompt(
         self,
@@ -1135,6 +1268,79 @@ class OllamaClient(LLMClient):
                 error_type="service_unavailable"
             ) from e
 
+    async def generate_bug_analysis(
+        self,
+        ticket_key: str,
+        summary: str,
+        description: str | None,
+        development_info: dict | None = None,
+        comments: list[dict] | None = None,
+        linked_info: dict | None = None,
+    ) -> BugAnalysis:
+        """Analyze a bug ticket using Ollama."""
+        return await self._ollama_bug_analysis([{
+            "ticket_key": ticket_key,
+            "summary": summary,
+            "description": description,
+            "development_info": development_info,
+            "comments": comments,
+            "linked_info": linked_info,
+        }])
+
+    async def generate_multi_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
+        """Analyze multiple bug tickets using Ollama."""
+        return await self._ollama_bug_analysis(tickets)
+
+    async def _ollama_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
+        prompt = self._build_bug_analysis_prompt(tickets)
+        schema = {
+            "type": "object",
+            "properties": {
+                "bug_summary": {"type": "string"},
+                "root_cause": {"type": "string"},
+                "is_fixed": {"type": "boolean"},
+                "fix_explanation": {"type": "string"},
+                "regression_tests": {"type": "array", "items": {"type": "string"}},
+                "similar_patterns": {"type": "array", "items": {"type": "string"}},
+            },
+        }
+        full_prompt = BUG_LENS_SYSTEM_PROMPT + "\n\n" + prompt + "\n\nReturn ONLY valid JSON matching this schema: " + json.dumps(schema)
+
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": full_prompt,
+                        "format": "json",
+                        "stream": False,
+                        "options": {"temperature": 0.1},
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                try:
+                    parsed = json.loads(data.get("response", ""))
+                except json.JSONDecodeError as e:
+                    raise LLMError(f"Failed to parse JSON from Ollama: {e}", error_type="service_unavailable") from e
+
+                return BugAnalysis(
+                    bug_summary=parsed.get("bug_summary", ""),
+                    root_cause=parsed.get("root_cause"),
+                    is_fixed=parsed.get("is_fixed", False),
+                    fix_explanation=parsed.get("fix_explanation"),
+                    regression_tests=parsed.get("regression_tests", []),
+                    similar_patterns=parsed.get("similar_patterns", []),
+                )
+
+        except httpx.ConnectError as e:
+            raise LLMError(f"Failed to connect to Ollama at {self.base_url}: {e}", error_type="service_unavailable") from e
+        except httpx.TimeoutException as e:
+            raise LLMError(f"Ollama request timed out: {e}", error_type="service_unavailable") from e
+        except httpx.HTTPStatusError as e:
+            raise LLMError(f"Ollama returned error {e.response.status_code}: {e.response.text}", error_type="service_unavailable") from e
+
 
 TEST_CASE_SCHEMA = {
     "type": "object",
@@ -1413,6 +1619,153 @@ class ClaudeClient(LLMClient):
             ) from e
         except httpx.TimeoutException as e:
             raise LLMError(f"Claude API request timed out: {e}", error_type="service_unavailable") from e
+
+    async def generate_bug_analysis(
+        self,
+        ticket_key: str,
+        summary: str,
+        description: str | None,
+        development_info: dict | None = None,
+        comments: list[dict] | None = None,
+        linked_info: dict | None = None,
+    ) -> BugAnalysis:
+        """Analyze a bug ticket using Claude API."""
+        return await self._claude_bug_analysis([{
+            "ticket_key": ticket_key,
+            "summary": summary,
+            "description": description,
+            "development_info": development_info,
+            "comments": comments,
+            "linked_info": linked_info,
+        }])
+
+    async def generate_multi_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
+        """Analyze multiple bug tickets using Claude API."""
+        return await self._claude_bug_analysis(tickets)
+
+    async def _claude_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
+        prompt = self._build_bug_analysis_prompt(tickets)
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "anthropic-version": "2023-06-01",
+                        "x-api-key": self.api_key,
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 4096,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": BUG_LENS_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.1,
+                        "tools": [SUBMIT_BUG_ANALYSIS_TOOL],
+                        "tool_choice": {"type": "tool", "name": "submit_bug_analysis"},
+                    },
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                tool_block = next(
+                    (b for b in data["content"] if b.get("type") == "tool_use"),
+                    None,
+                )
+                if tool_block is None:
+                    raise LLMError("Claude did not return a tool_use block.", error_type="service_unavailable")
+
+                parsed = tool_block["input"]
+                return BugAnalysis(
+                    bug_summary=parsed.get("bug_summary", ""),
+                    root_cause=parsed.get("root_cause"),
+                    is_fixed=parsed.get("is_fixed", False),
+                    fix_explanation=parsed.get("fix_explanation"),
+                    regression_tests=parsed.get("regression_tests", []),
+                    similar_patterns=parsed.get("similar_patterns", []),
+                )
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise LLMError("Anthropic API key is invalid or expired.", error_type="invalid") from e
+            elif e.response.status_code == 429:
+                raise LLMError("Anthropic API rate limit exceeded.", error_type="rate_limited") from e
+            raise LLMError(f"Claude API error {e.response.status_code}: {e.response.text}", error_type="service_unavailable") from e
+        except httpx.TimeoutException as e:
+            raise LLMError(f"Claude API request timed out: {e}", error_type="service_unavailable") from e
+
+
+BUG_LENS_SYSTEM_PROMPT = """You are a senior software engineer performing a structured bug post-mortem. Your job is to analyze a Jira bug ticket — and any associated code changes — and produce a clear, grounded analysis.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT YOU MUST DO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. **bug_summary** — Explain the bug in plain English. What was the user-facing symptom? What was broken?
+
+2. **root_cause** — If code diffs are available, identify the exact cause in the code. Reference file names and what the faulty logic was. If no diff is available, derive the likely cause from the ticket description and comments.
+
+3. **is_fixed** — Set to true only if there is a merged pull request. Open or absent PRs mean the bug is not yet fixed.
+
+4. **fix_explanation** — If fixed, explain what the code change did to resolve the bug. Reference specific files and the nature of the change. If not fixed, set to null.
+
+5. **regression_tests** — List concrete, specific test cases a QA engineer can run to verify this exact bug does not recur. Each item must be a complete, actionable test description (not a category). Be specific: include the scenario, the input or action, and the expected outcome.
+
+6. **similar_patterns** — List classes of related bugs that could exist elsewhere in the codebase based on the same root cause. These help the team proactively find similar issues.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GROUNDING RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Base your analysis only on what is in the ticket, PR description, and code diffs provided.
+- Do NOT invent root causes not supported by the evidence.
+- Do NOT add regression tests for unrelated features.
+- If a diff is not available, say so in root_cause and work from the ticket description only.
+- Keep all text concise and technical — this is read by engineers and QA, not end users."""
+
+
+SUBMIT_BUG_ANALYSIS_TOOL = {
+    "name": "submit_bug_analysis",
+    "description": "Submit the structured bug analysis.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "bug_summary": {
+                "type": "string",
+                "description": "Plain-English explanation of what the bug is and its user-facing impact.",
+            },
+            "root_cause": {
+                "type": ["string", "null"],
+                "description": "The technical root cause in the code. Reference file names if diffs are available.",
+            },
+            "is_fixed": {
+                "type": "boolean",
+                "description": "True only if a merged PR exists for this bug.",
+            },
+            "fix_explanation": {
+                "type": ["string", "null"],
+                "description": "What the fix did. Null if the bug is not yet fixed.",
+            },
+            "regression_tests": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Concrete, specific test cases to prevent this bug from recurring.",
+            },
+            "similar_patterns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Classes of similar bugs to proactively look for in the codebase.",
+            },
+        },
+        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns"],
+    },
+}
 
 
 def get_llm_client() -> LLMClient:
