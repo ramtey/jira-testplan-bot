@@ -122,6 +122,8 @@ function App() {
     setGeneratingPlan(true)
     setPlanError(null)
     setTestPlan(null)
+    setBugAnalysis(null)
+    setBugAnalysisError(null)
 
     try {
       if (!isMultiTicket) {
