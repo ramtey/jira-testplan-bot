@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './App.css'
 import { API_BASE_URL, fetchConfig } from './config'
 import TicketForm from './components/TicketForm'
@@ -26,6 +26,10 @@ function App() {
   const [planError, setPlanError] = useState(null)
   const [abortController, setAbortController] = useState(null)
 
+  // Scroll refs for auto-scrolling to results
+  const testPlanRef = useRef(null)
+  const bugAnalysisRef = useRef(null)
+
   // Bug Lens state
   const [analyzingBug, setAnalyzingBug] = useState(false)
   const [bugAnalysis, setBugAnalysis] = useState(null)
@@ -36,6 +40,19 @@ function App() {
   useEffect(() => {
     fetchConfig()
   }, [])
+
+  // Auto-scroll to results when they appear
+  useEffect(() => {
+    if (testPlan && testPlanRef.current) {
+      testPlanRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [testPlan])
+
+  useEffect(() => {
+    if (bugAnalysis && bugAnalysisRef.current) {
+      bugAnalysisRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [bugAnalysis])
 
   const isMultiTicket = ticketsData.length > 1
   // For single-ticket backward-compat: expose first ticket as ticketData
@@ -376,15 +393,19 @@ function App() {
                 )}
 
                 {testPlan && (
-                  <TestPlanDisplay
-                    testPlan={testPlan}
-                    ticketData={ticketData}
-                    ticketsData={isMultiTicket ? ticketsData : null}
-                  />
+                  <div ref={testPlanRef}>
+                    <TestPlanDisplay
+                      testPlan={testPlan}
+                      ticketData={ticketData}
+                      ticketsData={isMultiTicket ? ticketsData : null}
+                    />
+                  </div>
                 )}
 
                 {bugAnalysis && (
-                  <BugAnalysisDisplay analysis={bugAnalysis} />
+                  <div ref={bugAnalysisRef}>
+                    <BugAnalysisDisplay analysis={bugAnalysis} />
+                  </div>
                 )}
               </>
             )}
