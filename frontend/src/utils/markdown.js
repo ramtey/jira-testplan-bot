@@ -95,6 +95,40 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
   return markdown
 }
 
+export const formatBugAnalysisAsMarkdown = (analysis) => {
+  const isMulti = Array.isArray(analysis.ticket_keys)
+  const ticketLabel = isMulti ? analysis.ticket_keys.join(', ') : analysis.ticket_key
+
+  let md = `# Bug Lens Analysis: ${ticketLabel}\n\n`
+  md += `**Status:** ${analysis.is_fixed ? '✅ Fixed' : '⚠️ Not yet fixed'}\n\n`
+
+  md += `## Bug Summary\n\n${analysis.bug_summary}\n\n`
+
+  md += `## Root Cause\n\n`
+  md += analysis.root_cause
+    ? `${analysis.root_cause}\n\n`
+    : `*No code diff available — root cause derived from ticket description only.*\n\n`
+
+  if (analysis.is_fixed) {
+    md += `## Fix Explanation\n\n`
+    md += analysis.fix_explanation ? `${analysis.fix_explanation}\n\n` : `*No fix details available.*\n\n`
+  }
+
+  if (analysis.regression_tests && analysis.regression_tests.length > 0) {
+    md += `## Regression Tests\n\n`
+    analysis.regression_tests.forEach(test => { md += `- ${test}\n` })
+    md += '\n'
+  }
+
+  if (analysis.similar_patterns && analysis.similar_patterns.length > 0) {
+    md += `## Similar Bug Patterns to Watch\n\n`
+    analysis.similar_patterns.forEach(pattern => { md += `- ${pattern}\n` })
+    md += '\n'
+  }
+
+  return md
+}
+
 export const formatTestPlanAsJira = (plan) => {
   let jira = ''
 

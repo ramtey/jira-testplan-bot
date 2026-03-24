@@ -2,11 +2,28 @@
  * Display bug analysis results from Jira Bug Lens.
  */
 
+import { formatBugAnalysisAsMarkdown } from '../utils/markdown'
+
 function BugAnalysisDisplay({ analysis }) {
   const isMulti = Array.isArray(analysis.ticket_keys)
   const ticketLabel = isMulti
     ? analysis.ticket_keys.join(', ')
     : analysis.ticket_key
+
+  const handleDownloadMarkdown = () => {
+    const markdown = formatBugAnalysisAsMarkdown(analysis)
+    const blob = new Blob([markdown], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = isMulti
+      ? `bug-analysis-${analysis.ticket_keys.join('-')}.md`
+      : `bug-analysis-${analysis.ticket_key}.md`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <div className="test-plan-display">
@@ -82,6 +99,12 @@ function BugAnalysisDisplay({ analysis }) {
           </ul>
         </div>
       )}
+
+      <div className="test-plan-actions">
+        <button type="button" onClick={handleDownloadMarkdown} className="btn-download">
+          Download as .md
+        </button>
+      </div>
     </div>
   )
 }
