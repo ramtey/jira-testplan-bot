@@ -219,6 +219,10 @@ If yes, enhance that existing test instead of creating a new one.
    - Do NOT use for standard features where UI calls a single API
    - Examples: Cross-service data flow, third-party integrations, microservice communication
    - If it's just "frontend → single backend API → database", that's a normal flow (use happy_path)
+   - **API verification steps MUST always specify HOW to verify:**
+     - If there is a UI-observable outcome, describe it: "Verify the Transfer Tax field is NOT shown on screen"
+     - If there is NO UI outcome (pure backend/response check), always provide explicit DevTools steps: "Open browser DevTools (F12) > Network tab > filter for '[endpoint-name]' > trigger the action > click the request > inspect the Response tab and confirm [specific field/value]"
+   - ❌ NEVER write vague steps like "Verify the API returns filtered sections" or "Verify integrationInfo shows GFE status" — these are untestable without specifying the verification mechanism
 
 5. **Reset/Clear Functionality**
    - Test any reset, clear, or undo operations
