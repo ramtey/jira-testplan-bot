@@ -719,13 +719,16 @@ TICKET INFORMATION
                 body = comment.get('body', '')
                 created = comment.get('created', '')
 
-                # Truncate very long comments
-                body_preview = body[:500] + "..." if len(body) > 500 else body
+                # Allow up to 8000 chars per comment to preserve full manual test plans.
+                # Structured test plans written by developers can be several thousand chars
+                # and must not be truncated, as every test case is meaningful.
+                body_preview = body[:8000] + "..." if len(body) > 8000 else body
 
                 prompt += f"**Comment {i} by {author}** (Posted: {created[:10] if created else 'Unknown date'}):\n"
                 prompt += f"{body_preview}\n\n"
 
             prompt += "**Use these comments to:**\n"
+            prompt += "- If a manual test plan is present, use it as the primary source of truth for test cases — preserve its structure, numbering, and coverage\n"
             prompt += "- Incorporate manually suggested test scenarios and edge cases\n"
             prompt += "- Address specific concerns or questions raised about testing\n"
             prompt += "- Include validation steps mentioned in the discussions\n"

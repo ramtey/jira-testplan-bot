@@ -505,10 +505,11 @@ class JiraClient:
         Filter comments for testing-related content using smart keyword matching.
 
         Hybrid approach:
-        1. Fetch last 10 comments (reasonable window)
-        2. Filter for testing-related keywords
-        3. Take top 3 matches
-        4. If fewer than 3 matches, include latest comments up to 3 total
+        1. Fetch last 15 comments (reasonable window)
+        2. Prioritize formal manual test plans (comments starting with "Manual Test Plan",
+           "Test Plan", or similar headings) — these are always included first
+        3. Filter remaining for testing-related keywords
+        4. Return up to 5 total (formal plans first, then other testing comments, then latest)
 
         Excludes comments created by this tool (identified by marker).
 
@@ -516,10 +517,22 @@ class JiraClient:
             comments_data: List of comment objects from Jira API
 
         Returns:
-            List of up to 3 JiraComment objects most relevant to testing
+            List of up to 5 JiraComment objects most relevant to testing
         """
+        LIMIT = 5
+
         # Marker used to identify comments created by this tool
         BOT_MARKER = "🤖 Generated Test Plan"
+
+        # Phrases that indicate a formal manual test plan — prioritized above all others
+        FORMAL_TEST_PLAN_MARKERS = [
+            'manual test plan',
+            'test plan —',
+            'test plan:',
+            'manual testing plan',
+            'test cases:',
+            'test cases —',
+        ]
 
         # Testing-related keywords to search for
         TESTING_KEYWORDS = [
@@ -529,10 +542,11 @@ class JiraClient:
             'defect', 'issue', 'problem', 'fails', 'passes', 'coverage'
         ]
 
-        # Take last 10 comments (most recent)
-        recent_comments = comments_data[-10:] if len(comments_data) > 10 else comments_data
+        # Take last 15 comments (most recent)
+        recent_comments = comments_data[-15:] if len(comments_data) > 15 else comments_data
 
         parsed_comments = []
+        formal_test_plans = []
         testing_related = []
 
         for comment_data in recent_comments:
@@ -565,23 +579,27 @@ class JiraClient:
 
             parsed_comments.append(jira_comment)
 
-            # Check if comment contains testing keywords
             body_lower = body_text.lower()
-            if any(keyword in body_lower for keyword in TESTING_KEYWORDS):
+
+            # Check for formal test plan first (highest priority)
+            if any(marker in body_lower for marker in FORMAL_TEST_PLAN_MARKERS):
+                formal_test_plans.append(jira_comment)
+            elif any(keyword in body_lower for keyword in TESTING_KEYWORDS):
                 testing_related.append(jira_comment)
 
-        # Return top 3 testing-related comments, or latest 3 if fewer matches
-        if len(testing_related) >= 3:
-            return testing_related[:3]
-        elif testing_related:
-            # Have some testing comments but fewer than 3
-            # Fill remaining slots with latest non-testing comments
-            remaining_slots = 3 - len(testing_related)
-            other_comments = [c for c in parsed_comments if c not in testing_related]
-            return testing_related + other_comments[:remaining_slots]
-        else:
-            # No testing keywords found, return latest 3 comments
-            return parsed_comments[:3]
+        # Build result: formal plans first, then other testing comments, then latest
+        result = list(formal_test_plans)
+        for c in testing_related:
+            if len(result) >= LIMIT:
+                break
+            if c not in result:
+                result.append(c)
+        for c in parsed_comments:
+            if len(result) >= LIMIT:
+                break
+            if c not in result:
+                result.append(c)
+        return result
 
     async def download_image_as_base64(self, image_url: str) -> tuple[str, str] | None:
         """
