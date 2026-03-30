@@ -962,6 +962,13 @@ button:disabled {
   letter-spacing: 0.02em;
 }
 
+/* Bug variant — red ticket badge */
+.multi-ticket-badge--bug {
+  background: #fde8e8;
+  color: #c0392b;
+  border-color: #c0392b;
+}
+
 /* Multi-ticket list wrapper */
 .multi-ticket-list {
   display: flex;

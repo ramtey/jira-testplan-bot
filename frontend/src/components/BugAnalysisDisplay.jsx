@@ -6,9 +6,6 @@ import { formatBugAnalysisAsMarkdown } from '../utils/markdown'
 
 function BugAnalysisDisplay({ analysis }) {
   const isMulti = Array.isArray(analysis.ticket_keys)
-  const ticketLabel = isMulti
-    ? analysis.ticket_keys.join(', ')
-    : analysis.ticket_key
 
   const handleDownloadMarkdown = () => {
     const markdown = formatBugAnalysisAsMarkdown(analysis)
@@ -25,11 +22,17 @@ function BugAnalysisDisplay({ analysis }) {
     URL.revokeObjectURL(url)
   }
 
+  const allKeys = isMulti ? analysis.ticket_keys : [analysis.ticket_key]
+
   return (
     <div className="test-plan-display">
       <div className="test-plan-header">
-        <h2>Bug Lens Analysis</h2>
-        <p className="ticket-key-label">{ticketLabel}</p>
+        <h2>
+          Bug Lens Analysis
+          <span className="multi-ticket-badge multi-ticket-badge--bug">
+            {allKeys.join(' + ')}
+          </span>
+        </h2>
       </div>
 
       {/* Fix status badge */}
