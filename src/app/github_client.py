@@ -153,6 +153,113 @@ class GitHubClient:
         else:
             return (f"GitHub API error: {error_msg}", "invalid")
 
+    def _parse_blob_url(self, url: str) -> tuple[str, str, str, str, int | None, int | None] | None:
+        """
+        Parse a GitHub blob URL into (owner, repo, ref, path, start_line, end_line).
+
+        Handles URLs like:
+          https://github.com/owner/repo/blob/main/src/foo.py
+          https://github.com/owner/repo/blob/abc1234/src/foo.py#L42-L50
+        """
+        pattern = r"github\.com/([^/]+)/([^/]+)/blob/([^/]+)/([^#\s>\"'\)]+)(?:#L(\d+)(?:-L(\d+))?)?"
+        match = re.search(pattern, url)
+        if not match:
+            return None
+        owner, repo, ref, path = match.group(1), match.group(2), match.group(3), match.group(4)
+        path = path.rstrip(".,;)>]\"'")
+        start_line = int(match.group(5)) if match.group(5) else None
+        end_line = int(match.group(6)) if match.group(6) else None
+        return owner, repo, ref, path, start_line, end_line
+
+    def _parse_commit_url(self, url: str) -> tuple[str, str, str] | None:
+        """Parse a GitHub commit URL into (owner, repo, sha)."""
+        pattern = r"github\.com/([^/]+)/([^/]+)/commit/([0-9a-f]{7,40})"
+        match = re.search(pattern, url)
+        if not match:
+            return None
+        return match.group(1), match.group(2), match.group(3)
+
+    async def fetch_file_from_blob_url(self, url: str) -> dict | None:
+        """
+        Fetch file content from a GitHub blob URL.
+
+        If the URL includes a line anchor (#L42 or #L42-L50), returns only that
+        region with surrounding context. Otherwise returns the full file capped
+        at 200 lines.
+
+        Returns a dict with keys: path, ref, content, and optionally lines.
+        """
+        parsed = self._parse_blob_url(url)
+        if not parsed:
+            return None
+        owner, repo, ref, path, start_line, end_line = parsed
+
+        import base64
+        api_url = f"{self.base_url}/repos/{owner}/{repo}/contents/{path}?ref={ref}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(api_url, headers=self._headers())
+                if response.status_code != 200:
+                    logger.warning(f"GitHub file fetch returned {response.status_code} for {url}")
+                    return None
+                data = response.json()
+                content = base64.b64decode(data.get("content", "")).decode("utf-8")
+        except Exception as e:
+            logger.warning(f"Failed to fetch file from blob URL {url}: {e}")
+            return None
+
+        lines = content.splitlines()
+
+        if start_line:
+            ctx = 10
+            lo = max(0, start_line - 1 - ctx)
+            hi = min(len(lines), (end_line or start_line) + ctx)
+            snippet = "\n".join(f"{i + 1}: {line}" for i, line in enumerate(lines[lo:hi], start=lo))
+            label = f"L{start_line}" + (f"-L{end_line}" if end_line else "")
+            return {"path": path, "ref": ref, "content": snippet, "lines": label}
+
+        MAX_LINES = 200
+        if len(lines) > MAX_LINES:
+            content = "\n".join(lines[:MAX_LINES]) + f"\n... (truncated — {len(lines)} total lines)"
+        return {"path": path, "ref": ref, "content": content}
+
+    async def fetch_commit_from_url(self, url: str) -> dict | None:
+        """
+        Fetch a commit's metadata and diff from a GitHub commit URL.
+
+        Returns a dict with keys: sha, message, files (list of changed files with patches).
+        Patches are capped at 2 KB each and at most 10 files are included.
+        """
+        parsed = self._parse_commit_url(url)
+        if not parsed:
+            return None
+        owner, repo, sha = parsed
+
+        api_url = f"{self.base_url}/repos/{owner}/{repo}/commits/{sha}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(api_url, headers=self._headers())
+                if response.status_code != 200:
+                    logger.warning(f"GitHub commit fetch returned {response.status_code} for {url}")
+                    return None
+                data = response.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch commit from URL {url}: {e}")
+            return None
+
+        commit_msg = data.get("commit", {}).get("message", "").split("\n")[0]
+        files = [
+            {
+                "filename": f["filename"],
+                "status": f["status"],
+                "additions": f["additions"],
+                "deletions": f["deletions"],
+                "patch": f.get("patch", "")[:2000],
+            }
+            for f in data.get("files", [])[:10]
+        ]
+        return {"sha": sha[:8], "message": commit_msg, "files": files}
+
     def _parse_github_url(self, pr_url: str) -> tuple[str, str, int] | None:
         """
         Parse GitHub PR URL to extract owner, repo, and PR number.

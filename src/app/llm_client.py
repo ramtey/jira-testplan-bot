@@ -450,6 +450,7 @@ class LLMClient(ABC):
         development_info: dict | None = None,
         comments: list[dict] | None = None,
         linked_info: dict | None = None,
+        github_context: list[dict] | None = None,
     ) -> BugAnalysis:
         """Analyze a bug ticket and explain the bug, root cause, fix, and regression tests."""
         pass
@@ -481,6 +482,7 @@ class LLMClient(ABC):
             comments = ticket.get("comments")
             linked_info = ticket.get("linked_info")
             development_info = ticket.get("development_info")
+            github_context = ticket.get("github_context")
 
             if is_multi:
                 prompt += f"━━━ TICKET {i}: {ticket_key} ━━━\n"
@@ -567,6 +569,28 @@ class LLMClient(ABC):
                                 body_preview = body[:200] + "..." if len(body) > 200 else body
                                 icon = "📝" if comment.get("comment_type") == "review_comment" else "💬"
                                 prompt += f"  {icon} @{comment.get('author', 'unknown')}: {body_preview}\n"
+
+            # GitHub context fetched from links in the ticket body
+            if github_context:
+                prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                prompt += "LINKED CODE CONTEXT (fetched from GitHub links in the ticket)\n"
+                prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                prompt += "Use this code to inform root cause identification and fix complexity.\n\n"
+                for item in github_context:
+                    if item.get("type") == "file":
+                        label = f"{item['path']}"
+                        if item.get("lines"):
+                            label += f" ({item['lines']})"
+                        label += f" @ {item['ref']}"
+                        prompt += f"**File: {label}**\n```\n{item['content']}\n```\n\n"
+                    elif item.get("type") == "commit":
+                        prompt += f"**Commit {item['sha']}:** {item['message']}\n"
+                        for f in item.get("files", []):
+                            icon = {"added": "✨", "modified": "📝", "removed": "🗑️", "renamed": "📛"}.get(f.get("status", ""), "📄")
+                            prompt += f"  {icon} {f['filename']} (+{f['additions']}/-{f['deletions']})\n"
+                            if f.get("patch"):
+                                prompt += f"```diff\n{f['patch']}\n```\n"
+                        prompt += "\n"
 
             prompt += "\n"
 
@@ -1283,6 +1307,7 @@ class OllamaClient(LLMClient):
         development_info: dict | None = None,
         comments: list[dict] | None = None,
         linked_info: dict | None = None,
+        github_context: list[dict] | None = None,
     ) -> BugAnalysis:
         """Analyze a bug ticket using Ollama."""
         return await self._ollama_bug_analysis([{
@@ -1292,6 +1317,7 @@ class OllamaClient(LLMClient):
             "development_info": development_info,
             "comments": comments,
             "linked_info": linked_info,
+            "github_context": github_context,
         }])
 
     async def generate_multi_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
@@ -1641,6 +1667,7 @@ class ClaudeClient(LLMClient):
         development_info: dict | None = None,
         comments: list[dict] | None = None,
         linked_info: dict | None = None,
+        github_context: list[dict] | None = None,
     ) -> BugAnalysis:
         """Analyze a bug ticket using Claude API."""
         return await self._claude_bug_analysis([{
@@ -1650,6 +1677,7 @@ class ClaudeClient(LLMClient):
             "development_info": development_info,
             "comments": comments,
             "linked_info": linked_info,
+            "github_context": github_context,
         }])
 
     async def generate_multi_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
