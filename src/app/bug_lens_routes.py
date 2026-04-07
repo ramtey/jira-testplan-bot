@@ -21,13 +21,60 @@ _COMMIT_PATTERN = re.compile(
     r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/commit/[0-9a-f]{7,40}"
 )
 
+# Map title keywords (case-insensitive) to GitHub repos.
+# Checked in order — first match wins.
+_TITLE_REPO_MAP: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"agent.?cal(culator)?", re.IGNORECASE), "skyslope/agent-calculator"),
+    (re.compile(r"\bayce\b", re.IGNORECASE), "skyslope/agent-coach"),
+]
 
-async def _fetch_github_context(description: str | None, comments: list[dict] | None) -> list[dict] | None:
+# Stop words excluded when building a code search query from a ticket summary
+_STOP_WORDS = {
+    "a", "an", "the", "is", "in", "on", "at", "to", "for", "of", "and", "or",
+    "not", "with", "when", "that", "this", "it", "be", "are", "was", "were",
+    "has", "have", "had", "does", "do", "did", "by", "as", "but", "from",
+    "bug", "fix", "issue", "error", "fail", "incorrect", "wrong", "broken",
+}
+
+
+def _infer_repo_from_summary(summary: str) -> str | None:
+    """Return the owner/repo inferred from title keywords, or None if no match."""
+    for pattern, repo in _TITLE_REPO_MAP:
+        if pattern.search(summary):
+            return repo
+    return None
+
+
+def _build_search_query(summary: str) -> str:
+    """Extract meaningful terms from a ticket summary for use as a code search query."""
+    words = re.findall(r"[A-Za-z][A-Za-z0-9]*", summary)
+    terms = [w for w in words if len(w) > 3 and w.lower() not in _STOP_WORDS]
+    # Deduplicate while preserving order, cap at 6 terms
+    seen: set[str] = set()
+    unique: list[str] = []
+    for t in terms:
+        tl = t.lower()
+        if tl not in seen:
+            seen.add(tl)
+            unique.append(t)
+        if len(unique) == 6:
+            break
+    return " ".join(unique)
+
+
+async def _fetch_github_context(
+    summary: str,
+    description: str | None,
+    comments: list[dict] | None,
+) -> list[dict] | None:
     """
-    Scan ticket description and comments for GitHub file/commit URLs and fetch their content.
+    Build GitHub code context for bug analysis.
 
-    Only runs when a GitHub token is configured. Returns None if nothing was found or fetched.
-    Caps at 3 file URLs and 2 commit URLs to keep prompt size reasonable.
+    First scans ticket description and comments for explicit GitHub blob/commit URLs
+    and fetches their content. If nothing is found, falls back to inferring the repo
+    from the ticket summary (via _TITLE_REPO_MAP) and running a code search.
+
+    Only runs when a GitHub token is configured.
     """
     if not settings.github_token:
         return None
@@ -40,21 +87,28 @@ async def _fetch_github_context(description: str | None, comments: list[dict] | 
     blob_urls = list({m.group(0).rstrip(".,;)>]\"'") for m in _BLOB_PATTERN.finditer(combined)})[:3]
     commit_urls = list({m.group(0).rstrip(".,;)>]\"'") for m in _COMMIT_PATTERN.finditer(combined)})[:2]
 
-    if not blob_urls and not commit_urls:
-        return None
-
     client = GitHubClient()
     context: list[dict] = []
 
-    for url in blob_urls:
-        result = await client.fetch_file_from_blob_url(url)
-        if result:
-            context.append({"type": "file", "url": url, **result})
+    if blob_urls or commit_urls:
+        for url in blob_urls:
+            result = await client.fetch_file_from_blob_url(url)
+            if result:
+                context.append({"type": "file", "url": url, **result})
 
-    for url in commit_urls:
-        result = await client.fetch_commit_from_url(url)
-        if result:
-            context.append({"type": "commit", "url": url, **result})
+        for url in commit_urls:
+            result = await client.fetch_commit_from_url(url)
+            if result:
+                context.append({"type": "commit", "url": url, **result})
+    else:
+        # No explicit links — try inferring the repo from the ticket title
+        repo = _infer_repo_from_summary(summary)
+        if repo:
+            query = _build_search_query(summary)
+            if query:
+                files = await client.search_relevant_files(repo, query)
+                for f in files:
+                    context.append({"type": "file", "repo": repo, **f})
 
     return context or None
 
@@ -71,7 +125,7 @@ async def analyze_bug(request: BugAnalysisRequest):
     """
     try:
         llm = get_llm_client()
-        github_context = await _fetch_github_context(request.description, request.comments)
+        github_context = await _fetch_github_context(request.summary, request.description, request.comments)
         analysis = await llm.generate_bug_analysis(
             ticket_key=request.ticket_key,
             summary=request.summary,
@@ -99,7 +153,7 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
     """
     tickets_data = []
     for t in request.tickets:
-        github_context = await _fetch_github_context(t.description, t.comments)
+        github_context = await _fetch_github_context(t.summary, t.description, t.comments)
         tickets_data.append({
             "ticket_key": t.ticket_key,
             "summary": t.summary,

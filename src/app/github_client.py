@@ -260,6 +260,64 @@ class GitHubClient:
         ]
         return {"sha": sha[:8], "message": commit_msg, "files": files}
 
+    async def search_relevant_files(self, repo: str, query: str, max_files: int = 3) -> list[dict]:
+        """
+        Search for code in a repo using GitHub code search, then fetch the content
+        of the top matching files.
+
+        Args:
+            repo: Full "owner/repo" string (e.g. "skyslope/agent-calculator")
+            query: Search terms derived from the ticket summary
+            max_files: Maximum number of files to fetch content for
+
+        Returns:
+            List of dicts with keys: path, ref, content (same shape as fetch_file_from_blob_url)
+        """
+        import base64
+        import urllib.parse
+
+        search_url = f"{self.base_url}/search/code?q={urllib.parse.quote(query)}+repo:{repo}&per_page={max_files}"
+        results = []
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(search_url, headers=self._headers())
+                if response.status_code != 200:
+                    logger.warning(f"GitHub code search returned {response.status_code} for repo {repo}")
+                    return []
+
+                items = response.json().get("items", [])
+                if not items:
+                    return []
+
+                for item in items[:max_files]:
+                    path = item.get("path", "")
+                    # Use the default branch from the item's repository info
+                    default_branch = item.get("repository", {}).get("default_branch", "main")
+                    contents_url = f"{self.base_url}/repos/{repo}/contents/{path}?ref={default_branch}"
+
+                    file_response = await client.get(contents_url, headers=self._headers())
+                    if file_response.status_code != 200:
+                        continue
+
+                    data = file_response.json()
+                    try:
+                        content = base64.b64decode(data.get("content", "")).decode("utf-8")
+                    except Exception:
+                        continue
+
+                    lines = content.splitlines()
+                    MAX_LINES = 200
+                    if len(lines) > MAX_LINES:
+                        content = "\n".join(lines[:MAX_LINES]) + f"\n... (truncated — {len(lines)} total lines)"
+
+                    results.append({"path": path, "ref": default_branch, "content": content})
+
+        except Exception as e:
+            logger.warning(f"GitHub code search failed for repo {repo}: {e}")
+
+        return results
+
     def _parse_github_url(self, pr_url: str) -> tuple[str, str, int] | None:
         """
         Parse GitHub PR URL to extract owner, repo, and PR number.
