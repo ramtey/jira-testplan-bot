@@ -1309,6 +1309,9 @@ class OllamaClient(LLMClient):
                 "fix_explanation": {"type": "string"},
                 "regression_tests": {"type": "array", "items": {"type": "string"}},
                 "similar_patterns": {"type": "array", "items": {"type": "string"}},
+                "fix_complexity": {"type": "string"},
+                "fix_effort_estimate": {"type": "string"},
+                "fix_complexity_reasoning": {"type": "string"},
             },
         }
         full_prompt = BUG_LENS_SYSTEM_PROMPT + "\n\n" + prompt + "\n\nReturn ONLY valid JSON matching this schema: " + json.dumps(schema)
@@ -1339,6 +1342,9 @@ class OllamaClient(LLMClient):
                     fix_explanation=parsed.get("fix_explanation"),
                     regression_tests=parsed.get("regression_tests", []),
                     similar_patterns=parsed.get("similar_patterns", []),
+                    fix_complexity=parsed.get("fix_complexity"),
+                    fix_effort_estimate=parsed.get("fix_effort_estimate"),
+                    fix_complexity_reasoning=parsed.get("fix_complexity_reasoning"),
                 )
 
         except httpx.ConnectError as e:
@@ -1696,6 +1702,9 @@ class ClaudeClient(LLMClient):
                     fix_explanation=parsed.get("fix_explanation"),
                     regression_tests=parsed.get("regression_tests", []),
                     similar_patterns=parsed.get("similar_patterns", []),
+                    fix_complexity=parsed.get("fix_complexity"),
+                    fix_effort_estimate=parsed.get("fix_effort_estimate"),
+                    fix_complexity_reasoning=parsed.get("fix_complexity_reasoning"),
                 )
 
         except httpx.HTTPStatusError as e:
@@ -1726,6 +1735,17 @@ WHAT YOU MUST DO
 
 6. **similar_patterns** — List classes of related bugs that could exist elsewhere in the codebase based on the same root cause. These help the team proactively find similar issues.
 
+7. **fix_complexity** — Only when is_fixed is false. Classify the expected fix effort as one of:
+   - "trivial": a one-liner or config change, no risk of side effects
+   - "moderate": a focused code change in 1–2 files, straightforward logic fix
+   - "complex": touches multiple files or services, requires careful testing
+   - "architectural": requires design changes, schema migrations, or cross-team coordination
+   Set to null if the bug is already fixed.
+
+8. **fix_effort_estimate** — Only when is_fixed is false. A concise time range for a competent engineer who knows the codebase (e.g. "1–2 hours", "half a day", "2–3 days", "1+ week"). Set to null if the bug is already fixed.
+
+9. **fix_complexity_reasoning** — Only when is_fixed is false. 1–2 sentences explaining why you assigned that complexity level. Reference specific files, services, or constraints. Set to null if the bug is already fixed.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GROUNDING RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1734,7 +1754,8 @@ GROUNDING RULES
 - Do NOT invent root causes not supported by the evidence.
 - Do NOT add regression tests for unrelated features.
 - If a diff is not available, say so in root_cause and work from the ticket description only.
-- Keep all text concise and technical — this is read by engineers and QA, not end users."""
+- Keep all text concise and technical — this is read by engineers and QA, not end users.
+- For fix_complexity, fix_effort_estimate, and fix_complexity_reasoning: set all three to null when is_fixed is true."""
 
 
 SUBMIT_BUG_ANALYSIS_TOOL = {
@@ -1769,8 +1790,21 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
                 "items": {"type": "string"},
                 "description": "Classes of similar bugs to proactively look for in the codebase.",
             },
+            "fix_complexity": {
+                "type": ["string", "null"],
+                "enum": ["trivial", "moderate", "complex", "architectural", None],
+                "description": "Estimated fix complexity. One of: trivial, moderate, complex, architectural. Null if the bug is already fixed.",
+            },
+            "fix_effort_estimate": {
+                "type": ["string", "null"],
+                "description": "Estimated time to fix for a competent engineer (e.g. '2–4 hours', '1–2 days'). Null if the bug is already fixed.",
+            },
+            "fix_complexity_reasoning": {
+                "type": ["string", "null"],
+                "description": "1–2 sentences explaining the complexity rating. Reference files, services, or constraints. Null if the bug is already fixed.",
+            },
         },
-        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns"],
+        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning"],
     },
 }
 

@@ -233,6 +233,9 @@ class BugAnalysis:
     fix_explanation: str | None     # What the fix did (from diff); None if not yet fixed
     regression_tests: list[str]     # Concrete test cases to prevent this bug recurring
     similar_patterns: list[str]     # Classes of similar bugs to watch for
+    fix_complexity: str | None      # "trivial" | "moderate" | "complex" | "architectural"; None if fixed
+    fix_effort_estimate: str | None # e.g. "2–4 hours", "1–2 days"; None if fixed
+    fix_complexity_reasoning: str | None  # Why this complexity level was chosen; None if fixed
 
 
 # ============================================================================

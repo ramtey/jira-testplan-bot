@@ -969,6 +969,62 @@ button:disabled {
   border-color: #c0392b;
 }
 
+/* Fix complexity section */
+.fix-complexity-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.fix-complexity-badge {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1.5px solid;
+}
+
+.fix-complexity-trivial {
+  background: rgba(0, 135, 90, 0.12);
+  color: #006644;
+  border-color: #006644;
+}
+
+.fix-complexity-moderate {
+  background: rgba(255, 153, 31, 0.15);
+  color: #974F0C;
+  border-color: #974F0C;
+}
+
+.fix-complexity-complex {
+  background: rgba(222, 53, 11, 0.12);
+  color: #AE2A19;
+  border-color: #AE2A19;
+}
+
+.fix-complexity-architectural {
+  background: rgba(101, 84, 192, 0.12);
+  color: #403294;
+  border-color: #403294;
+}
+
+.fix-effort-estimate {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary, #6b7280);
+}
+
+.fix-complexity-reasoning {
+  margin-top: 0.4rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary, #6b7280);
+  line-height: 1.5;
+}
+
 /* Multi-ticket list wrapper */
 .multi-ticket-list {
   display: flex;

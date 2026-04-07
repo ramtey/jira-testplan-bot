@@ -73,6 +73,24 @@ function BugAnalysisDisplay({ analysis }) {
         </div>
       )}
 
+      {/* Fix Complexity — only for unfixed bugs */}
+      {!analysis.is_fixed && analysis.fix_complexity && (
+        <div className="ticket-section">
+          <h3>Fix Complexity</h3>
+          <div className="fix-complexity-row">
+            <span className={`fix-complexity-badge fix-complexity-${analysis.fix_complexity}`}>
+              {analysis.fix_complexity.charAt(0).toUpperCase() + analysis.fix_complexity.slice(1)}
+            </span>
+            {analysis.fix_effort_estimate && (
+              <span className="fix-effort-estimate">{analysis.fix_effort_estimate}</span>
+            )}
+          </div>
+          {analysis.fix_complexity_reasoning && (
+            <p className="fix-complexity-reasoning">{analysis.fix_complexity_reasoning}</p>
+          )}
+        </div>
+      )}
+
       {/* Regression Tests */}
       {analysis.regression_tests && analysis.regression_tests.length > 0 && (
         <div className="ticket-section">
