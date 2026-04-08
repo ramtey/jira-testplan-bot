@@ -13,6 +13,112 @@ from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, Fi
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_inline_markdown(text: str) -> list:
+    """Convert inline markdown (bold, italic, code) to ADF text nodes."""
+    nodes = []
+    pattern = r'(\*\*(.+?)\*\*|__(.+?)__|`(.+?)`|\*(.+?)\*|_(.+?)_|([^*_`]+))'
+    for match in re.finditer(pattern, text, re.DOTALL):
+        full = match.group(0)
+        if full.startswith('**') or full.startswith('__'):
+            inner = match.group(2) or match.group(3)
+            nodes.append({"type": "text", "text": inner, "marks": [{"type": "strong"}]})
+        elif full.startswith('`'):
+            nodes.append({"type": "text", "text": match.group(4), "marks": [{"type": "code"}]})
+        elif full.startswith('*') or full.startswith('_'):
+            inner = match.group(5) or match.group(6)
+            nodes.append({"type": "text", "text": inner, "marks": [{"type": "em"}]})
+        elif full:
+            nodes.append({"type": "text", "text": full})
+    return nodes or [{"type": "text", "text": text}]
+
+
+def markdown_to_adf(markdown_text: str) -> dict:
+    """Convert markdown text to Atlassian Document Format (ADF)."""
+    lines = markdown_text.split('\n')
+    content = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Fenced code block
+        if line.startswith('```'):
+            lang = line[3:].strip()
+            code_lines = []
+            i += 1
+            while i < len(lines) and not lines[i].startswith('```'):
+                code_lines.append(lines[i])
+                i += 1
+            content.append({
+                "type": "codeBlock",
+                "attrs": {"language": lang or ""},
+                "content": [{"type": "text", "text": '\n'.join(code_lines)}]
+            })
+            i += 1
+            continue
+
+        # Heading
+        if line.startswith('#'):
+            level = len(line) - len(line.lstrip('#'))
+            level = min(level, 6)
+            text = line[level:].strip()
+            content.append({
+                "type": "heading",
+                "attrs": {"level": level},
+                "content": _parse_inline_markdown(text)
+            })
+            i += 1
+            continue
+
+        # Horizontal rule
+        stripped = line.strip()
+        if re.match(r'^(-{3,}|\*{3,}|_{3,})$', stripped):
+            content.append({"type": "rule"})
+            i += 1
+            continue
+
+        # Bullet list (collect consecutive items)
+        if re.match(r'^[-*] ', line):
+            items = []
+            while i < len(lines) and re.match(r'^[-*] ', lines[i]):
+                item_text = lines[i][2:].strip()
+                items.append({
+                    "type": "listItem",
+                    "content": [{"type": "paragraph", "content": _parse_inline_markdown(item_text)}]
+                })
+                i += 1
+            content.append({"type": "bulletList", "content": items})
+            continue
+
+        # Ordered list (collect consecutive items)
+        if re.match(r'^\d+\. ', line):
+            items = []
+            while i < len(lines) and re.match(r'^\d+\. ', lines[i]):
+                item_text = re.sub(r'^\d+\. ', '', lines[i]).strip()
+                items.append({
+                    "type": "listItem",
+                    "content": [{"type": "paragraph", "content": _parse_inline_markdown(item_text)}]
+                })
+                i += 1
+            content.append({"type": "orderedList", "content": items})
+            continue
+
+        # Skip blank lines
+        if not stripped:
+            i += 1
+            continue
+
+        # Regular paragraph
+        content.append({"type": "paragraph", "content": _parse_inline_markdown(line)})
+        i += 1
+
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": content or [{"type": "paragraph", "content": [{"type": "text", "text": ""}]}]
+    }
+
 # Directories whose files are never worth diffing (generated, tooling, agent config)
 _SKIP_PATCH_DIRS = frozenset({'.agents', '.claude', '.cursor', 'scripts', 'tooling', 'node_modules'})
 # File extensions that are runtime source code
@@ -1064,24 +1170,8 @@ class JiraClient:
         # No existing test plan comment found - create new one
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
 
-        # Jira Cloud uses ADF (Atlassian Document Format) for comments
-        # Convert plain text to ADF format
         payload = {
-            "body": {
-                "type": "doc",
-                "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": marked_text
-                            }
-                        ]
-                    }
-                ]
-            }
+            "body": markdown_to_adf(marked_text)
         }
 
         headers = {
@@ -1170,24 +1260,8 @@ class JiraClient:
         """
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment/{comment_id}"
 
-        # Jira Cloud uses ADF (Atlassian Document Format) for comments
-        # Convert plain text to ADF format
         payload = {
-            "body": {
-                "type": "doc",
-                "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": comment_text
-                            }
-                        ]
-                    }
-                ]
-            }
+            "body": markdown_to_adf(comment_text)
         }
 
         headers = {
