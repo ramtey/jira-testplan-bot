@@ -3,11 +3,49 @@
  */
 
 import { useState } from 'react'
-import { getJiraTicketUrl } from '../config'
+import { API_BASE_URL, getJiraTicketUrl } from '../config'
 import DevelopmentInfo from './DevelopmentInfo'
 
 function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription }) {
   const [isAttachmentsExpanded, setIsAttachmentsExpanded] = useState(false)
+  const [isSummaryExpanded, setIsSummaryExpanded] = useState(false)
+  const [plainSummary, setPlainSummary] = useState(null)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState(null)
+
+  const handleToggleSummary = async () => {
+    if (isSummaryExpanded) {
+      setIsSummaryExpanded(false)
+      return
+    }
+
+    setIsSummaryExpanded(true)
+
+    if (plainSummary === null && !summaryLoading) {
+      setSummaryLoading(true)
+      setSummaryError(null)
+      try {
+        const response = await fetch(`${API_BASE_URL}/issue/${ticketData.key}/summarize`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            summary: ticketData.summary,
+            description: ticketData.description,
+          }),
+        })
+        if (!response.ok) {
+          const err = await response.json()
+          throw new Error(err.detail || 'Failed to generate summary')
+        }
+        const data = await response.json()
+        setPlainSummary(data.summary)
+      } catch (err) {
+        setSummaryError(err.message)
+      } finally {
+        setSummaryLoading(false)
+      }
+    }
+  }
   const jiraTicketUrl = getJiraTicketUrl(ticketData.key)
 
   const getIssueTypeClass = (issueType) => {
@@ -72,6 +110,35 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription 
             </div>
           )}
         </div>
+      </div>
+
+      <div className="ticket-section">
+        <div
+          className="collapsible-header"
+          onClick={handleToggleSummary}
+          style={{ cursor: 'pointer' }}
+        >
+          <h3>
+            <span className={`collapse-icon ${isSummaryExpanded ? 'expanded' : ''}`}>▶</span>
+            Plain-language Summary
+          </h3>
+          {!isSummaryExpanded && (
+            <span className="collapse-summary">
+              {plainSummary
+                ? plainSummary.length > 100
+                  ? plainSummary.slice(0, 100) + '…'
+                  : plainSummary
+                : 'Click to generate'}
+            </span>
+          )}
+        </div>
+        {isSummaryExpanded && (
+          <div className="collapsible-content">
+            {summaryLoading && <p className="loading-text">Generating summary...</p>}
+            {summaryError && <p className="error-text">{summaryError}</p>}
+            {plainSummary && <p className="plain-summary-text">{plainSummary}</p>}
+          </div>
+        )}
       </div>
 
       <div className="ticket-section">

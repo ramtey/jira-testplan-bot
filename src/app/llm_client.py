@@ -463,6 +463,15 @@ class LLMClient(ABC):
         """Analyze multiple related bug tickets together and produce a combined analysis."""
         pass
 
+    @abstractmethod
+    async def summarize_ticket(
+        self,
+        summary: str,
+        description: str | None,
+    ) -> str:
+        """Return a 2-3 sentence plain-language summary of the ticket."""
+        pass
+
     def _build_bug_analysis_prompt(self, tickets: list[dict]) -> str:
         """Build the prompt for bug analysis (single or multi-ticket)."""
         is_multi = len(tickets) > 1
@@ -1324,6 +1333,32 @@ class OllamaClient(LLMClient):
         """Analyze multiple bug tickets using Ollama."""
         return await self._ollama_bug_analysis(tickets)
 
+    async def summarize_ticket(self, summary: str, description: str | None) -> str:
+        """Return a plain-language summary using Ollama."""
+        desc_part = f"\n\nDescription:\n{description}" if description else ""
+        prompt = (
+            f"Summarize this Jira ticket in 2-3 plain sentences that a tester can quickly read. "
+            f"Focus on what the feature/bug is, what it affects, and what a tester needs to know. "
+            f"No jargon, no bullet points.\n\nTitle: {summary}{desc_part}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": False,
+                    },
+                )
+                response.raise_for_status()
+                result = response.json()
+                return result.get("response", "").strip()
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise LLMError(f"Cannot connect to Ollama at {self.base_url}", error_type="connection_failed") from e
+        except httpx.HTTPStatusError as e:
+            raise LLMError(f"Ollama returned error status {e.response.status_code}", error_type="service_unavailable") from e
+
     async def _ollama_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)
         schema = {
@@ -1683,6 +1718,38 @@ class ClaudeClient(LLMClient):
     async def generate_multi_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         """Analyze multiple bug tickets using Claude API."""
         return await self._claude_bug_analysis(tickets)
+
+    async def summarize_ticket(self, summary: str, description: str | None) -> str:
+        """Return a plain-language summary using Claude API."""
+        desc_part = f"\n\nDescription:\n{description}" if description else ""
+        prompt = (
+            f"Summarize this Jira ticket in 2-3 plain sentences that a tester can quickly read. "
+            f"Focus on what the feature/bug is, what it affects, and what a tester needs to know. "
+            f"No jargon, no bullet points. Reply with only the summary text.\n\nTitle: {summary}{desc_part}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "anthropic-version": "2023-06-01",
+                        "x-api-key": self.api_key,
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 256,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.3,
+                    },
+                )
+                response.raise_for_status()
+                result = response.json()
+                return result["content"][0]["text"].strip()
+        except httpx.HTTPStatusError as e:
+            raise LLMError(f"Claude API returned error status {e.response.status_code}", error_type="service_unavailable") from e
+        except httpx.TimeoutException as e:
+            raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
 
     async def _claude_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)

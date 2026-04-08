@@ -193,6 +193,21 @@ async def get_issue(issue_key: str):
         )
 
 
+@app.post("/issue/{issue_key}/summarize")
+async def summarize_issue(issue_key: str, request: dict):
+    """Generate a plain-language summary of a ticket for quick tester context."""
+    summary = request.get("summary", "")
+    description = request.get("description")
+    if not summary:
+        raise HTTPException(status_code=400, detail="summary is required")
+    try:
+        llm = get_llm_client()
+        text = await llm.summarize_ticket(summary=summary, description=description)
+        return {"summary": text}
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @app.post("/generate-test-plan")
 async def generate_test_plan(request: GenerateTestPlanRequest):
     """

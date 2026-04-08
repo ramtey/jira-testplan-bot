@@ -1596,6 +1596,24 @@ button:disabled {
   font-weight: normal;
 }
 
+.plain-summary-text {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+  margin: 0.5rem 0 0;
+}
+
+.loading-text {
+  color: var(--text-secondary);
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+.error-text {
+  color: var(--error);
+  font-size: 0.9rem;
+}
+
 .collapsible-content {
   animation: slideDown 0.3s ease;
   overflow: hidden;
