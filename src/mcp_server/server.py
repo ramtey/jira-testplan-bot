@@ -204,16 +204,17 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
     if test_plan_dict.get("happy_path"):
         jira += "✅ HAPPY PATH TEST CASES\n\n"
         for index, test in enumerate(test_plan_dict["happy_path"]):
-            jira += f"{index + 1}. {test['title']}"
+            title = f"**{index + 1}. {test['title']}"
             if test.get("priority"):
                 priority = test["priority"]
                 emoji = "🔴" if priority == "critical" else "🟡" if priority == "high" else "🟢"
-                jira += f" {emoji} {priority.upper()}"
-            jira += "\n\n"
+                title += f" {emoji} {priority.upper()}"
+            title += "**"
+            jira += f"{title}\n\n"
             if test.get("steps"):
                 jira += "Steps:\n"
                 for step_index, step in enumerate(test["steps"]):
-                    jira += f"   {step_index + 1}. {step}\n"
+                    jira += f"{step_index + 1}. {step}\n"
                 jira += "\n"
             if test.get("expected"):
                 jira += f"Expected Result: {test['expected']}\n\n"
@@ -224,18 +225,19 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
     if test_plan_dict.get("edge_cases"):
         jira += "🔍 EDGE CASES & ERROR SCENARIOS\n\n"
         for index, test in enumerate(test_plan_dict["edge_cases"]):
-            jira += f"{index + 1}. {test['title']}"
+            title = f"**{index + 1}. {test['title']}"
             if test.get("priority"):
                 priority = test["priority"]
                 emoji = "🔴" if priority == "critical" else "🟡" if priority == "high" else "🟢"
-                jira += f" {emoji} {priority.upper()}"
+                title += f" {emoji} {priority.upper()}"
             if test.get("category"):
-                jira += f" [{test['category']}]"
-            jira += "\n\n"
+                title += f" [{test['category']}]"
+            title += "**"
+            jira += f"{title}\n\n"
             if test.get("steps"):
                 jira += "Steps:\n"
                 for step_index, step in enumerate(test["steps"]):
-                    jira += f"   {step_index + 1}. {step}\n"
+                    jira += f"{step_index + 1}. {step}\n"
                 jira += "\n"
             if test.get("expected"):
                 jira += f"Expected Result: {test['expected']}\n\n"
@@ -246,16 +248,17 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
     if test_plan_dict.get("integration_tests"):
         jira += "🔗 INTEGRATION & BACKEND TESTS\n\n"
         for index, test in enumerate(test_plan_dict["integration_tests"]):
-            jira += f"{index + 1}. {test['title']}"
+            title = f"**{index + 1}. {test['title']}"
             if test.get("priority"):
                 priority = test["priority"]
                 emoji = "🔴" if priority == "critical" else "🟡" if priority == "high" else "🟢"
-                jira += f" {emoji} {priority.upper()}"
-            jira += "\n\n"
+                title += f" {emoji} {priority.upper()}"
+            title += "**"
+            jira += f"{title}\n\n"
             if test.get("steps"):
                 jira += "Steps:\n"
                 for step_index, step in enumerate(test["steps"]):
-                    jira += f"   {step_index + 1}. {step}\n"
+                    jira += f"{step_index + 1}. {step}\n"
                 jira += "\n"
             if test.get("expected"):
                 jira += f"Expected Result: {test['expected']}\n\n"
