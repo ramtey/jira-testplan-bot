@@ -96,6 +96,13 @@ Rules:
 ✅ If diff shows HazardInsurance only changed in buyer-side files → generate test for Buyer defaults only
 ✅ If ticket explicitly says "applies to both buyer and seller" → generate tests for both
 
+**IGNORE HISTORICAL / SUPERSEDED ACCEPTANCE CRITERIA:**
+Ticket descriptions sometimes preserve old requirements under headings like "OG AC", "Old AC", "Original AC", "Previous AC", "Old Acceptance Criteria", or similar. These sections document what the requirements **used to be** — they are NOT current requirements.
+- NEVER generate test cases based on content under these headings
+- Treat them as historical context only; the current AC is everything outside those sections
+❌ "OG AC: button should be red" → Do not test for a red button; the requirement has changed
+✅ Look for the updated/current AC elsewhere in the description and test that instead
+
 **WHEN TO ADD "ABSENCE" TESTS:**
 Only test for the absence of something if:
 - The ticket explicitly mentions removing/hiding a feature
