@@ -3,7 +3,8 @@
     "allow": [
       "Bash(gh api:*)",
       "Bash(gh pr checks:*)",
-      "Bash(gh pr view:*)"
+      "Bash(gh pr view:*)",
+      "Bash(uv run pytest:*)"
     ]
   }
 }

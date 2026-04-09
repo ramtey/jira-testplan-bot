@@ -1373,6 +1373,11 @@ class OllamaClient(LLMClient):
                 "fix_complexity": {"type": "string"},
                 "fix_effort_estimate": {"type": "string"},
                 "fix_complexity_reasoning": {"type": "string"},
+                "affected_flow": {"type": "array", "items": {"type": "string"}},
+                "scope_of_impact": {"type": "array", "items": {"type": "string"}},
+                "why_tests_miss": {"type": "string"},
+                "is_regression": {"type": "boolean"},
+                "regression_introduced_by": {"type": "string"},
             },
         }
         full_prompt = BUG_LENS_SYSTEM_PROMPT + "\n\n" + prompt + "\n\nReturn ONLY valid JSON matching this schema: " + json.dumps(schema)
@@ -1406,6 +1411,11 @@ class OllamaClient(LLMClient):
                     fix_complexity=parsed.get("fix_complexity"),
                     fix_effort_estimate=parsed.get("fix_effort_estimate"),
                     fix_complexity_reasoning=parsed.get("fix_complexity_reasoning"),
+                    affected_flow=parsed.get("affected_flow"),
+                    scope_of_impact=parsed.get("scope_of_impact"),
+                    why_tests_miss=parsed.get("why_tests_miss"),
+                    is_regression=parsed.get("is_regression"),
+                    regression_introduced_by=parsed.get("regression_introduced_by"),
                 )
 
         except httpx.ConnectError as e:
@@ -1800,6 +1810,11 @@ class ClaudeClient(LLMClient):
                     fix_complexity=parsed.get("fix_complexity"),
                     fix_effort_estimate=parsed.get("fix_effort_estimate"),
                     fix_complexity_reasoning=parsed.get("fix_complexity_reasoning"),
+                    affected_flow=parsed.get("affected_flow"),
+                    scope_of_impact=parsed.get("scope_of_impact"),
+                    why_tests_miss=parsed.get("why_tests_miss"),
+                    is_regression=parsed.get("is_regression"),
+                    regression_introduced_by=parsed.get("regression_introduced_by"),
                 )
 
         except httpx.HTTPStatusError as e:
@@ -1830,16 +1845,26 @@ WHAT YOU MUST DO
 
 6. **similar_patterns** — List classes of related bugs that could exist elsewhere in the codebase based on the same root cause. These help the team proactively find similar issues.
 
-7. **fix_complexity** — Only when is_fixed is false. Classify the expected fix effort as one of:
+7. **affected_flow** — A numbered list of steps tracing the end-to-end path from user action to the bug. Format each step as a short sentence, e.g. "1. User clicks Submit → 2. Frontend calls POST /api/calculate → 3. Handler calls FeeService.compute() → 4. compute() divides by zero when payor is null". If you cannot determine the flow from the available evidence, set to null.
+
+8. **scope_of_impact** — A list of other features, endpoints, or callers that invoke the same broken code and are therefore also affected. Be concrete: name the feature or file, not just a category. If no other callers are identifiable from the evidence, set to null.
+
+9. **why_tests_miss** — A single plain-English explanation of why the existing test suite did not catch this bug (e.g. mocking bypassed the broken layer, only happy-path covered, no integration test for this flow). If you cannot determine this from the evidence, set to null.
+
+10. **is_regression** — Set to true if the bug was previously working and a specific code change broke it. Set to false if the feature was never functional. Set to null if you cannot determine this from the available evidence.
+
+11. **regression_introduced_by** — If is_regression is true, identify the PR title, PR number, commit SHA, or branch name that introduced the breakage. Set to null if is_regression is false or unknown.
+
+12. **fix_complexity** — Only when is_fixed is false. Classify the expected fix effort as one of:
    - "trivial": a one-liner or config change, no risk of side effects
    - "moderate": a focused code change in 1–2 files, straightforward logic fix
    - "complex": touches multiple files or services, requires careful testing
    - "architectural": requires design changes, schema migrations, or cross-team coordination
    Set to null if the bug is already fixed.
 
-8. **fix_effort_estimate** — Only when is_fixed is false. A concise time range for a competent engineer who knows the codebase (e.g. "1–2 hours", "half a day", "2–3 days", "1+ week"). Set to null if the bug is already fixed.
+13. **fix_effort_estimate** — Only when is_fixed is false. A concise time range for a competent engineer who knows the codebase (e.g. "1–2 hours", "half a day", "2–3 days", "1+ week"). Set to null if the bug is already fixed.
 
-9. **fix_complexity_reasoning** — Only when is_fixed is false. 1–2 sentences explaining why you assigned that complexity level. Reference specific files, services, or constraints. Set to null if the bug is already fixed.
+14. **fix_complexity_reasoning** — Only when is_fixed is false. 1–2 sentences explaining why you assigned that complexity level. Reference specific files, services, or constraints. Set to null if the bug is already fixed.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GROUNDING RULES
@@ -1898,8 +1923,30 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
                 "type": ["string", "null"],
                 "description": "1–2 sentences explaining the complexity rating. Reference files, services, or constraints. Null if the bug is already fixed.",
             },
+            "affected_flow": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+                "description": "Numbered steps tracing the end-to-end path from user action to the bug. Each step is a short sentence. Null if flow cannot be determined.",
+            },
+            "scope_of_impact": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+                "description": "Other features, endpoints, or callers that invoke the same broken code and are also affected. Null if none identifiable.",
+            },
+            "why_tests_miss": {
+                "type": ["string", "null"],
+                "description": "Plain-English explanation of why existing tests did not catch this bug. Null if cannot be determined.",
+            },
+            "is_regression": {
+                "type": ["boolean", "null"],
+                "description": "True if the bug was previously working and a code change broke it. False if never functional. Null if unknown.",
+            },
+            "regression_introduced_by": {
+                "type": ["string", "null"],
+                "description": "PR title, PR number, commit SHA, or branch name that introduced the regression. Null if is_regression is false or unknown.",
+            },
         },
-        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning"],
+        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by"],
     },
 }
 

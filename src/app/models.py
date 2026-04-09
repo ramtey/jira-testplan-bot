@@ -236,6 +236,11 @@ class BugAnalysis:
     fix_complexity: str | None      # "trivial" | "moderate" | "complex" | "architectural"; None if fixed
     fix_effort_estimate: str | None # e.g. "2–4 hours", "1–2 days"; None if fixed
     fix_complexity_reasoning: str | None  # Why this complexity level was chosen; None if fixed
+    affected_flow: list[str] | None = None  # Numbered steps tracing the end-to-end path to the bug
+    scope_of_impact: list[str] | None = None  # Other features/callers broken by the same issue
+    why_tests_miss: str | None = None  # Why existing tests don't catch this bug
+    is_regression: bool | None = None  # True if bug was previously working and then broke
+    regression_introduced_by: str | None = None  # PR or commit that introduced the regression
 
 
 # ============================================================================

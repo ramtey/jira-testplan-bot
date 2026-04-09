@@ -45,6 +45,23 @@ function BugAnalysisDisplay({ analysis }) {
         </span>
       </div>
 
+      {/* Regression badge */}
+      {analysis.is_regression != null && (
+        <div className="ticket-section">
+          <span
+            className={`priority-badge ${analysis.is_regression ? 'priority-critical' : 'priority-medium'}`}
+            style={{ fontSize: '0.85rem', padding: '3px 10px' }}
+          >
+            {analysis.is_regression ? '🔁 Regression' : '🆕 Never worked'}
+          </span>
+          {analysis.is_regression && analysis.regression_introduced_by && (
+            <span className="fix-complexity-reasoning" style={{ marginLeft: '8px' }}>
+              Introduced by: {analysis.regression_introduced_by}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Bug Summary */}
       <div className="ticket-section">
         <h3>Bug Summary</h3>
@@ -60,6 +77,40 @@ function BugAnalysisDisplay({ analysis }) {
           <p className="text-muted">No code diff available — root cause derived from ticket description only.</p>
         )}
       </div>
+
+      {/* Affected Flow */}
+      {analysis.affected_flow && analysis.affected_flow.length > 0 && (
+        <div className="ticket-section">
+          <h3>Affected Flow</h3>
+          <p className="section-description">End-to-end path from user action to the bug:</p>
+          <ol className="regression-list">
+            {analysis.affected_flow.map((step, i) => (
+              <li key={i}>{step}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {/* Scope of Impact */}
+      {analysis.scope_of_impact && analysis.scope_of_impact.length > 0 && (
+        <div className="ticket-section">
+          <h3>Scope of Impact</h3>
+          <p className="section-description">Other features or callers affected by the same broken code:</p>
+          <ul className="regression-list">
+            {analysis.scope_of_impact.map((item, i) => (
+              <li key={i}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Why Tests Miss */}
+      {analysis.why_tests_miss && (
+        <div className="ticket-section">
+          <h3>Why Tests Don't Catch This</h3>
+          <p>{analysis.why_tests_miss}</p>
+        </div>
+      )}
 
       {/* Fix Explanation */}
       {analysis.is_fixed && (

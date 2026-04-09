@@ -102,12 +102,36 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
   let md = `# Bug Lens Analysis: ${ticketLabel}\n\n`
   md += `**Status:** ${analysis.is_fixed ? '✅ Fixed' : '⚠️ Not yet fixed'}\n\n`
 
+  if (analysis.is_regression != null) {
+    md += `**Regression:** ${analysis.is_regression ? '🔁 Yes — this was previously working' : '🆕 No — feature was never functional'}\n`
+    if (analysis.is_regression && analysis.regression_introduced_by) {
+      md += `**Introduced by:** ${analysis.regression_introduced_by}\n`
+    }
+    md += '\n'
+  }
+
   md += `## Bug Summary\n\n${analysis.bug_summary}\n\n`
 
   md += `## Root Cause\n\n`
   md += analysis.root_cause
     ? `${analysis.root_cause}\n\n`
     : `*No code diff available — root cause derived from ticket description only.*\n\n`
+
+  if (analysis.affected_flow && analysis.affected_flow.length > 0) {
+    md += `## Affected Flow\n\n`
+    analysis.affected_flow.forEach((step, i) => { md += `${i + 1}. ${step}\n` })
+    md += '\n'
+  }
+
+  if (analysis.scope_of_impact && analysis.scope_of_impact.length > 0) {
+    md += `## Scope of Impact\n\n`
+    analysis.scope_of_impact.forEach(item => { md += `- ${item}\n` })
+    md += '\n'
+  }
+
+  if (analysis.why_tests_miss) {
+    md += `## Why Tests Don't Catch This\n\n${analysis.why_tests_miss}\n\n`
+  }
 
   if (analysis.is_fixed) {
     md += `## Fix Explanation\n\n`
