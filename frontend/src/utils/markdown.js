@@ -171,16 +171,17 @@ export const formatTestPlanAsJira = (plan) => {
   if (plan.happy_path && plan.happy_path.length > 0) {
     jira += '✅ HAPPY PATH TEST CASES\n\n'
     plan.happy_path.forEach((test, index) => {
-      jira += `${index + 1}. ${test.title}`
+      let title = `**${index + 1}. ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
-        jira += ` ${emoji} ${test.priority.toUpperCase()}`
+        title += ` ${emoji} ${test.priority.toUpperCase()}`
       }
-      jira += '\n\n'
+      title += '**'
+      jira += `${title}\n\n`
       if (test.steps && test.steps.length > 0) {
         jira += 'Steps:\n'
         test.steps.forEach((step, stepIndex) => {
-          jira += `   ${stepIndex + 1}. ${step}\n`
+          jira += `${stepIndex + 1}. ${step}\n`
         })
         jira += '\n'
       }
@@ -197,19 +198,20 @@ export const formatTestPlanAsJira = (plan) => {
   if (plan.edge_cases && plan.edge_cases.length > 0) {
     jira += '🔍 EDGE CASES & ERROR SCENARIOS\n\n'
     plan.edge_cases.forEach((test, index) => {
-      jira += `${index + 1}. ${test.title}`
+      let title = `**${index + 1}. ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
-        jira += ` ${emoji} ${test.priority.toUpperCase()}`
+        title += ` ${emoji} ${test.priority.toUpperCase()}`
       }
       if (test.category) {
-        jira += ` [${test.category}]`
+        title += ` [${test.category}]`
       }
-      jira += '\n\n'
+      title += '**'
+      jira += `${title}\n\n`
       if (test.steps && test.steps.length > 0) {
         jira += 'Steps:\n'
         test.steps.forEach((step, stepIndex) => {
-          jira += `   ${stepIndex + 1}. ${step}\n`
+          jira += `${stepIndex + 1}. ${step}\n`
         })
         jira += '\n'
       }
@@ -226,16 +228,17 @@ export const formatTestPlanAsJira = (plan) => {
   if (plan.integration_tests && plan.integration_tests.length > 0) {
     jira += '🔗 INTEGRATION & BACKEND TESTS\n\n'
     plan.integration_tests.forEach((test, index) => {
-      jira += `${index + 1}. ${test.title}`
+      let title = `**${index + 1}. ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
-        jira += ` ${emoji} ${test.priority.toUpperCase()}`
+        title += ` ${emoji} ${test.priority.toUpperCase()}`
       }
-      jira += '\n\n'
+      title += '**'
+      jira += `${title}\n\n`
       if (test.steps && test.steps.length > 0) {
         jira += 'Steps:\n'
         test.steps.forEach((step, stepIndex) => {
-          jira += `   ${stepIndex + 1}. ${step}\n`
+          jira += `${stepIndex + 1}. ${step}\n`
         })
         jira += '\n'
       }

@@ -380,6 +380,7 @@ async def post_comment(request: PostCommentRequest):
             "success": True,
             "comment_id": result.get("id"),
             "issue_key": request.issue_key,
+            "updated": result.get("updated", False),
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
