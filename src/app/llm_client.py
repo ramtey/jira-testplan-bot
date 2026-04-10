@@ -186,6 +186,34 @@ Group related test cases logically by the feature or component they test.
 **AVOID REDUNDANCY - CRITICAL RULE:**
 DO NOT create separate test cases that test the same user flow from different angles. Instead, create ONE comprehensive test case that validates multiple aspects together.
 
+**USE PRECONDITIONS TO ELIMINATE REPEATED SETUP STEPS:**
+If 3 or more test cases in a section share the same opening steps (e.g. "Log in → navigate to listing → clear localStorage"), extract them into the `preconditions` field instead of repeating them in every steps list. Steps should begin at the actual variation point for that test.
+- ❌ BAD: Every test starts with "Log in to Staging 2", "Navigate to a listing in an enabled state"
+- ✅ GOOD: preconditions: "Logged in to Staging 2 with devagent account, on a listing in an enabled state"
+- Only set preconditions when the setup is genuinely shared. If a test has unique setup (e.g. "clear localStorage" is only needed for 2 of 8 tests), keep those steps in the steps list.
+
+**PARAMETERIZE IDENTICAL TEST CASES:**
+If 3 or more test cases share identical steps and differ ONLY in test data (e.g. testing fallback behavior for states CT, KS, KY, LA), collapse them into ONE test case. Put the varying data in a markdown table inside the `test_data` field:
+```
+| State | Purchase Price |
+|-------|---------------|
+| CT    | $400,000      |
+| KS    | $300,000      |
+```
+- ❌ BAD: Separate "Verify CT falls back gracefully", "Verify KS falls back gracefully", "Verify KY falls back gracefully" tests
+- ✅ GOOD: One "Verify unsupported states fall back gracefully" test with a table of states in test_data
+
+**USE TABLES FOR INPUT VALIDATION EDGE CASES:**
+When multiple edge cases test the same input field with different invalid values (e.g. max boundary, negative, empty, decimal truncation), combine them into ONE test case. Use a markdown table in `test_data`:
+```
+| Input   | Trigger | Expected result     |
+|---------|---------|---------------------|
+| 25      | blur    | Clamped to 20%      |
+| -5      | blur    | Restores to 6.75%   |
+| (empty) | blur    | Restores to 6.75%   |
+```
+Only split into separate tests if the validation behavior is meaningfully different or requires different setup.
+
 ❌ BAD - Redundant tests:
   - Test 1: "User clicks button and modal appears"
   - Test 2: "Modal posts to correct API endpoint"
@@ -296,8 +324,9 @@ Return ONLY valid JSON (no markdown, no code blocks):
     {
       "title": "Comprehensive test name covering the complete flow",
       "priority": "critical|high|medium",
+      "preconditions": "Assumed pre-state shared with other tests (omit if unique to this test)",
       "steps": [
-        "First action step",
+        "First action step (start here, not at login/navigation if covered by preconditions)",
         "Second action step - verify intermediate state",
         "Third action step",
         "Fourth step - verify API correctness",
@@ -1438,6 +1467,7 @@ TEST_CASE_SCHEMA = {
     "properties": {
         "title": {"type": "string"},
         "priority": {"type": "string", "enum": ["critical", "high", "medium"]},
+        "preconditions": {"type": "string", "description": "Assumed pre-state before step 1 (e.g. 'Logged in, Buyer toggle selected, Interest Rate modal open'). Only include setup that is shared/repeated across multiple tests. Omit if the test has unique setup steps."},
         "steps": {"type": "array", "items": {"type": "string"}},
         "expected": {"type": "string"},
         "test_data": {"type": "string"},

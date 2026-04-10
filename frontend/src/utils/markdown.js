@@ -15,6 +15,9 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += ` ${emoji} *${test.priority}*`
       }
       markdown += '\n\n'
+      if (test.preconditions) {
+        markdown += `**Preconditions:** ${test.preconditions}\n\n`
+      }
       if (test.steps && test.steps.length > 0) {
         markdown += '**Steps:**\n'
         test.steps.forEach((step, stepIndex) => {
@@ -43,6 +46,9 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += ` [${test.category}]`
       }
       markdown += '\n\n'
+      if (test.preconditions) {
+        markdown += `**Preconditions:** ${test.preconditions}\n\n`
+      }
       if (test.steps && test.steps.length > 0) {
         markdown += '**Steps:**\n'
         test.steps.forEach((step, stepIndex) => {
@@ -68,6 +74,9 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += ` ${emoji} *${test.priority}*`
       }
       markdown += '\n\n'
+      if (test.preconditions) {
+        markdown += `**Preconditions:** ${test.preconditions}\n\n`
+      }
       if (test.steps && test.steps.length > 0) {
         markdown += '**Steps:**\n'
         test.steps.forEach((step, stepIndex) => {
@@ -178,6 +187,9 @@ export const formatTestPlanAsJira = (plan) => {
       }
       title += '**'
       jira += `${title}\n\n`
+      if (test.preconditions) {
+        jira += `Preconditions: ${test.preconditions}\n\n`
+      }
       if (test.steps && test.steps.length > 0) {
         jira += 'Steps:\n'
         test.steps.forEach((step, stepIndex) => {
@@ -208,6 +220,9 @@ export const formatTestPlanAsJira = (plan) => {
       }
       title += '**'
       jira += `${title}\n\n`
+      if (test.preconditions) {
+        jira += `Preconditions: ${test.preconditions}\n\n`
+      }
       if (test.steps && test.steps.length > 0) {
         jira += 'Steps:\n'
         test.steps.forEach((step, stepIndex) => {
@@ -235,6 +250,9 @@ export const formatTestPlanAsJira = (plan) => {
       }
       title += '**'
       jira += `${title}\n\n`
+      if (test.preconditions) {
+        jira += `Preconditions: ${test.preconditions}\n\n`
+      }
       if (test.steps && test.steps.length > 0) {
         jira += 'Steps:\n'
         test.steps.forEach((step, stepIndex) => {

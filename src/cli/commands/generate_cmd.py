@@ -305,6 +305,10 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
         for i, test in enumerate(test_plan["happy_path"], 1):
             lines.append(f"### Test {i}: {test['title']}\n" if format == "markdown" else f"Test {i}: {test['title']}")
             lines.append("")
+            if test.get("preconditions"):
+                lines.append("**Preconditions:**" if format == "markdown" else "Preconditions:")
+                lines.append(test["preconditions"])
+                lines.append("")
             lines.append("**Steps:**" if format == "markdown" else "Steps:")
             for step_num, step in enumerate(test.get("steps", []), 1):
                 lines.append(f"{step_num}. {step}")
@@ -326,6 +330,10 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
         for i, test in enumerate(test_plan["edge_cases"], 1):
             lines.append(f"### Test {i}: {test['title']}\n" if format == "markdown" else f"Test {i}: {test['title']}")
             lines.append("")
+            if test.get("preconditions"):
+                lines.append("**Preconditions:**" if format == "markdown" else "Preconditions:")
+                lines.append(test["preconditions"])
+                lines.append("")
             lines.append("**Steps:**" if format == "markdown" else "Steps:")
             for step_num, step in enumerate(test.get("steps", []), 1):
                 lines.append(f"{step_num}. {step}")

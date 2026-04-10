@@ -26,6 +26,12 @@ function renderTestCase(test, index, showCategory = false) {
           <span className="category-badge">{test.category}</span>
         )}
       </h5>
+      {test.preconditions && (
+        <div className="test-preconditions">
+          <strong>Preconditions:</strong>{' '}
+          {typeof test.preconditions === 'string' ? test.preconditions : JSON.stringify(test.preconditions)}
+        </div>
+      )}
       {test.steps && Array.isArray(test.steps) && test.steps.length > 0 && (
         <div className="test-steps">
           <strong>Steps:</strong>
