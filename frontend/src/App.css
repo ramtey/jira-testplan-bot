@@ -1032,41 +1032,69 @@ button:disabled {
   gap: 1rem;
 }
 
+/* Test Plan Actions */
+.test-plan-actions {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.actions-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.actions-row--jira {
+  display: contents;
+}
+
+.actions-row--export {
+  display: contents;
+}
+
 /* Multi-ticket posting panel */
 .multi-post-panel {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 0.75rem;
-  align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .multi-post-label {
   font-weight: 600;
   color: var(--text-secondary, #555);
-  font-size: 0.9rem;
+  font-size: 0.875rem;
+  white-space: nowrap;
 }
 
 .multi-post-options {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 1.25rem;
-  padding: 0.75rem 1rem;
+  gap: 0.25rem 0.75rem;
+  padding: 0.4rem 0.75rem;
   background: var(--bg-secondary, #f8f9fa);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 .multi-post-option {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.875rem;
 }
 
 .multi-post-option input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   cursor: pointer;
   accent-color: var(--primary);
 }
@@ -1077,7 +1105,7 @@ button:disabled {
 }
 
 .post-state {
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 500;
 }
 
@@ -1085,29 +1113,26 @@ button:disabled {
 .post-state.done    { color: var(--success, #00875a); }
 .post-state.error   { color: var(--error, #de350b); }
 
-/* Test Plan Actions */
-.test-plan-actions {
-  margin-top: 2rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--border);
-  display: flex;
-  justify-content: center;
-  gap: 1rem;
+/* Action buttons — shared base */
+.btn-post-jira,
+.btn-copy-markdown,
+.btn-download {
+  padding: 0.55rem 1.25rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 6px;
+  white-space: nowrap;
 }
 
 .btn-post-jira {
-  padding: 1rem 2.5rem;
   background: var(--success);
-  font-size: 1rem;
-  font-weight: 600;
-  min-width: 200px;
-  box-shadow: 0 4px 12px rgba(0, 135, 90, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 135, 90, 0.25);
   transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .btn-post-jira:hover:not(:disabled) {
   background: #007a52;
-  box-shadow: 0 6px 16px rgba(0, 135, 90, 0.4);
+  box-shadow: 0 4px 12px rgba(0, 135, 90, 0.35);
 }
 
 .btn-post-jira:disabled {
@@ -1117,51 +1142,40 @@ button:disabled {
 
 .btn-post-jira.btn-feedback--success {
   background: #006644;
-  box-shadow: 0 4px 12px rgba(0, 102, 68, 0.45);
 }
 
 .btn-post-jira.btn-feedback--error {
   background: #de350b;
-  box-shadow: 0 4px 12px rgba(222, 53, 11, 0.35);
 }
 
 .btn-copy-markdown {
-  padding: 1rem 2.5rem;
-  background: #2d3748;
-  font-size: 1rem;
-  font-weight: 600;
-  min-width: 200px;
-  box-shadow: 0 4px 12px rgba(45, 55, 72, 0.3);
+  background: #3a4a5c;
+  box-shadow: 0 2px 8px rgba(45, 55, 72, 0.2);
   transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .btn-copy-markdown:hover:not(:disabled) {
-  background: #1a202c;
-  box-shadow: 0 6px 16px rgba(45, 55, 72, 0.4);
+  background: #2d3748;
+  box-shadow: 0 4px 12px rgba(45, 55, 72, 0.3);
 }
 
 .btn-copy-markdown.btn-feedback--success {
   background: #006644;
-  box-shadow: 0 4px 12px rgba(0, 102, 68, 0.45);
 }
 
 .btn-copy-markdown.btn-feedback--error {
   background: #de350b;
-  box-shadow: 0 4px 12px rgba(222, 53, 11, 0.35);
 }
 
 .btn-download {
-  padding: 1rem 2.5rem;
   background: var(--primary);
-  font-size: 1rem;
-  font-weight: 600;
-  min-width: 200px;
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.25);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .btn-download:hover:not(:disabled) {
   background: #5568d3;
-  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.35);
 }
 
 /* Responsive adjustments for test plan */
@@ -1179,13 +1193,18 @@ button:disabled {
 
   .test-plan-actions {
     flex-direction: column;
+    align-items: stretch;
+  }
+
+  .multi-post-panel {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .btn-post-jira,
   .btn-copy-markdown,
   .btn-download {
     width: 100%;
-    min-width: unset;
   }
 }
 

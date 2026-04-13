@@ -152,10 +152,13 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
 
   // ── Multi-ticket: post to a single key ─────────────────────────────────────
 
-  const postToKey = async (issueKey) => {
+  const postToKey = async (issueKey, otherKeys = []) => {
     setPostingStates((prev) => ({ ...prev, [issueKey]: 'posting' }))
     try {
-      const jiraText = formatTestPlanAsJira(testPlan)
+      let jiraText = formatTestPlanAsJira(testPlan)
+      if (otherKeys.length > 0) {
+        jiraText += `\n\n----\n_Also posted to: ${otherKeys.join(', ')}_`
+      }
       const response = await fetch(`${API_BASE}/jira/post-comment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -185,8 +188,17 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
       return
     }
     for (const key of keys) {
-      await postToKey(key)
+      const otherKeys = keys.filter((k) => k !== key)
+      await postToKey(key, otherKeys)
     }
+    // Show success if no errors were encountered
+    setPostingStates((prev) => {
+      const anyError = keys.some((k) => prev[k] === 'error')
+      if (!anyError) {
+        showNotification(setPostNotification, postTimerRef, 'success', `Posted to ${keys.join(', ')}`)
+      }
+      return prev
+    })
   }
 
   const toggleKeySelection = (key) => {
@@ -257,75 +269,81 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
         )}
 
       <div className="test-plan-actions">
-        {isMulti ? (
-          // ── Multi-ticket posting panel ──────────────────────────────────
-          <div className="multi-post-panel">
-            <span className="multi-post-label">Post to Jira:</span>
-            <div className="multi-post-options">
-              {ticketsData.map((td) => {
-                const state = postingStates[td.key]
-                const checked = selectedKeys.has(td.key)
-                return (
-                  <label key={td.key} className="multi-post-option">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleKeySelection(td.key)}
-                      disabled={isAnyPosting || state === 'done'}
-                    />
-                    <span className="multi-post-key">{td.key}</span>
-                    {state === 'posting' && <span className="post-state posting">Posting…</span>}
-                    {state === 'done' && <span className="post-state done">✅ Posted</span>}
-                    {state === 'error' && <span className="post-state error">❌ Failed</span>}
-                  </label>
-                )
-              })}
+        {/* ── Jira post row ── */}
+        <div className="actions-row actions-row--jira">
+          {isMulti ? (
+            <div className="multi-post-panel">
+              <span className="multi-post-label">Post to Jira:</span>
+              <div className="multi-post-options">
+                {ticketsData.map((td) => {
+                  const state = postingStates[td.key]
+                  const checked = selectedKeys.has(td.key)
+                  return (
+                    <label key={td.key} className="multi-post-option">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleKeySelection(td.key)}
+                        disabled={isAnyPosting || state === 'done'}
+                      />
+                      <span className="multi-post-key">{td.key}</span>
+                      {state === 'posting' && <span className="post-state posting">Posting…</span>}
+                      {state === 'done' && <span className="post-state done">✅ Posted</span>}
+                      {state === 'error' && <span className="post-state error">❌ Failed</span>}
+                    </label>
+                  )
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={handlePostSelected}
+                className={`btn-post-jira${postNotification ? ` btn-feedback--${postNotification.type}` : ''}`}
+                disabled={isAnyPosting || selectedKeys.size === 0}
+              >
+                {isAnyPosting
+                  ? 'Posting…'
+                  : postNotification?.type === 'success'
+                  ? `✓ ${postNotification.message}`
+                  : postNotification?.type === 'error'
+                  ? `✗ ${postNotification.message}`
+                  : `Post to Selected (${selectedKeys.size})`}
+              </button>
             </div>
+          ) : (
             <button
               type="button"
-              onClick={handlePostSelected}
+              onClick={handlePostToJira}
               className={`btn-post-jira${postNotification ? ` btn-feedback--${postNotification.type}` : ''}`}
-              disabled={isAnyPosting || selectedKeys.size === 0}
+              disabled={isPosting}
             >
-              {isAnyPosting
-                ? 'Posting…'
+              {isPosting
+                ? 'Posting...'
+                : postNotification?.type === 'success'
+                ? `✓ ${postNotification.message}`
                 : postNotification?.type === 'error'
                 ? `✗ ${postNotification.message}`
-                : `Post to Selected (${selectedKeys.size})`}
+                : 'Post to Jira'}
             </button>
-          </div>
-        ) : (
-          // ── Single-ticket post button ────────────────────────────────────
+          )}
+        </div>
+
+        {/* ── Export row ── */}
+        <div className="actions-row actions-row--export">
           <button
             type="button"
-            onClick={handlePostToJira}
-            className={`btn-post-jira${postNotification ? ` btn-feedback--${postNotification.type}` : ''}`}
-            disabled={isPosting}
+            onClick={handleCopyMarkdown}
+            className={`btn-copy-markdown${copyNotification ? ` btn-feedback--${copyNotification.type}` : ''}`}
           >
-            {isPosting
-              ? 'Posting...'
-              : postNotification?.type === 'success'
-              ? `✓ ${postNotification.message}`
-              : postNotification?.type === 'error'
-              ? `✗ ${postNotification.message}`
-              : 'Post to Jira'}
+            {copyNotification?.type === 'success'
+              ? `✓ ${copyNotification.message}`
+              : copyNotification?.type === 'error'
+              ? `✗ ${copyNotification.message}`
+              : 'Copy as Markdown'}
           </button>
-        )}
-
-        <button
-          type="button"
-          onClick={handleCopyMarkdown}
-          className={`btn-copy-markdown${copyNotification ? ` btn-feedback--${copyNotification.type}` : ''}`}
-        >
-          {copyNotification?.type === 'success'
-            ? `✓ ${copyNotification.message}`
-            : copyNotification?.type === 'error'
-            ? `✗ ${copyNotification.message}`
-            : 'Copy as Markdown'}
-        </button>
-        <button type="button" onClick={handleDownloadMarkdown} className="btn-download">
-          Download as .md
-        </button>
+          <button type="button" onClick={handleDownloadMarkdown} className="btn-download">
+            Download as .md
+          </button>
+        </div>
       </div>
     </div>
   )
