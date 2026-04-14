@@ -281,7 +281,7 @@ When a requirement says "add X to Y", "the difference is added to Y", "increase 
 Rules:
 1. **Always set a non-zero starting value** for any field that is being added to. Never let it default to zero or blank when testing an additive operation.
 2. **State the exact expected total** in the expected result: `final_Y = initial_Y + X`. Do NOT write vague phrases like "the X amount is included" or "Y reflects the difference" — these pass even when the field was replaced instead of accumulated.
-3. **Include the arithmetic explicitly** in test_data so the tester can verify without guessing: e.g. `Initial Down Payment: $10,000 + Excess: $50,000 = Expected Total: $60,000`.
+3. **Include the arithmetic explicitly** in test_data so the tester can verify without guessing: e.g. `Initial Down Payment: $A + Excess: $B = Expected Total: $A+B`. Always compute the actual sum from your chosen test values — never copy a sum from an example.
 
 ❌ BAD — misses the replace-vs-add bug:
 - test_data: "Purchase Price: $600,000, Max FHA: $500,000"
