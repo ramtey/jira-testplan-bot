@@ -275,6 +275,25 @@ Each test should include:
 - Never place an action button tap in the middle of filling out a form — fill ALL inputs first, then tap the action button
 - Think through the complete user flow before writing steps: enter all inputs → then trigger the action
 
+**ADDITIVE OPERATIONS — CRITICAL RULE:**
+When a requirement says "add X to Y", "the difference is added to Y", "increase Y by X", or any similar additive phrasing, the test MUST verify accumulation, not replacement. A common implementation bug is to SET Y = X instead of SET Y = Y + X. If your test data doesn't include a pre-existing value for Y, this bug will pass undetected.
+
+Rules:
+1. **Always set a non-zero starting value** for any field that is being added to. Never let it default to zero or blank when testing an additive operation.
+2. **State the exact expected total** in the expected result: `final_Y = initial_Y + X`. Do NOT write vague phrases like "the X amount is included" or "Y reflects the difference" — these pass even when the field was replaced instead of accumulated.
+3. **Include the arithmetic explicitly** in test_data so the tester can verify without guessing: e.g. `Initial Down Payment: $10,000 + Excess: $50,000 = Expected Total: $60,000`.
+
+❌ BAD — misses the replace-vs-add bug:
+- test_data: "Purchase Price: $600,000, Max FHA: $500,000"
+- expected: "Down Payment includes the $100,000 difference"
+  → Passes even if Down Payment is SET to $100,000 (replacing the original value)
+
+✅ GOOD — catches the replace-vs-add bug:
+- test_data: "Initial Down Payment: $50,000, Purchase Price: $600,000, Max FHA: $500,000. Expected: $50,000 + $100,000 = $150,000"
+- expected: "Down Payment field shows $150,000 (original $50,000 + $100,000 excess). A result of $100,000 would indicate the original value was replaced instead of accumulated."
+
+Apply this rule to ALL additive scenarios: down payment accumulation, running totals, fee stacking, counter increments, balance additions, etc.
+
 **GUIDELINES:**
 - Write from the user's perspective (avoid technical implementation details)
 - Be specific and actionable (use concrete examples)
