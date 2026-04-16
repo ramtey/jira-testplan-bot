@@ -254,6 +254,7 @@ If yes, enhance that existing test instead of creating a new one.
    - Do NOT use for standard features where UI calls a single API
    - Examples: Cross-service data flow, third-party integrations, microservice communication
    - If it's just "frontend → single backend API → database", that's a normal flow (use happy_path)
+   - **DEDUPLICATION RULE:** If a behavior (e.g., "PDF excludes branding when flag is off") is already verified through a UI-based happy path test, do NOT create a separate integration/API test for the same behavior. The UI test already exercises the underlying API. Only add an integration test when it covers a genuinely different scenario or system interaction that no UI test reaches.
    - **API verification steps MUST always specify HOW to verify:**
      - If there is a UI-observable outcome, describe it: "Verify the Transfer Tax field is NOT shown on screen"
      - If there is NO UI outcome (pure backend/response check), always provide explicit DevTools steps: "Open browser DevTools (F12) > Network tab > filter for '[endpoint-name]' > trigger the action > click the request > inspect the Response tab and confirm [specific field/value]"
