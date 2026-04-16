@@ -34,7 +34,9 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Post test plans directly to Jira comments
 - **Parent ticket awareness** for sub-tasks to understand broader feature context
 - **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input)
-- **Jira Bug Lens**: analyze bug tickets to explain root cause, fix, and suggest regression tests
+- **Jira Bug Lens**: analyze bug tickets for root cause, fix complexity, affected flow, and regression tests
+- **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does
+- **Inline UX feedback**: auto-scroll to results and inline button-state feedback (no alert dialogs)
 
 ## Key Features
 
@@ -62,7 +64,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Token health monitoring**: Real-time validation with expiration warnings
 
 ### Test Plan Generation
-- **Claude Opus 4.5**: Fast (5-10s), high-quality test plans with structured JSON output
+- **Claude Opus 4.6**: Fast (5-10s), high-quality test plans with structured JSON tool-use output
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
 - **Multiple export formats**: Markdown, Jira-formatted text, or JSON
 - **Issue type validation**: Only generates plans for testable types (Story, Bug, Task)
@@ -72,9 +74,13 @@ Analyze bug tickets to go beyond the ticket description and into the code:
 - **Bug summary**: Plain-English explanation of what broke and what the user experienced
 - **Root cause**: Identifies the exact cause in the code, referencing specific files and logic (requires a linked PR with diffs)
 - **Fix explanation**: Describes what the merged PR changed to resolve the bug
+- **Fix complexity estimate**: For unfixed bugs, infers the GitHub repo from the ticket and estimates effort required
+- **Affected flow & scope of impact**: Identifies which user flows are broken and how wide the blast radius is
+- **Test gap analysis**: Highlights what testing was missing that allowed the bug through
 - **Regression tests**: Concrete, actionable test cases to prevent the bug from recurring
 - **Similar patterns**: Classes of related bugs to proactively look for in the codebase
 - **Multi-ticket support**: Analyze multiple related bug tickets together for a combined root cause analysis
+- **Download as .md**: Export the full analysis as a Markdown file
 - Only shown for `Bug` issue type; automatically uses the same GitHub PR diff pipeline as test plan generation
 
 ## Tech Stack
@@ -124,7 +130,7 @@ npm install
 2. Add to `.env`:
    ```
    LLM_PROVIDER=claude
-   LLM_MODEL=claude-opus-4-5-20251101
+   LLM_MODEL=claude-opus-4-6
    ANTHROPIC_API_KEY=sk-ant-api03-...
    ```
 
@@ -342,7 +348,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** UI enrichment complete (assignee history, PR repo labels, PR authors)
+**Current:** Bug Lens v2 complete (fix complexity, affected flow, test gap analysis); prompt quality hardening ongoing
 
 ## Roadmap
 
@@ -360,6 +366,12 @@ uv run pytest tests/ -v
 - ✅ **Assignee history**: All unique people ever assigned to a ticket (from Jira changelog), with current assignee highlighted
 - ✅ **Multi-ticket test plans**: Enter comma-separated ticket keys (e.g. `PROJ-123, PROJ-456`) to generate one unified plan; requires shared repo or overlapping file changes
 - ✅ **Jira Bug Lens**: Analyze bug tickets to explain root cause, fix, and suggest regression tests; supports multi-ticket analysis
+- ✅ **Bug Lens v2**: Fix complexity estimate, affected flow, scope of impact, test gap analysis, download as .md
+- ✅ **Plain-language ticket summary**: Lazy-loaded collapsible explanation of what the ticket does
+- ✅ **Prompt caching**: Static system prompt cached via Claude API for lower latency and cost
+- ✅ **Structured tool-use output**: Claude tool use enforces JSON schema on test plan output (replaces regex parsing)
+- ✅ **Formatted Jira comments**: Test plans posted as rich ADF (Atlassian Document Format) instead of plain text
+- ✅ **UX polish**: Auto-scroll to results, inline button-state feedback, red ticket badge in Bug Lens
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
