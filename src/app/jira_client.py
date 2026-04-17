@@ -119,6 +119,43 @@ def markdown_to_adf(markdown_text: str) -> dict:
         "content": content or [{"type": "paragraph", "content": [{"type": "text", "text": ""}]}]
     }
 
+
+TEST_PLAN_MARKER = "🤖 Generated Test Plan"
+TEST_PLAN_EXPAND_TITLE = "Click to view generated test plan"
+
+
+def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
+                         title: str = TEST_PLAN_EXPAND_TITLE) -> dict:
+    """Wrap everything after the marker paragraph in an ADF `expand` node.
+
+    Keeps the marker paragraph as content[0] so existing comment-update detection
+    (which reads content[0]'s text) continues to work.
+    """
+    content = adf_doc.get("content", [])
+    if len(content) < 2:
+        return adf_doc
+    first = content[0]
+    if first.get("type") != "paragraph":
+        return adf_doc
+    first_text = "".join(
+        node.get("text", "") for node in first.get("content", [])
+        if node.get("type") == "text"
+    )
+    if marker not in first_text:
+        return adf_doc
+    return {
+        **adf_doc,
+        "content": [
+            first,
+            {
+                "type": "expand",
+                "attrs": {"title": title},
+                "content": content[1:],
+            },
+        ],
+    }
+
+
 # Directories whose files are never worth diffing (generated, tooling, agent config)
 _SKIP_PATCH_DIRS = frozenset({'.agents', '.claude', '.cursor', 'scripts', 'tooling', 'node_modules'})
 # File extensions that are runtime source code
@@ -1136,7 +1173,7 @@ class JiraClient:
         """
         # Add unique marker to identify test plan comments
         # Using a marker that won't be visible to users but can be detected
-        marker = "🤖 Generated Test Plan"
+        marker = TEST_PLAN_MARKER
         marked_text = f"{marker}\n\n{comment_text}"
 
         # Check if there's already a test plan comment to update
@@ -1171,7 +1208,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
 
         payload = {
-            "body": markdown_to_adf(marked_text)
+            "body": _wrap_body_in_expand(markdown_to_adf(marked_text))
         }
 
         headers = {
@@ -1261,7 +1298,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment/{comment_id}"
 
         payload = {
-            "body": markdown_to_adf(comment_text)
+            "body": _wrap_body_in_expand(markdown_to_adf(comment_text))
         }
 
         headers = {
