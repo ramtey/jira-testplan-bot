@@ -121,7 +121,7 @@ def markdown_to_adf(markdown_text: str) -> dict:
 
 
 TEST_PLAN_MARKER = "🤖 Generated Test Plan"
-TEST_PLAN_EXPAND_TITLE = "Click to view generated test plan"
+TEST_PLAN_EXPAND_TITLE = "Click to view"
 
 
 def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
