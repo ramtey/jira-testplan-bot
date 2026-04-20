@@ -8,6 +8,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -15,6 +17,8 @@ sys.path.insert(0, str(project_root))
 from src.app.llm_client import get_llm_client, LLMError
 
 
+@pytest.mark.asyncio
+@pytest.mark.skip(reason="Manual integration test — requires a running LLM provider. Run directly: python tests/test_llm.py")
 async def test_llm_generation():
     """Test generating a test plan with mock data."""
     print("=" * 80)

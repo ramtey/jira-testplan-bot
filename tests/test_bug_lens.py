@@ -37,6 +37,9 @@ def make_bug_analysis(is_fixed=True):
             "Other form submit buttons without debounce or disabled-on-submit guards.",
             "Async handlers that mutate shared state without loading flags.",
         ],
+        fix_complexity=None if is_fixed else "trivial",
+        fix_effort_estimate=None if is_fixed else "1–2 hours",
+        fix_complexity_reasoning=None if is_fixed else "Single-line guard in one component.",
     )
 
 

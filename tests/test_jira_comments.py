@@ -5,7 +5,7 @@ This tests the smart comment management feature that updates existing
 test plan comments instead of creating duplicates.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,13 +20,15 @@ async def test_post_comment_creates_new_when_none_exists():
     # Mock get_comments to return empty list (no existing comments)
     with patch.object(jira, 'get_comments', return_value=[]):
         with patch('httpx.AsyncClient') as mock_client:
-            mock_response = AsyncMock()
+            mock_response = MagicMock()
             mock_response.status_code = 201
             mock_response.json.return_value = {
                 "id": "12345",
                 "body": {"type": "doc", "version": 1, "content": []}
             }
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
 
             result = await jira.post_comment("TEST-123", "Test plan content")
 
@@ -101,13 +103,15 @@ async def test_post_comment_creates_new_when_marker_not_found():
 
     with patch.object(jira, 'get_comments', return_value=[existing_comment]):
         with patch('httpx.AsyncClient') as mock_client:
-            mock_response = AsyncMock()
+            mock_response = MagicMock()
             mock_response.status_code = 201
             mock_response.json.return_value = {
                 "id": "22222",
                 "body": {"type": "doc", "version": 1, "content": []}
             }
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
 
             result = await jira.post_comment("TEST-123", "Test plan content")
 
@@ -123,20 +127,25 @@ async def test_post_comment_includes_marker():
 
     with patch.object(jira, 'get_comments', return_value=[]):
         with patch('httpx.AsyncClient') as mock_client:
-            mock_response = AsyncMock()
+            mock_response = MagicMock()
             mock_response.status_code = 201
             mock_response.json.return_value = {"id": "12345"}
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response
+            mock_post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__.return_value.post = mock_post
 
             await jira.post_comment("TEST-123", "Test plan content")
 
-            # Verify the posted payload includes the marker
-            call_args = mock_client.return_value.__aenter__.return_value.post.call_args
-            payload = call_args.kwargs['json']
-            content_text = payload['body']['content'][0]['content'][0]['text']
+            # Verify the posted payload includes the marker (in content[0]) and
+            # the comment body (wrapped in an expand block at content[1]).
+            import json as _json
 
-            assert "🤖 Generated Test Plan" in content_text
-            assert "Test plan content" in content_text
+            call_args = mock_post.call_args
+            payload = call_args.kwargs['json']
+            marker_text = payload['body']['content'][0]['content'][0]['text']
+            full_body = _json.dumps(payload['body'])
+
+            assert "🤖 Generated Test Plan" in marker_text
+            assert "Test plan content" in full_body
 
 
 @pytest.mark.asyncio
@@ -147,13 +156,15 @@ async def test_post_comment_fallback_on_error():
     # Mock get_comments to raise an exception
     with patch.object(jira, 'get_comments', side_effect=Exception("API error")):
         with patch('httpx.AsyncClient') as mock_client:
-            mock_response = AsyncMock()
+            mock_response = MagicMock()
             mock_response.status_code = 201
             mock_response.json.return_value = {
                 "id": "12345",
                 "body": {"type": "doc", "version": 1, "content": []}
             }
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
 
             # Should still succeed by creating new comment
             result = await jira.post_comment("TEST-123", "Test plan content")
