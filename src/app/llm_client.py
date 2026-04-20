@@ -472,12 +472,14 @@ class LLMClient(ABC):
         comments: list[dict] | None = None,
         parent_info: dict | None = None,
         linked_info: dict | None = None,
+        slack_messages: list[dict] | None = None,
     ) -> TestPlan:
         """Generate a structured test plan from ticket data and context.
 
         Args:
             images: List of (base64_data, media_type) tuples for image analysis
             comments: List of filtered testing-related Jira comments
+            slack_messages: Resolved Slack messages from permalinks found in ticket
         """
         pass
 
@@ -674,6 +676,7 @@ class LLMClient(ABC):
         comments: list[dict] | None = None,
         parent_info: dict | None = None,
         linked_info: dict | None = None,
+        slack_messages: list[dict] | None = None,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
         prompt = f"""**Your Task:** Create a detailed test plan for the following Jira ticket{" (screenshots/mockups attached)" if has_images else ""}.
@@ -822,6 +825,30 @@ TICKET INFORMATION
             prompt += "- Address specific concerns or questions raised about testing\n"
             prompt += "- Include validation steps mentioned in the discussions\n"
             prompt += "- Consider any reproduction steps or test data mentioned\n\n"
+
+        # Add resolved Slack discussions if available
+        if slack_messages:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "SLACK DISCUSSIONS (LINKED IN TICKET)\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += f"\nThe following {len(slack_messages)} Slack message(s) were linked from the ticket description or comments:\n\n"
+
+            for i, msg in enumerate(slack_messages[:10], 1):
+                author = _safe_get(msg, "author", "Unknown") or "Unknown"
+                text = _safe_get(msg, "text", "") or ""
+                url = _safe_get(msg, "url", "")
+                # Cap each message to keep prompt size predictable; callers should
+                # still include the URL so testers can read the full thread if needed.
+                text_preview = text[:2000] + "..." if len(text) > 2000 else text
+                prompt += f"**Slack message {i} by {author}:**\n"
+                prompt += f"{text_preview}\n"
+                if url:
+                    prompt += f"(source: {url})\n"
+                prompt += "\n"
+
+            prompt += "**Use these Slack messages to:**\n"
+            prompt += "- Incorporate edge cases, scenarios, or constraints raised in discussion\n"
+            prompt += "- Treat them as supplementary context; the ticket itself remains the source of truth\n\n"
 
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups are attached. Use them to understand the UI requirements and generate specific visual test cases.\n"
@@ -1246,6 +1273,7 @@ class OllamaClient(LLMClient):
         comments: list[dict] | None = None,
         parent_info: dict | None = None,
         linked_info: dict | None = None,
+        slack_messages: list[dict] | None = None,
     ) -> TestPlan:
         """Generate test plan using Ollama."""
         # Note: Ollama doesn't support vision yet, so images are ignored
@@ -1253,7 +1281,7 @@ class OllamaClient(LLMClient):
             print("Warning: Ollama does not support image analysis. Images will be ignored.")
 
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info, slack_messages=slack_messages
         )
 
         try:
@@ -1561,10 +1589,11 @@ class ClaudeClient(LLMClient):
         comments: list[dict] | None = None,
         parent_info: dict | None = None,
         linked_info: dict | None = None,
+        slack_messages: list[dict] | None = None,
     ) -> TestPlan:
         """Generate test plan using Claude API with optional image support."""
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info, slack_messages=slack_messages
         )
 
         # Build message content (text + images if provided)

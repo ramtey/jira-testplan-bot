@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
 
+    # Slack (for resolving Slack message links in Jira descriptions/comments)
+    slack_user_token: str | None = None  # Slack user token (xoxp-) - required scopes: channels:history, groups:history, im:history, mpim:history, users:read
+
     # App
     app_env: str = "local"
 

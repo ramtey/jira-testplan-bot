@@ -13,6 +13,7 @@ from .jira_client import (
 )
 from .llm_client import LLMError, get_llm_client
 from .models import GenerateTestPlanRequest, MultiTicketGenerateRequest, PostCommentRequest
+from .slack_client import resolve_slack_messages_in_text
 from .token_service import token_health_service
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
@@ -239,6 +240,16 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             if not images:
                 images = None  # No images successfully downloaded
 
+        # Resolve Slack permalinks pasted into the description or comments so the
+        # LLM sees the actual discussion, not just a bare URL. Returns [] when no
+        # token is configured or no links are present.
+        resolved_slack = await resolve_slack_messages_in_text(
+            request.description, request.comments
+        )
+        slack_messages_for_prompt = (
+            [asdict(m) for m in resolved_slack] if resolved_slack else None
+        )
+
         llm = get_llm_client()
         test_plan = await llm.generate_test_plan(
             ticket_key=request.ticket_key,
@@ -250,6 +261,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             comments=request.comments,
             parent_info=request.parent_info,
             linked_info=request.linked_info,
+            slack_messages=slack_messages_for_prompt,
         )
 
         return {

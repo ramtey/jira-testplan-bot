@@ -185,6 +185,18 @@ class LinkedIssues:
 
 
 @dataclass
+class SlackMessage:
+    """A single Slack message resolved from a permalink in a Jira ticket."""
+
+    url: str
+    channel_id: str
+    ts: str
+    author: str | None
+    text: str
+    thread_ts: str | None = None
+
+
+@dataclass
 class JiraIssue:
     """Represents a Jira issue with extracted data."""
 
