@@ -147,6 +147,18 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
     md += analysis.fix_explanation ? `${analysis.fix_explanation}\n\n` : `*No fix details available.*\n\n`
   }
 
+  if (analysis.open_questions && analysis.open_questions.length > 0) {
+    md += `## Open Questions\n\n`
+    analysis.open_questions.forEach(q => { md += `- ${q}\n` })
+    md += '\n'
+  }
+
+  if (analysis.assumptions && analysis.assumptions.length > 0) {
+    md += `## Assumptions\n\n`
+    analysis.assumptions.forEach(a => { md += `- ${a}\n` })
+    md += '\n'
+  }
+
   if (!analysis.is_fixed && analysis.fix_complexity) {
     md += `## Fix Complexity\n\n`
     md += `**Complexity:** ${analysis.fix_complexity.charAt(0).toUpperCase() + analysis.fix_complexity.slice(1)}`

@@ -124,6 +124,32 @@ function BugAnalysisDisplay({ analysis }) {
         </div>
       )}
 
+      {/* Open Questions — surface ambiguity before the estimate */}
+      {analysis.open_questions && analysis.open_questions.length > 0 && (
+        <div className="ticket-section">
+          <h3>Open Questions</h3>
+          <p className="section-description">Resolve these before committing to an estimate or fix:</p>
+          <ul className="regression-list">
+            {analysis.open_questions.map((q, i) => (
+              <li key={i}>{q}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Assumptions — inferences the analysis depends on */}
+      {analysis.assumptions && analysis.assumptions.length > 0 && (
+        <div className="ticket-section">
+          <h3>Assumptions</h3>
+          <p className="section-description">Inferences not directly grounded in the evidence — verify before acting:</p>
+          <ul className="regression-list">
+            {analysis.assumptions.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Fix Complexity — only for unfixed bugs */}
       {!analysis.is_fixed && analysis.fix_complexity && (
         <div className="ticket-section">

@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     # GitHub (for PR diff fetching - Phase 3a)
     github_token: str | None = None  # GitHub personal access token (optional - enables PR diff fetching)
 
+    # Bug Lens repo hints: maps a regex pattern (matched against summary + description + comments)
+    # to one or more "owner/repo" strings to search when the ticket has no explicit GitHub links.
+    # Set via env as JSON, e.g. BUG_LENS_REPO_HINTS='{"title.?rep|folders": ["skyslope/mobile-app"]}'
+    bug_lens_repo_hints: dict[str, list[str]] = {}
+
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
 

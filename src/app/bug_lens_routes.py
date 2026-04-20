@@ -4,6 +4,7 @@ Bug Lens routes — analyze bug tickets to explain root cause, fix, and regressi
 Mounted at /bug-lens in main.py via APIRouter.
 """
 
+import logging
 import re
 from dataclasses import asdict
 
@@ -14,6 +15,8 @@ from .github_client import GitHubClient
 from .llm_client import LLMError, get_llm_client
 from .models import BugAnalysisRequest, MultiBugAnalysisRequest
 
+logger = logging.getLogger(__name__)
+
 _BLOB_PATTERN = re.compile(
     r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/blob/[^\s>\"'\)]+"
 )
@@ -21,12 +24,18 @@ _COMMIT_PATTERN = re.compile(
     r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/commit/[0-9a-f]{7,40}"
 )
 
-# Map title keywords (case-insensitive) to GitHub repos.
-# Checked in order — first match wins.
-_TITLE_REPO_MAP: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"agent.?cal(culator)?", re.IGNORECASE), "skyslope/agent-calculator"),
-    (re.compile(r"\bayce\b", re.IGNORECASE), "skyslope/agent-coach"),
+# Built-in product keyword → repo mapping. Each entry maps a regex (case-insensitive)
+# to one or more "owner/repo" strings. Keywords are matched against the ticket's
+# summary + description + comments, and every matching entry contributes its repos
+# (deduplicated). Users can extend this without code changes via the
+# BUG_LENS_REPO_HINTS env var (see config.py).
+_TITLE_REPO_MAP: list[tuple[re.Pattern, list[str]]] = [
+    (re.compile(r"agent.?cal(culator)?", re.IGNORECASE), ["skyslope/agent-calculator"]),
+    (re.compile(r"\bayce\b", re.IGNORECASE), ["skyslope/agent-coach"]),
 ]
+
+# How many matched repos to actually search per ticket, as a cost/noise cap.
+_MAX_REPOS_TO_SEARCH = 3
 
 # Stop words excluded when building a code search query from a ticket summary
 _STOP_WORDS = {
@@ -37,12 +46,40 @@ _STOP_WORDS = {
 }
 
 
-def _infer_repo_from_summary(summary: str) -> str | None:
-    """Return the owner/repo inferred from title keywords, or None if no match."""
-    for pattern, repo in _TITLE_REPO_MAP:
-        if pattern.search(summary):
-            return repo
-    return None
+def _infer_repos_from_text(*texts: str | None) -> list[str]:
+    """
+    Return all owner/repo strings whose keyword patterns match any of the given texts.
+
+    Scans the concatenation of the provided texts (summary, description, comments)
+    against both the built-in _TITLE_REPO_MAP and user-provided hints from
+    settings.bug_lens_repo_hints. Returns a deduplicated list preserving the order
+    in which repos first appeared.
+    """
+    combined = "\n".join(t for t in texts if t)
+    if not combined:
+        return []
+
+    seen: set[str] = set()
+    result: list[str] = []
+
+    def _add(repos: list[str]) -> None:
+        for r in repos:
+            if r and r not in seen:
+                seen.add(r)
+                result.append(r)
+
+    for pattern, repos in _TITLE_REPO_MAP:
+        if pattern.search(combined):
+            _add(repos)
+
+    for pattern_str, repos in (settings.bug_lens_repo_hints or {}).items():
+        try:
+            if re.search(pattern_str, combined, re.IGNORECASE):
+                _add(repos)
+        except re.error as e:
+            logger.warning(f"Invalid regex in bug_lens_repo_hints: {pattern_str!r} ({e})")
+
+    return result
 
 
 def _build_search_query(summary: str) -> str:
@@ -101,14 +138,27 @@ async def _fetch_github_context(
             if result:
                 context.append({"type": "commit", "url": url, **result})
     else:
-        # No explicit links — try inferring the repo from the ticket title
-        repo = _infer_repo_from_summary(summary)
-        if repo:
+        # No explicit links — try inferring repos from keywords in the full ticket text
+        comment_bodies = [c.get("body", "") for c in (comments or [])]
+        repos = _infer_repos_from_text(summary, description, *comment_bodies)
+        if not repos:
+            logger.info(
+                "Bug Lens: no repo keywords matched for summary %r — "
+                "add entries to BUG_LENS_REPO_HINTS to extend coverage.",
+                summary,
+            )
+        else:
             query = _build_search_query(summary)
             if query:
-                files = await client.search_relevant_files(repo, query)
-                for f in files:
-                    context.append({"type": "file", "repo": repo, **f})
+                seen_paths: set[tuple[str, str]] = set()
+                for repo in repos[:_MAX_REPOS_TO_SEARCH]:
+                    files = await client.search_relevant_files(repo, query)
+                    for f in files:
+                        key = (repo, f.get("path", ""))
+                        if key in seen_paths:
+                            continue
+                        seen_paths.add(key)
+                        context.append({"type": "file", "repo": repo, **f})
 
     return context or None
 

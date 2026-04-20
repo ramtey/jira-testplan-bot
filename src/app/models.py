@@ -241,6 +241,8 @@ class BugAnalysis:
     why_tests_miss: str | None = None  # Why existing tests don't catch this bug
     is_regression: bool | None = None  # True if bug was previously working and then broke
     regression_introduced_by: str | None = None  # PR or commit that introduced the regression
+    assumptions: list[str] | None = None  # Inferences the model made that aren't directly grounded in evidence
+    open_questions: list[str] | None = None  # Ambiguities a human should resolve before estimating/fixing
 
 
 # ============================================================================

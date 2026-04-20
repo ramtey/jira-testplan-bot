@@ -1434,6 +1434,8 @@ class OllamaClient(LLMClient):
                 "why_tests_miss": {"type": "string"},
                 "is_regression": {"type": "boolean"},
                 "regression_introduced_by": {"type": "string"},
+                "assumptions": {"type": "array", "items": {"type": "string"}},
+                "open_questions": {"type": "array", "items": {"type": "string"}},
             },
         }
         full_prompt = BUG_LENS_SYSTEM_PROMPT + "\n\n" + prompt + "\n\nReturn ONLY valid JSON matching this schema: " + json.dumps(schema)
@@ -1472,6 +1474,8 @@ class OllamaClient(LLMClient):
                     why_tests_miss=parsed.get("why_tests_miss"),
                     is_regression=parsed.get("is_regression"),
                     regression_introduced_by=parsed.get("regression_introduced_by"),
+                    assumptions=parsed.get("assumptions"),
+                    open_questions=parsed.get("open_questions"),
                 )
 
         except httpx.ConnectError as e:
@@ -1872,6 +1876,8 @@ class ClaudeClient(LLMClient):
                     why_tests_miss=parsed.get("why_tests_miss"),
                     is_regression=parsed.get("is_regression"),
                     regression_introduced_by=parsed.get("regression_introduced_by"),
+                    assumptions=parsed.get("assumptions"),
+                    open_questions=parsed.get("open_questions"),
                 )
 
         except httpx.HTTPStatusError as e:
@@ -1904,7 +1910,7 @@ WHAT YOU MUST DO
 
 7. **affected_flow** — A numbered list of steps tracing the end-to-end path from user action to the bug. Format each step as a short sentence, e.g. "1. User clicks Submit → 2. Frontend calls POST /api/calculate → 3. Handler calls FeeService.compute() → 4. compute() divides by zero when payor is null". If you cannot determine the flow from the available evidence, set to null.
 
-8. **scope_of_impact** — A list of other features, endpoints, or callers that invoke the same broken code and are therefore also affected. Be concrete: name the feature or file, not just a category. If no other callers are identifiable from the evidence, set to null.
+8. **scope_of_impact** — Other callers or features affected by the same broken code. When code context is available (diffs, fetched files, linked code), each entry MUST name a specific file, component, or symbol (e.g. "apps/expo/src/screens/Folders.tsx uses the same BrandedHeader"). Screen names or feature categories alone ("Folders screen header") are only acceptable when no code context is available. Set to null if no other callers are identifiable from the evidence.
 
 9. **why_tests_miss** — A single plain-English explanation of why the existing test suite did not catch this bug (e.g. mocking bypassed the broken layer, only happy-path covered, no integration test for this flow). If you cannot determine this from the evidence, set to null.
 
@@ -1919,9 +1925,13 @@ WHAT YOU MUST DO
    - "architectural": requires design changes, schema migrations, or cross-team coordination
    Set to null if the bug is already fixed.
 
-13. **fix_effort_estimate** — Only when is_fixed is false. A concise time range for a competent engineer who knows the codebase (e.g. "1–2 hours", "half a day", "2–3 days", "1+ week"). Set to null if the bug is already fixed.
+13. **fix_effort_estimate** — Only when is_fixed is false. A concise time range for a competent engineer who knows the codebase (e.g. "1–2 hours", "half a day", "2–3 days", "1+ week"). **If the scope is genuinely ambiguous (e.g. the ticket could mean a narrow UI tweak or a broader data-model change), give a branched estimate instead of averaging**, e.g. "2h if scoped to the existing single-color header / 4–5h if supporting per-rep colors end-to-end". Do not pick a single midpoint when the scope itself is unclear — the ambiguity belongs in the estimate. Set to null if the bug is already fixed.
 
 14. **fix_complexity_reasoning** — Only when is_fixed is false. 1–2 sentences explaining why you assigned that complexity level. Reference specific files, services, or constraints. Set to null if the bug is already fixed.
+
+15. **assumptions** — Inferences you made that are NOT directly grounded in the evidence, but that your analysis depends on. Example: "Assumed each Title Rep has their own assigned color (ticket says 'rep's assigned color' but code context only shows a single hardcoded value)." List every non-trivial leap so a reviewer can verify them. Set to null only if your analysis makes no such inferences.
+
+16. **open_questions** — Interpretation ambiguities a human should resolve before committing to the estimate or fix. Phrase each as a question. Example: "Is the bug scoped to making the existing yellow header's contrast work, or does it include supporting arbitrary per-rep colors?" Set to null only if the scope is fully unambiguous from the evidence.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GROUNDING RULES
@@ -1932,7 +1942,8 @@ GROUNDING RULES
 - Do NOT add regression tests for unrelated features.
 - If a diff is not available, say so in root_cause and work from the ticket description only.
 - Keep all text concise and technical — this is read by engineers and QA, not end users.
-- For fix_complexity, fix_effort_estimate, and fix_complexity_reasoning: set all three to null when is_fixed is true."""
+- For fix_complexity, fix_effort_estimate, and fix_complexity_reasoning: set all three to null when is_fixed is true.
+- Surface ambiguity explicitly in assumptions and open_questions rather than resolving it silently. A confident-looking analysis that papers over interpretation gaps is worse than one that names them."""
 
 
 SUBMIT_BUG_ANALYSIS_TOOL = {
@@ -2002,8 +2013,18 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
                 "type": ["string", "null"],
                 "description": "PR title, PR number, commit SHA, or branch name that introduced the regression. Null if is_regression is false or unknown.",
             },
+            "assumptions": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+                "description": "Non-trivial inferences the analysis depends on but that are NOT directly grounded in the ticket, comments, or code context. Each item names the inference so a reviewer can verify it. Null only if the analysis makes no such inferences.",
+            },
+            "open_questions": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+                "description": "Interpretation ambiguities a human should resolve before committing to the estimate or fix. Each item is phrased as a question. Null only if scope is fully unambiguous.",
+            },
         },
-        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by"],
+        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by", "assumptions", "open_questions"],
     },
 }
 
