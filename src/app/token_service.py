@@ -373,7 +373,7 @@ class TokenHealthService:
                         "content-type": "application/json",
                     },
                     json={
-                        "model": "claude-3-haiku-20240307",  # Cheapest model for validation
+                        "model": "claude-haiku-4-5-20251001",  # Cheapest current model for validation
                         "max_tokens": 10,
                         "messages": [{"role": "user", "content": "Hi"}],
                     },
