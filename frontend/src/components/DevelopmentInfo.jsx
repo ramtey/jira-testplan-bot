@@ -9,10 +9,17 @@ function DevelopmentInfo({ developmentInfo }) {
   if (!developmentInfo) {
     return (
       <div className="ticket-section">
-        <h3>Development Activity</h3>
-        <p className="no-data">No linked commits, pull requests, or branches found</p>
+        <h3>
+          Development Activity
+          <span
+            className="open-pr-warning"
+            title="No linked commits or PRs — test plan will be based on ticket description only"
+          >
+            {' '}⚠️ No linked PRs
+          </span>
+        </h3>
         <p className="info-note">
-          Development information will appear here when commits or pull requests are linked to this ticket.
+          No linked commits or pull requests — test plan will be derived from the ticket description only.
         </p>
       </div>
     )
@@ -25,8 +32,18 @@ function DevelopmentInfo({ developmentInfo }) {
   if (!hasCommits && !hasPullRequests && !hasBranches) {
     return (
       <div className="ticket-section">
-        <h3>Development Activity</h3>
-        <p className="no-data">No development activity detected</p>
+        <h3>
+          Development Activity
+          <span
+            className="open-pr-warning"
+            title="No linked commits or PRs — test plan will be based on ticket description only"
+          >
+            {' '}⚠️ No linked PRs
+          </span>
+        </h3>
+        <p className="info-note">
+          No development activity detected — test plan will be derived from the ticket description only.
+        </p>
       </div>
     )
   }
