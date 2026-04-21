@@ -586,6 +586,13 @@ class LLMClient(ABC):
                     prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     prompt += "PULL REQUESTS & CODE CHANGES\n"
                     prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    open_prs = [pr for pr in pull_requests if (pr.get("status") or "").upper() == "OPEN"]
+                    if open_prs:
+                        prompt += (
+                            f"\n⚠️ {len(open_prs)} of {len(pull_requests)} PR(s) are still OPEN — "
+                            "the code in those PRs is unmerged and may still change. "
+                            "Note this when reasoning about the fix state.\n"
+                        )
                     for pr in pull_requests:
                         status = pr.get("status", "UNKNOWN")
                         merged = status.upper() in ("MERGED", "CLOSED")
@@ -957,6 +964,13 @@ TICKET INFORMATION
             pull_requests = development_info.get("pull_requests", [])
             if pull_requests:
                 prompt += f"\n**Pull Requests ({len(pull_requests)}):**\n"
+                open_prs = [pr for pr in pull_requests if (pr.get("status") or "").upper() == "OPEN"]
+                if open_prs:
+                    prompt += (
+                        f"⚠️ Note: {len(open_prs)} of {len(pull_requests)} PR(s) are still OPEN "
+                        "(unmerged) — flag this in the test plan so reviewers know the code "
+                        "under test may still change.\n"
+                    )
                 for pr in pull_requests:
                     prompt += f"- **{pr.get('title', 'Untitled PR')}** (Status: {pr.get('status', 'UNKNOWN')})\n"
                     if pr.get('source_branch'):
@@ -1151,6 +1165,12 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                 prompt += f"**{ticket_key} — Development:**\n"
 
                 pull_requests = dev_info.get("pull_requests", [])
+                open_prs = [pr for pr in pull_requests if (pr.get("status") or "").upper() == "OPEN"]
+                if open_prs:
+                    prompt += (
+                        f"  ⚠️ {len(open_prs)} of {len(pull_requests)} PR(s) still OPEN — "
+                        "unmerged code; flag this in the plan.\n"
+                    )
                 for pr in pull_requests:
                     prompt += f"- PR: **{pr.get('title', 'Untitled')}** ({pr.get('status', 'UNKNOWN')})\n"
                     if pr.get("source_branch"):

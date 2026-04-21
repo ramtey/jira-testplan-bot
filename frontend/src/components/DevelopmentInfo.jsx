@@ -31,17 +31,27 @@ function DevelopmentInfo({ developmentInfo }) {
     )
   }
 
+  const isOpenPR = (status) => (status || '').toLowerCase() === 'open'
+
   const getPRStatusClass = (status) => {
-    const statusLower = status.toLowerCase()
-    if (statusLower === 'merged' || statusLower === 'open') return 'success'
+    const statusLower = (status || '').toLowerCase()
+    if (statusLower === 'merged') return 'success'
+    if (statusLower === 'open') return 'warning'
     if (statusLower === 'declined' || statusLower === 'closed') return 'warning'
     return ''
   }
 
+  const openPRCount = hasPullRequests
+    ? developmentInfo.pull_requests.filter((pr) => isOpenPR(pr.status)).length
+    : 0
+
   // Build summary text for collapsed state
   const buildSummary = () => {
     const parts = []
-    if (hasPullRequests) parts.push(`${developmentInfo.pull_requests.length} PR${developmentInfo.pull_requests.length !== 1 ? 's' : ''}`)
+    if (hasPullRequests) {
+      const total = developmentInfo.pull_requests.length
+      parts.push(`${total} PR${total !== 1 ? 's' : ''}`)
+    }
     if (hasCommits) parts.push(`${developmentInfo.commits.length} commit${developmentInfo.commits.length !== 1 ? 's' : ''}`)
     if (hasBranches) parts.push(`${developmentInfo.branches.length} branch${developmentInfo.branches.length !== 1 ? 'es' : ''}`)
     return parts.join(', ')
@@ -56,6 +66,14 @@ function DevelopmentInfo({ developmentInfo }) {
         <h3>
           <span className={`collapse-icon ${isExpanded ? 'expanded' : ''}`}>▶</span>
           Development Activity
+          {openPRCount > 0 && (
+            <span
+              className="open-pr-warning"
+              title={`${openPRCount} open PR${openPRCount !== 1 ? 's' : ''} — unmerged`}
+            >
+              {' '}⚠️ {openPRCount} open PR{openPRCount !== 1 ? 's' : ''}
+            </span>
+          )}
         </h3>
         {!isExpanded && (
           <span className="collapse-summary">{buildSummary()} • Click to expand</span>

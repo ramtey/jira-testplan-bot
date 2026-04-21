@@ -1615,6 +1615,13 @@ button:disabled {
   font-weight: normal;
 }
 
+.open-pr-warning {
+  color: var(--warning);
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin-left: 0.5rem;
+}
+
 .plain-summary-text {
   font-size: 0.95rem;
   line-height: 1.6;
