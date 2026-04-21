@@ -9,6 +9,7 @@ Switch providers by changing LLM_PROVIDER in .env
 """
 
 import json
+import re
 from abc import ABC, abstractmethod
 from dataclasses import is_dataclass
 from typing import Any
@@ -36,6 +37,84 @@ def _safe_get(obj: dict | Any, key: str, default: Any = None) -> Any:
     elif is_dataclass(obj):
         return getattr(obj, key, default)
     return default
+
+
+_VOICE_KEYWORDS_RE = re.compile(
+    r"\b("
+    r"voice[- ]?over|voiceover|"
+    r"screen[- ]?reader|screenreader|"
+    r"text[- ]?to[- ]?speech|speech[- ]?to[- ]?text|"
+    r"speech recognition|"
+    r"talkback|nvda|jaws|"
+    r"dictat\w*|"
+    r"tts|stt|"
+    r"voice"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_voice_ticket(summary: str | None, description: str | None) -> bool:
+    """Return True if the ticket involves voice I/O or screen-reader behavior.
+
+    Word-boundary matching avoids false positives like 'invoice' or 'choice'.
+    """
+    combined = f"{summary or ''}\n{description or ''}"
+    return bool(_VOICE_KEYWORDS_RE.search(combined))
+
+
+VOICE_TESTING_GUIDANCE = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎙️ VOICE / SCREEN READER — SPECIALIZED TEST GUIDANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This ticket touches voice input, voice output, or screen-reader behavior. SKIP obvious cases the tester already knows to check (mic permission granted, labels exist, TTS produces sound). Focus on the non-obvious failure modes below, and ONLY include cases plausibly affected by what the ticket / diff actually changes. If the ticket is purely TTS, skip STT-specific cases, and vice versa.
+
+**REQUIRED when the ticket involves streaming, concurrent audio, or both voice input and voice output in the same flow** — these two are frequently missed, include them unless the diff clearly rules them out:
+- **Barge-in** — user speaks while the app is still talking. Does voice input get gated, does voice output cancel, or does the mic record the app's own voice output and transcribe it back as input? → `edge_cases` / `error_handling`.
+- **Voice-output interruption policy** — a second voice-output trigger fires mid-utterance (rapid message, user re-asks, tool result arrives). Is it queued, cancel-and-replace, or overlapping into garbled audio? → `edge_cases` / `boundary`.
+
+**Voice input (speech-to-text / dictation) — creative scenarios:**
+- Mid-capture audio route change — Bluetooth headset connects/disconnects while dictating; does capture continue, restart, or silently drop?
+- Domain vocabulary fidelity — proper nouns this feature actually uses (street names, MLS IDs, brokerage names, unit numbers like "3B" / "Apt 12-A") transcribe without autocorrect mangling.
+- Numeric ambiguity — "three point five" vs "three fifty" vs "thirty-five hundred" vs "$3,500"; normalization must match the field type (currency vs year vs count vs decimal).
+- Long silence mid-utterance — does auto-stop cut the user off while they're still thinking?
+- Partial iOS permission — speech recognition granted but microphone denied (or vice versa); specific failure mode that bypasses the combined "permissions OK" path.
+- Locale mismatch — device set to en-GB / es-MX while app forces en-US; which wins, and does recognition quality drop?
+
+**Voice output (text-to-speech) — creative scenarios:**
+- Pronunciation of the exact strings THIS feature emits — currency, HOA/MLS abbreviations, street addresses, ordinals, decimals, negative values.
+- Audio focus — another app playing music or a call active; confirm ducking / pause / interrupt behavior is the intended choice.
+- Rapid re-triggers — user taps the TTS control 5× quickly; queue bloat vs debounce vs cancel-and-restart.
+- Silent mode / DND — is TTS still audible, and is that the intended behavior for this feature?
+
+**Screen reader (VoiceOver / TalkBack / NVDA / JAWS) — creative scenarios:**
+- Live-region + focus-change race — content updates while the reader is mid-sentence on the previous element; is the update lost or does it interrupt?
+- Dynamic content mid-scan — list re-renders while the reader is scanning; does position survive?
+- Custom gesture vs passthrough conflict — app-level swipe overlaps VoiceOver's passthrough gesture; which wins?
+- Focus restoration after modal dismiss mid-announcement — lands on the correct trigger element?
+- Text-expansion in localized strings (German, Finnish often 2–3× longer) — does visual truncation hide content from sighted users while the reader still reads the full string?
+- iOS VoiceOver vs Android TalkBack parity — walk the same flow on each; flag any divergence.
+
+━━ VOICE TEST-PLAN ORGANIZATION (MANDATORY) ━━
+Voice tickets produce many tests. Keep the output scannable — PREFIX every test case title (in `happy_path`, `edge_cases`, and `integration_tests`) with ONE of these group tags:
+
+  `[Prompts]`       agent dialogue quality: intro, clarification, confirmation, follow-ups
+  `[Voice input]`   speech capture, transcription, mic handling, recognition quality
+  `[Voice output]`  playback, pronunciation, audio focus, interruption policy
+  `[Streaming]`     concurrent generation + playback, SSE / WebSocket transport, timing, barge-in
+  `[UI]`            on-screen voice components (address cards, transcripts, settings sheet)
+  `[Security]`      prompt injection, user-context sanitization, payload / rate caps
+  `[Screen reader]` VoiceOver / TalkBack / NVDA / JAWS (only if the ticket touches a11y)
+
+Use the tag text EXACTLY as shown above (including the spaces inside `[Voice input]` and `[Voice output]`). Do NOT abbreviate to `[STT]` or `[TTS]` — testers shouldn't have to decode acronyms.
+
+Example title: `[Voice output] Agent reads captured currency amounts in natural language`.
+
+**Ordering within each section:** first by priority (critical → high → medium) as already required, THEN keep same-group tests adjacent so the reader sees all `[Prompts]` together, all `[Voice input]` together, etc.
+
+**Consolidate aggressively:** if multiple tests differ only by provider/model (e.g. xai vs whisper-1 vs gpt-4o-transcribe), collapse to ONE test with a provider/model table in `test_data`. Do NOT emit one test per provider. Same rule for different speech-to-text engines, text-to-speech voices, or LLM models.
+"""
 
 
 SYSTEM_PROMPT = """You are an expert QA engineer with 10+ years of experience creating comprehensive test plans. Your role is to generate thorough, actionable test cases that catch bugs before they reach production.
@@ -1104,6 +1183,9 @@ TICKET INFORMATION
         if testing_context.get("specialInstructions"):
             prompt += f"\n**Special Testing Instructions:**\n{testing_context['specialInstructions']}\n"
 
+        if _is_voice_ticket(summary, description):
+            prompt += VOICE_TESTING_GUIDANCE
+
         return prompt
 
     def _build_multi_ticket_prompt(
@@ -1271,6 +1353,9 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
 
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups from one or more tickets are attached. Use them for UI-specific test cases.\n"
+
+        if any(_is_voice_ticket(t.get("summary"), t.get("description")) for t in tickets):
+            prompt += VOICE_TESTING_GUIDANCE
 
         return prompt
 
