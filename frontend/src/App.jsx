@@ -11,18 +11,47 @@ import TokenStatus from './components/TokenStatus'
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
 
+// Keys used to persist state across reloads (e.g. after laptop sleep → Vite HMR reload)
+const STORAGE_KEYS = {
+  issueKey: 'jtb.issueKey',
+  ticketsData: 'jtb.ticketsData',
+  testPlan: 'jtb.testPlan',
+  bugAnalysis: 'jtb.bugAnalysis',
+}
+
+const loadStored = (key, fallback) => {
+  try {
+    const raw = sessionStorage.getItem(key)
+    return raw === null ? fallback : JSON.parse(raw)
+  } catch {
+    return fallback
+  }
+}
+
+const saveStored = (key, value) => {
+  try {
+    if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) {
+      sessionStorage.removeItem(key)
+    } else {
+      sessionStorage.setItem(key, JSON.stringify(value))
+    }
+  } catch {
+    // storage quota / disabled — ignore
+  }
+}
+
 function App() {
-  const [issueKey, setIssueKey] = useState('')
+  const [issueKey, setIssueKey] = useState(() => loadStored(STORAGE_KEYS.issueKey, ''))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
   // ticketsData is always an array; single-ticket mode uses ticketsData[0]
-  const [ticketsData, setTicketsData] = useState([])
+  const [ticketsData, setTicketsData] = useState(() => loadStored(STORAGE_KEYS.ticketsData, []))
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
 
   // Test plan generation state
   const [generatingPlan, setGeneratingPlan] = useState(false)
-  const [testPlan, setTestPlan] = useState(null)
+  const [testPlan, setTestPlan] = useState(() => loadStored(STORAGE_KEYS.testPlan, null))
   const [planError, setPlanError] = useState(null)
   const [abortController, setAbortController] = useState(null)
 
@@ -32,9 +61,14 @@ function App() {
 
   // Bug Lens state
   const [analyzingBug, setAnalyzingBug] = useState(false)
-  const [bugAnalysis, setBugAnalysis] = useState(null)
+  const [bugAnalysis, setBugAnalysis] = useState(() => loadStored(STORAGE_KEYS.bugAnalysis, null))
   const [bugAnalysisError, setBugAnalysisError] = useState(null)
   const [bugAbortController, setBugAbortController] = useState(null)
+
+  useEffect(() => saveStored(STORAGE_KEYS.issueKey, issueKey), [issueKey])
+  useEffect(() => saveStored(STORAGE_KEYS.ticketsData, ticketsData), [ticketsData])
+  useEffect(() => saveStored(STORAGE_KEYS.testPlan, testPlan), [testPlan])
+  useEffect(() => saveStored(STORAGE_KEYS.bugAnalysis, bugAnalysis), [bugAnalysis])
 
   // Fetch config on mount to get Jira base URL
   useEffect(() => {
