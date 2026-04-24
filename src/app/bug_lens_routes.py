@@ -99,6 +99,113 @@ def _build_search_query(summary: str) -> str:
     return " ".join(unique)
 
 
+_REPO_FROM_URL_PATTERN = re.compile(
+    r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:blob|commit|pull|tree)/"
+)
+
+
+def _infer_repos_for_evidence(
+    summary: str,
+    description: str | None,
+    comments: list[dict] | None,
+) -> list[str]:
+    """
+    Infer candidate repos for code-evidence search: first from any GitHub URLs
+    in the ticket body, then from the existing keyword map. Preserves order,
+    deduplicates.
+    """
+    texts = [summary or "", description or ""]
+    for c in (comments or []):
+        texts.append(c.get("body", ""))
+    combined = "\n".join(texts)
+
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for match in _REPO_FROM_URL_PATTERN.finditer(combined):
+        repo = f"{match.group(1)}/{match.group(2)}"
+        if repo not in seen:
+            seen.add(repo)
+            result.append(repo)
+
+    comment_bodies = [c.get("body", "") for c in (comments or [])]
+    for repo in _infer_repos_from_text(summary, description, *comment_bodies):
+        if repo not in seen:
+            seen.add(repo)
+            result.append(repo)
+
+    return result
+
+
+def _find_symbol_line(content: str, symbol: str) -> tuple[int, str] | None:
+    """Return (line_number, trimmed_snippet) for the first line containing the symbol."""
+    for i, line in enumerate(content.splitlines(), start=1):
+        if symbol in line:
+            trimmed = line.strip()
+            if len(trimmed) > 200:
+                trimmed = trimmed[:200] + "..."
+            return i, trimmed
+    return None
+
+
+_DOC_EXTENSIONS = (".md", ".mdx", ".rst", ".txt")
+
+
+async def _compute_code_evidence(
+    suspect_symbols: list[str] | None,
+    repos: list[str],
+) -> list[dict]:
+    """
+    Run a deterministic GitHub code search for each suspect symbol across the
+    candidate repos, and package the hits into a code_evidence list.
+
+    Returns [] (not None) when nothing can be searched — the route decides
+    whether to set the field based on whether search was even attempted.
+
+    Doc files (.md/.mdx/.rst/.txt) are filtered out — text search matches
+    them whenever a symbol is mentioned in a README, and they're almost
+    never what the reviewer wants in a "Code Evidence" section.
+    """
+    if not suspect_symbols or not repos or not settings.github_token:
+        return []
+
+    client = GitHubClient()
+    evidence: list[dict] = []
+
+    for symbol in suspect_symbols[:3]:
+        for repo in repos[:_MAX_REPOS_TO_SEARCH]:
+            try:
+                files = await client.search_relevant_files(repo, symbol, max_files=5)
+            except Exception as e:
+                logger.warning(f"Code evidence search failed for {symbol!r} in {repo}: {e}")
+                files = []
+
+            usages: list[dict] = []
+            for f in files:
+                path = f.get("path", "")
+                if path.lower().endswith(_DOC_EXTENSIONS):
+                    continue
+                hit = _find_symbol_line(f.get("content", ""), symbol)
+                if hit is None:
+                    continue
+                line_no, snippet = hit
+                usages.append({
+                    "path": path,
+                    "ref": f.get("ref"),
+                    "line": line_no,
+                    "snippet": snippet,
+                })
+
+            evidence.append({
+                "suspect": symbol,
+                "repo": repo,
+                "usages": usages,
+                "notes": None if usages else "No matches found in this repo.",
+            })
+
+    return evidence
+
+
 async def _fetch_github_context(
     summary: str,
     description: str | None,
@@ -185,6 +292,10 @@ async def analyze_bug(request: BugAnalysisRequest):
             linked_info=request.linked_info,
             github_context=github_context,
         )
+        repos = _infer_repos_for_evidence(request.summary, request.description, request.comments)
+        evidence = await _compute_code_evidence(analysis.suspect_symbols, repos)
+        if evidence:
+            analysis.code_evidence = evidence
         return {
             "ticket_key": request.ticket_key,
             **asdict(analysis),
@@ -217,6 +328,14 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
     try:
         llm = get_llm_client()
         analysis = await llm.generate_multi_bug_analysis(tickets=tickets_data)
+        combined_repos: list[str] = []
+        for t in request.tickets:
+            for repo in _infer_repos_for_evidence(t.summary, t.description, t.comments):
+                if repo not in combined_repos:
+                    combined_repos.append(repo)
+        evidence = await _compute_code_evidence(analysis.suspect_symbols, combined_repos)
+        if evidence:
+            analysis.code_evidence = evidence
         return {
             "ticket_keys": [t.ticket_key for t in request.tickets],
             **asdict(analysis),

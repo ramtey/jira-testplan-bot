@@ -128,7 +128,10 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
 
   if (analysis.affected_flow && analysis.affected_flow.length > 0) {
     md += `## Affected Flow\n\n`
-    analysis.affected_flow.forEach((step, i) => { md += `${i + 1}. ${step}\n` })
+    analysis.affected_flow.forEach((step, i) => {
+      const clean = step.replace(/^\s*\d+[.)]\s+/, '')
+      md += `${i + 1}. ${clean}\n`
+    })
     md += '\n'
   }
 
@@ -136,6 +139,29 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
     md += `## Scope of Impact\n\n`
     analysis.scope_of_impact.forEach(item => { md += `- ${item}\n` })
     md += '\n'
+  }
+
+  if (analysis.code_evidence && analysis.code_evidence.length > 0) {
+    const withHits = analysis.code_evidence.filter(e => e.usages && e.usages.length > 0)
+    md += `## Code Evidence\n\n`
+    if (withHits.length === 0) {
+      md += `_Searched for the suspected symbols but none were found in the candidate repos — the bug may live in a different repo, or the suspects were off. Verify the repo mapping and the symbol names before acting._\n\n`
+    } else {
+      md += `Places the suspected symbols actually appear in the repo — verify before acting.\n\n`
+      withHits.forEach(entry => {
+        md += `### \`${entry.suspect}\` in \`${entry.repo}\`\n\n`
+        entry.usages.forEach(u => {
+          const url = encodeURI(`https://github.com/${entry.repo}/blob/${u.ref}/${u.path}`) + `#L${u.line}`
+          md += `- [\`${u.path}:${u.line}\`](${url})`
+          if (u.snippet) {
+            const safeSnippet = u.snippet.replace(/`/g, "'")
+            md += ` — \`${safeSnippet}\``
+          }
+          md += '\n'
+        })
+        md += '\n'
+      })
+    }
   }
 
   if (analysis.why_tests_miss) {

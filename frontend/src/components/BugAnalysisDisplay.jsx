@@ -85,7 +85,7 @@ function BugAnalysisDisplay({ analysis }) {
           <p className="section-description">End-to-end path from user action to the bug:</p>
           <ol className="regression-list">
             {analysis.affected_flow.map((step, i) => (
-              <li key={i}>{step}</li>
+              <li key={i}>{step.replace(/^\s*\d+[.)]\s+/, '')}</li>
             ))}
           </ol>
         </div>
@@ -103,6 +103,54 @@ function BugAnalysisDisplay({ analysis }) {
           </ul>
         </div>
       )}
+
+      {/* Code Evidence — deterministic grep results for suspect symbols.
+          Hide individual no-match entries; only show a fallback if ALL suspects missed. */}
+      {analysis.code_evidence && analysis.code_evidence.length > 0 && (() => {
+        const withHits = analysis.code_evidence.filter(e => e.usages && e.usages.length > 0)
+        if (withHits.length === 0) {
+          return (
+            <div className="ticket-section">
+              <h3>Code Evidence</h3>
+              <p className="text-muted">
+                Searched for the suspected symbols but none were found in the candidate repos — the bug may live in a different repo, or the suspects were off. Verify the repo mapping and the symbol names before acting.
+              </p>
+            </div>
+          )
+        }
+        return (
+          <div className="ticket-section">
+            <h3>Code Evidence</h3>
+            <p className="section-description">
+              Places the suspected symbols actually appear in the repo — verify before acting.
+            </p>
+            {withHits.map((entry, i) => (
+              <div key={i} className="code-evidence-entry">
+                <h4 className="code-evidence-heading">
+                  <code>{entry.suspect}</code>
+                  <span className="code-evidence-repo"> in {entry.repo}</span>
+                </h4>
+                <ul className="regression-list">
+                  {entry.usages.map((u, j) => (
+                    <li key={j}>
+                      <a
+                        href={encodeURI(`https://github.com/${entry.repo}/blob/${u.ref}/${u.path}`) + `#L${u.line}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <code>{u.path}:{u.line}</code>
+                      </a>
+                      {u.snippet && (
+                        <pre className="code-evidence-snippet"><code>{u.snippet}</code></pre>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )
+      })()}
 
       {/* Why Tests Miss */}
       {analysis.why_tests_miss && (

@@ -255,6 +255,8 @@ class BugAnalysis:
     regression_introduced_by: str | None = None  # PR or commit that introduced the regression
     assumptions: list[str] | None = None  # Inferences the model made that aren't directly grounded in evidence
     open_questions: list[str] | None = None  # Ambiguities a human should resolve before estimating/fixing
+    suspect_symbols: list[str] | None = None  # Symbols (component/function/class names) the LLM flagged for code search
+    code_evidence: list[dict] | None = None  # Deterministic grep results for suspect_symbols — each entry: {suspect, repo, usages: [{path, ref, snippet}], notes}
 
 
 # ============================================================================

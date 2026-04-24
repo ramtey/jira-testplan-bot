@@ -1025,6 +1025,55 @@ button:disabled {
   line-height: 1.5;
 }
 
+/* Code Evidence section — deterministic grep results for LLM-suspected symbols */
+.code-evidence-entry {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 4px;
+}
+
+.code-evidence-entry + .code-evidence-entry {
+  margin-top: 0.5rem;
+}
+
+.code-evidence-heading {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.code-evidence-heading code {
+  font-size: 0.95rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+.code-evidence-repo {
+  font-weight: 400;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.code-evidence-snippet {
+  margin: 0.25rem 0 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 /* Multi-ticket list wrapper */
 .multi-ticket-list {
   display: flex;

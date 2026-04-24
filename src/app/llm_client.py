@@ -1560,6 +1560,7 @@ class OllamaClient(LLMClient):
                 "regression_introduced_by": {"type": "string"},
                 "assumptions": {"type": "array", "items": {"type": "string"}},
                 "open_questions": {"type": "array", "items": {"type": "string"}},
+                "suspect_symbols": {"type": "array", "items": {"type": "string"}},
             },
         }
         full_prompt = BUG_LENS_SYSTEM_PROMPT + "\n\n" + prompt + "\n\nReturn ONLY valid JSON matching this schema: " + json.dumps(schema)
@@ -1600,6 +1601,7 @@ class OllamaClient(LLMClient):
                     regression_introduced_by=parsed.get("regression_introduced_by"),
                     assumptions=parsed.get("assumptions"),
                     open_questions=parsed.get("open_questions"),
+                    suspect_symbols=parsed.get("suspect_symbols") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -2003,6 +2005,7 @@ class ClaudeClient(LLMClient):
                     regression_introduced_by=parsed.get("regression_introduced_by"),
                     assumptions=parsed.get("assumptions"),
                     open_questions=parsed.get("open_questions"),
+                    suspect_symbols=parsed.get("suspect_symbols") or None,
                 )
 
         except httpx.HTTPStatusError as e:
@@ -2057,6 +2060,8 @@ WHAT YOU MUST DO
 15. **assumptions** — Inferences you made that are NOT directly grounded in the evidence, but that your analysis depends on. Example: "Assumed each Title Rep has their own assigned color (ticket says 'rep's assigned color' but code context only shows a single hardcoded value)." List every non-trivial leap so a reviewer can verify them. Set to null only if your analysis makes no such inferences.
 
 16. **open_questions** — Interpretation ambiguities a human should resolve before committing to the estimate or fix. Phrase each as a question. Example: "Is the bug scoped to making the existing yellow header's contrast work, or does it include supporting arbitrary per-rep colors?" Set to null only if the scope is fully unambiguous from the evidence.
+
+17. **suspect_symbols** — 1–3 code symbol names (component, function, class, or distinctive identifier) most likely implicated in the bug. These will be used to run a deterministic code search in the repo to produce a "Code Evidence" section, so pick names that are (a) likely to exist verbatim in the codebase and (b) specific enough to return meaningful hits. Good picks: `BrandedHeader`, `calculateAgentFee`, `useTitleRepColor`. Bad picks: generic words like `button`, `color`, `screen` (too many false matches). Prefer PascalCase component names and snake_case/camelCase function names over feature descriptions. Return an empty list (not null) if you cannot identify any specific symbols from the evidence — do NOT guess.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GROUNDING RULES
@@ -2148,8 +2153,13 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
                 "items": {"type": "string"},
                 "description": "Interpretation ambiguities a human should resolve before committing to the estimate or fix. Each item is phrased as a question. Null only if scope is fully unambiguous.",
             },
+            "suspect_symbols": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "1–3 specific code symbol names (component/function/class identifiers) likely implicated in the bug, for use in a deterministic code search. Return an empty list if no specific symbols are identifiable from the evidence — do not guess.",
+            },
         },
-        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by", "assumptions", "open_questions"],
+        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by", "assumptions", "open_questions", "suspect_symbols"],
     },
 }
 
