@@ -79,6 +79,7 @@ Analyze bug tickets to go beyond the ticket description and into the code:
 - **Test gap analysis**: Highlights what testing was missing that allowed the bug through
 - **Regression tests**: Concrete, actionable test cases to prevent the bug from recurring
 - **Similar patterns**: Classes of related bugs to proactively look for in the codebase
+- **Code evidence**: Deterministic GitHub code search for LLM-suspected symbols — each analysis lists the exact files, line numbers, and code snippets where the suspects appear, with clickable links. Doc files (`.md`/`.rst`) are filtered and zero-hit suspects are hidden.
 - **Multi-ticket support**: Analyze multiple related bug tickets together for a combined root cause analysis
 - **Download as .md**: Export the full analysis as a Markdown file
 - Only shown for `Bug` issue type; automatically uses the same GitHub PR diff pipeline as test plan generation
@@ -348,7 +349,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Bug Lens v2 complete (fix complexity, affected flow, test gap analysis); prompt quality hardening ongoing
+**Current:** Bug Lens v2 + Code Evidence (deterministic grep grounding); prompt quality hardening ongoing
 
 ## Roadmap
 
@@ -367,6 +368,7 @@ uv run pytest tests/ -v
 - ✅ **Multi-ticket test plans**: Enter comma-separated ticket keys (e.g. `PROJ-123, PROJ-456`) to generate one unified plan; requires shared repo or overlapping file changes
 - ✅ **Jira Bug Lens**: Analyze bug tickets to explain root cause, fix, and suggest regression tests; supports multi-ticket analysis
 - ✅ **Bug Lens v2**: Fix complexity estimate, affected flow, scope of impact, test gap analysis, download as .md
+- ✅ **Bug Lens Code Evidence**: Grep-based grounding section showing where LLM-suspected symbols actually exist in the repo, with clickable links per hit
 - ✅ **Plain-language ticket summary**: Lazy-loaded collapsible explanation of what the ticket does
 - ✅ **Prompt caching**: Static system prompt cached via Claude API for lower latency and cost
 - ✅ **Structured tool-use output**: Claude tool use enforces JSON schema on test plan output (replaces regex parsing)
