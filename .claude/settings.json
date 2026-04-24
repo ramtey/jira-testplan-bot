@@ -6,5 +6,6 @@
       "Bash(gh pr view:*)",
       "Bash(uv run pytest:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": ["neon"]
 }

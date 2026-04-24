@@ -1,3 +1,5 @@
+import json
+import os
 from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException
@@ -5,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .bug_lens_routes import router as bug_lens_router
 from .config import NON_TESTABLE_ISSUE_TYPES
+from .db.models.plan import PlanFormat
+from .db.models.run import RunType
 from .jira_client import (
     JiraAuthError,
     JiraClient,
@@ -13,8 +17,65 @@ from .jira_client import (
 )
 from .llm_client import LLMError, get_llm_client
 from .models import GenerateTestPlanRequest, MultiTicketGenerateRequest, PostCommentRequest
+from .services import run_tracker
 from .slack_client import resolve_slack_messages_in_text
 from .token_service import token_health_service
+
+
+def _derive_context_flags(request: GenerateTestPlanRequest) -> dict:
+    dev_info = request.development_info or {}
+    prs = dev_info.get("pull_requests") or []
+    had_pr_diff = any(
+        any((fc or {}).get("patch") for fc in (pr or {}).get("files_changed") or [])
+        for pr in prs
+    )
+    linked = request.linked_info or {}
+    linked_count = sum(
+        len(v or []) for v in linked.values() if isinstance(v, list)
+    )
+    testing_ctx_str = json.dumps(request.testing_context or {}).lower()
+    had_figma = "figma" in testing_ctx_str
+    return {
+        "had_pr_diff": had_pr_diff,
+        "had_figma": had_figma,
+        "had_parent": bool(request.parent_info),
+        "linked_ticket_count": linked_count,
+        "pr_count": len(prs),
+        "comment_count": len(request.comments or []),
+    }
+
+
+def _flatten_cases_for_persistence(test_plan) -> list[tuple[str, str, str | None]]:
+    cases: list[tuple[str, str, str | None]] = []
+
+    def _structured_case_body(item: dict) -> str:
+        parts = []
+        if item.get("preconditions"):
+            parts.append(f"Preconditions: {item['preconditions']}")
+        steps = item.get("steps") or []
+        if steps:
+            parts.append("Steps:\n" + "\n".join(f"- {s}" for s in steps))
+        if item.get("expected"):
+            parts.append(f"Expected: {item['expected']}")
+        if item.get("test_data"):
+            parts.append(f"Test data: {item['test_data']}")
+        return "\n\n".join(parts)
+
+    for item in test_plan.happy_path or []:
+        if isinstance(item, dict):
+            cases.append((item.get("title", ""), _structured_case_body(item), "happy_path"))
+    for item in test_plan.edge_cases or []:
+        if isinstance(item, dict):
+            category = f"edge:{item.get('category', 'edge')}"
+            cases.append((item.get("title", ""), _structured_case_body(item), category))
+    for item in test_plan.integration_tests or []:
+        if isinstance(item, dict):
+            cases.append((item.get("title", ""), _structured_case_body(item), "integration"))
+    for item in test_plan.regression_checklist or []:
+        if isinstance(item, str):
+            cases.append((item, "", "regression"))
+
+    return cases
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
 app.include_router(bug_lens_router)
@@ -218,7 +279,6 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
     then uses the configured LLM provider (Ollama or Claude) to generate
     a comprehensive test plan.
     """
-    # Validate issue type
     if request.issue_type in NON_TESTABLE_ISSUE_TYPES:
         raise HTTPException(
             status_code=400,
@@ -226,23 +286,29 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             f"Only Story, Task, and Bug issues are supported.",
         )
 
+    flags = _derive_context_flags(request)
+    run_ctx = await run_tracker.start_run(
+        run_type=RunType.test_plan,
+        ticket_keys=[request.ticket_key],
+        model=os.environ.get("LLM_MODEL", "unknown"),
+        llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
+        ticket_title=request.summary,
+        ticket_issue_type=request.issue_type,
+        **flags,
+    )
+
     try:
-        # Download images if provided
         images = None
         if request.image_urls:
             jira = JiraClient()
             images = []
-            for image_url in request.image_urls[:3]:  # Limit to 3 images
+            for image_url in request.image_urls[:3]:
                 image_data = await jira.download_image_as_base64(image_url)
                 if image_data:
                     images.append(image_data)
-
             if not images:
-                images = None  # No images successfully downloaded
+                images = None
 
-        # Resolve Slack permalinks pasted into the description or comments so the
-        # LLM sees the actual discussion, not just a bare URL. Returns [] when no
-        # token is configured or no links are present.
         resolved_slack = await resolve_slack_messages_in_text(
             request.description, request.comments
         )
@@ -264,15 +330,28 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             slack_messages=slack_messages_for_prompt,
         )
 
-        return {
+        response = {
             "ticket_key": request.ticket_key,
             "happy_path": test_plan.happy_path,
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
         }
+
+        await run_tracker.complete_with_plan(
+            run_ctx,
+            plan_body=json.dumps(response),
+            plan_format=PlanFormat.json,
+            cases=_flatten_cases_for_persistence(test_plan),
+        )
+        return response
+
     except LLMError as e:
+        await run_tracker.fail(run_ctx, error_code=f"LLMError: {e}")
         raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        await run_tracker.fail(run_ctx, error_code=f"{type(e).__name__}: {e}")
+        raise
 
 
 def _check_tickets_share_context(tickets: list) -> bool:

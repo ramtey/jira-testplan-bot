@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # App
     app_env: str = "local"
 
+    # Database (Neon Postgres)
+    database_url: str | None = None
+
 
 settings = Settings()
 
