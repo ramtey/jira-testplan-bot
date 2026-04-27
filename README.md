@@ -35,6 +35,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Parent ticket awareness** for sub-tasks to understand broader feature context
 - **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input)
 - **Jira Bug Lens**: analyze bug tickets for root cause, fix complexity, affected flow, and regression tests
+- **Test plan history**: previous test plans for a ticket are surfaced as a banner with view-side-by-side and diff-against-previous-version actions
 - **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does
 - **Inline UX feedback**: auto-scroll to results and inline button-state feedback (no alert dialogs)
 
@@ -83,6 +84,27 @@ Analyze bug tickets to go beyond the ticket description and into the code:
 - **Multi-ticket support**: Analyze multiple related bug tickets together for a combined root cause analysis
 - **Download as .md**: Export the full analysis as a Markdown file
 - Only shown for `Bug` issue type; automatically uses the same GitHub PR diff pipeline as test plan generation
+
+### Test Plan History
+
+Every successful test plan run is persisted to Postgres so prior versions stay
+recoverable and comparable.
+
+- **Prior-runs banner**: When a ticket has prior successful test-plan runs, a
+  banner appears above the generate area summarising the latest version and
+  expanding to a list of every version with creation time, model, and case count
+- **Side-by-side preview**: Clicking *View* on a row renders the historical
+  plan below the live one in muted gray styling, so versions can be read
+  side-by-side without losing the active output. The preview is read-only —
+  duplicate Post-to-Jira/Copy/Download actions are hidden
+- **Version diff**: Clicking *Diff* opens a unified line-diff of the markdown-
+  formatted plan against its immediate predecessor (`generated_plans.previous_plan_id`)
+- **Auto-chained regenerations**: Single-ticket regenerations automatically set
+  `previous_plan_id` and bump `version`, so the chain forms without any user
+  action
+- The history banner hides while Bug Lens analysis is running or showing, so
+  the two flows don't visually overlap; persisting Bug Lens output (with its
+  own history banner) is a planned follow-up
 
 ## Tech Stack
 
@@ -303,6 +325,8 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets (must share a repo or overlapping files; returns `422 TICKETS_NO_SHARED_CONTEXT` otherwise)
 - **Analyze bug**: `POST /bug-lens/analyze` - Root cause, fix explanation, and regression tests for a bug ticket
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
+- **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
+- **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
 
 See `/docs` for detailed API documentation and schemas.
 
@@ -374,10 +398,11 @@ uv run pytest tests/ -v
 - ✅ **Structured tool-use output**: Claude tool use enforces JSON schema on test plan output (replaces regex parsing)
 - ✅ **Formatted Jira comments**: Test plans posted as rich ADF (Atlassian Document Format) instead of plain text
 - ✅ **UX polish**: Auto-scroll to results, inline button-state feedback, red ticket badge in Bug Lens
+- ✅ **Test plan history**: Persist every test-plan run to Postgres; surface prior versions in a banner with side-by-side view and diff against the previous version; regenerations auto-chain via `previous_plan_id`
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
-- **Test Plan History**: Save and compare previous generations
+- **Bug Lens history**: Persist and surface prior Bug Lens analyses the same way test plans are surfaced
 - **Quality Feedback**: Thumbs up/down to improve prompts
 - **Test Tool Integration**: TestRail, Zephyr, etc.
 - **Custom Templates**: Per-team or per-project prompt templates
