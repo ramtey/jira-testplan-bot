@@ -57,9 +57,11 @@ async def start_run(
     comment_count: int = 0,
     ticket_title: str | None = None,
     ticket_issue_type: str | None = None,
+    ticket_parent_key: str | None = None,
 ) -> RunContext:
     started = perf_counter()
     ticket_keys_list = list(ticket_keys)
+    is_single_ticket = len(ticket_keys_list) == 1
     try:
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
@@ -71,7 +73,8 @@ async def start_run(
                     session,
                     ticket_key=key,
                     issue_type=ticket_issue_type,
-                    title=ticket_title if len(ticket_keys_list) == 1 else None,
+                    title=ticket_title if is_single_ticket else None,
+                    parent_key=ticket_parent_key if is_single_ticket else None,
                 )
             run = await run_repository.create(
                 session,

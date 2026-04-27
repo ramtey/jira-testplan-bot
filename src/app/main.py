@@ -291,6 +291,8 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         )
 
     flags = _derive_context_flags(request)
+    parent_key = (request.parent_info or {}).get("key")
+    parent_key_clean = parent_key if isinstance(parent_key, str) and parent_key.strip() else None
     run_ctx = await run_tracker.start_run(
         run_type=RunType.test_plan,
         ticket_keys=[request.ticket_key],
@@ -298,6 +300,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
         ticket_title=request.summary,
         ticket_issue_type=request.issue_type,
+        ticket_parent_key=parent_key_clean,
         **flags,
     )
 
