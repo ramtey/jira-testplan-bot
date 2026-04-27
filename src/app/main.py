@@ -17,7 +17,12 @@ from .jira_client import (
     JiraNotFoundError,
 )
 from .llm_client import LLMError, get_llm_client
-from .models import GenerateTestPlanRequest, MultiTicketGenerateRequest, PostCommentRequest
+from .models import (
+    GenerateTestPlanRequest,
+    MultiTicketGenerateRequest,
+    PostCommentRequest,
+    TicketInput,
+)
 from .repositories import bug_analysis_repository
 from .runs_routes import router as runs_router
 from .services import run_tracker
@@ -25,7 +30,7 @@ from .slack_client import resolve_slack_messages_in_text
 from .token_service import token_health_service
 
 
-def _derive_context_flags(request: GenerateTestPlanRequest) -> dict:
+def _derive_context_flags(request: GenerateTestPlanRequest | TicketInput) -> dict:
     dev_info = request.development_info or {}
     prs = dev_info.get("pull_requests") or []
     had_pr_diff = any(
@@ -440,6 +445,31 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             detail="TICKETS_NO_SHARED_CONTEXT",
         )
 
+    aggregated_flags = {
+        "had_pr_diff": False,
+        "had_figma": False,
+        "had_parent": False,
+        "linked_ticket_count": 0,
+        "pr_count": 0,
+        "comment_count": 0,
+    }
+    for t in request.tickets:
+        flags = _derive_context_flags(t)
+        aggregated_flags["had_pr_diff"] = aggregated_flags["had_pr_diff"] or flags["had_pr_diff"]
+        aggregated_flags["had_figma"] = aggregated_flags["had_figma"] or flags["had_figma"]
+        aggregated_flags["had_parent"] = aggregated_flags["had_parent"] or flags["had_parent"]
+        aggregated_flags["linked_ticket_count"] += flags["linked_ticket_count"]
+        aggregated_flags["pr_count"] += flags["pr_count"]
+        aggregated_flags["comment_count"] += flags["comment_count"]
+
+    run_ctx = await run_tracker.start_run(
+        run_type=RunType.test_plan,
+        ticket_keys=[t.ticket_key for t in request.tickets],
+        model=os.environ.get("LLM_MODEL", "unknown"),
+        llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
+        **aggregated_flags,
+    )
+
     try:
         # Collect images from all tickets (cap at 3 total)
         all_images: list | None = None
@@ -476,15 +506,27 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             images=all_images,
         )
 
-        return {
+        response = {
             "ticket_keys": [t.ticket_key for t in request.tickets],
             "happy_path": test_plan.happy_path,
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
         }
+
+        await run_tracker.complete_with_plan(
+            run_ctx,
+            plan_body=json.dumps(response),
+            plan_format=PlanFormat.json,
+            cases=_flatten_cases_for_persistence(test_plan),
+        )
+        return response
     except LLMError as e:
+        await run_tracker.fail(run_ctx, error_code=f"LLMError: {e}")
         raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        await run_tracker.fail(run_ctx, error_code=f"{type(e).__name__}: {e}")
+        raise
 
 
 @app.post("/jira/post-comment")
