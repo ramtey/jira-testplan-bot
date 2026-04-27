@@ -5,15 +5,18 @@ Mounted at /bug-lens in main.py via APIRouter.
 """
 
 import logging
+import os
 import re
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException
 
 from .config import settings
+from .db.models.run import RunType
 from .github_client import GitHubClient
 from .llm_client import LLMError, get_llm_client
 from .models import BugAnalysisRequest, MultiBugAnalysisRequest
+from .services import run_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +272,26 @@ async def _fetch_github_context(
 
     return context or None
 
+def _derive_bug_lens_flags(request: BugAnalysisRequest) -> dict:
+    dev_info = request.development_info or {}
+    prs = dev_info.get("pull_requests") or []
+    had_pr_diff = any(
+        any((fc or {}).get("patch") for fc in (pr or {}).get("files_changed") or [])
+        for pr in prs
+    )
+    linked = request.linked_info or {}
+    linked_count = sum(
+        len(v or []) for v in linked.values() if isinstance(v, list)
+    )
+    return {
+        "had_pr_diff": had_pr_diff,
+        "had_parent": bool(request.parent_info),
+        "linked_ticket_count": linked_count,
+        "pr_count": len(prs),
+        "comment_count": len(request.comments or []),
+    }
+
+
 router = APIRouter(prefix="/bug-lens", tags=["bug-lens"])
 
 
@@ -280,6 +303,19 @@ async def analyze_bug(request: BugAnalysisRequest):
     Uses the configured LLM to explain the bug, identify root cause,
     describe the fix (if a merged PR exists), and suggest regression tests.
     """
+    flags = _derive_bug_lens_flags(request)
+    parent_key = (request.parent_info or {}).get("key")
+    run_ctx = await run_tracker.start_run(
+        run_type=RunType.bug_lens,
+        ticket_keys=[request.ticket_key],
+        model=os.environ.get("LLM_MODEL", "unknown"),
+        llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
+        ticket_title=request.summary,
+        ticket_issue_type=request.issue_type,
+        ticket_parent_key=parent_key if isinstance(parent_key, str) and parent_key.strip() else None,
+        **flags,
+    )
+
     try:
         llm = get_llm_client()
         github_context = await _fetch_github_context(request.summary, request.description, request.comments)
@@ -298,13 +334,18 @@ async def analyze_bug(request: BugAnalysisRequest):
         evidence = await _compute_code_evidence(analysis.suspect_symbols, repos)
         if evidence:
             analysis.code_evidence = evidence
+        await run_tracker.complete_with_bug_analysis(run_ctx, analysis=analysis)
         return {
             "ticket_key": request.ticket_key,
             **asdict(analysis),
             "is_fixed": analysis.fix_status == "fixed",
         }
     except LLMError as e:
+        await run_tracker.fail(run_ctx, error_code=f"LLMError: {e}")
         raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        await run_tracker.fail(run_ctx, error_code=f"{type(e).__name__}: {e}")
+        raise
 
 
 @router.post("/analyze/multi")
@@ -315,6 +356,29 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
     Produces a single combined analysis covering the shared root cause,
     fix explanation, and regression tests across all tickets.
     """
+    aggregated_flags = {
+        "had_pr_diff": False,
+        "had_parent": False,
+        "linked_ticket_count": 0,
+        "pr_count": 0,
+        "comment_count": 0,
+    }
+    for t in request.tickets:
+        flags = _derive_bug_lens_flags(t)
+        aggregated_flags["had_pr_diff"] = aggregated_flags["had_pr_diff"] or flags["had_pr_diff"]
+        aggregated_flags["had_parent"] = aggregated_flags["had_parent"] or flags["had_parent"]
+        aggregated_flags["linked_ticket_count"] += flags["linked_ticket_count"]
+        aggregated_flags["pr_count"] += flags["pr_count"]
+        aggregated_flags["comment_count"] += flags["comment_count"]
+
+    run_ctx = await run_tracker.start_run(
+        run_type=RunType.bug_lens_multi,
+        ticket_keys=[t.ticket_key for t in request.tickets],
+        model=os.environ.get("LLM_MODEL", "unknown"),
+        llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
+        **aggregated_flags,
+    )
+
     tickets_data = []
     for t in request.tickets:
         github_context = await _fetch_github_context(t.summary, t.description, t.comments)
@@ -341,10 +405,15 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
         evidence = await _compute_code_evidence(analysis.suspect_symbols, combined_repos)
         if evidence:
             analysis.code_evidence = evidence
+        await run_tracker.complete_with_bug_analysis(run_ctx, analysis=analysis)
         return {
             "ticket_keys": [t.ticket_key for t in request.tickets],
             **asdict(analysis),
             "is_fixed": analysis.fix_status == "fixed",
         }
     except LLMError as e:
+        await run_tracker.fail(run_ctx, error_code=f"LLMError: {e}")
         raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        await run_tracker.fail(run_ctx, error_code=f"{type(e).__name__}: {e}")
+        raise

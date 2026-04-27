@@ -10,7 +10,9 @@ from time import perf_counter
 from src.app.db.models.plan import PlanFormat
 from src.app.db.models.run import RunStatus, RunType
 from src.app.db.session import get_sessionmaker
+from src.app.models import BugAnalysis
 from src.app.repositories import (
+    bug_analysis_repository,
     jira_ticket_repository,
     plan_repository,
     run_repository,
@@ -153,6 +155,78 @@ async def complete_with_plan(
             await session.commit()
     except Exception:
         logger.exception("run_tracker.complete_with_plan failed")
+
+
+async def complete(
+    ctx: RunContext,
+    *,
+    prompt_tokens: int = 0,
+    output_tokens: int = 0,
+    cost_usd: Decimal | float = 0,
+) -> None:
+    """Mark a run completed without persisting a generated plan.
+
+    Used for runs whose output isn't a TestPlan (Bug Lens, summarize, etc.).
+    """
+    if ctx.run_id is None:
+        return
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            run = await session.get(_run_type(), ctx.run_id)
+            if run is None:
+                logger.warning("run_tracker.complete: run_id=%s vanished", ctx.run_id)
+                return
+            await run_repository.mark_completed(
+                session,
+                run=run,
+                latency_ms=ctx.elapsed_ms(),
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost_usd,
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("run_tracker.complete failed")
+
+
+async def complete_with_bug_analysis(
+    ctx: RunContext,
+    *,
+    analysis: BugAnalysis,
+    prompt_tokens: int = 0,
+    output_tokens: int = 0,
+    cost_usd: Decimal | float = 0,
+) -> None:
+    """Mark a Bug Lens run completed and persist the analysis output."""
+    if ctx.run_id is None:
+        return
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            run = await session.get(_run_type(), ctx.run_id)
+            if run is None:
+                logger.warning(
+                    "run_tracker.complete_with_bug_analysis: run_id=%s vanished",
+                    ctx.run_id,
+                )
+                return
+            await run_repository.mark_completed(
+                session,
+                run=run,
+                latency_ms=ctx.elapsed_ms(),
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost_usd,
+            )
+            await bug_analysis_repository.save(
+                session,
+                run_id=ctx.run_id,
+                analysis=analysis,
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("run_tracker.complete_with_bug_analysis failed")
 
 
 async def fail(ctx: RunContext, *, error_code: str) -> None:
