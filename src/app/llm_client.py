@@ -563,6 +563,7 @@ class LLMClient(ABC):
         parent_info: dict | None = None,
         linked_info: dict | None = None,
         slack_messages: list[dict] | None = None,
+        seed_regressions: list[dict] | None = None,
     ) -> TestPlan:
         """Generate a structured test plan from ticket data and context.
 
@@ -570,6 +571,8 @@ class LLMClient(ABC):
             images: List of (base64_data, media_type) tuples for image analysis
             comments: List of filtered testing-related Jira comments
             slack_messages: Resolved Slack messages from permalinks found in ticket
+            seed_regressions: Prior Bug Lens regression tests from sibling tickets
+                under the same parent. Each dict: {source_ticket_keys, regression_tests, created_at}.
         """
         pass
 
@@ -781,6 +784,7 @@ class LLMClient(ABC):
         parent_info: dict | None = None,
         linked_info: dict | None = None,
         slack_messages: list[dict] | None = None,
+        seed_regressions: list[dict] | None = None,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
         prompt = f"""**Your Task:** Create a detailed test plan for the following Jira ticket{" (screenshots/mockups attached)" if has_images else ""}.
@@ -953,6 +957,28 @@ TICKET INFORMATION
             prompt += "**Use these Slack messages to:**\n"
             prompt += "- Incorporate edge cases, scenarios, or constraints raised in discussion\n"
             prompt += "- Treat them as supplementary context; the ticket itself remains the source of truth\n\n"
+
+        if seed_regressions:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "PRIOR REGRESSION TESTS (FROM RELATED BUG LENS ANALYSES)\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += (
+                "\nThe following regression tests were proposed by Bug Lens for prior "
+                "tickets under the same parent/Epic. Treat them as candidate seeds for "
+                "this ticket's regression coverage:\n\n"
+            )
+            for entry in seed_regressions[:5]:
+                src = ", ".join(entry.get("source_ticket_keys") or [])
+                tests = entry.get("regression_tests") or []
+                prompt += f"**From {src}:**\n"
+                for t in tests[:8]:
+                    if isinstance(t, str) and t.strip():
+                        prompt += f"- {t.strip()}\n"
+                prompt += "\n"
+            prompt += "**How to use these:**\n"
+            prompt += "- Include any that remain relevant to this ticket's surface area, adapted as needed for this ticket's specifics.\n"
+            prompt += "- Skip ones that are clearly unrelated to this ticket's behavior.\n"
+            prompt += "- Prefer adding them under the regression checklist rather than happy-path or edge cases.\n\n"
 
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups are attached. Use them to understand the UI requirements and generate specific visual test cases.\n"
@@ -1388,6 +1414,7 @@ class OllamaClient(LLMClient):
         parent_info: dict | None = None,
         linked_info: dict | None = None,
         slack_messages: list[dict] | None = None,
+        seed_regressions: list[dict] | None = None,
     ) -> TestPlan:
         """Generate test plan using Ollama."""
         # Note: Ollama doesn't support vision yet, so images are ignored
@@ -1395,7 +1422,7 @@ class OllamaClient(LLMClient):
             print("Warning: Ollama does not support image analysis. Images will be ignored.")
 
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info, slack_messages=slack_messages
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions
         )
 
         try:
@@ -1710,10 +1737,11 @@ class ClaudeClient(LLMClient):
         parent_info: dict | None = None,
         linked_info: dict | None = None,
         slack_messages: list[dict] | None = None,
+        seed_regressions: list[dict] | None = None,
     ) -> TestPlan:
         """Generate test plan using Claude API with optional image support."""
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info, slack_messages=slack_messages
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions
         )
 
         # Build message content (text + images if provided)

@@ -9,6 +9,7 @@ from .bug_lens_routes import router as bug_lens_router
 from .config import NON_TESTABLE_ISSUE_TYPES
 from .db.models.plan import PlanFormat
 from .db.models.run import RunType
+from .db.session import get_sessionmaker
 from .jira_client import (
     JiraAuthError,
     JiraClient,
@@ -17,6 +18,7 @@ from .jira_client import (
 )
 from .llm_client import LLMError, get_llm_client
 from .models import GenerateTestPlanRequest, MultiTicketGenerateRequest, PostCommentRequest
+from .repositories import bug_analysis_repository
 from .runs_routes import router as runs_router
 from .services import run_tracker
 from .slack_client import resolve_slack_messages_in_text
@@ -304,6 +306,27 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         **flags,
     )
 
+    seed_regressions: list[dict] = []
+    if parent_key_clean:
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        try:
+            sessionmaker = get_sessionmaker()
+            async with sessionmaker() as session:
+                seed_regressions = await bug_analysis_repository.find_seed_regression_tests(
+                    session,
+                    ticket_key=request.ticket_key,
+                    parent_key=parent_key_clean,
+                    limit=5,
+                )
+            seed_count = sum(len(s.get("regression_tests") or []) for s in seed_regressions)
+            _log.info(
+                "seed_regressions: ticket=%s parent=%s sources=%d total_tests=%d",
+                request.ticket_key, parent_key_clean, len(seed_regressions), seed_count,
+            )
+        except Exception:
+            _log.exception("find_seed_regression_tests failed; continuing without seeds")
+
     try:
         images = None
         if request.image_urls:
@@ -335,6 +358,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             parent_info=request.parent_info,
             linked_info=request.linked_info,
             slack_messages=slack_messages_for_prompt,
+            seed_regressions=seed_regressions or None,
         )
 
         response = {
