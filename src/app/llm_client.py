@@ -19,6 +19,17 @@ import httpx
 from .config import settings
 from .models import BugAnalysis, TestPlan
 
+_VALID_FIX_STATUSES = ("not_fixed", "in_testing", "fixed")
+
+
+def _normalize_fix_status(raw: Any, legacy_is_fixed: Any = None) -> str:
+    """Coerce LLM output to a valid fix_status. Falls back to legacy is_fixed boolean."""
+    if isinstance(raw, str) and raw in _VALID_FIX_STATUSES:
+        return raw
+    if isinstance(legacy_is_fixed, bool):
+        return "fixed" if legacy_is_fixed else "not_fixed"
+    return "not_fixed"
+
 
 def _safe_get(obj: dict | Any, key: str, default: Any = None) -> Any:
     """
@@ -588,6 +599,8 @@ class LLMClient(ABC):
         comments: list[dict] | None = None,
         linked_info: dict | None = None,
         github_context: list[dict] | None = None,
+        status: str | None = None,
+        status_category: str | None = None,
     ) -> BugAnalysis:
         """Analyze a bug ticket and explain the bug, root cause, fix, and regression tests."""
         pass
@@ -639,6 +652,11 @@ class LLMClient(ABC):
 
             prompt += f"\n**Ticket:** {ticket_key}\n"
             prompt += f"**Summary:** {summary}\n"
+            status_name = ticket.get("status")
+            status_category = ticket.get("status_category")
+            if status_name or status_category:
+                cat_str = f" (category: {status_category})" if status_category else ""
+                prompt += f"**Jira Status:** {status_name or 'unknown'}{cat_str}\n"
             prompt += f"\n**Description:**\n{description if description else 'No description provided'}\n"
 
             # Jira comments
@@ -677,7 +695,7 @@ class LLMClient(ABC):
                         merged = status.upper() in ("MERGED", "CLOSED")
                         prompt += f"\n**PR:** {pr.get('title', 'Untitled')} — Status: {status}"
                         if merged:
-                            prompt += " ✅ (merged — bug is fixed)"
+                            prompt += " ✅ (merged — code change is in)"
                         prompt += "\n"
                         if pr.get("source_branch"):
                             prompt += f"Branch: {pr['source_branch']}\n"
@@ -1497,6 +1515,8 @@ class OllamaClient(LLMClient):
         comments: list[dict] | None = None,
         linked_info: dict | None = None,
         github_context: list[dict] | None = None,
+        status: str | None = None,
+        status_category: str | None = None,
     ) -> BugAnalysis:
         """Analyze a bug ticket using Ollama."""
         return await self._ollama_bug_analysis([{
@@ -1507,6 +1527,8 @@ class OllamaClient(LLMClient):
             "comments": comments,
             "linked_info": linked_info,
             "github_context": github_context,
+            "status": status,
+            "status_category": status_category,
         }])
 
     async def generate_multi_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
@@ -1546,7 +1568,7 @@ class OllamaClient(LLMClient):
             "properties": {
                 "bug_summary": {"type": "string"},
                 "root_cause": {"type": "string"},
-                "is_fixed": {"type": "boolean"},
+                "fix_status": {"type": "string", "enum": ["not_fixed", "in_testing", "fixed"]},
                 "fix_explanation": {"type": "string"},
                 "regression_tests": {"type": "array", "items": {"type": "string"}},
                 "similar_patterns": {"type": "array", "items": {"type": "string"}},
@@ -1587,7 +1609,7 @@ class OllamaClient(LLMClient):
                 return BugAnalysis(
                     bug_summary=parsed.get("bug_summary", ""),
                     root_cause=parsed.get("root_cause"),
-                    is_fixed=parsed.get("is_fixed", False),
+                    fix_status=_normalize_fix_status(parsed.get("fix_status"), parsed.get("is_fixed")),
                     fix_explanation=parsed.get("fix_explanation"),
                     regression_tests=parsed.get("regression_tests", []),
                     similar_patterns=parsed.get("similar_patterns", []),
@@ -1901,6 +1923,8 @@ class ClaudeClient(LLMClient):
         comments: list[dict] | None = None,
         linked_info: dict | None = None,
         github_context: list[dict] | None = None,
+        status: str | None = None,
+        status_category: str | None = None,
     ) -> BugAnalysis:
         """Analyze a bug ticket using Claude API."""
         return await self._claude_bug_analysis([{
@@ -1911,6 +1935,8 @@ class ClaudeClient(LLMClient):
             "comments": comments,
             "linked_info": linked_info,
             "github_context": github_context,
+            "status": status,
+            "status_category": status_category,
         }])
 
     async def generate_multi_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
@@ -1991,7 +2017,7 @@ class ClaudeClient(LLMClient):
                 return BugAnalysis(
                     bug_summary=parsed.get("bug_summary", ""),
                     root_cause=parsed.get("root_cause"),
-                    is_fixed=parsed.get("is_fixed", False),
+                    fix_status=_normalize_fix_status(parsed.get("fix_status"), parsed.get("is_fixed")),
                     fix_explanation=parsed.get("fix_explanation"),
                     regression_tests=parsed.get("regression_tests", []),
                     similar_patterns=parsed.get("similar_patterns", []),
@@ -2028,9 +2054,13 @@ WHAT YOU MUST DO
 
 2. **root_cause** — If code diffs are available, identify the exact cause in the code. Reference file names and what the faulty logic was. If no diff is available, derive the likely cause from the ticket description and comments.
 
-3. **is_fixed** — Set to true only if there is a merged pull request. Open or absent PRs mean the bug is not yet fixed.
+3. **fix_status** — Tri-state describing how far the fix has progressed. Use the Jira status (and its category: "new" = To Do, "indeterminate" = In Progress, "done" = Done) together with PR state:
+   - "fixed": Jira status category is "done" (e.g. "Done", "Closed", "Resolved") AND a merged PR exists, OR Jira category is "done" with a clear close-out comment confirming the fix shipped. The bug has been fixed AND validated/released.
+   - "in_testing": the code change is in but QA hasn't yet signed off. Use this when (a) a PR is merged but the Jira ticket is not yet in the "done" category, OR (b) the Jira status name implies QA/testing/code-review/ready-for-release (e.g. "In Testing", "QA", "Code Review", "Ready for QA", "Ready for Release") regardless of PR state. This is the "fix is in flight, not yet verified" bucket.
+   - "not_fixed": Jira status is "To Do" / "In Progress" with no merged PR — work hasn't reached testing yet. Open PRs alone do NOT promote a ticket to "in_testing"; the Jira status must indicate testing/review.
+   When PR state and Jira status disagree (e.g. merged PR but Jira still "In Progress"), prefer "in_testing" — the code is in, the workflow column just hasn't been moved.
 
-4. **fix_explanation** — If fixed, explain what the code change did to resolve the bug. Reference specific files and the nature of the change. If not fixed, set to null.
+4. **fix_explanation** — If fix_status is "fixed" or "in_testing", explain what the code change did to resolve the bug. Reference specific files and the nature of the change. When in_testing, frame it as the proposed/landed fix awaiting validation. If fix_status is "not_fixed", set to null.
 
 5. **regression_tests** — List concrete, specific test cases a QA engineer can run to verify this exact bug does not recur. Each item must be a complete, actionable test description (not a category). Be specific: include the scenario, the input or action, and the expected outcome.
 
@@ -2046,16 +2076,16 @@ WHAT YOU MUST DO
 
 11. **regression_introduced_by** — If is_regression is true, identify the PR title, PR number, commit SHA, or branch name that introduced the breakage. Set to null if is_regression is false or unknown.
 
-12. **fix_complexity** — Only when is_fixed is false. Classify the expected fix effort as one of:
+12. **fix_complexity** — Only when fix_status is "not_fixed" (work hasn't started or is still in progress). Classify the expected fix effort as one of:
    - "trivial": a one-liner or config change, no risk of side effects
    - "moderate": a focused code change in 1–2 files, straightforward logic fix
    - "complex": touches multiple files or services, requires careful testing
    - "architectural": requires design changes, schema migrations, or cross-team coordination
-   Set to null if the bug is already fixed.
+   Set to null if fix_status is "in_testing" or "fixed".
 
-13. **fix_effort_estimate** — Only when is_fixed is false. A concise time range for a competent engineer who knows the codebase (e.g. "1–2 hours", "half a day", "2–3 days", "1+ week"). **If the scope is genuinely ambiguous (e.g. the ticket could mean a narrow UI tweak or a broader data-model change), give a branched estimate instead of averaging**, e.g. "2h if scoped to the existing single-color header / 4–5h if supporting per-rep colors end-to-end". Do not pick a single midpoint when the scope itself is unclear — the ambiguity belongs in the estimate. **Coupling with open_questions:** if `open_questions` contains ANY question about scope, feature breadth, or which alternative is intended, then `fix_effort_estimate` MUST be a branched estimate whose branches correspond to those alternatives. A single unconditional range is only valid when `open_questions` contains no scope-level questions. Widening a single range (e.g. "2–4 hours") is NOT an acceptable substitute for branching — it hides the ambiguity rather than exposing it. Set to null if the bug is already fixed.
+13. **fix_effort_estimate** — Only when fix_status is "not_fixed". A concise time range for a competent engineer who knows the codebase (e.g. "1–2 hours", "half a day", "2–3 days", "1+ week"). **If the scope is genuinely ambiguous (e.g. the ticket could mean a narrow UI tweak or a broader data-model change), give a branched estimate instead of averaging**, e.g. "2h if scoped to the existing single-color header / 4–5h if supporting per-rep colors end-to-end". Do not pick a single midpoint when the scope itself is unclear — the ambiguity belongs in the estimate. **Coupling with open_questions:** if `open_questions` contains ANY question about scope, feature breadth, or which alternative is intended, then `fix_effort_estimate` MUST be a branched estimate whose branches correspond to those alternatives. A single unconditional range is only valid when `open_questions` contains no scope-level questions. Widening a single range (e.g. "2–4 hours") is NOT an acceptable substitute for branching — it hides the ambiguity rather than exposing it. Set to null if fix_status is "in_testing" or "fixed".
 
-14. **fix_complexity_reasoning** — Only when is_fixed is false. 1–2 sentences explaining why you assigned that complexity level. Reference specific files, services, or constraints. Set to null if the bug is already fixed.
+14. **fix_complexity_reasoning** — Only when fix_status is "not_fixed". 1–2 sentences explaining why you assigned that complexity level. Reference specific files, services, or constraints. Set to null if fix_status is "in_testing" or "fixed".
 
 15. **assumptions** — Inferences you made that are NOT directly grounded in the evidence, but that your analysis depends on. Example: "Assumed each Title Rep has their own assigned color (ticket says 'rep's assigned color' but code context only shows a single hardcoded value)." List every non-trivial leap so a reviewer can verify them. Set to null only if your analysis makes no such inferences.
 
@@ -2072,7 +2102,7 @@ GROUNDING RULES
 - Do NOT add regression tests for unrelated features.
 - If a diff is not available, say so in root_cause and work from the ticket description only.
 - Keep all text concise and technical — this is read by engineers and QA, not end users.
-- For fix_complexity, fix_effort_estimate, and fix_complexity_reasoning: set all three to null when is_fixed is true.
+- For fix_complexity, fix_effort_estimate, and fix_complexity_reasoning: set all three to null when fix_status is "in_testing" or "fixed" (the dev work is no longer the bottleneck — there is nothing left to estimate).
 - Surface ambiguity explicitly in assumptions and open_questions rather than resolving it silently. A confident-looking analysis that papers over interpretation gaps is worse than one that names them."""
 
 
@@ -2090,13 +2120,14 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
                 "type": ["string", "null"],
                 "description": "The technical root cause in the code. Reference file names if diffs are available.",
             },
-            "is_fixed": {
-                "type": "boolean",
-                "description": "True only if a merged PR exists for this bug.",
+            "fix_status": {
+                "type": "string",
+                "enum": ["not_fixed", "in_testing", "fixed"],
+                "description": "Tri-state fix progress. 'fixed' = Jira Done category with merged PR. 'in_testing' = code change is in but QA hasn't validated (PR merged but ticket not Done, or Jira status implies QA/code-review/ready-for-release). 'not_fixed' = To Do / In Progress with no merged PR.",
             },
             "fix_explanation": {
                 "type": ["string", "null"],
-                "description": "What the fix did. Null if the bug is not yet fixed.",
+                "description": "What the fix did. Provide for 'fixed' or 'in_testing'. Null when fix_status is 'not_fixed'.",
             },
             "regression_tests": {
                 "type": "array",
@@ -2111,15 +2142,15 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
             "fix_complexity": {
                 "type": ["string", "null"],
                 "enum": ["trivial", "moderate", "complex", "architectural", None],
-                "description": "Estimated fix complexity. One of: trivial, moderate, complex, architectural. Null if the bug is already fixed.",
+                "description": "Estimated fix complexity. One of: trivial, moderate, complex, architectural. Null when fix_status is 'in_testing' or 'fixed'.",
             },
             "fix_effort_estimate": {
                 "type": ["string", "null"],
-                "description": "Estimated time to fix for a competent engineer (e.g. '2–4 hours', '1–2 days'). Null if the bug is already fixed.",
+                "description": "Estimated time to fix for a competent engineer (e.g. '2–4 hours', '1–2 days'). Null when fix_status is 'in_testing' or 'fixed'.",
             },
             "fix_complexity_reasoning": {
                 "type": ["string", "null"],
-                "description": "1–2 sentences explaining the complexity rating. Reference files, services, or constraints. Null if the bug is already fixed.",
+                "description": "1–2 sentences explaining the complexity rating. Reference files, services, or constraints. Null when fix_status is 'in_testing' or 'fixed'.",
             },
             "affected_flow": {
                 "type": ["array", "null"],
@@ -2159,7 +2190,7 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
                 "description": "1–3 specific code symbol names (component/function/class identifiers) likely implicated in the bug, for use in a deterministic code search. Return an empty list if no specific symbols are identifiable from the evidence — do not guess.",
             },
         },
-        "required": ["bug_summary", "root_cause", "is_fixed", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by", "assumptions", "open_questions", "suspect_symbols"],
+        "required": ["bug_summary", "root_cause", "fix_status", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by", "assumptions", "open_questions", "suspect_symbols"],
     },
 }
 

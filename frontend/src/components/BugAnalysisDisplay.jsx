@@ -24,6 +24,13 @@ function BugAnalysisDisplay({ analysis }) {
 
   const allKeys = isMulti ? analysis.ticket_keys : [analysis.ticket_key]
 
+  const fixStatus = analysis.fix_status || (analysis.is_fixed ? 'fixed' : 'not_fixed')
+  const fixStatusBadge = {
+    fixed: { label: '✅ Fixed', className: 'priority-high' },
+    in_testing: { label: '🧪 In testing — fix awaiting QA', className: 'priority-medium' },
+    not_fixed: { label: '⚠️ Not yet fixed', className: 'priority-critical' },
+  }[fixStatus] || { label: '⚠️ Not yet fixed', className: 'priority-critical' }
+
   return (
     <div className="test-plan-display">
       <div className="test-plan-header">
@@ -38,10 +45,10 @@ function BugAnalysisDisplay({ analysis }) {
       {/* Fix status badge */}
       <div className="ticket-section">
         <span
-          className={`priority-badge ${analysis.is_fixed ? 'priority-high' : 'priority-critical'}`}
+          className={`priority-badge ${fixStatusBadge.className}`}
           style={{ fontSize: '0.95rem', padding: '4px 12px' }}
         >
-          {analysis.is_fixed ? '✅ Fixed' : '⚠️ Not yet fixed'}
+          {fixStatusBadge.label}
         </span>
       </div>
 
@@ -160,14 +167,19 @@ function BugAnalysisDisplay({ analysis }) {
         </div>
       )}
 
-      {/* Fix Explanation */}
-      {analysis.is_fixed && (
+      {/* Fix Explanation — shown when fix is in (fixed) or in flight (in_testing) */}
+      {(fixStatus === 'fixed' || fixStatus === 'in_testing') && (
         <div className="ticket-section">
           <h3>Fix Explanation</h3>
           {analysis.fix_explanation ? (
             <p>{analysis.fix_explanation}</p>
           ) : (
             <p className="text-muted">No fix details available.</p>
+          )}
+          {fixStatus === 'in_testing' && (
+            <p className="section-description">
+              The code change is in but QA hasn't validated it yet — confirm the fix behaves correctly before closing the ticket.
+            </p>
           )}
         </div>
       )}
@@ -198,8 +210,8 @@ function BugAnalysisDisplay({ analysis }) {
         </div>
       )}
 
-      {/* Fix Complexity — only for unfixed bugs */}
-      {!analysis.is_fixed && analysis.fix_complexity && (
+      {/* Fix Complexity — only when no code change is in yet */}
+      {fixStatus === 'not_fixed' && analysis.fix_complexity && (
         <div className="ticket-section">
           <h3>Fix Complexity</h3>
           <div className="fix-complexity-row">

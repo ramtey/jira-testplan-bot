@@ -291,6 +291,8 @@ async def analyze_bug(request: BugAnalysisRequest):
             comments=request.comments,
             linked_info=request.linked_info,
             github_context=github_context,
+            status=request.status,
+            status_category=request.status_category,
         )
         repos = _infer_repos_for_evidence(request.summary, request.description, request.comments)
         evidence = await _compute_code_evidence(analysis.suspect_symbols, repos)
@@ -299,6 +301,7 @@ async def analyze_bug(request: BugAnalysisRequest):
         return {
             "ticket_key": request.ticket_key,
             **asdict(analysis),
+            "is_fixed": analysis.fix_status == "fixed",
         }
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -323,6 +326,8 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
             "comments": t.comments,
             "linked_info": t.linked_info,
             "github_context": github_context,
+            "status": t.status,
+            "status_category": t.status_category,
         })
 
     try:
@@ -339,6 +344,7 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
         return {
             "ticket_keys": [t.ticket_key for t in request.tickets],
             **asdict(analysis),
+            "is_fixed": analysis.fix_status == "fixed",
         }
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))

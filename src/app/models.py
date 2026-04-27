@@ -213,6 +213,8 @@ class JiraIssue:
     comments: list[JiraComment] | None = None  # Filtered testing-related comments
     parent: ParentIssue | None = None  # Parent ticket context with design resources
     linked_issues: LinkedIssues | None = None  # Linked tickets (blocks, blocked by, etc.)
+    status: str | None = None  # Workflow status name (e.g. "To Do", "In Progress", "In Testing", "Done")
+    status_category: str | None = None  # Stable category key: "new" | "indeterminate" | "done"
 
 
 # ============================================================================
@@ -241,7 +243,7 @@ class BugAnalysis:
 
     bug_summary: str                # Plain-English explanation of what the bug is
     root_cause: str | None          # What in the code caused it
-    is_fixed: bool                  # Whether a merged PR exists for this bug
+    fix_status: str                 # "not_fixed" | "in_testing" | "fixed"
     fix_explanation: str | None     # What the fix did (from diff); None if not yet fixed
     regression_tests: list[str]     # Concrete test cases to prevent this bug recurring
     similar_patterns: list[str]     # Classes of similar bugs to watch for
@@ -318,6 +320,8 @@ class BugAnalysisRequest(BaseModel):
     comments: list[dict] | None = None
     parent_info: dict | None = None
     linked_info: dict | None = None
+    status: str | None = None
+    status_category: str | None = None
 
 
 class MultiBugAnalysisRequest(BaseModel):

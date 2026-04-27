@@ -287,6 +287,8 @@ function App() {
             development_info: td.development_info,
             comments: td.comments || null,
             linked_info: td.linked_issues || null,
+            status: td.status || null,
+            status_category: td.status_category || null,
           }),
           signal: controller.signal,
         })
@@ -308,6 +310,8 @@ function App() {
               development_info: td.development_info,
               comments: td.comments || null,
               linked_info: td.linked_issues || null,
+              status: td.status || null,
+              status_category: td.status_category || null,
             })),
           }),
           signal: controller.signal,

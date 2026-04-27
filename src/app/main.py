@@ -17,6 +17,7 @@ from .jira_client import (
 )
 from .llm_client import LLMError, get_llm_client
 from .models import GenerateTestPlanRequest, MultiTicketGenerateRequest, PostCommentRequest
+from .runs_routes import router as runs_router
 from .services import run_tracker
 from .slack_client import resolve_slack_messages_in_text
 from .token_service import token_health_service
@@ -79,6 +80,7 @@ def _flatten_cases_for_persistence(test_plan) -> list[tuple[str, str, str | None
 
 app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
 app.include_router(bug_lens_router)
+app.include_router(runs_router)
 
 # Configure CORS for frontend communication
 # NOTE: For production, update allow_origins to include your production URLs
@@ -230,6 +232,8 @@ async def get_issue(issue_key: str):
             "comments": comments_list,
             "parent": parent_info_dict,
             "linked_issues": linked_info_dict,
+            "status": issue.status,
+            "status_category": issue.status_category,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

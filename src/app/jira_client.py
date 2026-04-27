@@ -979,7 +979,7 @@ class JiraClient:
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         # Ask Jira for fields we need + development info if available
-        params = {"fields": "summary,description,labels,issuetype,attachment,parent,issuelinks,assignee", "expand": "renderedFields,changelog"}
+        params = {"fields": "summary,description,labels,issuetype,attachment,parent,issuelinks,assignee,status", "expand": "renderedFields,changelog"}
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
@@ -1008,6 +1008,10 @@ class JiraClient:
         issue_type = fields.get("issuetype", {}).get("name", "Unknown")
         assignee_field = fields.get("assignee") or {}
         assignee = assignee_field.get("displayName") or assignee_field.get("emailAddress")
+
+        status_field = fields.get("status") or {}
+        status_name = status_field.get("name")
+        status_category = (status_field.get("statusCategory") or {}).get("key")
 
         # Extract all unique assignees from changelog (ordered by first appearance)
         assignee_history: list[str] = []
@@ -1149,6 +1153,8 @@ class JiraClient:
             comments=filtered_comments if filtered_comments else None,
             parent=parent_issue,
             linked_issues=linked_issues,
+            status=status_name,
+            status_category=status_category,
         )
 
     async def post_comment(self, issue_key: str, comment_text: str) -> dict:

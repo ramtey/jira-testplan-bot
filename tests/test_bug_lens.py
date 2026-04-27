@@ -23,12 +23,13 @@ client = TestClient(app)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def make_bug_analysis(is_fixed=True):
+def make_bug_analysis(fix_status="fixed"):
+    has_fix = fix_status in ("fixed", "in_testing")
     return BugAnalysis(
         bug_summary="Button click triggers duplicate API calls due to missing debounce.",
         root_cause="The onClick handler in SubmitButton.tsx was not guarded, allowing rapid re-clicks.",
-        is_fixed=is_fixed,
-        fix_explanation="Added a `disabled` flag set on first click and cleared after the API response." if is_fixed else None,
+        fix_status=fix_status,
+        fix_explanation="Added a `disabled` flag set on first click and cleared after the API response." if has_fix else None,
         regression_tests=[
             "Click 'Submit' rapidly — only one API call should be made.",
             "Click 'Submit', wait for response, click again — second call should proceed normally.",
@@ -37,9 +38,9 @@ def make_bug_analysis(is_fixed=True):
             "Other form submit buttons without debounce or disabled-on-submit guards.",
             "Async handlers that mutate shared state without loading flags.",
         ],
-        fix_complexity=None if is_fixed else "trivial",
-        fix_effort_estimate=None if is_fixed else "1–2 hours",
-        fix_complexity_reasoning=None if is_fixed else "Single-line guard in one component.",
+        fix_complexity=None if has_fix else "trivial",
+        fix_effort_estimate=None if has_fix else "1–2 hours",
+        fix_complexity_reasoning=None if has_fix else "Single-line guard in one component.",
     )
 
 
@@ -58,24 +59,32 @@ def test_bug_analysis_model_fields():
     analysis = make_bug_analysis()
     assert isinstance(analysis.bug_summary, str)
     assert isinstance(analysis.root_cause, (str, type(None)))
-    assert isinstance(analysis.is_fixed, bool)
+    assert analysis.fix_status in ("not_fixed", "in_testing", "fixed")
     assert isinstance(analysis.fix_explanation, (str, type(None)))
     assert isinstance(analysis.regression_tests, list)
     assert isinstance(analysis.similar_patterns, list)
 
 
 def test_bug_analysis_unfixed_has_no_fix_explanation():
-    """When is_fixed=False, fix_explanation must be None."""
-    analysis = make_bug_analysis(is_fixed=False)
-    assert analysis.is_fixed is False
+    """When fix_status='not_fixed', fix_explanation must be None."""
+    analysis = make_bug_analysis(fix_status="not_fixed")
+    assert analysis.fix_status == "not_fixed"
     assert analysis.fix_explanation is None
 
 
 def test_bug_analysis_fixed_has_explanation():
-    """When is_fixed=True, fix_explanation is populated."""
-    analysis = make_bug_analysis(is_fixed=True)
-    assert analysis.is_fixed is True
+    """When fix_status='fixed', fix_explanation is populated."""
+    analysis = make_bug_analysis(fix_status="fixed")
+    assert analysis.fix_status == "fixed"
     assert analysis.fix_explanation is not None
+
+
+def test_bug_analysis_in_testing_keeps_fix_explanation():
+    """When fix_status='in_testing', fix_explanation is populated and complexity is null."""
+    analysis = make_bug_analysis(fix_status="in_testing")
+    assert analysis.fix_status == "in_testing"
+    assert analysis.fix_explanation is not None
+    assert analysis.fix_complexity is None
 
 
 # ── API: single ticket ─────────────────────────────────────────────────────────
@@ -96,6 +105,7 @@ async def test_analyze_bug_single_ticket_success():
     data = response.json()
     assert data["ticket_key"] == "BUG-42"
     assert data["bug_summary"] == analysis.bug_summary
+    assert data["fix_status"] == "fixed"
     assert data["is_fixed"] is True
     assert data["fix_explanation"] == analysis.fix_explanation
     assert len(data["regression_tests"]) == 2
@@ -104,8 +114,8 @@ async def test_analyze_bug_single_ticket_success():
 
 @pytest.mark.asyncio
 async def test_analyze_bug_single_ticket_unfixed():
-    """POST /bug-lens/analyze returns is_fixed=False and null fix_explanation."""
-    analysis = make_bug_analysis(is_fixed=False)
+    """POST /bug-lens/analyze returns fix_status='not_fixed' and null fix_explanation."""
+    analysis = make_bug_analysis(fix_status="not_fixed")
 
     with patch("src.app.bug_lens_routes.get_llm_client", return_value=mock_llm(analysis)):
         response = client.post("/bug-lens/analyze", json={
@@ -116,8 +126,30 @@ async def test_analyze_bug_single_ticket_unfixed():
 
     assert response.status_code == 200
     data = response.json()
+    assert data["fix_status"] == "not_fixed"
     assert data["is_fixed"] is False
     assert data["fix_explanation"] is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_bug_in_testing_returns_tri_state():
+    """POST /bug-lens/analyze returns fix_status='in_testing' with is_fixed=False (derived)."""
+    analysis = make_bug_analysis(fix_status="in_testing")
+
+    with patch("src.app.bug_lens_routes.get_llm_client", return_value=mock_llm(analysis)):
+        response = client.post("/bug-lens/analyze", json={
+            "ticket_key": "BUG-77",
+            "summary": "Submit button still double-fires",
+            "issue_type": "Bug",
+            "status": "In Testing",
+            "status_category": "indeterminate",
+        })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fix_status"] == "in_testing"
+    assert data["is_fixed"] is False
+    assert data["fix_explanation"] is not None
 
 
 @pytest.mark.asyncio
@@ -347,6 +379,23 @@ def test_prompt_multi_ticket_includes_all_keys():
     assert "BUG-11" in prompt
     assert "Crash on login" in prompt
     assert "Crash on logout" in prompt
+
+
+def test_prompt_includes_jira_status_when_provided():
+    """Prompt surfaces the Jira workflow status and category so the LLM can pick a fix_status."""
+    llm = OllamaClient()
+    prompt = llm._build_bug_analysis_prompt([{
+        "ticket_key": "BUG-7",
+        "summary": "Crash",
+        "description": None,
+        "development_info": None,
+        "comments": None,
+        "linked_info": None,
+        "status": "In Testing",
+        "status_category": "indeterminate",
+    }])
+    assert "In Testing" in prompt
+    assert "indeterminate" in prompt
 
 
 def test_prompt_includes_jira_comments():

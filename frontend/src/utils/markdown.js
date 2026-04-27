@@ -109,7 +109,13 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
   const ticketLabel = isMulti ? analysis.ticket_keys.join(', ') : analysis.ticket_key
 
   let md = `# Bug Lens Analysis: ${ticketLabel}\n\n`
-  md += `**Status:** ${analysis.is_fixed ? '✅ Fixed' : '⚠️ Not yet fixed'}\n\n`
+  const fixStatus = analysis.fix_status || (analysis.is_fixed ? 'fixed' : 'not_fixed')
+  const statusLabel = {
+    fixed: '✅ Fixed',
+    in_testing: '🧪 In testing — fix awaiting QA',
+    not_fixed: '⚠️ Not yet fixed',
+  }[fixStatus] || '⚠️ Not yet fixed'
+  md += `**Status:** ${statusLabel}\n\n`
 
   if (analysis.is_regression != null) {
     md += `**Regression:** ${analysis.is_regression ? '🔁 Yes — this was previously working' : '🆕 No — feature was never functional'}\n`
@@ -168,9 +174,12 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
     md += `## Why Tests Don't Catch This\n\n${analysis.why_tests_miss}\n\n`
   }
 
-  if (analysis.is_fixed) {
+  if (fixStatus === 'fixed' || fixStatus === 'in_testing') {
     md += `## Fix Explanation\n\n`
     md += analysis.fix_explanation ? `${analysis.fix_explanation}\n\n` : `*No fix details available.*\n\n`
+    if (fixStatus === 'in_testing') {
+      md += `_The code change is in but QA hasn't validated it yet — confirm the fix behaves correctly before closing the ticket._\n\n`
+    }
   }
 
   if (analysis.open_questions && analysis.open_questions.length > 0) {
@@ -185,7 +194,7 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
     md += '\n'
   }
 
-  if (!analysis.is_fixed && analysis.fix_complexity) {
+  if (fixStatus === 'not_fixed' && analysis.fix_complexity) {
     md += `## Fix Complexity\n\n`
     md += `**Complexity:** ${analysis.fix_complexity.charAt(0).toUpperCase() + analysis.fix_complexity.slice(1)}`
     if (analysis.fix_effort_estimate) {
