@@ -2107,3 +2107,74 @@ button:disabled {
   color: var(--text-secondary);
   display: inline;
 }
+
+/* ── Historical plan preview (rendered beside live plan) ─────────────────── */
+.history-preview {
+  margin: 1.25rem 0 0;
+  border-left: 3px dashed var(--border);
+  border-radius: 4px;
+}
+
+.history-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  background: rgba(128, 128, 128, 0.06);
+  border-radius: 0 4px 0 0;
+  margin-left: -3px; /* align with the dashed border */
+  border-left: 3px solid var(--border);
+}
+
+.history-preview-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.history-preview-label strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.history-preview-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 0.3rem 0.7rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.history-preview-close:hover {
+  border-color: #667eea;
+  color: var(--text-primary);
+}
+
+/* Desaturate + dim so this reads as secondary content in both themes,
+   then force the gray palette on common text elements. Buttons keep their
+   own styling so action affordances stay clear. */
+.history-preview-body {
+  filter: grayscale(0.6);
+  opacity: 0.85;
+  color: var(--text-secondary);
+  padding: 0;
+}
+
+.history-preview-body h3,
+.history-preview-body h4,
+.history-preview-body h5,
+.history-preview-body p,
+.history-preview-body li,
+.history-preview-body strong {
+  color: var(--text-secondary);
+}
+
+/* Historical preview is read-only — hide the live action buttons. */
+.history-preview-body .test-plan-actions {
+  display: none;
+}

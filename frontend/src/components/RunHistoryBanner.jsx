@@ -52,7 +52,11 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
       } catch {
         throw new Error('Stored plan is not in the expected format')
       }
-      onViewPlan(parsed, { planId: run.plan_id, version: run.version })
+      onViewPlan(parsed, {
+        planId: run.plan_id,
+        version: run.version,
+        createdAt: run.created_at,
+      })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -125,6 +129,7 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
 
       {diffTarget && (
         <PlanDiffModal
+          key={diffTarget.plan_id}
           rightPlan={diffTarget}
           ticketData={ticketData}
           onClose={() => setDiffTarget(null)}

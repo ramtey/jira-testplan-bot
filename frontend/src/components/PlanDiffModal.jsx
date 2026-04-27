@@ -29,15 +29,15 @@ async function fetchPlan(planId) {
 
 export default function PlanDiffModal({ rightPlan, ticketData, onClose }) {
   // rightPlan is the historical row being inspected: { plan_id, version, previous_plan_id, ... }
-  const [leftRaw, setLeftRaw] = useState(null) // { body, version }
+  // The parent re-mounts this component (via `key`) when rightPlan changes, so
+  // initial state below is correct on every open and the effect only fires once.
+  const [leftRaw, setLeftRaw] = useState(null)
   const [rightRaw, setRightRaw] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError(null)
 
     const tasks = [fetchPlan(rightPlan.plan_id)]
     if (rightPlan.previous_plan_id) {

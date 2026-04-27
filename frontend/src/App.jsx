@@ -8,6 +8,7 @@ import TestPlanDisplay from './components/TestPlanDisplay'
 import BugAnalysisDisplay from './components/BugAnalysisDisplay'
 import TokenStatus from './components/TokenStatus'
 import RunHistoryBanner from './components/RunHistoryBanner'
+import HistoricalPlanPreview from './components/HistoricalPlanPreview'
 
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
@@ -69,6 +70,9 @@ function App() {
 
   // Run history (single-ticket only — multi-ticket scope deferred)
   const [runHistory, setRunHistory] = useState(() => loadStored(STORAGE_KEYS.runHistory, []))
+  // Historical plan preview opened from the banner — sits beside the live plan,
+  // not in place of it. Not persisted: it's an ephemeral comparison view.
+  const [historyPreview, setHistoryPreview] = useState(null)
 
   useEffect(() => saveStored(STORAGE_KEYS.issueKey, issueKey), [issueKey])
   useEffect(() => saveStored(STORAGE_KEYS.ticketsData, ticketsData), [ticketsData])
@@ -136,6 +140,7 @@ function App() {
     setBugAnalysis(null)
     setBugAnalysisError(null)
     setRunHistory([])
+    setHistoryPreview(null)
 
     try {
       if (keys.length === 1) {
@@ -185,6 +190,7 @@ function App() {
     setBugAnalysis(null)
     setBugAnalysisError(null)
     setRunHistory([])
+    setHistoryPreview(null)
   }
 
   const toggleDescription = () => {
@@ -437,13 +443,18 @@ function App() {
               </div>
             ) : (
               <>
-                {!isMultiTicket && runHistory.length > 0 && (
-                  <RunHistoryBanner
-                    runs={runHistory}
-                    ticketData={ticketData}
-                    onViewPlan={(plan) => setTestPlan(plan)}
-                  />
-                )}
+                {!isMultiTicket &&
+                  runHistory.length > 0 &&
+                  !analyzingBug &&
+                  !bugAnalysis && (
+                    <RunHistoryBanner
+                      runs={runHistory}
+                      ticketData={ticketData}
+                      onViewPlan={(plan, meta) =>
+                        setHistoryPreview({ plan, ...meta })
+                      }
+                    />
+                  )}
 
                 <TestingContextForm
                   onGenerateTestPlan={handleGenerateTestPlan}
@@ -475,6 +486,17 @@ function App() {
                       ticketsData={isMultiTicket ? ticketsData : null}
                     />
                   </div>
+                )}
+
+                {!isMultiTicket && historyPreview && !bugAnalysis && !analyzingBug && (
+                  <HistoricalPlanPreview
+                    key={historyPreview.planId}
+                    plan={historyPreview.plan}
+                    version={historyPreview.version}
+                    createdAt={historyPreview.createdAt}
+                    ticketData={ticketData}
+                    onClose={() => setHistoryPreview(null)}
+                  />
                 )}
 
                 {bugAnalysis && (
