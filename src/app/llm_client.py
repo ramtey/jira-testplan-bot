@@ -2054,11 +2054,11 @@ WHAT YOU MUST DO
 
 2. **root_cause** — If code diffs are available, identify the exact cause in the code. Reference file names and what the faulty logic was. If no diff is available, derive the likely cause from the ticket description and comments.
 
-3. **fix_status** — Tri-state describing how far the fix has progressed. Use the Jira status (and its category: "new" = To Do, "indeterminate" = In Progress, "done" = Done) together with PR state:
-   - "fixed": Jira status category is "done" (e.g. "Done", "Closed", "Resolved") AND a merged PR exists, OR Jira category is "done" with a clear close-out comment confirming the fix shipped. The bug has been fixed AND validated/released.
-   - "in_testing": the code change is in but QA hasn't yet signed off. Use this when (a) a PR is merged but the Jira ticket is not yet in the "done" category, OR (b) the Jira status name implies QA/testing/code-review/ready-for-release (e.g. "In Testing", "QA", "Code Review", "Ready for QA", "Ready for Release") regardless of PR state. This is the "fix is in flight, not yet verified" bucket.
-   - "not_fixed": Jira status is "To Do" / "In Progress" with no merged PR — work hasn't reached testing yet. Open PRs alone do NOT promote a ticket to "in_testing"; the Jira status must indicate testing/review.
-   When PR state and Jira status disagree (e.g. merged PR but Jira still "In Progress"), prefer "in_testing" — the code is in, the workflow column just hasn't been moved.
+3. **fix_status** — Tri-state describing how far the fix has progressed. **The Jira workflow status is the source of truth — PR state alone never overrides the column the ticket sits in.** Use the Jira status (and its category: "new" = To Do, "indeterminate" = In Progress, "done" = Done) together with PR state:
+   - "fixed": Jira status category is "done" (e.g. "Done", "Closed", "Resolved"). Typically a merged PR also exists. The bug has been fixed AND validated/released.
+   - "in_testing": the code change is in AND the ticket has moved past dev work. Use this ONLY when the Jira status name explicitly implies QA/testing/code-review/ready-for-release (e.g. "In Testing", "QA", "Code Review", "Ready for QA", "Ready for Release", "Awaiting Verification"). A merged PR alone does NOT qualify — the workflow column must reflect that dev is done.
+   - "not_fixed": Jira status category is "new" (To Do) OR "indeterminate" with a generic in-progress status name (e.g. "In Progress", "Open"). This applies even when merged PRs are attached — those PRs are likely diagnostic logging, partial work, refactors, or PRs that merely mention the ticket key. If QA hasn't moved the column out of To Do/In Progress, the bug is not yet in testing.
+   **Heuristic for ambiguous cases:** when the Jira status is "To Do" but merged PRs exist, scan the PR titles and diffs — if the PRs are clearly preliminary work (logging, instrumentation, refactors) rather than a fix matching the bug's root cause, choose "not_fixed" and surface the disconnect in `assumptions` or `open_questions`.
 
 4. **fix_explanation** — If fix_status is "fixed" or "in_testing", explain what the code change did to resolve the bug. Reference specific files and the nature of the change. When in_testing, frame it as the proposed/landed fix awaiting validation. If fix_status is "not_fixed", set to null.
 
@@ -2123,7 +2123,7 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
             "fix_status": {
                 "type": "string",
                 "enum": ["not_fixed", "in_testing", "fixed"],
-                "description": "Tri-state fix progress. 'fixed' = Jira Done category with merged PR. 'in_testing' = code change is in but QA hasn't validated (PR merged but ticket not Done, or Jira status implies QA/code-review/ready-for-release). 'not_fixed' = To Do / In Progress with no merged PR.",
+                "description": "Tri-state fix progress. Jira workflow status is the source of truth. 'fixed' = Jira Done category. 'in_testing' = Jira status name explicitly says QA/Testing/Code Review/Ready for Release. 'not_fixed' = Jira To Do or generic In Progress, even if merged PRs exist (those may be logging/refactor/partial work).",
             },
             "fix_explanation": {
                 "type": ["string", "null"],
