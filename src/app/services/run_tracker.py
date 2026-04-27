@@ -122,12 +122,30 @@ async def complete_with_plan(
                 output_tokens=output_tokens,
                 cost_usd=cost_usd,
             )
+
+            # Chain regenerations on single-ticket runs: link to the prior plan
+            # and bump version. Multi-ticket runs are intentionally left flat —
+            # "previous" is ambiguous when several tickets fan in.
+            previous_plan_id: int | None = None
+            version = 1
+            if run.ticket_keys and len(run.ticket_keys) == 1:
+                prior = await plan_repository.find_latest_plan_for_ticket(
+                    session,
+                    ticket_key=run.ticket_keys[0],
+                    exclude_run_id=ctx.run_id,
+                )
+                if prior is not None:
+                    previous_plan_id = prior.id
+                    version = (prior.version or 1) + 1
+
             await plan_repository.save_with_cases(
                 session,
                 run_id=ctx.run_id,
                 format=plan_format,
                 body=plan_body,
                 cases=cases,
+                previous_plan_id=previous_plan_id,
+                version=version,
             )
             await session.commit()
     except Exception:

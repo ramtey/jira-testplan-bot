@@ -7,6 +7,7 @@ import TestingContextForm from './components/TestingContextForm'
 import TestPlanDisplay from './components/TestPlanDisplay'
 import BugAnalysisDisplay from './components/BugAnalysisDisplay'
 import TokenStatus from './components/TokenStatus'
+import RunHistoryBanner from './components/RunHistoryBanner'
 
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
@@ -17,6 +18,7 @@ const STORAGE_KEYS = {
   ticketsData: 'jtb.ticketsData',
   testPlan: 'jtb.testPlan',
   bugAnalysis: 'jtb.bugAnalysis',
+  runHistory: 'jtb.runHistory',
 }
 
 const loadStored = (key, fallback) => {
@@ -65,10 +67,14 @@ function App() {
   const [bugAnalysisError, setBugAnalysisError] = useState(null)
   const [bugAbortController, setBugAbortController] = useState(null)
 
+  // Run history (single-ticket only — multi-ticket scope deferred)
+  const [runHistory, setRunHistory] = useState(() => loadStored(STORAGE_KEYS.runHistory, []))
+
   useEffect(() => saveStored(STORAGE_KEYS.issueKey, issueKey), [issueKey])
   useEffect(() => saveStored(STORAGE_KEYS.ticketsData, ticketsData), [ticketsData])
   useEffect(() => saveStored(STORAGE_KEYS.testPlan, testPlan), [testPlan])
   useEffect(() => saveStored(STORAGE_KEYS.bugAnalysis, bugAnalysis), [bugAnalysis])
+  useEffect(() => saveStored(STORAGE_KEYS.runHistory, runHistory), [runHistory])
 
   // Fetch config on mount to get Jira base URL
   useEffect(() => {
@@ -92,6 +98,22 @@ function App() {
   // For single-ticket backward-compat: expose first ticket as ticketData
   const ticketData = ticketsData.length === 1 ? ticketsData[0] : null
 
+  // Fetch prior test-plan runs for a ticket. Silently no-op on failure so the
+  // banner just doesn't appear — DB outages shouldn't block the main flow.
+  const loadRunHistory = async (key) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/runs/by-ticket/${key}`)
+      if (!res.ok) {
+        setRunHistory([])
+        return
+      }
+      const data = await res.json()
+      setRunHistory(Array.isArray(data.runs) ? data.runs : [])
+    } catch {
+      setRunHistory([])
+    }
+  }
+
   const handleFetchTicket = async (e) => {
     e.preventDefault()
 
@@ -113,6 +135,7 @@ function App() {
     setPlanError(null)
     setBugAnalysis(null)
     setBugAnalysisError(null)
+    setRunHistory([])
 
     try {
       if (keys.length === 1) {
@@ -124,6 +147,9 @@ function App() {
         }
         const data = await response.json()
         setTicketsData([data])
+        // Fire-and-forget: history fetch happens in parallel with the user
+        // reading the ticket — don't block the main render.
+        loadRunHistory(data.key)
       } else {
         // ── Multiple tickets — fetch in parallel ─────────────────────────────
         const responses = await Promise.all(
@@ -158,6 +184,7 @@ function App() {
     setPlanError(null)
     setBugAnalysis(null)
     setBugAnalysisError(null)
+    setRunHistory([])
   }
 
   const toggleDescription = () => {
@@ -207,6 +234,8 @@ function App() {
 
         const data = await response.json()
         setTestPlan(data)
+        // Refresh history so the new run appears in the banner with a bumped version.
+        loadRunHistory(td.key)
       } else {
         // ── Multi-ticket ───────────────────────────────────────────────────
         const response = await fetch(`${API_BASE_URL}/generate-test-plan/multi`, {
@@ -408,6 +437,14 @@ function App() {
               </div>
             ) : (
               <>
+                {!isMultiTicket && runHistory.length > 0 && (
+                  <RunHistoryBanner
+                    runs={runHistory}
+                    ticketData={ticketData}
+                    onViewPlan={(plan) => setTestPlan(plan)}
+                  />
+                )}
+
                 <TestingContextForm
                   onGenerateTestPlan={handleGenerateTestPlan}
                   onStopGeneration={handleStopGeneration}
