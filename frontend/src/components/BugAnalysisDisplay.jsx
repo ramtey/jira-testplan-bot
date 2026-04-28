@@ -42,38 +42,34 @@ function BugAnalysisDisplay({ analysis }) {
         </h2>
       </div>
 
-      {/* Fix status badge */}
-      <div className="ticket-section">
-        <span
-          className={`priority-badge ${fixStatusBadge.className}`}
-          style={{ fontSize: '0.95rem', padding: '4px 12px' }}
-        >
+      {/* Status row: fix status + regression badges grouped together */}
+      <div className="ticket-section bug-status-row">
+        <span className={`priority-badge priority-badge--lg ${fixStatusBadge.className}`}>
           {fixStatusBadge.label}
         </span>
-      </div>
-
-      {/* Regression badge */}
-      {analysis.is_regression != null && (
-        <div className="ticket-section">
+        {analysis.is_regression != null && (
           <span
-            className={`priority-badge ${analysis.is_regression ? 'priority-critical' : 'priority-medium'}`}
-            style={{ fontSize: '0.85rem', padding: '3px 10px' }}
+            className={`priority-badge priority-badge--lg ${
+              analysis.is_regression ? 'priority-critical' : 'priority-medium'
+            }`}
           >
             {analysis.is_regression ? '🔁 Regression' : '🆕 Never worked'}
           </span>
-          {analysis.is_regression && analysis.regression_introduced_by && (
-            <span className="fix-complexity-reasoning" style={{ marginLeft: '8px' }}>
-              Introduced by: {analysis.regression_introduced_by}
-            </span>
-          )}
-        </div>
-      )}
+        )}
+        {analysis.is_regression && analysis.regression_introduced_by && (
+          <span className="bug-status-meta">
+            Introduced by: {analysis.regression_introduced_by}
+          </span>
+        )}
+      </div>
 
       {/* Bug Summary */}
-      <div className="ticket-section">
-        <h3>Bug Summary</h3>
-        <p>{analysis.bug_summary}</p>
-      </div>
+      {analysis.bug_summary && (
+        <div className="ticket-section">
+          <h3>Bug Summary</h3>
+          <p>{analysis.bug_summary}</p>
+        </div>
+      )}
 
       {/* Root Cause */}
       <div className="ticket-section">

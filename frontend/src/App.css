@@ -1504,6 +1504,28 @@ button:disabled {
   vertical-align: middle;
 }
 
+.priority-badge--lg {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.75rem;
+  letter-spacing: 0.03em;
+}
+
+.bug-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.bug-status-row .priority-badge {
+  margin-left: 0;
+}
+
+.bug-status-meta {
+  font-size: 0.875rem;
+  color: var(--text-secondary, #6b7280);
+}
+
 .priority-critical {
   background: rgba(222, 53, 11, 0.15);
   color: #de350b;
