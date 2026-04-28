@@ -36,6 +36,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input)
 - **Jira Bug Lens**: analyze bug tickets for root cause, fix complexity, affected flow, and regression tests
 - **Test plan history**: previous test plans for a ticket are surfaced as a banner with view-side-by-side and diff-against-previous-version actions
+- **Epic children view**: fetching an Epic lists every child ticket with per-row Generate and Analyze buttons that render results inline beneath the row
 - **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does
 - **Inline UX feedback**: auto-scroll to results and inline button-state feedback (no alert dialogs)
 
@@ -69,6 +70,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
 - **Multiple export formats**: Markdown, Jira-formatted text, or JSON
 - **Issue type validation**: Only generates plans for testable types (Story, Bug, Task)
+- **Epic launcher view**: Fetching an Epic renders its child tickets as a list with per-row Generate (test plan) and Analyze (Bug Lens) buttons; results expand inline so multiple children can be reviewed without navigating away
 
 ### Jira Bug Lens
 Analyze bug tickets to go beyond the ticket description and into the code:
@@ -321,6 +323,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **API docs**: `/docs` (Swagger UI)
 - **Token health**: `GET /health/tokens` - Validates all API tokens
 - **Fetch issue**: `GET /issue/{issue_key}` - Returns ticket with development info
+- **List Epic children**: `GET /issue/{epic_key}/children` - Lightweight list (key, summary, issue_type, status) of tickets directly under an Epic; powers the Epic launcher view
 - **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON
 - **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets (must share a repo or overlapping files; returns `422 TICKETS_NO_SHARED_CONTEXT` otherwise)
 - **Analyze bug**: `POST /bug-lens/analyze` - Root cause, fix explanation, and regression tests for a bug ticket
