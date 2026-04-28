@@ -185,6 +185,17 @@ class LinkedIssues:
 
 
 @dataclass
+class EpicChildSummary:
+    """Lightweight summary of a child ticket under an Epic."""
+
+    key: str
+    summary: str
+    issue_type: str
+    status: str | None = None
+    status_category: str | None = None
+
+
+@dataclass
 class SlackMessage:
     """A single Slack message resolved from a permalink in a Jira ticket."""
 

@@ -1,8 +1,8 @@
 /**
- * Form for test plan generation and bug analysis actions.
+ * Buttons for test plan generation and bug analysis actions.
  */
 
-function TestingContextForm({
+function ActionButtons({
   onGenerateTestPlan,
   onStopGeneration,
   generatingPlan,
@@ -65,4 +65,4 @@ function TestingContextForm({
   )
 }
 
-export default TestingContextForm
+export default ActionButtons

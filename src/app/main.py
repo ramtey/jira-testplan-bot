@@ -266,6 +266,32 @@ async def get_issue(issue_key: str):
         )
 
 
+@app.get("/issue/{epic_key}/children")
+async def get_epic_children(epic_key: str):
+    """List child tickets under an Epic.
+
+    Returns lightweight rows (key, summary, issue_type, status) so the UI can
+    render an inline list with per-row Generate/Analyze actions.
+    """
+    jira = JiraClient()
+    try:
+        children = await jira.search_epic_children(epic_key)
+        return {"children": [asdict(child) for child in children]}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        import logging
+        logging.error(f"Unexpected error fetching children for {epic_key}: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while fetching Epic children",
+        )
+
+
 @app.post("/issue/{issue_key}/summarize")
 async def summarize_issue(issue_key: str, request: dict):
     """Generate a plain-language summary of a ticket for quick tester context."""

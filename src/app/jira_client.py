@@ -9,7 +9,7 @@ from .config import settings
 from .description_analyzer import analyze_description
 from .figma_client import FigmaClient
 from .github_client import GitHubClient
-from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, FileChange, JiraComment, JiraIssue, LinkedIssue, LinkedIssues, ParentIssue, PRComment, PullRequest, RepositoryContext
+from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, EpicChildSummary, FileChange, JiraComment, JiraIssue, LinkedIssue, LinkedIssues, ParentIssue, PRComment, PullRequest, RepositoryContext
 
 logger = logging.getLogger(__name__)
 
@@ -975,6 +975,67 @@ class JiraClient:
             link_type=link_type,
             status=fields.get("status", {}).get("name"),
         )
+
+    async def search_epic_children(self, epic_key: str) -> list[EpicChildSummary]:
+        """Fetch child tickets under an Epic via JQL search.
+
+        Returns a lightweight list (key, summary, issue_type, status). Capped at the
+        first page (100 children); larger Epics are truncated and a warning is logged.
+        """
+        if not re.match(r"^[A-Z][A-Z0-9_]*-\d+$", epic_key):
+            raise ValueError(f"Invalid Jira issue key: {epic_key}")
+
+        url = f"{self.base_url}/rest/api/3/search/jql"
+        payload = {
+            "jql": f"parent = {epic_key} ORDER BY created ASC",
+            "fields": ["summary", "issuetype", "status"],
+            "maxResults": 100,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(
+                    url,
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json=payload,
+                )
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for searching issues.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+
+        data = r.json()
+        issues = data.get("issues") or []
+        if data.get("nextPageToken"):
+            logger.warning(
+                "Epic %s has more children than the page limit; only first %d returned.",
+                epic_key,
+                len(issues),
+            )
+
+        children: list[EpicChildSummary] = []
+        for issue in issues:
+            fields = issue.get("fields") or {}
+            status_field = fields.get("status") or {}
+            children.append(
+                EpicChildSummary(
+                    key=issue.get("key", ""),
+                    summary=fields.get("summary") or "",
+                    issue_type=(fields.get("issuetype") or {}).get("name") or "Unknown",
+                    status=status_field.get("name"),
+                    status_category=(status_field.get("statusCategory") or {}).get("key"),
+                )
+            )
+        return children
 
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"

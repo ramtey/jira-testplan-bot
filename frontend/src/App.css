@@ -2178,3 +2178,136 @@ button:disabled {
 .history-preview-body .test-plan-actions {
   display: none;
 }
+
+/* ── Epic children list ──────────────────────────────────────────────────── */
+
+.epic-children-section {
+  margin-top: 2rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border);
+}
+
+.epic-children-heading {
+  font-size: 1.125rem;
+  color: var(--text-primary);
+  margin-bottom: 1rem;
+}
+
+.epic-children-loading {
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.epic-children-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.epic-child-row {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+
+.epic-child-row-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.epic-child-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.epic-child-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.epic-child-key:hover {
+  text-decoration: underline;
+}
+
+.epic-child-type {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+}
+
+.epic-child-status {
+  font-size: 0.75rem;
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.epic-child-status-done {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.epic-child-status-indeterminate {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.epic-child-summary {
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.epic-child-row-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.btn-small {
+  font-size: 0.8rem;
+  padding: 0.3rem 0.7rem;
+}
+
+.btn-collapse {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.btn-collapse:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.epic-child-row-error {
+  margin-top: 0.75rem;
+}
+
+.epic-child-row-result {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--border);
+}

@@ -3,12 +3,13 @@ import './App.css'
 import { API_BASE_URL, fetchConfig } from './config'
 import TicketForm from './components/TicketForm'
 import TicketDetails from './components/TicketDetails'
-import TestingContextForm from './components/TestingContextForm'
+import ActionButtons from './components/ActionButtons'
 import TestPlanDisplay from './components/TestPlanDisplay'
 import BugAnalysisDisplay from './components/BugAnalysisDisplay'
 import TokenStatus from './components/TokenStatus'
 import RunHistoryBanner from './components/RunHistoryBanner'
 import HistoricalPlanPreview from './components/HistoricalPlanPreview'
+import EpicChildrenList from './components/EpicChildrenList'
 
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
@@ -435,14 +436,18 @@ function App() {
             )}
 
             {nonTestableTicket ? (
-              <div className="ticket-section">
-                <div className="alert alert-info">
-                  <strong>ℹ️ Note:</strong> Test plans are not generated for{' '}
-                  {nonTestableTicket.issue_type} tickets ({nonTestableTicket.key}).
-                  <br />
-                  Test plan generation is available for Story, Task, and Bug issues only.
+              !isMultiTicket && nonTestableTicket.issue_type === 'Epic' ? (
+                <EpicChildrenList epicKey={nonTestableTicket.key} />
+              ) : (
+                <div className="ticket-section">
+                  <div className="alert alert-info">
+                    <strong>ℹ️ Note:</strong> Test plans are not generated for{' '}
+                    {nonTestableTicket.issue_type} tickets ({nonTestableTicket.key}).
+                    <br />
+                    Test plan generation is available for Story, Task, and Bug issues only.
+                  </div>
                 </div>
-              </div>
+              )
             ) : (
               <>
                 {!isMultiTicket &&
@@ -458,7 +463,7 @@ function App() {
                     />
                   )}
 
-                <TestingContextForm
+                <ActionButtons
                   onGenerateTestPlan={handleGenerateTestPlan}
                   onStopGeneration={handleStopGeneration}
                   generatingPlan={generatingPlan}
