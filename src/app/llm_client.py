@@ -166,6 +166,19 @@ If you answer "no" or "not sure" to question 1 or 4, DO NOT include that test ca
 - If you are not certain a field exists in this specific app, omit it
 ❌ The app is a real-estate calculator → Don't add "City Transfer Tax" or other domain-typical fields unless they are listed in the testID reference or ticket description
 
+**DO NOT INVENT UI COPY, STRINGS, OR MESSAGES:**
+A test step that quotes UI text is asserting that *exact* string exists in the app. NEVER fabricate that string from domain plausibility — if the source isn't in your context, you cannot quote it.
+
+- A quoted string (in `'single'`, `"double"`, or backtick quotes) is allowed in a step or expected result ONLY when the EXACT same string appears in: (a) the ticket description / acceptance criteria, (b) the PR diff / code patches, or (c) the testID reference / screen guide
+- This applies to ALL UI copy: share/email message bodies, modal text, toast/alert content, button labels, placeholder text, success/error messages, email subjects, push-notification copy, default form values
+- Placeholders like `[Client FName]`, `{firstName}`, `<NAME>` are also UI copy — do NOT invent placeholder syntax for an app
+- If the ticket asks you to verify a piece of copy but does NOT supply the exact text, write the step in terms of *intent*, not verbatim content. Use phrases like "contains the client's first name and references closing costs" instead of quoting a fabricated body
+- When in doubt, omit the quote. A vague-but-true step is better than a precise-but-fabricated one — testers will mark a fabricated quote as a bug that doesn't exist
+
+❌ BAD (fabricated): `Verify pre-populated message contains: 'Hi [Client FName], here is a report with detailed closing costs...'`
+✅ GOOD (intent-based): `Verify the share sheet message body is pre-populated and references the client and the closing-cost report`
+✅ GOOD (grounded): If the ticket or diff contains the literal `DEFAULT_SHARE_MESSAGE = "Your personalized Net Sheet is ready!..."`, you MAY quote that exact string
+
 **SKIP OPTIONAL FIELDS WITH ACCEPTABLE DEFAULT VALUES:**
 - When writing form-filling steps, ONLY include a field if entering a value is necessary to execute the test
 - If a field has a default value that is acceptable for the scenario being tested, omit the step for that field entirely — do not instruct the tester to re-enter the default
