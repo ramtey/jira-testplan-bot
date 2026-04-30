@@ -179,6 +179,19 @@ A test step that quotes UI text is asserting that *exact* string exists in the a
 ✅ GOOD (intent-based): `Verify the share sheet message body is pre-populated and references the client and the closing-cost report`
 ✅ GOOD (grounded): If the ticket or diff contains the literal `DEFAULT_SHARE_MESSAGE = "Your personalized Net Sheet is ready!..."`, you MAY quote that exact string
 
+**DO NOT INVENT TEST DATA VALUES FROM UNIT TESTS OR FIXTURES:**
+A unit test's fixture values (e.g. `finhoadues1: '275'`, mock API responses, seeded DB rows) are *synthetic inputs the developer chose to exercise a code path* — they are NOT values the tester will see when running the test plan against a real environment. NEVER copy a fixture value into a test step or expected result as if it were a known, observable quantity.
+
+- Asserting "Verify HOA Dues = $275" only works if the tester's chosen address actually has $275 dues. The test plan does NOT supply that address — so the value is unknowable in advance.
+- This applies to ALL fixture-derived values: dollar amounts, dates, account IDs, addresses, lat/lng, response payloads, count totals, percentage rates, default seeds — anything that lives in test fixtures, mocks, or seeded DBs but is NOT a UI default or constant defined in app code.
+- Write expected results in terms of the *relationship* between input and output, not a specific number: "Verify the HOA Dues field auto-populates with the same monthly value shown in the property data modal" instead of "Verify HOA Dues = $275".
+- If the test requires a specific value, instruct the tester to capture it from the prior step: "Note the HOA dues value displayed in the modal" → later → "Verify the HOA Dues field matches the value noted in step N".
+- A constant defined in app code (e.g. `DEFAULT_TAX_RATE = 6.75`) IS groundable and MAY be quoted. A value that only appears in `*.test.ts` / `*.spec.ts` / fixture JSON / mock response files is NOT.
+
+❌ BAD (fixture leak): `Enter a property with finhoadues1: '275', finhoaperiod1: 'Monthly'` ... `Verify HOA Dues field shows $275`
+✅ GOOD (intent-based): `Enter a property address that has monthly HOA dues in Spoke VRE` ... `Verify the HOA Dues field is auto-populated with the monthly dues amount shown in the property data modal`
+✅ GOOD (capture-then-compare): `Note the 'Estimated Monthly HOA Dues' value shown in the modal` ... `Verify the HOA Dues field auto-populates with the value noted above, in monthly mode`
+
 **SKIP OPTIONAL FIELDS WITH ACCEPTABLE DEFAULT VALUES:**
 - When writing form-filling steps, ONLY include a field if entering a value is necessary to execute the test
 - If a field has a default value that is acceptable for the scenario being tested, omit the step for that field entirely — do not instruct the tester to re-enter the default
