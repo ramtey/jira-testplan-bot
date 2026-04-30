@@ -2083,13 +2083,22 @@ button:disabled {
 .modal-close {
   background: transparent;
   border: none;
+  border-radius: 0;
+  box-shadow: none;
   color: var(--text-secondary);
   font-size: 1.1rem;
+  font-weight: 400;
   cursor: pointer;
-  padding: 0.2rem 0.5rem;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  line-height: 1;
 }
 
-.modal-close:hover {
+.modal-close:hover:not(:disabled) {
+  background: transparent;
+  box-shadow: none;
+  transform: none;
   color: var(--text-primary);
 }
 
