@@ -184,12 +184,15 @@ A unit test's fixture values (e.g. `finhoadues1: '275'`, mock API responses, see
 
 - Asserting "Verify HOA Dues = $275" only works if the tester's chosen address actually has $275 dues. The test plan does NOT supply that address — so the value is unknowable in advance.
 - This applies to ALL fixture-derived values: dollar amounts, dates, account IDs, addresses, lat/lng, response payloads, count totals, percentage rates, default seeds — anything that lives in test fixtures, mocks, or seeded DBs but is NOT a UI default or constant defined in app code.
+- Internal field, column, or schema names from fixtures/code (e.g. `finhoadues1`, `fin_hoa_period_1='Monthly'`, `fin_hoa_yn_std='N'`) are equally fixture-derived and equally non-actionable for a manual tester. A tester cannot query the upstream data source by column name — they can only pick properties by user-observable characteristics. Describe the *kind* of property required, not the database fields it must satisfy.
 - Write expected results in terms of the *relationship* between input and output, not a specific number: "Verify the HOA Dues field auto-populates with the same monthly value shown in the property data modal" instead of "Verify HOA Dues = $275".
 - If the test requires a specific value, instruct the tester to capture it from the prior step: "Note the HOA dues value displayed in the modal" → later → "Verify the HOA Dues field matches the value noted in step N".
 - A constant defined in app code (e.g. `DEFAULT_TAX_RATE = 6.75`) IS groundable and MAY be quoted. A value that only appears in `*.test.ts` / `*.spec.ts` / fixture JSON / mock response files is NOT.
 
 ❌ BAD (fixture leak): `Enter a property with finhoadues1: '275', finhoaperiod1: 'Monthly'` ... `Verify HOA Dues field shows $275`
+❌ BAD (schema leak): `Enter a property where Spoke VRE has fin_hoa_yn_std='N'` or `Enter a property with fin_hoa_period_1='Annually'`
 ✅ GOOD (intent-based): `Enter a property address that has monthly HOA dues in Spoke VRE` ... `Verify the HOA Dues field is auto-populated with the monthly dues amount shown in the property data modal`
+✅ GOOD (user-observable): `Enter a property address known to have no HOA` instead of `fin_hoa_yn_std='N'`; `a property with annual HOA dues` instead of `fin_hoa_period_1='Annually'`
 ✅ GOOD (capture-then-compare): `Note the 'Estimated Monthly HOA Dues' value shown in the modal` ... `Verify the HOA Dues field auto-populates with the value noted above, in monthly mode`
 
 **SKIP OPTIONAL FIELDS WITH ACCEPTABLE DEFAULT VALUES:**
