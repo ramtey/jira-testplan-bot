@@ -397,7 +397,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1><img src="/favicon.svg" alt="logo" style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle', marginRight: '0.4em' }} />Jira Test Plan Bot</h1>
+        <h1><img src="/favicon.svg" alt="logo" style={{ width: '1.2em', height: '1.2em', verticalAlign: 'middle', marginRight: '0.4em' }} />Jira Test Plan Bot</h1>
         <p>Fetch Jira tickets and analyze description quality</p>
       </header>
 

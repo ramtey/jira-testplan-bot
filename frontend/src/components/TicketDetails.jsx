@@ -120,7 +120,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription 
         >
           <h3>
             <span className={`collapse-icon ${isSummaryExpanded ? 'expanded' : ''}`}>▶</span>
-            Plain-language Summary
+            Summary
           </h3>
           {!isSummaryExpanded && (
             <span className="collapse-summary">
