@@ -10,6 +10,7 @@ import TokenStatus from './components/TokenStatus'
 import RunHistoryBanner from './components/RunHistoryBanner'
 import HistoricalPlanPreview from './components/HistoricalPlanPreview'
 import EpicChildrenList from './components/EpicChildrenList'
+import JiraBrowser from './components/JiraBrowser'
 
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
@@ -119,14 +120,7 @@ function App() {
     }
   }
 
-  const handleFetchTicket = async (e) => {
-    e.preventDefault()
-
-    const keys = issueKey
-      .split(',')
-      .map((k) => k.trim().toUpperCase())
-      .filter(Boolean)
-
+  const fetchTicketsByKeys = async (keys) => {
     if (keys.length === 0) {
       setError('Please enter a Jira issue key')
       return
@@ -179,6 +173,20 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleFetchTicket = async (e) => {
+    e.preventDefault()
+    const keys = issueKey
+      .split(',')
+      .map((k) => k.trim().toUpperCase())
+      .filter(Boolean)
+    await fetchTicketsByKeys(keys)
+  }
+
+  const handleSelectFromBrowser = async (key) => {
+    setIssueKey(key)
+    await fetchTicketsByKeys([key.toUpperCase()])
   }
 
   const handleClear = () => {
@@ -393,10 +401,16 @@ function App() {
         <p>Fetch Jira tickets and analyze description quality</p>
       </header>
 
-      <main className="app-main">
-        <TokenStatus />
+      <div className="app-shell">
+        <JiraBrowser
+          onSelectIssue={handleSelectFromBrowser}
+          selectedIssueKey={ticketData?.key || null}
+        />
 
-        <TicketForm
+        <main className="app-main">
+          <TokenStatus />
+
+          <TicketForm
           issueKey={issueKey}
           setIssueKey={setIssueKey}
           loading={loading}
@@ -515,7 +529,8 @@ function App() {
             )}
           </>
         )}
-      </main>
+        </main>
+      </div>
     </div>
   )
 }

@@ -292,6 +292,76 @@ async def get_epic_children(epic_key: str):
         )
 
 
+@app.get("/jira/projects")
+async def list_jira_projects():
+    """List Jira projects accessible to the configured account."""
+    jira = JiraClient()
+    try:
+        projects = await jira.list_projects()
+        return {"projects": projects}
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        import logging
+        logging.error(f"Unexpected error listing projects: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while listing projects",
+        )
+
+
+@app.get("/jira/projects/{project_key}/statuses")
+async def list_jira_project_statuses(project_key: str):
+    """List the unique status columns available for a project."""
+    jira = JiraClient()
+    try:
+        statuses = await jira.list_project_statuses(project_key)
+        return {"statuses": statuses}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except JiraNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        import logging
+        logging.error(f"Unexpected error listing statuses for {project_key}: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while listing project statuses",
+        )
+
+
+@app.get("/jira/projects/{project_key}/issues")
+async def list_jira_project_issues(project_key: str, status: str):
+    """List issues in a project filtered by status name."""
+    if not status or not status.strip():
+        raise HTTPException(status_code=400, detail="status query param is required")
+    jira = JiraClient()
+    try:
+        issues = await jira.search_project_issues(project_key, status.strip())
+        return {"issues": [asdict(issue) for issue in issues]}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        import logging
+        logging.error(
+            f"Unexpected error searching issues for {project_key} status={status}: {type(e).__name__}: {e}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while searching issues",
+        )
+
+
 @app.post("/issue/{issue_key}/summarize")
 async def summarize_issue(issue_key: str, request: dict):
     """Generate a plain-language summary of a ticket for quick tester context."""

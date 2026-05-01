@@ -1037,6 +1037,151 @@ class JiraClient:
             )
         return children
 
+    async def list_projects(self) -> list[dict]:
+        """List Jira projects accessible to the configured account.
+
+        Returns lightweight rows ({key, name, project_type, avatar_url}) sorted
+        by name. Capped at the first page (100 projects).
+        """
+        url = f"{self.base_url}/rest/api/3/project/search"
+        params = {"orderBy": "name", "maxResults": 100}
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for browsing projects.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+
+        values = r.json().get("values") or []
+        projects: list[dict] = []
+        for proj in values:
+            avatar_urls = proj.get("avatarUrls") or {}
+            projects.append({
+                "key": proj.get("key", ""),
+                "name": proj.get("name", ""),
+                "project_type": proj.get("projectTypeKey"),
+                # 24x24 is the smallest avatar; falls back to any size present.
+                "avatar_url": avatar_urls.get("24x24") or next(iter(avatar_urls.values()), None),
+            })
+        return projects
+
+    async def list_project_statuses(self, project_key: str) -> list[dict]:
+        """List unique status columns available for issues in a project.
+
+        Jira returns statuses grouped per issue-type; we flatten and dedupe by
+        status name, preserving the statusCategory key (new/indeterminate/done)
+        so the UI can group them into Backlog / In Progress / Done columns.
+        """
+        if not re.match(r"^[A-Z][A-Z0-9_]*$", project_key):
+            raise ValueError(f"Invalid Jira project key: {project_key}")
+
+        url = f"{self.base_url}/rest/api/3/project/{project_key}/statuses"
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers())
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Project not found: {project_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for this project.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+
+        seen: dict[str, dict] = {}
+        for issue_type_entry in r.json() or []:
+            for status in issue_type_entry.get("statuses") or []:
+                name = status.get("name")
+                if not name or name in seen:
+                    continue
+                category = (status.get("statusCategory") or {}).get("key")
+                seen[name] = {"name": name, "status_category": category}
+        return list(seen.values())
+
+    async def search_project_issues(
+        self, project_key: str, status_name: str
+    ) -> list[EpicChildSummary]:
+        """Search issues in a project filtered by status.
+
+        Returns lightweight rows reusing EpicChildSummary. Capped at the first
+        page (100 issues); larger result sets are truncated and a warning is logged.
+        """
+        if not re.match(r"^[A-Z][A-Z0-9_]*$", project_key):
+            raise ValueError(f"Invalid Jira project key: {project_key}")
+        # Status names are user-facing strings (e.g. "In Progress"); escape any
+        # quotes/backslashes before interpolating into JQL.
+        escaped_status = status_name.replace("\\", "\\\\").replace('"', '\\"')
+
+        url = f"{self.base_url}/rest/api/3/search/jql"
+        payload = {
+            "jql": f'project = {project_key} AND status = "{escaped_status}" ORDER BY updated DESC',
+            "fields": ["summary", "issuetype", "status"],
+            "maxResults": 100,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(
+                    url,
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json=payload,
+                )
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for searching issues.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+
+        data = r.json()
+        issues = data.get("issues") or []
+        if data.get("nextPageToken"):
+            logger.warning(
+                "Project %s status %s has more issues than the page limit; only first %d returned.",
+                project_key, status_name, len(issues),
+            )
+
+        results: list[EpicChildSummary] = []
+        for issue in issues:
+            fields = issue.get("fields") or {}
+            status_field = fields.get("status") or {}
+            results.append(
+                EpicChildSummary(
+                    key=issue.get("key", ""),
+                    summary=fields.get("summary") or "",
+                    issue_type=(fields.get("issuetype") or {}).get("name") or "Unknown",
+                    status=status_field.get("name"),
+                    status_category=(status_field.get("statusCategory") or {}).get("key"),
+                )
+            )
+        return results
+
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         # Ask Jira for fields we need + development info if available
