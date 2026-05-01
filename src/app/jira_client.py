@@ -1538,3 +1538,121 @@ class JiraClient:
         r.raise_for_status()
 
         return r.json()
+
+    async def get_my_account_id(self) -> str:
+        """Return the accountId of the configured Jira user (via /myself)."""
+        url = f"{self.base_url}/rest/api/3/myself"
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers())
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        r.raise_for_status()
+        return r.json()["accountId"]
+
+    async def list_transitions(self, issue_key: str) -> list[dict]:
+        """List available transitions from the issue's current status."""
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers())
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        r.raise_for_status()
+        return r.json().get("transitions", [])
+
+    async def transition_issue(self, issue_key: str, transition_id: str) -> None:
+        """Execute a workflow transition on an issue."""
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"
+        headers = {**self._headers(), "Content-Type": "application/json"}
+        payload = {"transition": {"id": transition_id}}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(url, headers=headers, json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for transitioning this issue.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+
+    async def assign_issue(self, issue_key: str, account_id: str | None) -> None:
+        """Assign an issue to the given accountId. Pass None to unassign."""
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/assignee"
+        headers = {**self._headers(), "Content-Type": "application/json"}
+        payload = {"accountId": account_id}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.put(url, headers=headers, json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for assigning this issue.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+
+    async def get_prior_assignee_account_id(self, issue_key: str) -> tuple[str | None, str | None]:
+        """Return (accountId, displayName) of the most recent prior assignee from changelog.
+
+        Walks the changelog newest-first; the most recent assignee change's `from`
+        field is the person who had the ticket before the current assignee. Returns
+        (None, None) if there's no prior assignee (e.g. ticket only ever had one
+        assignee, or was just unassigned → assigned).
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        params = {"fields": "assignee", "expand": "changelog"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        r.raise_for_status()
+
+        data = r.json()
+        # Jira returns histories oldest-first; reverse to scan newest-first.
+        # Walk all assignee changes and return the most recent non-null `from`.
+        # We can't bail on the first assignee item: a "null -> me" entry (e.g.
+        # picking up an unassigned ticket) hides earlier assignees behind it.
+        histories = list(reversed(data.get("changelog", {}).get("histories", [])))
+        for history in histories:
+            for item in history.get("items", []):
+                if item.get("field") != "assignee":
+                    continue
+                prior_id = item.get("from")
+                if prior_id:
+                    return prior_id, item.get("fromString")
+        return None, None

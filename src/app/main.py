@@ -377,6 +377,81 @@ async def summarize_issue(issue_key: str, request: dict):
         raise HTTPException(status_code=503, detail=str(e))
 
 
+# QA workflow actions for the SK project. Hardcoded for SK only — generalize
+# to other projects via a per-project config once a second project needs it.
+SK_WORKFLOW_ACTIONS: dict[str, str] = {
+    "pull-to-testing": "In Testing",
+    "pass-to-uat": "Ready for UAT",
+    "fail-to-in-progress": "In Progress",
+}
+
+
+@app.post("/issue/{issue_key}/workflow/{action}")
+async def run_workflow_action(issue_key: str, action: str):
+    """Execute a single-click QA workflow action: transition + reassign."""
+    if not issue_key.upper().startswith("SK-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Workflow actions are only enabled for the SK project right now.",
+        )
+    if action not in SK_WORKFLOW_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+    target_status = SK_WORKFLOW_ACTIONS[action]
+    jira = JiraClient()
+
+    try:
+        transitions = await jira.list_transitions(issue_key)
+        transition = next(
+            (
+                t for t in transitions
+                if (t.get("to") or {}).get("name", "").strip().lower()
+                == target_status.lower()
+            ),
+            None,
+        )
+        if transition is None:
+            available = sorted({
+                (t.get("to") or {}).get("name") for t in transitions
+                if (t.get("to") or {}).get("name")
+            })
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No transition to '{target_status}' is available from the "
+                    f"current status. Available transitions: {available or 'none'}."
+                ),
+            )
+
+        if action == "pull-to-testing":
+            target_account_id = await jira.get_my_account_id()
+            assigned_label = "you"
+        else:
+            target_account_id, prior_name = await jira.get_prior_assignee_account_id(issue_key)
+            if not target_account_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No prior assignee found in the issue history.",
+                )
+            assigned_label = prior_name or "prior assignee"
+
+        await jira.transition_issue(issue_key, transition["id"])
+        await jira.assign_issue(issue_key, target_account_id)
+
+        return {
+            "status": "ok",
+            "action": action,
+            "target_status": target_status,
+            "assigned_to": assigned_label,
+        }
+    except JiraNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @app.post("/generate-test-plan")
 async def generate_test_plan(request: GenerateTestPlanRequest):
     """

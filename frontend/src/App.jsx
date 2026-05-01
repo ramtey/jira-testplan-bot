@@ -189,6 +189,21 @@ function App() {
     await fetchTicketsByKeys([key.toUpperCase()])
   }
 
+  // Refresh just the current ticket's metadata in place — used after workflow
+  // actions so the user keeps their generated test plan, history, etc.
+  const refreshCurrentTicket = async () => {
+    if (ticketsData.length !== 1) return
+    const key = ticketsData[0].key
+    try {
+      const response = await fetch(`${API_BASE_URL}/issue/${key}`)
+      if (!response.ok) return
+      const data = await response.json()
+      setTicketsData([data])
+    } catch {
+      // ignore — the user can manually refetch if needed
+    }
+  }
+
   const handleClear = () => {
     setIssueKey('')
     setTicketsData([])
@@ -446,6 +461,7 @@ function App() {
                 ticketData={ticketData}
                 isDescriptionExpanded={isDescriptionExpanded}
                 onToggleDescription={toggleDescription}
+                onActionComplete={refreshCurrentTicket}
               />
             )}
 

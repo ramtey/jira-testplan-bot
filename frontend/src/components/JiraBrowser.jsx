@@ -17,8 +17,8 @@ import { API_BASE_URL } from '../config'
 // "Backlog / In Progress / Done" columns regardless of the project's custom names.
 const CATEGORY_ORDER = ['new', 'indeterminate', 'done']
 const CATEGORY_LABEL = {
-  new: 'To Do',
-  indeterminate: 'In Progress',
+  new: 'Backlog',
+  indeterminate: 'Active',
   done: 'Done',
 }
 

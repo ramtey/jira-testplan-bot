@@ -5,8 +5,9 @@
 import { useState } from 'react'
 import { API_BASE_URL, getJiraTicketUrl } from '../config'
 import DevelopmentInfo from './DevelopmentInfo'
+import WorkflowActions from './WorkflowActions'
 
-function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription }) {
+function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription, onActionComplete }) {
   const [isAttachmentsExpanded, setIsAttachmentsExpanded] = useState(false)
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false)
   const [plainSummary, setPlainSummary] = useState(null)
@@ -111,6 +112,12 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription 
           )}
         </div>
       </div>
+
+      <WorkflowActions
+        ticketKey={ticketData.key}
+        currentStatus={ticketData.status}
+        onActionComplete={onActionComplete}
+      />
 
       <div className="ticket-section">
         <div
