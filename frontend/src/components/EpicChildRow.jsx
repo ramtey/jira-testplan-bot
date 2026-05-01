@@ -8,7 +8,7 @@ import { API_BASE_URL, getJiraTicketUrl } from '../config'
 import TestPlanDisplay from './TestPlanDisplay'
 import BugAnalysisDisplay from './BugAnalysisDisplay'
 
-const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
+const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
 
 function StatusBadge({ status, statusCategory }) {
   if (!status) return null

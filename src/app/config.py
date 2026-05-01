@@ -42,5 +42,4 @@ settings = Settings()
 NON_TESTABLE_ISSUE_TYPES = {
     "Epic",
     "Spike",
-    "Sub-task",  # Optional - uncomment if sub-tasks shouldn't have test plans
 }

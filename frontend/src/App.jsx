@@ -13,7 +13,7 @@ import EpicChildrenList from './components/EpicChildrenList'
 import JiraBrowser from './components/JiraBrowser'
 
 // Issue types that don't require test plans
-const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike', 'Sub-task'])
+const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
 
 // Keys used to persist state across reloads (e.g. after laptop sleep → Vite HMR reload)
 const STORAGE_KEYS = {

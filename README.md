@@ -69,7 +69,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Claude Opus 4.6**: Fast (5-10s), high-quality test plans with structured JSON tool-use output
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
 - **Multiple export formats**: Markdown, Jira-formatted text, or JSON
-- **Issue type validation**: Only generates plans for testable types (Story, Bug, Task)
+- **Issue type validation**: Generates plans for Story, Bug, Task, and Sub-task; skips Epics and Spikes (Epics open the children view instead)
 - **Epic launcher view**: Fetching an Epic renders its child tickets as a list with per-row Generate (test plan) and Analyze (Bug Lens) buttons; results expand inline so multiple children can be reviewed without navigating away
 
 ### Jira Browser Side Rail
@@ -101,6 +101,28 @@ columns → Issues**.
 - **Auth note**: the rail surfaces only what the configured `JIRA_USERNAME` /
   `JIRA_API_TOKEN` can see. Project list is capped at the first 100 results
   from `/rest/api/3/project/search`
+
+### QA Workflow Actions (SK project)
+
+One-click status transitions plus reassignment, to remove the "transition →
+pick assignee" two-step from the QA loop. Currently scoped to the SK project
+(buttons hide for everything else); generalize via per-project config when a
+second project needs it.
+
+- **Pull to Testing**: shown when the ticket is *not* already in *In Testing*.
+  Transitions to *In Testing* and assigns the ticket to the current Jira user
+  (the one whose `JIRA_USERNAME` / `JIRA_API_TOKEN` is configured)
+- **Pass to UAT**: shown when the ticket is in *In Testing*. Transitions to
+  *Ready for UAT* and reassigns to the prior assignee (read from the issue
+  changelog) so the dev who handed it over gets it back for promotion
+- **Fail back to In Progress**: shown when the ticket is in *In Testing*.
+  Transitions to *In Progress* and reassigns to the prior assignee for
+  rework
+- **Available transition guard**: each action looks up the issue's available
+  transitions before acting. If the target status isn't reachable from the
+  current state the API returns 400 with the list of valid transitions, so
+  bad clicks fail loudly instead of silently no-op'ing
+- **Endpoint**: `POST /issue/{issue_key}/workflow/{pull-to-testing|pass-to-uat|fail-to-in-progress}`
 
 ### Jira Bug Lens
 Analyze bug tickets to go beyond the ticket description and into the code:
@@ -360,6 +382,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
+- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - One-click transition + reassignment for the SK project (`pull-to-testing`, `pass-to-uat`, `fail-to-in-progress`); rejects non-SK keys with 400
 
 See `/docs` for detailed API documentation and schemas.
 
@@ -406,7 +429,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Bug Lens v2 + Code Evidence (deterministic grep grounding); prompt quality hardening ongoing
+**Current:** Jira browser rail + QA workflow shortcuts for the SK project; sub-tasks now testable; prompt quality hardening ongoing
 
 ## Roadmap
 
@@ -432,6 +455,9 @@ uv run pytest tests/ -v
 - ✅ **Formatted Jira comments**: Test plans posted as rich ADF (Atlassian Document Format) instead of plain text
 - ✅ **UX polish**: Auto-scroll to results, inline button-state feedback, red ticket badge in Bug Lens
 - ✅ **Test plan history**: Persist every test-plan run to Postgres; surface prior versions in a banner with side-by-side view and diff against the previous version; regenerations auto-chain via `previous_plan_id`
+- ✅ **Jira browser side rail**: Collapsible Projects → Status → Issues drill-down with status-category grouping, type badges, pinned + recent project shortcuts, and silent refresh on tab focus
+- ✅ **QA workflow buttons**: One-click *Pull to Testing* / *Pass to UAT* / *Fail back to In Progress* for the SK project, with automatic reassignment (current user on pull, prior assignee on pass/fail)
+- ✅ **Sub-task test plans**: Sub-tasks are now a testable issue type and flow through the same generation path as Story/Task/Bug, while still inheriting parent Epic/Story design context
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
