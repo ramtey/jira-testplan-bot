@@ -22,6 +22,32 @@ const CATEGORY_LABEL = {
   done: 'Done',
 }
 
+// Pinned + recent projects are persisted in localStorage so the user's
+// shortcuts survive across sessions. We store keys only and look up the full
+// project metadata from the loaded list at render time.
+const PINNED_STORAGE_KEY = 'jtb.browser.pinnedProjects'
+const RECENTS_STORAGE_KEY = 'jtb.browser.recentProjects'
+const MAX_RECENTS = 5
+
+const loadStored = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === null) return fallback
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : fallback
+  } catch {
+    return fallback
+  }
+}
+
+const saveStored = (key, value) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // storage quota / disabled — ignore
+  }
+}
+
 function JiraBrowser({ onSelectIssue, selectedIssueKey }) {
   const [collapsed, setCollapsed] = useState(false)
 
@@ -39,6 +65,26 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey }) {
   const [issues, setIssues] = useState(null)
   const [issuesError, setIssuesError] = useState(null)
   const [issuesLoading, setIssuesLoading] = useState(false)
+
+  const [pinnedKeys, setPinnedKeys] = useState(() => loadStored(PINNED_STORAGE_KEY, []))
+  const [recentKeys, setRecentKeys] = useState(() => loadStored(RECENTS_STORAGE_KEY, []))
+
+  useEffect(() => saveStored(PINNED_STORAGE_KEY, pinnedKeys), [pinnedKeys])
+  useEffect(() => saveStored(RECENTS_STORAGE_KEY, recentKeys), [recentKeys])
+
+  const togglePin = (projectKey) => {
+    setPinnedKeys((prev) =>
+      prev.includes(projectKey)
+        ? prev.filter((k) => k !== projectKey)
+        : [...prev, projectKey],
+    )
+  }
+
+  const trackRecent = (projectKey) => {
+    setRecentKeys((prev) =>
+      [projectKey, ...prev.filter((k) => k !== projectKey)].slice(0, MAX_RECENTS),
+    )
+  }
 
   // ── Pure fetchers — never touch navigation state. `silent` keeps the
   //    current data on screen while reloading (used by refresh button + focus).
@@ -105,6 +151,7 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey }) {
   // ── Navigation handlers — clear downstream state, then fetch (non-silent).
 
   const selectProject = (project) => {
+    trackRecent(project.key)
     setActiveProject(project)
     setActiveStatus(null)
     setIssues(null)
@@ -181,13 +228,23 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey }) {
     )
   }
 
+  const isFiltering = projectFilter.trim().length > 0
   const filteredProjects = (projects || []).filter((p) => {
-    if (!projectFilter.trim()) return true
+    if (!isFiltering) return true
     const q = projectFilter.toLowerCase()
     return (
       p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q)
     )
   })
+
+  const projectByKey = Object.fromEntries((projects || []).map((p) => [p.key, p]))
+  const pinnedProjects = pinnedKeys.map((k) => projectByKey[k]).filter(Boolean)
+  // Exclude pinned from recents to avoid showing the same project twice in
+  // adjacent shortcut sections.
+  const recentProjects = recentKeys
+    .filter((k) => !pinnedKeys.includes(k))
+    .map((k) => projectByKey[k])
+    .filter(Boolean)
 
   const groupedStatuses = CATEGORY_ORDER.map((cat) => ({
     key: cat,
@@ -245,31 +302,80 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey }) {
           </div>
           {projectsLoading && <div className="jira-browser__hint">Loading projects…</div>}
           {projectsError && <div className="jira-browser__error">{projectsError}</div>}
-          {projects && filteredProjects.length === 0 && !projectsLoading && (
-            <div className="jira-browser__hint">No projects match.</div>
+
+          {/* Filter active: show a single flat list of matches (no shortcut
+              sections — they'd be confusing while searching). */}
+          {isFiltering && projects && (
+            filteredProjects.length === 0 ? (
+              <div className="jira-browser__hint">No projects match.</div>
+            ) : (
+              <ul className="jira-browser__list">
+                {filteredProjects.map((p) => (
+                  <ProjectRow
+                    key={p.key}
+                    project={p}
+                    isPinned={pinnedKeys.includes(p.key)}
+                    onSelect={selectProject}
+                    onTogglePin={togglePin}
+                  />
+                ))}
+              </ul>
+            )
           )}
-          <ul className="jira-browser__list">
-            {filteredProjects.map((p) => (
-              <li key={p.key}>
-                <button
-                  type="button"
-                  className="jira-browser__row"
-                  onClick={() => selectProject(p)}
-                >
-                  {p.avatar_url && (
-                    <img
-                      src={p.avatar_url}
-                      alt=""
-                      className="jira-browser__avatar"
-                      loading="lazy"
+
+          {/* No filter: show Pinned, Recent, then the full alphabetical list. */}
+          {!isFiltering && projects && (
+            <>
+              {pinnedProjects.length > 0 && (
+                <div className="jira-browser__group">
+                  <div className="jira-browser__group-label">Pinned</div>
+                  <ul className="jira-browser__list">
+                    {pinnedProjects.map((p) => (
+                      <ProjectRow
+                        key={p.key}
+                        project={p}
+                        isPinned={true}
+                        onSelect={selectProject}
+                        onTogglePin={togglePin}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {recentProjects.length > 0 && (
+                <div className="jira-browser__group">
+                  <div className="jira-browser__group-label">Recent</div>
+                  <ul className="jira-browser__list">
+                    {recentProjects.map((p) => (
+                      <ProjectRow
+                        key={p.key}
+                        project={p}
+                        isPinned={false}
+                        onSelect={selectProject}
+                        onTogglePin={togglePin}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="jira-browser__group">
+                {(pinnedProjects.length > 0 || recentProjects.length > 0) && (
+                  <div className="jira-browser__group-label">All projects</div>
+                )}
+                <ul className="jira-browser__list">
+                  {filteredProjects.map((p) => (
+                    <ProjectRow
+                      key={p.key}
+                      project={p}
+                      isPinned={pinnedKeys.includes(p.key)}
+                      onSelect={selectProject}
+                      onTogglePin={togglePin}
                     />
-                  )}
-                  <span className="jira-browser__row-name">{p.name}</span>
-                  <span className="jira-browser__row-meta">{p.key}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
+                  ))}
+                </ul>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -383,6 +489,40 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey }) {
         </div>
       )}
     </aside>
+  )
+}
+
+// A project row with a pin button. The pin button is a sibling of the main
+// click target — nesting buttons inside buttons isn't valid HTML.
+function ProjectRow({ project, isPinned, onSelect, onTogglePin }) {
+  return (
+    <li className="jira-browser__row-wrap">
+      <button
+        type="button"
+        className="jira-browser__row"
+        onClick={() => onSelect(project)}
+      >
+        {project.avatar_url && (
+          <img
+            src={project.avatar_url}
+            alt=""
+            className="jira-browser__avatar"
+            loading="lazy"
+          />
+        )}
+        <span className="jira-browser__row-name">{project.name}</span>
+        <span className="jira-browser__row-meta">{project.key}</span>
+      </button>
+      <button
+        type="button"
+        className={'jira-browser__star' + (isPinned ? ' jira-browser__star--on' : '')}
+        onClick={() => onTogglePin(project.key)}
+        aria-label={isPinned ? `Unpin ${project.key}` : `Pin ${project.key}`}
+        title={isPinned ? 'Unpin' : 'Pin to top'}
+      >
+        {isPinned ? '★' : '☆'}
+      </button>
+    </li>
   )
 }
 

@@ -2344,6 +2344,31 @@ button:disabled {
 }
 
 /* ── Jira browser (left rail) ───────────────────────────────────────────── */
+
+/* The global `button { min-width: 140px; padding: 1rem 2rem; background: ... }`
+   rule above is the right default for primary form buttons but completely wrong
+   for icon-sized rail controls. Reset it inside the browser; specific classes
+   layer their own sizing/colors on top. */
+.jira-browser button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  font-size: inherit;
+  font-weight: 400;
+  color: var(--text-primary);
+  white-space: normal;
+  transition: none;
+}
+.jira-browser button:hover:not(:disabled) {
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
 .app-shell {
   flex: 1;
   display: flex;
@@ -2538,6 +2563,43 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.jira-browser__row-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.jira-browser__row-wrap .jira-browser__row {
+  flex: 1;
+  min-width: 0;
+}
+
+.jira-browser__star {
+  flex-shrink: 0;
+  width: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0;
+  border-radius: 6px;
+  opacity: 0.35;
+  transition: opacity 0.1s ease;
+}
+.jira-browser__row-wrap:hover .jira-browser__star {
+  opacity: 0.7;
+}
+.jira-browser__star:hover {
+  opacity: 1 !important;
+  background: var(--bg-secondary);
+  border-color: var(--border);
+}
+.jira-browser__star--on {
+  opacity: 1;
+  color: #f5b400;
 }
 
 .jira-browser__row {

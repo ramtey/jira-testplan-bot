@@ -72,6 +72,36 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Issue type validation**: Only generates plans for testable types (Story, Bug, Task)
 - **Epic launcher view**: Fetching an Epic renders its child tickets as a list with per-row Generate (test plan) and Analyze (Bug Lens) buttons; results expand inline so multiple children can be reviewed without navigating away
 
+### Jira Browser Side Rail
+
+A collapsible left rail that lets testers find a ticket without typing a key.
+Three drill-down panels mirror Jira's own structure: **Projects → Status
+columns → Issues**.
+
+- **Status columns**: statuses are grouped by Jira's `statusCategory` (To Do /
+  In Progress / Done) so the rail looks the same across projects with custom
+  workflows. Statuses outside the three known categories appear under "Other"
+  so nothing is silently hidden
+- **Issue type badges**: each issue row shows a small color-coded badge
+  (Story / Bug / Task / Spike / Epic / Sub-task) using the same palette as
+  the main ticket header
+- **Pinned + Recent**: pin frequently-used projects with the star icon — they
+  appear in a "Pinned" group at the top of the projects list. Recently visited
+  projects auto-populate a "Recent" group below it (capped at 5, excluding
+  pinned to avoid duplication). Pins and recents are persisted in
+  `localStorage` per browser. Both sections are hidden while the filter input
+  is in use
+- **Refresh model**: every panel has a manual ↻ button, and the active panel
+  silently re-fetches whenever the tab regains visibility (covers the common
+  "I just changed something in the Jira tab" case). Silent refresh keeps the
+  current data on screen while the request is in flight — no spinner flash
+- **Selection**: clicking an issue populates the existing input field and
+  triggers the normal fetch flow, so the rail is purely additive; the
+  paste-a-key input remains the escape hatch for power users
+- **Auth note**: the rail surfaces only what the configured `JIRA_USERNAME` /
+  `JIRA_API_TOKEN` can see. Project list is capped at the first 100 results
+  from `/rest/api/3/project/search`
+
 ### Jira Bug Lens
 Analyze bug tickets to go beyond the ticket description and into the code:
 - **Bug summary**: Plain-English explanation of what broke and what the user experienced
