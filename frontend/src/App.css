@@ -336,6 +336,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  animation: fadeIn 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .workflow-actions-buttons {
@@ -352,6 +353,7 @@ button:disabled {
   border-radius: 6px;
   box-shadow: none;
   border: 1px solid transparent;
+  transition: filter 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease, background 0.2s ease;
 }
 
 .btn-workflow-primary {
@@ -379,6 +381,30 @@ button:disabled {
   font-size: 0.875rem;
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+  will-change: opacity, transform;
+}
+
+.workflow-message.is-shown {
+  animation: workflow-message-enter 0.24s ease both;
+}
+
+.workflow-message.is-leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@keyframes workflow-message-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .workflow-message.success {
@@ -399,7 +425,7 @@ button:disabled {
   border-radius: 8px;
   font-size: 1rem;
   width: 100%;
-  animation: slideDown 0.3s ease;
+  animation: slideDown 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @keyframes slideDown {
@@ -941,7 +967,7 @@ button:disabled {
   color: var(--text-secondary);
   font-size: 0.9375rem;
   text-align: center;
-  animation: fadeIn 0.3s ease;
+  animation: fadeIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 /* Test Plan Display */
@@ -1163,6 +1189,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  animation: fadeIn 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 /* Test Plan Actions */
@@ -1796,7 +1823,7 @@ button:disabled {
 }
 
 .collapsible-content {
-  animation: slideDown 0.3s ease;
+  animation: slideDown 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
   overflow: hidden;
 }
 
@@ -1860,6 +1887,8 @@ button:disabled {
 
 .token-status-details {
   padding: 1rem 1.5rem;
+  animation: slideDown 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: top;
 }
 
 .token-service {
@@ -2026,6 +2055,7 @@ button:disabled {
   border-radius: 6px;
   padding: 0.75rem 1rem;
   margin: 0;
+  animation: fadeIn 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .run-history-summary {
@@ -2056,6 +2086,7 @@ button:disabled {
   border-radius: 4px;
   font-size: 0.8rem;
   cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
 }
 
 .run-history-toggle:hover {
@@ -2067,6 +2098,8 @@ button:disabled {
   margin: 0.75rem 0 0;
   padding: 0;
   border-top: 1px solid var(--border);
+  animation: slideDown 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: top;
 }
 
 .run-history-item {
@@ -2116,6 +2149,7 @@ button:disabled {
   border-radius: 4px;
   font-size: 0.8rem;
   cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease, opacity 0.18s ease;
 }
 
 .run-history-actions button:hover:not(:disabled) {
@@ -2137,6 +2171,7 @@ button:disabled {
   justify-content: center;
   z-index: 1000;
   padding: 2rem;
+  animation: modalBackdropFade 0.18s ease-out;
 }
 
 .modal-panel {
@@ -2148,6 +2183,23 @@ button:disabled {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  animation: modalPanelIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes modalBackdropFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .modal-header {
@@ -2228,6 +2280,7 @@ button:disabled {
   margin: 1.25rem 0 0;
   border-left: 3px dashed var(--border);
   border-radius: 4px;
+  animation: fadeIn 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .history-preview-header {
@@ -2263,6 +2316,7 @@ button:disabled {
   border-radius: 4px;
   font-size: 0.8rem;
   cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease;
 }
 
 .history-preview-close:hover {
@@ -2300,6 +2354,7 @@ button:disabled {
   margin-top: 2rem;
   padding-top: 2rem;
   border-top: 1px solid var(--border);
+  animation: fadeIn 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .epic-children-heading {

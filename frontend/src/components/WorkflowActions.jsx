@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
 import { API_BASE_URL } from '../config'
 
+// Match the CSS exit duration for .workflow-message.is-leaving so the element
+// stays in the DOM long enough to play its fade-out.
+const MESSAGE_EXIT_MS = 220
+
 const TESTING_STATUS = 'in testing'
 
 const ACTIONS = [
@@ -37,14 +41,26 @@ function isSKProject(ticketKey) {
 
 function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
   const [pendingAction, setPendingAction] = useState(null)
-  const [message, setMessage] = useState(null)
-  const [error, setError] = useState(null)
+  // {kind: 'success'|'error', text: string} — held during fade-out via isLeaving.
+  const [feedback, setFeedback] = useState(null)
+  const [isLeaving, setIsLeaving] = useState(false)
 
+  // Auto-dismiss success messages after 15s; errors stay until the next action.
   useEffect(() => {
-    if (!message) return
-    const t = setTimeout(() => setMessage(null), 15000)
+    if (!feedback || feedback.kind !== 'success') return
+    const dismiss = setTimeout(() => setIsLeaving(true), 15000)
+    return () => clearTimeout(dismiss)
+  }, [feedback])
+
+  // Once isLeaving flips on, wait for the CSS exit transition then unmount.
+  useEffect(() => {
+    if (!isLeaving) return
+    const t = setTimeout(() => {
+      setFeedback(null)
+      setIsLeaving(false)
+    }, MESSAGE_EXIT_MS)
     return () => clearTimeout(t)
-  }, [message])
+  }, [isLeaving])
 
   if (!isSKProject(ticketKey)) return null
 
@@ -53,8 +69,8 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
 
   const runAction = async (action) => {
     setPendingAction(action.id)
-    setMessage(null)
-    setError(null)
+    setFeedback(null)
+    setIsLeaving(false)
     try {
       const response = await fetch(
         `${API_BASE_URL}/issue/${ticketKey}/workflow/${action.id}`,
@@ -64,10 +80,13 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
       if (!response.ok) {
         throw new Error(data.detail || `Action failed (${response.status})`)
       }
-      setMessage(`Moved to ${data.target_status} · assigned to ${data.assigned_to}`)
+      setFeedback({
+        kind: 'success',
+        text: `Moved to ${data.target_status} · assigned to ${data.assigned_to}`,
+      })
       if (onActionComplete) onActionComplete()
     } catch (err) {
-      setError(err.message)
+      setFeedback({ kind: 'error', text: err.message })
     } finally {
       setPendingAction(null)
     }
@@ -89,8 +108,14 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
           </button>
         ))}
       </div>
-      {message && <div className="workflow-message success">{message}</div>}
-      {error && <div className="workflow-message error">{error}</div>}
+      {feedback && (
+        <div
+          className={`workflow-message ${feedback.kind} ${isLeaving ? 'is-leaving' : 'is-shown'}`}
+          role={feedback.kind === 'error' ? 'alert' : 'status'}
+        >
+          {feedback.text}
+        </div>
+      )}
     </div>
   )
 }
