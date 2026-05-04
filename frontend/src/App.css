@@ -1267,11 +1267,23 @@ button:disabled {
 .post-state {
   font-size: 0.75rem;
   font-weight: 500;
+  animation: postStateIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .post-state.posting { color: var(--text-secondary, #888); }
 .post-state.done    { color: var(--success, #00875a); }
 .post-state.error   { color: var(--error, #de350b); }
+
+@keyframes postStateIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 
 /* Action buttons — shared base */
 .btn-post-jira,
@@ -1284,10 +1296,34 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* Subtle pop when a feedback class is applied — smooths the otherwise
+   instant text swap from "Post to Jira" to "✓ Posted…" / "✗ Failed". */
+.btn-post-jira.btn-feedback--success,
+.btn-post-jira.btn-feedback--error,
+.btn-copy-markdown.btn-feedback--success,
+.btn-copy-markdown.btn-feedback--error {
+  animation: btnFeedbackPop 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes btnFeedbackPop {
+  0% {
+    transform: scale(0.96);
+    opacity: 0.7;
+  }
+  60% {
+    transform: scale(1.03);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 .btn-post-jira {
   background: var(--success);
   box-shadow: 0 2px 8px rgba(0, 135, 90, 0.25);
-  transition: background 0.2s ease, box-shadow 0.2s ease;
+  transition: background 0.22s ease, box-shadow 0.22s ease, opacity 0.22s ease, transform 0.18s ease;
 }
 
 .btn-post-jira:hover:not(:disabled) {
@@ -1311,7 +1347,7 @@ button:disabled {
 .btn-copy-markdown {
   background: #3a4a5c;
   box-shadow: 0 2px 8px rgba(45, 55, 72, 0.2);
-  transition: background 0.2s ease, box-shadow 0.2s ease;
+  transition: background 0.22s ease, box-shadow 0.22s ease, opacity 0.22s ease, transform 0.18s ease;
 }
 
 .btn-copy-markdown:hover:not(:disabled) {
@@ -1330,7 +1366,7 @@ button:disabled {
 .btn-download {
   background: var(--primary);
   box-shadow: 0 2px 8px rgba(102, 126, 234, 0.25);
-  transition: background 0.2s ease, box-shadow 0.2s ease;
+  transition: background 0.22s ease, box-shadow 0.22s ease, opacity 0.22s ease, transform 0.18s ease;
 }
 
 .btn-download:hover:not(:disabled) {
