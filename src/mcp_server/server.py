@@ -287,6 +287,32 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         if issue.development_info:
             development_info = asdict(issue.development_info)
 
+        # Prepare Jira comments
+        comments = None
+        if issue.comments:
+            comments = [asdict(c) for c in issue.comments]
+
+        # Prepare parent info (for sub-tasks: surfaces parent description, Figma, attachments)
+        parent_info = None
+        if issue.parent:
+            parent_info = asdict(issue.parent)
+
+        # Prepare linked issues info (blocks, blocked_by, causes, etc.)
+        linked_info = None
+        if issue.linked_issues:
+            linked_info = asdict(issue.linked_issues)
+
+        # Download image attachments (cap at 3, matching CLI behavior)
+        images = None
+        if issue.attachments:
+            images = []
+            for attachment in issue.attachments[:3]:
+                image_data = await jira_client.download_image_as_base64(attachment.url)
+                if image_data:
+                    images.append(image_data)
+            if not images:
+                images = None
+
         # Generate test plan
         llm_client = get_llm_client()
         test_plan = await llm_client.generate_test_plan(
@@ -295,6 +321,10 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
             description=issue.description or "",
             testing_context={},
             development_info=development_info,
+            images=images,
+            comments=comments,
+            parent_info=parent_info,
+            linked_info=linked_info,
         )
 
         # Convert to dict for formatting
