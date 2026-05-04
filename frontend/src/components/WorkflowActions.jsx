@@ -80,9 +80,13 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
       if (!response.ok) {
         throw new Error(data.detail || `Action failed (${response.status})`)
       }
+      const assigneeText =
+        data.assigned_to === 'unassigned'
+          ? 'unassigned'
+          : `assigned to ${data.assigned_to}`
       setFeedback({
         kind: 'success',
-        text: `Moved to ${data.target_status} · assigned to ${data.assigned_to}`,
+        text: `Moved to ${data.target_status} · ${assigneeText}`,
       })
       if (onActionComplete) onActionComplete()
     } catch (err) {

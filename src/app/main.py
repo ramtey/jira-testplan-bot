@@ -428,12 +428,10 @@ async def run_workflow_action(issue_key: str, action: str):
             assigned_label = "you"
         else:
             target_account_id, prior_name = await jira.get_prior_assignee_account_id(issue_key)
-            if not target_account_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No prior assignee found in the issue history.",
-                )
-            assigned_label = prior_name or "prior assignee"
+            if target_account_id:
+                assigned_label = prior_name or "prior assignee"
+            else:
+                assigned_label = "unassigned"
 
         await jira.transition_issue(issue_key, transition["id"])
         await jira.assign_issue(issue_key, target_account_id)
