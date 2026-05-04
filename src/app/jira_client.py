@@ -1133,7 +1133,7 @@ class JiraClient:
 
         url = f"{self.base_url}/rest/api/3/search/jql"
         payload = {
-            "jql": f'project = {project_key} AND status = "{escaped_status}" ORDER BY updated DESC',
+            "jql": f'project = {project_key} AND status = "{escaped_status}" ORDER BY Rank ASC, created ASC',
             "fields": ["summary", "issuetype", "status"],
             "maxResults": 100,
         }

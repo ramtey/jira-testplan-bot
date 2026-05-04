@@ -56,5 +56,5 @@ async def test_search_project_issues_escapes_quotes_and_backslashes_in_status():
         # should appear in the middle of the value.
         assert sent_jql == (
             'project = PROJ AND status = "Done\\\\\\" OR status = \\"Open" '
-            'ORDER BY updated DESC'
+            'ORDER BY Rank ASC, created ASC'
         )
