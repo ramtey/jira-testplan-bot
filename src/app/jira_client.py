@@ -14,6 +14,32 @@ from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, Ep
 logger = logging.getLogger(__name__)
 
 
+# Source of truth: skyslope/agent-calculator -> agent-calculator-docs/Team Members.md
+# (introduced in PR #532). GitHub display names are free-text and don't match
+# Jira display names, and several team members route commits through GitHub
+# noreply emails — login-based mapping is the only reliable signal. Keep this
+# in sync with the upstream doc when the team changes.
+TEAM_GITHUB_LOGIN_TO_JIRA: dict[str, tuple[str, str]] = {
+    "steviecs": ("5b15aed34d941a51f0da4491", "Steven Sullivan"),
+    "piradukunda": ("712020:0fac97f2-6ad3-4c72-9cf8-a73d1ee9ba83", "Patrick Iradukunda"),
+    "ramtey": ("557058:37d141e3-d541-42c5-9b2a-79278da6598e", "Ramtin Teymouri"),
+    "kszombathy-skyslope": ("633b1ba7409249995eeb9578", "Kyle Szombathy"),
+    "ssteuteville": ("712020:79959462-f899-4f82-9a2d-522c45cefaa0", "Shane Steuteville"),
+}
+
+# Bot accounts that must never be the final assignee on pass-to-UAT or
+# fail-to-in-progress, regardless of which lookup surfaced them. Compared
+# case-insensitively against Jira display names. Belt-and-suspenders for
+# the accountId-based safety net: catches stale credentials, additional
+# bot accounts, or any path that returns a name we recognize as a bot.
+BOT_DISPLAY_NAME_BLOCKLIST: frozenset[str] = frozenset({"testing skyslope"})
+
+
+def is_blocked_bot_display_name(name: str | None) -> bool:
+    """Return True if `name` matches a known bot account (case-insensitive)."""
+    return bool(name) and name.strip().lower() in BOT_DISPLAY_NAME_BLOCKLIST
+
+
 def _parse_inline_markdown(text: str) -> list:
     """Convert inline markdown (bold, italic, code) to ADF text nodes."""
     nodes = []
@@ -1664,7 +1690,10 @@ class JiraClient:
                     continue
                 if exclude_account_id and prior_id == exclude_account_id:
                     continue
-                return prior_id, item.get("fromString")
+                prior_name = item.get("fromString")
+                if is_blocked_bot_display_name(prior_name):
+                    continue
+                return prior_id, prior_name
         return None, None
 
     async def _get_issue_internal_id(self, issue_key: str) -> str | None:
@@ -1768,7 +1797,7 @@ class JiraClient:
         return None, None
 
     async def get_top_pr_contributor_account_id(
-        self, issue_key: str
+        self, issue_key: str, exclude_account_id: str | None = None
     ) -> tuple[str | None, str | None]:
         """Find the Jira user who authored the linked PRs with the most code changes.
 
@@ -1779,6 +1808,10 @@ class JiraClient:
 
         Returns (None, None) if there are no linked PRs, the GitHub token
         isn't configured, or no Jira user matches the top contributor.
+
+        `exclude_account_id` rejects matches resolving to that account (e.g.
+        the bot itself) — name/login fallbacks are loose and could otherwise
+        accidentally resolve to the bot user.
         """
         if not settings.github_token:
             return None, None
@@ -1816,6 +1849,17 @@ class JiraClient:
             author_stats.items(), key=lambda item: item[1]["changes"]
         )
 
+        # Hand-curated mapping is the most reliable signal: GitHub display
+        # names diverge from Jira (e.g. `kszombathy-skyslope` vs "Kyle
+        # Szombathy") and some commit emails are GitHub noreply addresses
+        # that no Jira search can resolve. Use it before falling through to
+        # the loose email/name search.
+        mapped = TEAM_GITHUB_LOGIN_TO_JIRA.get(top_login)
+        if mapped:
+            account_id, display_name = mapped
+            if not exclude_account_id or account_id != exclude_account_id:
+                return account_id, display_name
+
         # Build search queries in best-to-worst order. The first one that
         # resolves to a Jira user wins.
         queries: list[str] = []
@@ -1835,6 +1879,11 @@ class JiraClient:
 
         for query in queries:
             account_id, display_name = await self.find_user(query)
-            if account_id:
-                return account_id, display_name
+            if not account_id:
+                continue
+            if exclude_account_id and account_id == exclude_account_id:
+                continue
+            if is_blocked_bot_display_name(display_name):
+                continue
+            return account_id, display_name
         return None, None

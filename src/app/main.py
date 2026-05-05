@@ -15,6 +15,7 @@ from .jira_client import (
     JiraClient,
     JiraConnectionError,
     JiraNotFoundError,
+    is_blocked_bot_display_name,
 )
 from .llm_client import LLMError, get_llm_client
 from .models import (
@@ -423,29 +424,53 @@ async def run_workflow_action(issue_key: str, action: str):
                 ),
             )
 
+        my_account_id = await jira.get_my_account_id()
         if action == "pull-to-testing":
-            target_account_id = await jira.get_my_account_id()
+            target_account_id = my_account_id
             assigned_label = "you"
+            resolved_via = "self"
         else:
-            # Exclude the bot's own account from the prior-assignee search:
-            # pull-to-testing always parks the ticket on the bot, so the
-            # bot showing up as a prior `from` in the changelog is noise,
-            # not a real developer to hand the ticket back to.
-            my_account_id = await jira.get_my_account_id()
+            # Exclude the bot's own account from both lookups: pull-to-testing
+            # always parks the ticket on the bot, so the bot showing up as a
+            # prior `from` (or as a loose name match in PR-contributor search)
+            # is noise, not a real developer to hand the ticket back to.
             target_account_id, prior_name = await jira.get_prior_assignee_account_id(
                 issue_key, exclude_account_id=my_account_id
             )
             if target_account_id:
                 assigned_label = prior_name or "prior assignee"
+                resolved_via = "prior-assignee"
             else:
-                # No prior assignee — fall back to the top PR contributor so a
-                # ticket that's never been assigned still ends up on the right
-                # developer's plate.
-                target_account_id, contributor_name = await jira.get_top_pr_contributor_account_id(issue_key)
+                target_account_id, contributor_name = await jira.get_top_pr_contributor_account_id(
+                    issue_key, exclude_account_id=my_account_id
+                )
                 if target_account_id:
                     assigned_label = contributor_name or "top contributor"
+                    resolved_via = "pr-contributor"
                 else:
                     assigned_label = "unassigned"
+                    resolved_via = "unassigned"
+
+            # Final safety net: if anything upstream slipped through and
+            # resolved to a known bot (by accountId or display name), treat
+            # it as "no real developer found" and unassign instead of
+            # bouncing the ticket back to the bot.
+            if (
+                target_account_id == my_account_id
+                or is_blocked_bot_display_name(assigned_label)
+            ):
+                target_account_id = None
+                assigned_label = "unassigned"
+                resolved_via = "unassigned-safety-net"
+
+        import logging
+        logging.info(
+            "Workflow %s on %s: resolved assignee via %s -> %s",
+            action,
+            issue_key,
+            resolved_via,
+            assigned_label,
+        )
 
         await jira.transition_issue(issue_key, transition["id"])
         await jira.assign_issue(issue_key, target_account_id)
