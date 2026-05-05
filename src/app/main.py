@@ -427,7 +427,14 @@ async def run_workflow_action(issue_key: str, action: str):
             target_account_id = await jira.get_my_account_id()
             assigned_label = "you"
         else:
-            target_account_id, prior_name = await jira.get_prior_assignee_account_id(issue_key)
+            # Exclude the bot's own account from the prior-assignee search:
+            # pull-to-testing always parks the ticket on the bot, so the
+            # bot showing up as a prior `from` in the changelog is noise,
+            # not a real developer to hand the ticket back to.
+            my_account_id = await jira.get_my_account_id()
+            target_account_id, prior_name = await jira.get_prior_assignee_account_id(
+                issue_key, exclude_account_id=my_account_id
+            )
             if target_account_id:
                 assigned_label = prior_name or "prior assignee"
             else:

@@ -1619,13 +1619,20 @@ class JiraClient:
             )
         r.raise_for_status()
 
-    async def get_prior_assignee_account_id(self, issue_key: str) -> tuple[str | None, str | None]:
+    async def get_prior_assignee_account_id(
+        self, issue_key: str, exclude_account_id: str | None = None
+    ) -> tuple[str | None, str | None]:
         """Return (accountId, displayName) of the most recent prior assignee from changelog.
 
         Walks the changelog newest-first; the most recent assignee change's `from`
         field is the person who had the ticket before the current assignee. Returns
         (None, None) if there's no prior assignee (e.g. ticket only ever had one
         assignee, or was just unassigned → assigned).
+
+        `exclude_account_id` skips entries whose `from` matches it. Pass the
+        bot's own account when reassigning out of testing — pull-to-testing
+        always parks the ticket on the bot, so those entries aren't real
+        developer ownership and shouldn't win as "prior assignee".
         """
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         params = {"fields": "assignee", "expand": "changelog"}
@@ -1653,8 +1660,11 @@ class JiraClient:
                 if item.get("field") != "assignee":
                     continue
                 prior_id = item.get("from")
-                if prior_id:
-                    return prior_id, item.get("fromString")
+                if not prior_id:
+                    continue
+                if exclude_account_id and prior_id == exclude_account_id:
+                    continue
+                return prior_id, item.get("fromString")
         return None, None
 
     async def _get_issue_internal_id(self, issue_key: str) -> str | None:
