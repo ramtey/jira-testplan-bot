@@ -431,7 +431,14 @@ async def run_workflow_action(issue_key: str, action: str):
             if target_account_id:
                 assigned_label = prior_name or "prior assignee"
             else:
-                assigned_label = "unassigned"
+                # No prior assignee — fall back to the top PR contributor so a
+                # ticket that's never been assigned still ends up on the right
+                # developer's plate.
+                target_account_id, contributor_name = await jira.get_top_pr_contributor_account_id(issue_key)
+                if target_account_id:
+                    assigned_label = contributor_name or "top contributor"
+                else:
+                    assigned_label = "unassigned"
 
         await jira.transition_issue(issue_key, transition["id"])
         await jira.assign_issue(issue_key, target_account_id)

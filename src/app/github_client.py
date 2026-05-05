@@ -339,6 +339,60 @@ class GitHubClient:
         logger.warning(f"Failed to parse GitHub PR URL: {pr_url}")
         return None
 
+    async def fetch_user_profile(self, login: str) -> dict | None:
+        """Fetch a GitHub user's display name and (public) email.
+
+        `email` is only returned if the user has set it as public — which is
+        rare. Callers should fall back to commit-based emails when this is None.
+        """
+        if not self.token or not login:
+            return None
+        url = f"{self.base_url}/users/{login}"
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(url, headers=self._headers())
+                if response.status_code != 200:
+                    return None
+                data = response.json()
+                return {
+                    "login": data.get("login"),
+                    "name": data.get("name"),
+                    "email": data.get("email"),
+                }
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub user profile for {login}: {e}")
+            return None
+
+    async def fetch_pr_author_commit_email(self, pr_url: str) -> str | None:
+        """Return the git-author email of the most recent commit in a PR.
+
+        Useful for mapping a PR opener to a real email address when their
+        public profile email is hidden. GitHub's `noreply` emails are filtered
+        out — they aren't searchable in Jira.
+        """
+        if not self.token:
+            return None
+        parsed = self._parse_github_url(pr_url)
+        if not parsed:
+            return None
+        owner, repo, pr_number = parsed
+        url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/commits"
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(url, headers=self._headers(), params={"per_page": 100})
+                if response.status_code != 200:
+                    return None
+                commits = response.json() or []
+        except Exception as e:
+            logger.warning(f"Failed to fetch PR commits for {pr_url}: {e}")
+            return None
+
+        for commit in reversed(commits):
+            email = (commit.get("commit", {}).get("author") or {}).get("email")
+            if email and "noreply" not in email.lower():
+                return email
+        return None
+
     async def _fetch_pr_comments(self, client: httpx.AsyncClient, owner: str, repo: str, pr_number: int) -> list[PRComment]:
         """
         Fetch all comments for a PR (conversation + review comments).

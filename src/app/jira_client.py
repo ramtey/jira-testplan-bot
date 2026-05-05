@@ -1656,3 +1656,175 @@ class JiraClient:
                 if prior_id:
                     return prior_id, item.get("fromString")
         return None, None
+
+    async def _get_issue_internal_id(self, issue_key: str) -> str | None:
+        """Fetch only the numeric internal ID for an issue key. Used by the
+        dev-status API, which keys off issueId rather than issueKey.
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        params = {"fields": "summary"}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code != 200:
+            return None
+        return r.json().get("id")
+
+    async def _list_dev_status_pr_urls(self, issue_id: str) -> list[str]:
+        """Return GitHub PR URLs linked to an issue via the dev-status API.
+
+        Slim variant of `_get_development_info` that skips commits, branches,
+        and per-PR enrichment. Used when we only need to walk linked PRs.
+        """
+        summary_url = (
+            f"{self.base_url}/rest/dev-status/latest/issue/summary?issueId={issue_id}"
+        )
+        urls: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                summary_response = await client.get(summary_url, headers=self._headers())
+                if summary_response.status_code != 200:
+                    return []
+                summary_info = summary_response.json().get("summary", {})
+                pr_summary = summary_info.get("pullrequest", {}).get("byInstanceType", {})
+                application_types = list(pr_summary.keys())
+
+                for app_type in application_types:
+                    pr_response = await client.get(
+                        f"{self.base_url}/rest/dev-status/latest/issue/detail",
+                        headers=self._headers(),
+                        params={
+                            "issueId": issue_id,
+                            "applicationType": app_type,
+                            "dataType": "pullrequest",
+                        },
+                    )
+                    if pr_response.status_code != 200:
+                        continue
+                    for detail in pr_response.json().get("detail", []):
+                        for pr in detail.get("pullRequests", []):
+                            url = pr.get("url")
+                            if url:
+                                urls.append(url)
+        except Exception as e:
+            logger.warning(f"Dev-status PR lookup failed for issue {issue_id}: {e}")
+            return []
+
+        # De-dupe while preserving order.
+        seen: set[str] = set()
+        unique = []
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                unique.append(u)
+        return unique
+
+    async def find_user(self, query: str) -> tuple[str | None, str | None]:
+        """Search Jira users by email or display name.
+
+        Returns the first active human user (skipping app/bot accounts) as
+        (accountId, displayName), or (None, None) if no match.
+        """
+        if not query:
+            return None, None
+        url = f"{self.base_url}/rest/api/3/user/search"
+        params = {"query": query, "maxResults": 5}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code != 200:
+            return None, None
+
+        for user in r.json() or []:
+            if user.get("accountType") and user.get("accountType") != "atlassian":
+                continue
+            if user.get("active") is False:
+                continue
+            return user.get("accountId"), user.get("displayName")
+        return None, None
+
+    async def get_top_pr_contributor_account_id(
+        self, issue_key: str
+    ) -> tuple[str | None, str | None]:
+        """Find the Jira user who authored the linked PRs with the most code changes.
+
+        Walks PRs surfaced by the dev-status API, scores each PR's author by
+        `total_additions + total_deletions`, picks the top scorer, then maps
+        the GitHub login back to a Jira accountId via (in order) commit
+        author email, public profile email, public profile name, and login.
+
+        Returns (None, None) if there are no linked PRs, the GitHub token
+        isn't configured, or no Jira user matches the top contributor.
+        """
+        if not settings.github_token:
+            return None, None
+
+        issue_id = await self._get_issue_internal_id(issue_key)
+        if not issue_id:
+            return None, None
+
+        pr_urls = await self._list_dev_status_pr_urls(issue_id)
+        if not pr_urls:
+            return None, None
+
+        github_client = GitHubClient()
+        # login -> {"changes": int, "pr_urls": list[str]} so we can later look
+        # up a commit email from one of *this author's* PRs, not just any PR.
+        author_stats: dict[str, dict] = {}
+        for pr_url in pr_urls:
+            if "github.com" not in pr_url:
+                continue
+            details = await github_client.fetch_pr_details(
+                pr_url, include_patch=False, include_comments=False
+            )
+            if not details or not details.author:
+                continue
+            login = details.author
+            changes = (details.total_additions or 0) + (details.total_deletions or 0)
+            entry = author_stats.setdefault(login, {"changes": 0, "pr_urls": []})
+            entry["changes"] += changes
+            entry["pr_urls"].append(pr_url)
+
+        if not author_stats:
+            return None, None
+
+        top_login, top_entry = max(
+            author_stats.items(), key=lambda item: item[1]["changes"]
+        )
+
+        # Build search queries in best-to-worst order. The first one that
+        # resolves to a Jira user wins.
+        queries: list[str] = []
+        for pr_url in top_entry["pr_urls"]:
+            commit_email = await github_client.fetch_pr_author_commit_email(pr_url)
+            if commit_email:
+                queries.append(commit_email)
+                break
+
+        profile = await github_client.fetch_user_profile(top_login)
+        if profile:
+            if profile.get("email"):
+                queries.append(profile["email"])
+            if profile.get("name"):
+                queries.append(profile["name"])
+        queries.append(top_login)
+
+        for query in queries:
+            account_id, display_name = await self.find_user(query)
+            if account_id:
+                return account_id, display_name
+        return None, None
