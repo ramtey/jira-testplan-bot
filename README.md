@@ -63,6 +63,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **GitHub enrichment**: PR code diffs (actual source changes injected into LLM context), review comments, and repository documentation
 - **Simulator test context**: Automatically pulls testID references and screen guides from `.agents/skills/simulator-testing/references/` in the target repo (when present), so Claude references real UI test IDs in generated test steps
 - **Jira development data**: Commits, branches, and PR statuses with clickable links
+- **Open-PR handling**: Open (un-merged) PRs are excluded from the LLM prompt so plans only reflect merged code — *except* PRs whose title or branch contain `hotfix`, which are kept so QA can plan coverage before they merge
 - **Token health monitoring**: Real-time validation with expiration warnings
 
 ### Test Plan Generation
@@ -113,11 +114,17 @@ second project needs it.
   Transitions to *In Testing* and assigns the ticket to the current Jira user
   (the one whose `JIRA_USERNAME` / `JIRA_API_TOKEN` is configured)
 - **Pass to UAT**: shown when the ticket is in *In Testing*. Transitions to
-  *Ready for UAT* and reassigns to the prior assignee (read from the issue
-  changelog) so the dev who handed it over gets it back for promotion
+  *Ready for UAT* and reassigns so the dev who handed it over gets it back
+  for promotion
 - **Fail back to In Progress**: shown when the ticket is in *In Testing*.
-  Transitions to *In Progress* and reassigns to the prior assignee for
-  rework
+  Transitions to *In Progress* and reassigns for rework
+- **Assignee fallback chain** (Pass to UAT / Fail back): walks the issue
+  changelog for the prior assignee (skipping the bot's own account, since
+  Pull to Testing parks the ticket there). If none is found, falls back to
+  the top contributor across the ticket's linked PRs (highest
+  additions+deletions), mapping GitHub login → Jira account via commit
+  author email, then public profile email/name, then login. If neither
+  resolves, the ticket is left unassigned and the UI toast says so
 - **Available transition guard**: each action looks up the issue's available
   transitions before acting. If the target status isn't reachable from the
   current state the API returns 400 with the list of valid transitions, so
@@ -332,7 +339,7 @@ The CLI supports environment variables for automation. Example GitHub Actions wo
 
 ## MCP Server - Claude Skill Integration
 
-Use the test plan generator directly within Claude desktop app using natural language.
+Use the test plan generator directly within Claude desktop app using natural language. The MCP path now feeds the LLM the same context as the REST API and CLI (parent ticket, comments, linked issues, image attachments), so sub-tasks generated through Claude Desktop pick up parent Epic/Story Figma designs and descriptions automatically.
 
 ### Quick Setup
 
@@ -458,6 +465,9 @@ uv run pytest tests/ -v
 - ✅ **Jira browser side rail**: Collapsible Projects → Status → Issues drill-down with status-category grouping, type badges, pinned + recent project shortcuts, and silent refresh on tab focus
 - ✅ **QA workflow buttons**: One-click *Pull to Testing* / *Pass to UAT* / *Fail back to In Progress* for the SK project, with automatic reassignment (current user on pull, prior assignee on pass/fail)
 - ✅ **Sub-task test plans**: Sub-tasks are now a testable issue type and flow through the same generation path as Story/Task/Bug, while still inheriting parent Epic/Story design context
+- ✅ **MCP context parity**: MCP `generate_test_plan` mirrors CLI/REST context assembly (parent, comments, linked issues, images), so Claude Desktop sub-task plans no longer miss parent design resources
+- ✅ **Workflow assignee fallback**: Pass to UAT / Fail back to In Progress fall back from changelog prior-assignee → top PR contributor → unassigned, skipping the bot's own account in the changelog
+- ✅ **Hotfix-aware prompt filter**: Open hotfix PRs (title/branch contains `hotfix`) stay in the LLM prompt while other open PRs are excluded
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
