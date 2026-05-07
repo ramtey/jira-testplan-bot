@@ -55,6 +55,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
   - Root cause issues (for bugs - ensures actual cause is fixed)
   - Downstream issues this ticket may cause (validate no regressions)
 - **Smart comment analysis**: Extracts testing-related Jira comments (test scenarios, edge cases, QA discussions)
+- **QA/UAT bounce-back history**: Walks the issue changelog for transitions where the ticket reached an advanced state (QA / UAT / Testing / Ready-for-*) and was sent back to To Do, Backlog, Open, Reopened, or In Progress; pairs each bounce with the nearest Jira comment within ±6 hours (slight bonus when authors match) so the PM's reported reason is captured. Surfaced to the LLM as a "PRIOR QA / UAT BOUNCE-BACK HISTORY" section that asks for explicit regression coverage of each prior failure mode
 - **Figma integration**: Extracts actual UI component names from design files for specific test cases
 - **Smart filtering**: Focuses on runtime behavior, ignoring build-time configs (ESLint, TypeScript, etc.)
 - **Priority ordering**: Critical tests first, edge cases last
@@ -112,12 +113,22 @@ second project needs it.
 
 - **Pull to Testing**: shown when the ticket is *not* already in *In Testing*.
   Transitions to *In Testing* and assigns the ticket to the current Jira user
-  (the one whose `JIRA_USERNAME` / `JIRA_API_TOKEN` is configured)
-- **Pass to UAT**: shown when the ticket is in *In Testing*. Transitions to
-  *Ready for UAT* and reassigns so the dev who handed it over gets it back
-  for promotion
-- **Fail back to In Progress**: shown when the ticket is in *In Testing*.
-  Transitions to *In Progress* and reassigns for rework
+  (the one whose `JIRA_USERNAME` / `JIRA_API_TOKEN` is configured). If the
+  ticket has no stored test-plan run and none is loaded in the session, a
+  fresh plan is generated automatically — re-pulls and bounce-backs reuse the
+  existing plan rather than re-spending on the LLM
+- **Pass to UAT**: shown when the ticket is in *In Testing*. Opens an inline
+  note form with a "Tested in" chip row (Integ / Staging multi-select,
+  preselected from the latest comment / description / Integ default), an
+  optional Loom URL field, and an optional markdown summary. Submitting
+  transitions to *Ready for UAT*, reassigns to the dev who handed it over,
+  and posts a Jira comment whose marker line (e.g. `✅ QA Passed (Integ +
+  Staging) — ready for UAT`) stays visible with the summary tucked into a
+  collapsible expand block. Submitting the form empty preserves the original
+  one-click pass with no comment
+- **Fail back to To Do**: shown when the ticket is in *In Testing*.
+  Transitions to *To Do* (so failed QA drops back into the dev queue rather
+  than staying in flight) and reassigns for rework
 - **Assignee fallback chain** (Pass to UAT / Fail back): walks the issue
   changelog for the prior assignee (skipping the bot's own account, since
   Pull to Testing parks the ticket there). If none is found, falls back to
@@ -463,11 +474,15 @@ uv run pytest tests/ -v
 - ✅ **UX polish**: Auto-scroll to results, inline button-state feedback, red ticket badge in Bug Lens
 - ✅ **Test plan history**: Persist every test-plan run to Postgres; surface prior versions in a banner with side-by-side view and diff against the previous version; regenerations auto-chain via `previous_plan_id`
 - ✅ **Jira browser side rail**: Collapsible Projects → Status → Issues drill-down with status-category grouping, type badges, pinned + recent project shortcuts, and silent refresh on tab focus
-- ✅ **QA workflow buttons**: One-click *Pull to Testing* / *Pass to UAT* / *Fail back to In Progress* for the SK project, with automatic reassignment (current user on pull, prior assignee on pass/fail)
+- ✅ **QA workflow buttons**: One-click *Pull to Testing* / *Pass to UAT* / *Fail back to To Do* for the SK project, with automatic reassignment (current user on pull, prior assignee on pass/fail)
 - ✅ **Sub-task test plans**: Sub-tasks are now a testable issue type and flow through the same generation path as Story/Task/Bug, while still inheriting parent Epic/Story design context
 - ✅ **MCP context parity**: MCP `generate_test_plan` mirrors CLI/REST context assembly (parent, comments, linked issues, images), so Claude Desktop sub-task plans no longer miss parent design resources
-- ✅ **Workflow assignee fallback**: Pass to UAT / Fail back to In Progress fall back from changelog prior-assignee → top PR contributor → unassigned, skipping the bot's own account in the changelog
+- ✅ **Workflow assignee fallback**: Pass to UAT / Fail back to To Do fall back from changelog prior-assignee → top PR contributor → unassigned, skipping the bot's own account in the changelog
 - ✅ **Hotfix-aware prompt filter**: Open hotfix PRs (title/branch contains `hotfix`) stay in the LLM prompt while other open PRs are excluded
+- ✅ **QA/UAT bounce-back awareness**: Changelog walker detects prior QA/UAT failures, pairs each with the nearest Jira comment, and feeds them into the LLM prompt so regenerated plans cover the prior failure modes
+- ✅ **Auto test plan after Pull to Testing**: First *Pull to Testing* on a ticket with no stored run kicks off a generation automatically; subsequent re-pulls/bounce-backs reuse the existing plan
+- ✅ **Pass-to-UAT note form**: Inline form on Pass to UAT with env chips (Integ/Staging, preselected by scanning the latest comment / description), optional Loom URL, and markdown summary; posts a marker-line + collapsible-block Jira comment, or stays one-click when submitted empty
+- ✅ **Fail back to To Do**: Renamed from *Fail back to In Progress* and retargeted at *To Do* so failing QA drops the ticket back into the dev queue
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
