@@ -129,7 +129,7 @@ second project needs it.
   transitions before acting. If the target status isn't reachable from the
   current state the API returns 400 with the list of valid transitions, so
   bad clicks fail loudly instead of silently no-op'ing
-- **Endpoint**: `POST /issue/{issue_key}/workflow/{pull-to-testing|pass-to-uat|fail-to-in-progress}`
+- **Endpoint**: `POST /issue/{issue_key}/workflow/{pull-to-testing|pass-to-uat|fail-to-todo}`
 
 ### Jira Bug Lens
 Analyze bug tickets to go beyond the ticket description and into the code:
@@ -389,7 +389,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
-- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - One-click transition + reassignment for the SK project (`pull-to-testing`, `pass-to-uat`, `fail-to-in-progress`); rejects non-SK keys with 400
+- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - One-click transition + reassignment for the SK project (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`); rejects non-SK keys with 400
 
 See `/docs` for detailed API documentation and schemas.
 
