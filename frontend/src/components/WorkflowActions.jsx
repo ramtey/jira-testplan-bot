@@ -13,6 +13,38 @@ const TESTING_STATUS = 'in testing'
 const ENVIRONMENT_OPTIONS = ['Integ', 'Staging']
 const DEFAULT_ENVIRONMENTS = ['Integ']
 
+// Word-boundary keyword match per env. We deliberately don't match "stage"
+// (too noisy: "early stage", "staged rollout") or "integration" (clashes
+// with "integration test"); the bare "integ" / "staging" tokens almost
+// always refer to the env in QA chatter.
+const ENV_PATTERNS = {
+  Integ: /\binteg\b/i,
+  Staging: /\bstaging\b/i,
+}
+
+// Pick the most recent piece of ticket text that names an env and return
+// the envs it mentions. Falls back to DEFAULT_ENVIRONMENTS when nothing
+// matches, so QA still sees the usual preselect.
+function detectEnvironments(description, comments) {
+  const sources = []
+  if (Array.isArray(comments)) {
+    const sorted = comments
+      .filter((c) => c && typeof c.body === 'string' && c.body.length > 0)
+      .slice()
+      .sort((a, b) => (b.created || '').localeCompare(a.created || ''))
+    sources.push(...sorted.map((c) => c.body))
+  }
+  if (description) sources.push(description)
+
+  for (const text of sources) {
+    const matched = ENVIRONMENT_OPTIONS.filter((env) =>
+      ENV_PATTERNS[env].test(text)
+    )
+    if (matched.length > 0) return matched
+  }
+  return DEFAULT_ENVIRONMENTS
+}
+
 const ACTIONS = [
   {
     id: 'pull-to-testing',
@@ -45,7 +77,7 @@ function isSKProject(ticketKey) {
   return (ticketKey || '').toUpperCase().startsWith('SK-')
 }
 
-function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
+function WorkflowActions({ ticketKey, currentStatus, description, comments, onActionComplete }) {
   const [pendingAction, setPendingAction] = useState(null)
   // {kind: 'success'|'error', text: string} — held during fade-out via isLeaving.
   const [feedback, setFeedback] = useState(null)
@@ -120,7 +152,7 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
         text: `Moved to ${data.target_status} · ${assigneeText}${noteText}`,
       })
       closeNoteForm()
-      if (onActionComplete) onActionComplete()
+      if (onActionComplete) onActionComplete(action.id)
     } catch (err) {
       setFeedback({ kind: 'error', text: err.message })
     } finally {
@@ -130,6 +162,7 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
 
   const onActionClick = (action) => {
     if (action.id === 'pass-to-uat') {
+      setEnvironments(detectEnvironments(description, comments))
       setNoteForAction(action)
       setFeedback(null)
       return

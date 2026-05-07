@@ -116,6 +116,8 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
       <WorkflowActions
         ticketKey={ticketData.key}
         currentStatus={ticketData.status}
+        description={ticketData.description}
+        comments={ticketData.comments}
         onActionComplete={onActionComplete}
       />
 
