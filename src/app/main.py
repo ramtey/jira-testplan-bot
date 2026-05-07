@@ -501,6 +501,19 @@ async def run_workflow_action(
                 logging.warning(
                     "pass-to-uat comment failed on %s: %s", issue_key, exc
                 )
+        elif action == "fail-to-todo" and payload is not None:
+            try:
+                result = await jira.post_qa_fail_comment(
+                    issue_key,
+                    payload.reason,
+                    payload.loom_url,
+                    payload.image_urls,
+                )
+                comment_posted = result is not None
+            except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+                logging.warning(
+                    "fail-to-todo comment failed on %s: %s", issue_key, exc
+                )
 
         return {
             "status": "ok",

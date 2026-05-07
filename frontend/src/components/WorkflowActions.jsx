@@ -83,11 +83,13 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
   const [feedback, setFeedback] = useState(null)
   const [isLeaving, setIsLeaving] = useState(false)
   // When set, the inline note form is showing instead of the buttons row.
-  // Right now only `pass-to-uat` opens it; other actions still run on click.
+  // Both `pass-to-uat` and `fail-to-todo` open it; the form adapts per action.
   const [noteForAction, setNoteForAction] = useState(null)
   const [loomUrl, setLoomUrl] = useState('')
   const [summary, setSummary] = useState('')
   const [environments, setEnvironments] = useState(DEFAULT_ENVIRONMENTS)
+  const [reason, setReason] = useState('')
+  const [imageUrlsText, setImageUrlsText] = useState('')
 
   // Auto-dismiss success messages after 15s; errors stay until the next action.
   useEffect(() => {
@@ -116,6 +118,8 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
     setLoomUrl('')
     setSummary('')
     setEnvironments(DEFAULT_ENVIRONMENTS)
+    setReason('')
+    setImageUrlsText('')
   }
 
   const toggleEnvironment = (env) => {
@@ -167,6 +171,11 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
       setFeedback(null)
       return
     }
+    if (action.id === 'fail-to-todo') {
+      setNoteForAction(action)
+      setFeedback(null)
+      return
+    }
     runAction(action)
   }
 
@@ -174,17 +183,39 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
     e.preventDefault()
     if (!noteForAction) return
     const trimmedLoom = loomUrl.trim()
-    const trimmedSummary = summary.trim()
-    const hasAnyField =
-      trimmedLoom || trimmedSummary || environments.length > 0
-    const body = hasAnyField
-      ? {
-          loom_url: trimmedLoom || null,
-          summary: trimmedSummary || null,
-          environments: environments.length > 0 ? environments : null,
-        }
-      : undefined
-    runAction(noteForAction, body)
+
+    if (noteForAction.id === 'pass-to-uat') {
+      const trimmedSummary = summary.trim()
+      const hasAnyField =
+        trimmedLoom || trimmedSummary || environments.length > 0
+      const body = hasAnyField
+        ? {
+            loom_url: trimmedLoom || null,
+            summary: trimmedSummary || null,
+            environments: environments.length > 0 ? environments : null,
+          }
+        : undefined
+      runAction(noteForAction, body)
+      return
+    }
+
+    if (noteForAction.id === 'fail-to-todo') {
+      const trimmedReason = reason.trim()
+      if (!trimmedReason) {
+        setFeedback({ kind: 'error', text: 'Reason is required.' })
+        return
+      }
+      const images = imageUrlsText
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const body = {
+        reason: trimmedReason,
+        loom_url: trimmedLoom || null,
+        image_urls: images.length > 0 ? images : null,
+      }
+      runAction(noteForAction, body)
+    }
   }
 
   return (
@@ -192,28 +223,46 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
       {noteForAction ? (
         <form className="workflow-note-form" onSubmit={onNoteSubmit}>
           <div className="workflow-note-form-header">
-            Pass to UAT — optional note
+            {noteForAction.id === 'fail-to-todo'
+              ? 'Fail back to To Do — reason required'
+              : 'Pass to UAT — optional note'}
           </div>
-          <div className="workflow-note-field">
-            <span>Tested in</span>
-            <div className="workflow-env-chips" role="group" aria-label="Environments tested">
-              {ENVIRONMENT_OPTIONS.map((env) => {
-                const selected = environments.includes(env)
-                return (
-                  <button
-                    key={env}
-                    type="button"
-                    className={`workflow-env-chip${selected ? ' is-selected' : ''}`}
-                    aria-pressed={selected}
-                    onClick={() => toggleEnvironment(env)}
-                    disabled={pendingAction !== null}
-                  >
-                    {env}
-                  </button>
-                )
-              })}
+          {noteForAction.id === 'pass-to-uat' && (
+            <div className="workflow-note-field">
+              <span>Tested in</span>
+              <div className="workflow-env-chips" role="group" aria-label="Environments tested">
+                {ENVIRONMENT_OPTIONS.map((env) => {
+                  const selected = environments.includes(env)
+                  return (
+                    <button
+                      key={env}
+                      type="button"
+                      className={`workflow-env-chip${selected ? ' is-selected' : ''}`}
+                      aria-pressed={selected}
+                      onClick={() => toggleEnvironment(env)}
+                      disabled={pendingAction !== null}
+                    >
+                      {env}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
-          </div>
+          )}
+          {noteForAction.id === 'fail-to-todo' && (
+            <label className="workflow-note-field">
+              <span>Reason (markdown supported)</span>
+              <textarea
+                rows={4}
+                placeholder="What broke, where, and how to reproduce…"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                disabled={pendingAction !== null}
+                required
+                autoFocus
+              />
+            </label>
+          )}
           <label className="workflow-note-field">
             <span>Loom URL</span>
             <input
@@ -224,16 +273,30 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
               disabled={pendingAction !== null}
             />
           </label>
-          <label className="workflow-note-field">
-            <span>Test summary (markdown supported)</span>
-            <textarea
-              rows={4}
-              placeholder="Brief notes about what was tested…"
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              disabled={pendingAction !== null}
-            />
-          </label>
+          {noteForAction.id === 'pass-to-uat' && (
+            <label className="workflow-note-field">
+              <span>Test summary (markdown supported)</span>
+              <textarea
+                rows={4}
+                placeholder="Brief notes about what was tested…"
+                value={summary}
+                onChange={(e) => setSummary(e.target.value)}
+                disabled={pendingAction !== null}
+              />
+            </label>
+          )}
+          {noteForAction.id === 'fail-to-todo' && (
+            <label className="workflow-note-field">
+              <span>Image URLs (optional, one per line)</span>
+              <textarea
+                rows={3}
+                placeholder={'https://example.com/screenshot1.png\nhttps://example.com/screenshot2.png'}
+                value={imageUrlsText}
+                onChange={(e) => setImageUrlsText(e.target.value)}
+                disabled={pendingAction !== null}
+              />
+            </label>
+          )}
           <div className="workflow-note-form-actions">
             <button
               type="button"
@@ -245,10 +308,12 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
             </button>
             <button
               type="submit"
-              className="btn-workflow btn-workflow-success"
+              className={`btn-workflow btn-workflow-${noteForAction.intent}`}
               disabled={pendingAction !== null}
             >
-              {pendingAction === noteForAction.id ? 'Working…' : 'Pass to UAT'}
+              {pendingAction === noteForAction.id
+                ? 'Working…'
+                : noteForAction.label}
             </button>
           </div>
         </form>

@@ -342,15 +342,17 @@ class PostCommentRequest(BaseModel):
 class WorkflowActionRequest(BaseModel):
     """Optional payload for /issue/{key}/workflow/{action}.
 
-    Currently only `pass-to-uat` reads these — the QA can tag the
-    environment(s) tested in, attach a Loom recording, and a brief
-    summary. All fields are optional; if everything is empty the
-    transition runs without posting a comment.
+    `pass-to-uat` reads loom_url + summary + environments; `fail-to-todo`
+    reads reason (required for the comment to be posted) + loom_url +
+    image_urls. All fields are optional at the schema level; the per-action
+    handlers decide what's needed before posting.
     """
 
     loom_url: str | None = None
     summary: str | None = None
     environments: list[str] | None = None
+    reason: str | None = None
+    image_urls: list[str] | None = None
 
 
 class BugAnalysisRequest(BaseModel):

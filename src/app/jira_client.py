@@ -151,6 +151,7 @@ TEST_PLAN_EXPAND_TITLE = "Click to view"
 
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
 QA_PASS_EXPAND_TITLE = "Test summary"
+QA_FAIL_MARKER = "❌ QA Failed — back to To Do"
 
 
 def _normalize_environments(environments: list[str] | None) -> list[str]:
@@ -222,6 +223,78 @@ def _build_qa_pass_adf(
             "type": "expand",
             "attrs": {"title": QA_PASS_EXPAND_TITLE},
             "content": summary_doc.get("content", []),
+        })
+
+    return {"type": "doc", "version": 1, "content": content}
+
+
+def _normalize_url_list(urls: list[str] | None) -> list[str]:
+    if not urls:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in urls:
+        if not isinstance(url, str):
+            continue
+        url = url.strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+    return out
+
+
+def _build_qa_fail_adf(
+    reason: str | None,
+    loom_url: str | None,
+    image_urls: list[str] | None = None,
+) -> dict | None:
+    """Build the ADF body for a QA→To Do fail-back comment.
+
+    The reason is the load-bearing field — devs need to see *why* the
+    ticket bounced without expanding anything, so it's rendered above the
+    fold (not inside an expand node). Loom + image links sit below as
+    clickable references. Returns None if no reason is supplied: callers
+    use that signal to skip posting (the transition still runs).
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        return None
+
+    loom_url = (loom_url or "").strip()
+    images = _normalize_url_list(image_urls)
+
+    content: list[dict] = [
+        {"type": "paragraph", "content": [{"type": "text", "text": QA_FAIL_MARKER}]}
+    ]
+
+    reason_doc = markdown_to_adf(reason)
+    content.extend(reason_doc.get("content", []))
+
+    if loom_url:
+        content.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "📹 Loom: "},
+                {
+                    "type": "text",
+                    "text": loom_url,
+                    "marks": [{"type": "link", "attrs": {"href": loom_url}}],
+                },
+            ],
+        })
+
+    for url in images:
+        content.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "🖼️ "},
+                {
+                    "type": "text",
+                    "text": url,
+                    "marks": [{"type": "link", "attrs": {"href": url}}],
+                },
+            ],
         })
 
     return {"type": "doc", "version": 1, "content": content}
@@ -1705,6 +1778,45 @@ class JiraClient:
         QA pass, not a single living document like the test plan.
         """
         body = _build_qa_pass_adf(loom_url, summary, environments)
+        if body is None:
+            return None
+
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+        headers = {**self._headers(), "Content-Type": "application/json"}
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(url, headers=headers, json={"body": body})
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for this issue or verify your account has proper access.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+        return r.json()
+
+    async def post_qa_fail_comment(
+        self,
+        issue_key: str,
+        reason: str | None,
+        loom_url: str | None,
+        image_urls: list[str] | None = None,
+    ) -> dict | None:
+        """Post a QA→To Do fail-back comment.
+
+        Returns None when no reason is supplied (nothing to post — the
+        caller still runs the transition). Always creates a new comment.
+        """
+        body = _build_qa_fail_adf(reason, loom_url, image_urls)
         if body is None:
             return None
 
