@@ -377,6 +377,121 @@ button:disabled {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
 }
 
+.workflow-note-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  animation: workflow-message-enter 0.24s ease both;
+}
+
+.workflow-note-form-header {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.workflow-note-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.workflow-note-field input,
+.workflow-note-field textarea {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-sizing: border-box;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.workflow-note-field textarea {
+  resize: vertical;
+  min-height: 4.5rem;
+  font-family: inherit;
+}
+
+.workflow-note-field input:focus,
+.workflow-note-field textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.18);
+}
+
+.workflow-env-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.workflow-env-chip {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.workflow-env-chip:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--primary);
+}
+
+.workflow-env-chip.is-selected {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+
+.workflow-env-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workflow-note-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.15rem;
+}
+
+.btn-workflow-link {
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.btn-workflow-link:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.btn-workflow-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .workflow-message {
   font-size: 0.875rem;
   padding: 0.5rem 0.75rem;

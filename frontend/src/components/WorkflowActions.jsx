@@ -7,6 +7,12 @@ const MESSAGE_EXIT_MS = 220
 
 const TESTING_STATUS = 'in testing'
 
+// Environments QA can tag onto a Pass-to-UAT comment. Add new ones here —
+// the backend accepts whatever strings are sent. Integ is preselected
+// because it's the default target for most tickets.
+const ENVIRONMENT_OPTIONS = ['Integ', 'Staging']
+const DEFAULT_ENVIRONMENTS = ['Integ']
+
 const ACTIONS = [
   {
     id: 'pull-to-testing',
@@ -23,9 +29,9 @@ const ACTIONS = [
     showWhen: (status) => normalize(status) === TESTING_STATUS,
   },
   {
-    id: 'fail-to-in-progress',
-    label: 'Fail back to In Progress',
-    title: 'Move back to In Progress and reassign to the previous person',
+    id: 'fail-to-todo',
+    label: 'Fail back to To Do',
+    title: 'Move back to To Do and reassign to the previous person',
     intent: 'warn',
     showWhen: (status) => normalize(status) === TESTING_STATUS,
   },
@@ -44,6 +50,12 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
   // {kind: 'success'|'error', text: string} — held during fade-out via isLeaving.
   const [feedback, setFeedback] = useState(null)
   const [isLeaving, setIsLeaving] = useState(false)
+  // When set, the inline note form is showing instead of the buttons row.
+  // Right now only `pass-to-uat` opens it; other actions still run on click.
+  const [noteForAction, setNoteForAction] = useState(null)
+  const [loomUrl, setLoomUrl] = useState('')
+  const [summary, setSummary] = useState('')
+  const [environments, setEnvironments] = useState(DEFAULT_ENVIRONMENTS)
 
   // Auto-dismiss success messages after 15s; errors stay until the next action.
   useEffect(() => {
@@ -67,14 +79,32 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
   const visibleActions = ACTIONS.filter((a) => a.showWhen(currentStatus))
   if (visibleActions.length === 0) return null
 
-  const runAction = async (action) => {
+  const closeNoteForm = () => {
+    setNoteForAction(null)
+    setLoomUrl('')
+    setSummary('')
+    setEnvironments(DEFAULT_ENVIRONMENTS)
+  }
+
+  const toggleEnvironment = (env) => {
+    setEnvironments((prev) =>
+      prev.includes(env) ? prev.filter((e) => e !== env) : [...prev, env]
+    )
+  }
+
+  const runAction = async (action, body) => {
     setPendingAction(action.id)
     setFeedback(null)
     setIsLeaving(false)
     try {
+      const init = { method: 'POST' }
+      if (body) {
+        init.headers = { 'Content-Type': 'application/json' }
+        init.body = JSON.stringify(body)
+      }
       const response = await fetch(
         `${API_BASE_URL}/issue/${ticketKey}/workflow/${action.id}`,
-        { method: 'POST' }
+        init
       )
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
@@ -84,10 +114,12 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
         data.assigned_to === 'unassigned'
           ? 'unassigned'
           : `assigned to ${data.assigned_to}`
+      const noteText = data.comment_posted ? ' · note posted' : ''
       setFeedback({
         kind: 'success',
-        text: `Moved to ${data.target_status} · ${assigneeText}`,
+        text: `Moved to ${data.target_status} · ${assigneeText}${noteText}`,
       })
+      closeNoteForm()
       if (onActionComplete) onActionComplete()
     } catch (err) {
       setFeedback({ kind: 'error', text: err.message })
@@ -96,22 +128,113 @@ function WorkflowActions({ ticketKey, currentStatus, onActionComplete }) {
     }
   }
 
+  const onActionClick = (action) => {
+    if (action.id === 'pass-to-uat') {
+      setNoteForAction(action)
+      setFeedback(null)
+      return
+    }
+    runAction(action)
+  }
+
+  const onNoteSubmit = (e) => {
+    e.preventDefault()
+    if (!noteForAction) return
+    const trimmedLoom = loomUrl.trim()
+    const trimmedSummary = summary.trim()
+    const hasAnyField =
+      trimmedLoom || trimmedSummary || environments.length > 0
+    const body = hasAnyField
+      ? {
+          loom_url: trimmedLoom || null,
+          summary: trimmedSummary || null,
+          environments: environments.length > 0 ? environments : null,
+        }
+      : undefined
+    runAction(noteForAction, body)
+  }
+
   return (
     <div className="workflow-actions">
-      <div className="workflow-actions-buttons">
-        {visibleActions.map((action) => (
-          <button
-            key={action.id}
-            type="button"
-            className={`btn-workflow btn-workflow-${action.intent}`}
-            title={action.title}
-            disabled={pendingAction !== null}
-            onClick={() => runAction(action)}
-          >
-            {pendingAction === action.id ? 'Working…' : action.label}
-          </button>
-        ))}
-      </div>
+      {noteForAction ? (
+        <form className="workflow-note-form" onSubmit={onNoteSubmit}>
+          <div className="workflow-note-form-header">
+            Pass to UAT — optional note
+          </div>
+          <div className="workflow-note-field">
+            <span>Tested in</span>
+            <div className="workflow-env-chips" role="group" aria-label="Environments tested">
+              {ENVIRONMENT_OPTIONS.map((env) => {
+                const selected = environments.includes(env)
+                return (
+                  <button
+                    key={env}
+                    type="button"
+                    className={`workflow-env-chip${selected ? ' is-selected' : ''}`}
+                    aria-pressed={selected}
+                    onClick={() => toggleEnvironment(env)}
+                    disabled={pendingAction !== null}
+                  >
+                    {env}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <label className="workflow-note-field">
+            <span>Loom URL</span>
+            <input
+              type="url"
+              placeholder="https://www.loom.com/share/…"
+              value={loomUrl}
+              onChange={(e) => setLoomUrl(e.target.value)}
+              disabled={pendingAction !== null}
+            />
+          </label>
+          <label className="workflow-note-field">
+            <span>Test summary (markdown supported)</span>
+            <textarea
+              rows={4}
+              placeholder="Brief notes about what was tested…"
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              disabled={pendingAction !== null}
+            />
+          </label>
+          <div className="workflow-note-form-actions">
+            <button
+              type="button"
+              className="btn-workflow-link"
+              onClick={closeNoteForm}
+              disabled={pendingAction !== null}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn-workflow btn-workflow-success"
+              disabled={pendingAction !== null}
+            >
+              {pendingAction === noteForAction.id ? 'Working…' : 'Pass to UAT'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="workflow-actions-buttons">
+          {visibleActions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className={`btn-workflow btn-workflow-${action.intent}`}
+              title={action.title}
+              disabled={pendingAction !== null}
+              onClick={() => onActionClick(action)}
+            >
+              {pendingAction === action.id ? 'Working…' : action.label}
+            </button>
+          ))}
+        </div>
+      )}
       {feedback && (
         <div
           className={`workflow-message ${feedback.kind} ${isLeaving ? 'is-leaving' : 'is-shown'}`}
