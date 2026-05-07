@@ -208,6 +208,22 @@ class SlackMessage:
 
 
 @dataclass
+class BounceEvent:
+    """A backward status transition (e.g. UAT/QA → To Do) detected in the ticket's changelog.
+
+    These flag regression-prone moments — the ticket reached an advanced workflow state
+    and was then sent back, usually because something didn't work. The `reason` is the
+    body of the Jira comment closest in time to the transition (best-effort).
+    """
+
+    from_status: str
+    to_status: str
+    timestamp: str  # ISO-8601 from Jira changelog
+    author: str | None = None  # Who performed the transition
+    reason: str | None = None  # Nearest-in-time comment body, truncated
+
+
+@dataclass
 class JiraIssue:
     """Represents a Jira issue with extracted data."""
 
@@ -226,6 +242,7 @@ class JiraIssue:
     linked_issues: LinkedIssues | None = None  # Linked tickets (blocks, blocked by, etc.)
     status: str | None = None  # Workflow status name (e.g. "To Do", "In Progress", "In Testing", "Done")
     status_category: str | None = None  # Stable category key: "new" | "indeterminate" | "done"
+    bounce_history: list[BounceEvent] | None = None  # Detected QA/UAT → ToDo regressions
 
 
 # ============================================================================
@@ -290,6 +307,7 @@ class GenerateTestPlanRequest(BaseModel):
     comments: list[dict] | None = None  # Filtered testing-related Jira comments
     parent_info: dict | None = None  # Parent ticket context (key, summary, description, resources)
     linked_info: dict | None = None  # Linked issues (blocks, blocked_by, causes, caused_by)
+    bounce_history: list[dict] | None = None  # Prior QA/UAT bounce-back events with reasons
 
 
 class TicketInput(BaseModel):
@@ -305,6 +323,7 @@ class TicketInput(BaseModel):
     comments: list[dict] | None = None
     parent_info: dict | None = None
     linked_info: dict | None = None
+    bounce_history: list[dict] | None = None
 
 
 class MultiTicketGenerateRequest(BaseModel):
@@ -318,6 +337,20 @@ class PostCommentRequest(BaseModel):
 
     issue_key: str
     comment_text: str
+
+
+class WorkflowActionRequest(BaseModel):
+    """Optional payload for /issue/{key}/workflow/{action}.
+
+    Currently only `pass-to-uat` reads these — the QA can tag the
+    environment(s) tested in, attach a Loom recording, and a brief
+    summary. All fields are optional; if everything is empty the
+    transition runs without posting a comment.
+    """
+
+    loom_url: str | None = None
+    summary: str | None = None
+    environments: list[str] | None = None
 
 
 class BugAnalysisRequest(BaseModel):

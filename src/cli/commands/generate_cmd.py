@@ -174,6 +174,11 @@ def generate(
                 if issue.linked_issues:
                     linked_info = asdict(issue.linked_issues)
 
+                # Prepare bounce-back history (QA/UAT → ToDo regressions)
+                bounce_history = None
+                if issue.bounce_history:
+                    bounce_history = [asdict(b) for b in issue.bounce_history]
+
                 # Download image attachments
                 images = None
                 if issue.attachments:
@@ -199,6 +204,7 @@ def generate(
                         comments=comments,
                         parent_info=parent_info,
                         linked_info=linked_info,
+                        bounce_history=bounce_history,
                     )
                 )
 

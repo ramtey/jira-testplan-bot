@@ -9,7 +9,7 @@ from .config import settings
 from .description_analyzer import analyze_description
 from .figma_client import FigmaClient
 from .github_client import GitHubClient
-from .models import Attachment, Commit, DevelopmentInfo, DescriptionAnalysis, EpicChildSummary, FileChange, JiraComment, JiraIssue, LinkedIssue, LinkedIssues, ParentIssue, PRComment, PullRequest, RepositoryContext
+from .models import Attachment, BounceEvent, Commit, DevelopmentInfo, DescriptionAnalysis, EpicChildSummary, FileChange, JiraComment, JiraIssue, LinkedIssue, LinkedIssues, ParentIssue, PRComment, PullRequest, RepositoryContext
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ TEAM_GITHUB_LOGIN_TO_JIRA: dict[str, tuple[str, str]] = {
 }
 
 # Bot accounts that must never be the final assignee on pass-to-UAT or
-# fail-to-in-progress, regardless of which lookup surfaced them. Compared
+# fail-to-todo, regardless of which lookup surfaced them. Compared
 # case-insensitively against Jira display names. Belt-and-suspenders for
 # the accountId-based safety net: catches stale credentials, additional
 # bot accounts, or any path that returns a name we recognize as a bot.
@@ -149,6 +149,83 @@ def markdown_to_adf(markdown_text: str) -> dict:
 TEST_PLAN_MARKER = "🤖 Generated Test Plan"
 TEST_PLAN_EXPAND_TITLE = "Click to view"
 
+QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
+QA_PASS_EXPAND_TITLE = "Test summary"
+
+
+def _normalize_environments(environments: list[str] | None) -> list[str]:
+    """Trim, drop empties, and dedupe while preserving order."""
+    if not environments:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for env in environments:
+        if not isinstance(env, str):
+            continue
+        env = env.strip()
+        if not env or env.lower() in seen:
+            continue
+        seen.add(env.lower())
+        out.append(env)
+    return out
+
+
+def _build_qa_pass_adf(
+    loom_url: str | None,
+    summary: str | None,
+    environments: list[str] | None = None,
+) -> dict | None:
+    """Build the ADF body for a QA→UAT pass comment.
+
+    The marker paragraph is always first so future flows can detect this
+    comment the same way test-plan comments are detected. The environments
+    tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
+    stays visible without expanding. The Loom link sits above the fold;
+    the freeform summary is wrapped in an `expand` node.
+
+    Returns None when no fields are populated — callers use that signal
+    to skip posting entirely (preserves the original one-click pass).
+    """
+    loom_url = (loom_url or "").strip()
+    summary = (summary or "").strip()
+    envs = _normalize_environments(environments)
+    if not loom_url and not summary and not envs:
+        return None
+
+    if envs:
+        marker_text = QA_PASS_MARKER.replace(
+            "QA Passed", f"QA Passed ({' + '.join(envs)})"
+        )
+    else:
+        marker_text = QA_PASS_MARKER
+
+    content: list[dict] = [
+        {"type": "paragraph", "content": [{"type": "text", "text": marker_text}]}
+    ]
+
+    if loom_url:
+        content.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "📹 Loom: "},
+                {
+                    "type": "text",
+                    "text": loom_url,
+                    "marks": [{"type": "link", "attrs": {"href": loom_url}}],
+                },
+            ],
+        })
+
+    if summary:
+        summary_doc = markdown_to_adf(summary)
+        content.append({
+            "type": "expand",
+            "attrs": {"title": QA_PASS_EXPAND_TITLE},
+            "content": summary_doc.get("content", []),
+        })
+
+    return {"type": "doc", "version": 1, "content": content}
+
 
 def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
                          title: str = TEST_PLAN_EXPAND_TITLE) -> dict:
@@ -216,6 +293,130 @@ def _is_patchable_file(filename: str) -> bool:
     if any(basename.endswith(s) for s in ('.test.ts', '.test.tsx', '.spec.ts', '.spec.tsx', '.test.js')):
         return False
     return basename.endswith(_RUNTIME_EXTENSIONS)
+
+
+# Bounce-back detection: a "bounce" is a status transition that drops the
+# ticket back to a "needs more dev work" state AFTER it had already been
+# pushed to a downstream review/test state. Names are matched lowercase.
+_BOUNCE_BACKWARD_TARGETS: frozenset[str] = frozenset({
+    "to do", "todo", "backlog", "open", "reopened", "in progress",
+})
+_BOUNCE_ADVANCED_TOKENS: tuple[str, ...] = (
+    "qa", "uat", "test", "ready for", "verify", "verification", "release", "stage", "done",
+)
+
+
+def _is_advanced_status(name: str | None) -> bool:
+    if not name:
+        return False
+    n = name.lower()
+    return any(token in n for token in _BOUNCE_ADVANCED_TOKENS)
+
+
+def _is_backward_target(name: str | None) -> bool:
+    if not name:
+        return False
+    return name.strip().lower() in _BOUNCE_BACKWARD_TARGETS
+
+
+def _parse_jira_timestamp(ts: str | None):
+    """Parse Jira's ISO-8601 timestamps (handles trailing Z and ±HHMM offsets)."""
+    if not ts:
+        return None
+    from datetime import datetime
+    s = ts.strip()
+    # Jira returns "...+0000" — datetime.fromisoformat needs "+00:00" pre-3.11.
+    if len(s) >= 5 and (s[-5] in "+-") and s[-3] != ":":
+        s = s[:-2] + ":" + s[-2:]
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _find_bounce_reason(
+    comments_data: list[dict],
+    transition_ts: str,
+    transition_author: str | None,
+) -> str | None:
+    """Find the comment most likely to explain a bounce-back transition.
+
+    Heuristic: prefer comments by the same author within ±6 hours of the
+    transition; otherwise the closest comment within that window. Returns
+    plain text (truncated to 1000 chars) or None.
+    """
+    from datetime import timedelta
+
+    target = _parse_jira_timestamp(transition_ts)
+    if not target or not comments_data:
+        return None
+
+    window = timedelta(hours=6)
+    best: tuple[float, dict] | None = None  # (delta_seconds, comment_data)
+
+    for c in comments_data:
+        c_ts = _parse_jira_timestamp(c.get("created"))
+        if not c_ts:
+            continue
+        delta = c_ts - target
+        if abs(delta) > window:
+            continue
+        author = ((c.get("author") or {}).get("displayName")
+                  or (c.get("author") or {}).get("emailAddress"))
+        # Same author + posted within the window: prefer those (slight bonus)
+        score = abs(delta.total_seconds())
+        if transition_author and author == transition_author:
+            score -= 60 * 30  # 30-minute bonus for matching author
+        if best is None or score < best[0]:
+            best = (score, c)
+
+    if not best:
+        return None
+
+    body_text = extract_text_from_adf(best[1].get("body", {}))
+    if not body_text or not body_text.strip():
+        return None
+    body_text = body_text.strip()
+    if len(body_text) > 1000:
+        body_text = body_text[:1000] + "..."
+    return body_text
+
+
+def _extract_bounce_history(
+    changelog_histories: list[dict],
+    comments_data: list[dict],
+) -> list[BounceEvent]:
+    """Scan the changelog for QA/UAT → ToDo style regressions and pair each with a reason."""
+    events: list[BounceEvent] = []
+    saw_advanced = False
+
+    for history in changelog_histories:
+        created = history.get("created")
+        author = (history.get("author") or {}).get("displayName")
+        for item in history.get("items", []):
+            if item.get("field") != "status":
+                continue
+            from_status = item.get("fromString") or ""
+            to_status = item.get("toString") or ""
+            if _is_advanced_status(to_status):
+                saw_advanced = True
+            if (
+                saw_advanced
+                and _is_backward_target(to_status)
+                and _is_advanced_status(from_status)
+            ):
+                events.append(
+                    BounceEvent(
+                        from_status=from_status,
+                        to_status=to_status,
+                        timestamp=created or "",
+                        author=author,
+                        reason=_find_bounce_reason(comments_data, created, author),
+                    )
+                )
+    return events
 
 
 class JiraAuthError(Exception):
@@ -1309,6 +1510,18 @@ class JiraClient:
             # Non-critical - continue without comments if fetching fails
             logger.warning(f"Failed to fetch comments for {issue_key}: {e}")
 
+        # Detect QA/UAT → ToDo bounce-backs from the changelog. Reason text is
+        # pulled from the unfiltered comment list since bounce reasons may not
+        # match the testing-comment keyword filter.
+        bounce_history = _extract_bounce_history(
+            data.get("changelog", {}).get("histories", []),
+            comments_data,
+        )
+        if bounce_history:
+            logger.info(
+                f"Detected {len(bounce_history)} bounce-back event(s) for {issue_key}"
+            )
+
         # Fallback PR discovery: scan description and comments for GitHub PR URLs.
         # Catches PRs pasted as plain links in text when Jira-GitHub integration is absent.
         existing_pr_urls = {
@@ -1387,6 +1600,7 @@ class JiraClient:
             linked_issues=linked_issues,
             status=status_name,
             status_category=status_category,
+            bounce_history=bounce_history if bounce_history else None,
         )
 
     async def post_comment(self, issue_key: str, comment_text: str) -> dict:
@@ -1476,6 +1690,46 @@ class JiraClient:
         result = r.json()
         result["updated"] = False
         return result
+
+    async def post_qa_pass_comment(
+        self,
+        issue_key: str,
+        loom_url: str | None,
+        summary: str | None,
+        environments: list[str] | None = None,
+    ) -> dict | None:
+        """Post a QA→UAT pass comment with optional environments / Loom / summary.
+
+        Returns None when no fields are populated (nothing to post). Always
+        creates a new comment — these are point-in-time records of each
+        QA pass, not a single living document like the test plan.
+        """
+        body = _build_qa_pass_adf(loom_url, summary, environments)
+        if body is None:
+            return None
+
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+        headers = {**self._headers(), "Content-Type": "application/json"}
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(url, headers=headers, json={"body": body})
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for this issue or verify your account has proper access.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+        return r.json()
 
     async def get_comments(self, issue_key: str) -> list[dict]:
         """

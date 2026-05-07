@@ -23,6 +23,7 @@ from .models import (
     MultiTicketGenerateRequest,
     PostCommentRequest,
     TicketInput,
+    WorkflowActionRequest,
 )
 from .repositories import bug_analysis_repository
 from .runs_routes import router as runs_router
@@ -220,6 +221,10 @@ async def get_issue(issue_key: str):
             if issue.linked_issues.caused_by:
                 linked_info_dict["caused_by"] = [asdict(link) for link in issue.linked_issues.caused_by]
 
+        bounce_history_list = None
+        if issue.bounce_history:
+            bounce_history_list = [asdict(b) for b in issue.bounce_history]
+
         return {
             "key": issue.key,
             "summary": issue.summary,
@@ -242,6 +247,7 @@ async def get_issue(issue_key: str):
             "linked_issues": linked_info_dict,
             "status": issue.status,
             "status_category": issue.status_category,
+            "bounce_history": bounce_history_list,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -383,12 +389,16 @@ async def summarize_issue(issue_key: str, request: dict):
 SK_WORKFLOW_ACTIONS: dict[str, str] = {
     "pull-to-testing": "In Testing",
     "pass-to-uat": "Ready for UAT",
-    "fail-to-in-progress": "In Progress",
+    "fail-to-todo": "To Do",
 }
 
 
 @app.post("/issue/{issue_key}/workflow/{action}")
-async def run_workflow_action(issue_key: str, action: str):
+async def run_workflow_action(
+    issue_key: str,
+    action: str,
+    payload: WorkflowActionRequest | None = None,
+):
     """Execute a single-click QA workflow action: transition + reassign."""
     if not issue_key.upper().startswith("SK-"):
         raise HTTPException(
@@ -475,11 +485,29 @@ async def run_workflow_action(issue_key: str, action: str):
         await jira.transition_issue(issue_key, transition["id"])
         await jira.assign_issue(issue_key, target_account_id)
 
+        comment_posted = False
+        if action == "pass-to-uat" and payload is not None:
+            try:
+                result = await jira.post_qa_pass_comment(
+                    issue_key,
+                    payload.loom_url,
+                    payload.summary,
+                    payload.environments,
+                )
+                comment_posted = result is not None
+            except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+                # Transition + reassign already succeeded — surface the
+                # comment failure but don't roll back the workflow move.
+                logging.warning(
+                    "pass-to-uat comment failed on %s: %s", issue_key, exc
+                )
+
         return {
             "status": "ok",
             "action": action,
             "target_status": target_status,
             "assigned_to": assigned_label,
+            "comment_posted": comment_posted,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -572,6 +600,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             linked_info=request.linked_info,
             slack_messages=slack_messages_for_prompt,
             seed_regressions=seed_regressions or None,
+            bounce_history=request.bounce_history,
         )
 
         response = {

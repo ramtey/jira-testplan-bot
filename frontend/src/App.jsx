@@ -253,6 +253,7 @@ function App() {
             comments: td.comments || null,
             parent_info: td.parent || null,
             linked_info: td.linked_issues || null,
+            bounce_history: td.bounce_history || null,
           }),
           signal: controller.signal,
         })
@@ -283,6 +284,7 @@ function App() {
               comments: td.comments || null,
               parent_info: td.parent || null,
               linked_info: td.linked_issues || null,
+              bounce_history: td.bounce_history || null,
             })),
           }),
           signal: controller.signal,

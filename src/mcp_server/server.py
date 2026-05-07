@@ -302,6 +302,11 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         if issue.linked_issues:
             linked_info = asdict(issue.linked_issues)
 
+        # Prepare bounce-back history (QA/UAT → ToDo regressions)
+        bounce_history = None
+        if issue.bounce_history:
+            bounce_history = [asdict(b) for b in issue.bounce_history]
+
         # Download image attachments (cap at 3, matching CLI behavior)
         images = None
         if issue.attachments:
@@ -325,6 +330,7 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
             comments=comments,
             parent_info=parent_info,
             linked_info=linked_info,
+            bounce_history=bounce_history,
         )
 
         # Convert to dict for formatting
