@@ -191,16 +191,36 @@ function App() {
 
   // Refresh just the current ticket's metadata in place — used after workflow
   // actions so the user keeps their generated test plan, history, etc.
-  const refreshCurrentTicket = async () => {
+  const refreshCurrentTicket = async (actionId) => {
     if (ticketsData.length !== 1) return
     const key = ticketsData[0].key
+    let refreshed
     try {
       const response = await fetch(`${API_BASE_URL}/issue/${key}`)
       if (!response.ok) return
-      const data = await response.json()
-      setTicketsData([data])
+      refreshed = await response.json()
+      setTicketsData([refreshed])
     } catch {
-      // ignore — the user can manually refetch if needed
+      return
+    }
+
+    // After Pull-to-Testing, auto-generate a test plan if none has ever been
+    // generated for this ticket — saves the QA tester an extra click.
+    // Skipped when a prior run already exists in the DB or one is loaded in
+    // this session, so re-pulls and bounce-backs don't re-spend on the LLM.
+    if (actionId !== 'pull-to-testing') return
+    if (NON_TESTABLE_ISSUE_TYPES.has(refreshed.issue_type)) return
+    if (testPlan) return
+    try {
+      const res = await fetch(`${API_BASE_URL}/runs/by-ticket/${key}`)
+      const data = res.ok ? await res.json() : { runs: [] }
+      const runs = Array.isArray(data.runs) ? data.runs : []
+      setRunHistory(runs)
+      if (runs.length === 0) {
+        handleGenerateTestPlan()
+      }
+    } catch {
+      // network blip — leave the user to click Generate manually
     }
   }
 
