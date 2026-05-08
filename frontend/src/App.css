@@ -2494,9 +2494,26 @@ button:disabled {
   color: var(--text-secondary);
 }
 
-/* Historical preview is read-only — hide the live action buttons. */
-.history-preview-body .test-plan-actions {
+/* Historical preview is read-only by default — hide the live action buttons.
+   When no live plan exists, the preview becomes the active plan and gains
+   the --actionable modifier so the export/post buttons are usable. */
+.history-preview:not(.history-preview--actionable) .history-preview-body .test-plan-actions {
   display: none;
+}
+
+.history-preview--actionable .history-preview-body {
+  filter: none;
+  opacity: 1;
+  color: var(--text-primary);
+}
+
+.history-preview--actionable .history-preview-body h3,
+.history-preview--actionable .history-preview-body h4,
+.history-preview--actionable .history-preview-body h5,
+.history-preview--actionable .history-preview-body p,
+.history-preview--actionable .history-preview-body li,
+.history-preview--actionable .history-preview-body strong {
+  color: var(--text-primary);
 }
 
 /* ── Epic children list ──────────────────────────────────────────────────── */

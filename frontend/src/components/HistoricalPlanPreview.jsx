@@ -24,9 +24,17 @@ function formatRelative(iso) {
   return d.toLocaleDateString()
 }
 
-export default function HistoricalPlanPreview({ plan, version, createdAt, ticketData, onClose }) {
+export default function HistoricalPlanPreview({
+  plan,
+  version,
+  createdAt,
+  ticketData,
+  onClose,
+  showActions = false,
+}) {
+  const className = `history-preview${showActions ? ' history-preview--actionable' : ''}`
   return (
-    <section className="history-preview" aria-label="Historical test plan preview">
+    <section className={className} aria-label="Historical test plan preview">
       <header className="history-preview-header">
         <span className="history-preview-label">
           History preview · <strong>v{version}</strong> · {formatRelative(createdAt)}
