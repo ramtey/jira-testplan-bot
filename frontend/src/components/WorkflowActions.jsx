@@ -264,15 +264,24 @@ function WorkflowActions({
     if (!noteForAction) return
     const trimmedLoom = loomUrl.trim()
 
+    const images = imageUrlsText
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+
     if (noteForAction.id === 'pass-to-uat') {
       const trimmedSummary = summary.trim()
       const hasAnyField =
-        trimmedLoom || trimmedSummary || environments.length > 0
+        trimmedLoom ||
+        trimmedSummary ||
+        environments.length > 0 ||
+        images.length > 0
       const body = hasAnyField
         ? {
             loom_url: trimmedLoom || null,
             summary: trimmedSummary || null,
             environments: environments.length > 0 ? environments : null,
+            image_urls: images.length > 0 ? images : null,
             mention_account_ids:
               mentionAccountIds.length > 0 ? mentionAccountIds : null,
           }
@@ -287,10 +296,6 @@ function WorkflowActions({
         setFeedback({ kind: 'error', text: 'Reason is required.' })
         return
       }
-      const images = imageUrlsText
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean)
       const body = {
         reason: trimmedReason,
         loom_url: trimmedLoom || null,
@@ -369,18 +374,16 @@ function WorkflowActions({
               />
             </label>
           )}
-          {noteForAction.id === 'fail-to-todo' && (
-            <label className="workflow-note-field">
-              <span>Image URLs (optional, one per line)</span>
-              <textarea
-                rows={3}
-                placeholder={'https://example.com/screenshot1.png\nhttps://example.com/screenshot2.png'}
-                value={imageUrlsText}
-                onChange={(e) => setImageUrlsText(e.target.value)}
-                disabled={pendingAction !== null}
-              />
-            </label>
-          )}
+          <label className="workflow-note-field">
+            <span>Image URLs (optional, one per line)</span>
+            <textarea
+              rows={3}
+              placeholder={'https://example.com/screenshot1.png\nhttps://example.com/screenshot2.png'}
+              value={imageUrlsText}
+              onChange={(e) => setImageUrlsText(e.target.value)}
+              disabled={pendingAction !== null}
+            />
+          </label>
           {mentionCandidates.length > 0 && (
             <div className="workflow-note-field">
               <span>Notify (optional)</span>

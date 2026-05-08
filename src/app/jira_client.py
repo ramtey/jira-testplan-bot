@@ -176,25 +176,29 @@ def _build_qa_pass_adf(
     summary: str | None,
     environments: list[str] | None = None,
     mention_account_ids: list[str] | None = None,
+    image_urls: list[str] | None = None,
 ) -> dict | None:
     """Build the ADF body for a QA→UAT pass comment.
 
     The marker paragraph is always first so future flows can detect this
     comment the same way test-plan comments are detected. The environments
     tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
-    stays visible without expanding. The Loom link sits above the fold;
-    the freeform summary is wrapped in an `expand` node. When mentions
-    are supplied, a final "cc:" paragraph triggers Jira notifications.
+    stays visible without expanding. The Loom link sits above the fold,
+    image links sit just below it (also above-fold so reviewers see proof
+    without expanding), and the freeform summary is wrapped in an `expand`
+    node. When mentions are supplied, a final "cc:" paragraph triggers
+    Jira notifications.
 
     Mentions alone don't justify posting a comment — the function still
-    returns None unless at least one of loom/summary/envs is populated,
-    so QA accidentally selecting a chip with no other content stays a
-    one-click pass.
+    returns None unless at least one substantive field
+    (loom/summary/envs/images) is populated, so QA accidentally selecting
+    a chip with no other content stays a one-click pass.
     """
     loom_url = (loom_url or "").strip()
     summary = (summary or "").strip()
     envs = _normalize_environments(environments)
-    if not loom_url and not summary and not envs:
+    images = _normalize_url_list(image_urls)
+    if not loom_url and not summary and not envs and not images:
         return None
 
     if envs:
@@ -217,6 +221,19 @@ def _build_qa_pass_adf(
                     "type": "text",
                     "text": loom_url,
                     "marks": [{"type": "link", "attrs": {"href": loom_url}}],
+                },
+            ],
+        })
+
+    for url in images:
+        content.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "🖼️ "},
+                {
+                    "type": "text",
+                    "text": url,
+                    "marks": [{"type": "link", "attrs": {"href": url}}],
                 },
             ],
         })
@@ -1819,14 +1836,17 @@ class JiraClient:
         summary: str | None,
         environments: list[str] | None = None,
         mention_account_ids: list[str] | None = None,
+        image_urls: list[str] | None = None,
     ) -> dict | None:
-        """Post a QA→UAT pass comment with optional environments / Loom / summary.
+        """Post a QA→UAT pass comment with optional environments / Loom / summary / images.
 
         Returns None when no fields are populated (nothing to post). Always
         creates a new comment — these are point-in-time records of each
         QA pass, not a single living document like the test plan.
         """
-        body = _build_qa_pass_adf(loom_url, summary, environments, mention_account_ids)
+        body = _build_qa_pass_adf(
+            loom_url, summary, environments, mention_account_ids, image_urls
+        )
         if body is None:
             return None
 

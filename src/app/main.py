@@ -508,6 +508,7 @@ async def run_workflow_action(
                     payload.summary,
                     payload.environments,
                     payload.mention_account_ids,
+                    payload.image_urls,
                 )
                 comment_posted = result is not None
             except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
