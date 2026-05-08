@@ -175,6 +175,7 @@ def _build_qa_pass_adf(
     loom_url: str | None,
     summary: str | None,
     environments: list[str] | None = None,
+    mention_account_ids: list[str] | None = None,
 ) -> dict | None:
     """Build the ADF body for a QA→UAT pass comment.
 
@@ -182,10 +183,13 @@ def _build_qa_pass_adf(
     comment the same way test-plan comments are detected. The environments
     tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
     stays visible without expanding. The Loom link sits above the fold;
-    the freeform summary is wrapped in an `expand` node.
+    the freeform summary is wrapped in an `expand` node. When mentions
+    are supplied, a final "cc:" paragraph triggers Jira notifications.
 
-    Returns None when no fields are populated — callers use that signal
-    to skip posting entirely (preserves the original one-click pass).
+    Mentions alone don't justify posting a comment — the function still
+    returns None unless at least one of loom/summary/envs is populated,
+    so QA accidentally selecting a chip with no other content stays a
+    one-click pass.
     """
     loom_url = (loom_url or "").strip()
     summary = (summary or "").strip()
@@ -225,6 +229,10 @@ def _build_qa_pass_adf(
             "content": summary_doc.get("content", []),
         })
 
+    mentions_para = _build_mentions_paragraph(mention_account_ids)
+    if mentions_para:
+        content.append(mentions_para)
+
     return {"type": "doc", "version": 1, "content": content}
 
 
@@ -244,18 +252,40 @@ def _normalize_url_list(urls: list[str] | None) -> list[str]:
     return out
 
 
+def _build_mentions_paragraph(account_ids: list[str] | None) -> dict | None:
+    """Render an ADF paragraph that @mentions each accountId.
+
+    Jira notifies a user when their accountId appears as a `mention` node
+    in a comment body. Returns None when the input is empty so callers
+    can drop the paragraph entirely.
+    """
+    ids = _normalize_url_list(account_ids)  # Same shape: trim, dedupe, drop blanks.
+    if not ids:
+        return None
+    nodes: list[dict] = [{"type": "text", "text": "cc: "}]
+    for i, account_id in enumerate(ids):
+        if i > 0:
+            nodes.append({"type": "text", "text": " "})
+        nodes.append({"type": "mention", "attrs": {"id": account_id}})
+    return {"type": "paragraph", "content": nodes}
+
+
 def _build_qa_fail_adf(
     reason: str | None,
     loom_url: str | None,
     image_urls: list[str] | None = None,
+    mention_account_ids: list[str] | None = None,
 ) -> dict | None:
     """Build the ADF body for a QA→To Do fail-back comment.
 
     The reason is the load-bearing field — devs need to see *why* the
     ticket bounced without expanding anything, so it's rendered above the
     fold (not inside an expand node). Loom + image links sit below as
-    clickable references. Returns None if no reason is supplied: callers
-    use that signal to skip posting (the transition still runs).
+    clickable references; mentioned accountIds get a final "cc:" paragraph
+    that triggers Jira notifications. Returns None if no reason is
+    supplied: callers use that signal to skip posting (the transition
+    still runs). Mentions without a reason still return None — there's
+    no value in pinging people on an empty comment.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -296,6 +326,10 @@ def _build_qa_fail_adf(
                 },
             ],
         })
+
+    mentions_para = _build_mentions_paragraph(mention_account_ids)
+    if mentions_para:
+        content.append(mentions_para)
 
     return {"type": "doc", "version": 1, "content": content}
 
@@ -1017,7 +1051,8 @@ class JiraClient:
                 author=author,
                 body=body_text,
                 created=created,
-                updated=updated
+                updated=updated,
+                author_account_id=author_info.get('accountId'),
             )
 
             parsed_comments.append(jira_comment)
@@ -1514,24 +1549,33 @@ class JiraClient:
         issue_type = fields.get("issuetype", {}).get("name", "Unknown")
         assignee_field = fields.get("assignee") or {}
         assignee = assignee_field.get("displayName") or assignee_field.get("emailAddress")
+        assignee_account_id = assignee_field.get("accountId")
 
         status_field = fields.get("status") or {}
         status_name = status_field.get("name")
         status_category = (status_field.get("statusCategory") or {}).get("key")
 
-        # Extract all unique assignees from changelog (ordered by first appearance)
+        # Extract all unique assignees from changelog (ordered by first appearance).
+        # Track accountIds in a parallel list so the frontend can render @mentions
+        # for prior assignees, not just display-name chips.
         assignee_history: list[str] = []
+        assignee_history_account_ids: list[str | None] = []
         seen_assignees: set[str] = set()
         for history in data.get("changelog", {}).get("histories", []):
             for item in history.get("items", []):
                 if item.get("field") == "assignee":
-                    for name in (item.get("fromString"), item.get("toString")):
+                    for name, acct in (
+                        (item.get("fromString"), item.get("from")),
+                        (item.get("toString"), item.get("to")),
+                    ):
                         if name and name not in seen_assignees:
                             seen_assignees.add(name)
                             assignee_history.append(name)
+                            assignee_history_account_ids.append(acct)
         # Ensure current assignee is always included
         if assignee and assignee not in seen_assignees:
             assignee_history.append(assignee)
+            assignee_history_account_ids.append(assignee_account_id)
 
         # Extract readable text from ADF format
         description_str = extract_text_from_adf(description)
@@ -1665,7 +1709,11 @@ class JiraClient:
             labels=labels,
             issue_type=issue_type,
             assignee=assignee,
+            assignee_account_id=assignee_account_id,
             assignee_history=assignee_history if assignee_history else None,
+            assignee_history_account_ids=(
+                assignee_history_account_ids if assignee_history_account_ids else None
+            ),
             development_info=development_info,
             attachments=attachments if attachments else None,
             comments=filtered_comments if filtered_comments else None,
@@ -1770,6 +1818,7 @@ class JiraClient:
         loom_url: str | None,
         summary: str | None,
         environments: list[str] | None = None,
+        mention_account_ids: list[str] | None = None,
     ) -> dict | None:
         """Post a QA→UAT pass comment with optional environments / Loom / summary.
 
@@ -1777,7 +1826,7 @@ class JiraClient:
         creates a new comment — these are point-in-time records of each
         QA pass, not a single living document like the test plan.
         """
-        body = _build_qa_pass_adf(loom_url, summary, environments)
+        body = _build_qa_pass_adf(loom_url, summary, environments, mention_account_ids)
         if body is None:
             return None
 
@@ -1810,13 +1859,14 @@ class JiraClient:
         reason: str | None,
         loom_url: str | None,
         image_urls: list[str] | None = None,
+        mention_account_ids: list[str] | None = None,
     ) -> dict | None:
         """Post a QA→To Do fail-back comment.
 
         Returns None when no reason is supplied (nothing to post — the
         caller still runs the transition). Always creates a new comment.
         """
-        body = _build_qa_fail_adf(reason, loom_url, image_urls)
+        body = _build_qa_fail_adf(reason, loom_url, image_urls, mention_account_ids)
         if body is None:
             return None
 
@@ -1931,8 +1981,15 @@ class JiraClient:
 
         return r.json()
 
+    # The configured user's accountId is fixed for the lifetime of the
+    # process — cache it on the class so repeated issue fetches don't
+    # each pay a /myself round-trip.
+    _my_account_id_cache: str | None = None
+
     async def get_my_account_id(self) -> str:
         """Return the accountId of the configured Jira user (via /myself)."""
+        if JiraClient._my_account_id_cache:
+            return JiraClient._my_account_id_cache
         url = f"{self.base_url}/rest/api/3/myself"
         try:
             async with httpx.AsyncClient(timeout=20) as client:
@@ -1944,7 +2001,9 @@ class JiraClient:
             error_message, error_type = self._parse_auth_error(r)
             raise JiraAuthError(error_message, status_code=401, error_type=error_type)
         r.raise_for_status()
-        return r.json()["accountId"]
+        account_id = r.json()["accountId"]
+        JiraClient._my_account_id_cache = account_id
+        return account_id
 
     async def list_transitions(self, issue_key: str) -> list[dict]:
         """List available transitions from the issue's current status."""

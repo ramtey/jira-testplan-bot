@@ -118,6 +118,11 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
         currentStatus={ticketData.status}
         description={ticketData.description}
         comments={ticketData.comments}
+        assignee={ticketData.assignee}
+        assigneeAccountId={ticketData.assignee_account_id}
+        assigneeHistory={ticketData.assignee_history}
+        assigneeHistoryAccountIds={ticketData.assignee_history_account_ids}
+        currentUserAccountId={ticketData.current_user_account_id}
         onActionComplete={onActionComplete}
       />
 

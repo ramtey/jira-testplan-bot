@@ -225,6 +225,17 @@ async def get_issue(issue_key: str):
         if issue.bounce_history:
             bounce_history_list = [asdict(b) for b in issue.bounce_history]
 
+        # Best-effort: include the bot user's accountId so the frontend
+        # can filter self-mentions out of the Notify picker. Cached in the
+        # JiraClient class after first call. Any failure (network, auth,
+        # malformed /myself response) is non-fatal — the picker just keeps
+        # the self entry instead.
+        current_user_account_id = None
+        try:
+            current_user_account_id = await jira.get_my_account_id()
+        except Exception:
+            pass
+
         return {
             "key": issue.key,
             "summary": issue.summary,
@@ -232,7 +243,10 @@ async def get_issue(issue_key: str):
             "labels": issue.labels,
             "issue_type": issue.issue_type,
             "assignee": issue.assignee,
+            "assignee_account_id": issue.assignee_account_id,
             "assignee_history": issue.assignee_history,
+            "assignee_history_account_ids": issue.assignee_history_account_ids,
+            "current_user_account_id": current_user_account_id,
             "description_quality": {
                 "has_description": issue.description_analysis.has_description,
                 "is_weak": issue.description_analysis.is_weak,
@@ -493,6 +507,7 @@ async def run_workflow_action(
                     payload.loom_url,
                     payload.summary,
                     payload.environments,
+                    payload.mention_account_ids,
                 )
                 comment_posted = result is not None
             except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
@@ -508,6 +523,7 @@ async def run_workflow_action(
                     payload.reason,
                     payload.loom_url,
                     payload.image_urls,
+                    payload.mention_account_ids,
                 )
                 comment_posted = result is not None
             except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:

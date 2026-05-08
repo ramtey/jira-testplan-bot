@@ -77,7 +77,67 @@ function isSKProject(ticketKey) {
   return (ticketKey || '').toUpperCase().startsWith('SK-')
 }
 
-function WorkflowActions({ ticketKey, currentStatus, description, comments, onActionComplete }) {
+// Build a deduped, accountId-keyed list of people the form can @mention.
+// Sources, in order: current assignee → prior assignees (from changelog)
+// → comment authors. Entries without an accountId are skipped — display
+// names alone can't form a valid Jira mention node. The configured bot
+// user (i.e. whoever is operating the form) is filtered out so QA isn't
+// staring at "tag yourself" as the only option.
+function buildMentionCandidates({
+  assignee,
+  assigneeAccountId,
+  assigneeHistory,
+  assigneeHistoryAccountIds,
+  comments,
+  currentUserAccountId,
+}) {
+  const seen = new Map() // accountId -> { accountId, name, isAssignee }
+  const skip = (id) => !id || (currentUserAccountId && id === currentUserAccountId)
+
+  if (!skip(assigneeAccountId)) {
+    seen.set(assigneeAccountId, {
+      accountId: assigneeAccountId,
+      name: assignee || 'Assignee',
+      isAssignee: true,
+    })
+  }
+
+  if (Array.isArray(assigneeHistory) && Array.isArray(assigneeHistoryAccountIds)) {
+    for (let i = 0; i < assigneeHistory.length; i++) {
+      const id = assigneeHistoryAccountIds[i]
+      const name = assigneeHistory[i]
+      if (skip(id) || seen.has(id)) continue
+      seen.set(id, { accountId: id, name: name || id, isAssignee: false })
+    }
+  }
+
+  if (Array.isArray(comments)) {
+    for (const c of comments) {
+      const id = c?.author_account_id
+      if (skip(id) || seen.has(id)) continue
+      seen.set(id, {
+        accountId: id,
+        name: c.author || id,
+        isAssignee: false,
+      })
+    }
+  }
+
+  return Array.from(seen.values())
+}
+
+function WorkflowActions({
+  ticketKey,
+  currentStatus,
+  description,
+  comments,
+  assignee,
+  assigneeAccountId,
+  assigneeHistory,
+  assigneeHistoryAccountIds,
+  currentUserAccountId,
+  onActionComplete,
+}) {
   const [pendingAction, setPendingAction] = useState(null)
   // {kind: 'success'|'error', text: string} — held during fade-out via isLeaving.
   const [feedback, setFeedback] = useState(null)
@@ -90,6 +150,8 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
   const [environments, setEnvironments] = useState(DEFAULT_ENVIRONMENTS)
   const [reason, setReason] = useState('')
   const [imageUrlsText, setImageUrlsText] = useState('')
+  // Selected accountIds to @mention. Optional for both actions.
+  const [mentionAccountIds, setMentionAccountIds] = useState([])
 
   // Auto-dismiss success messages after 15s; errors stay until the next action.
   useEffect(() => {
@@ -120,6 +182,7 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
     setEnvironments(DEFAULT_ENVIRONMENTS)
     setReason('')
     setImageUrlsText('')
+    setMentionAccountIds([])
   }
 
   const toggleEnvironment = (env) => {
@@ -127,6 +190,23 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
       prev.includes(env) ? prev.filter((e) => e !== env) : [...prev, env]
     )
   }
+
+  const toggleMention = (accountId) => {
+    setMentionAccountIds((prev) =>
+      prev.includes(accountId)
+        ? prev.filter((id) => id !== accountId)
+        : [...prev, accountId]
+    )
+  }
+
+  const mentionCandidates = buildMentionCandidates({
+    assignee,
+    assigneeAccountId,
+    assigneeHistory,
+    assigneeHistoryAccountIds,
+    comments,
+    currentUserAccountId,
+  })
 
   const runAction = async (action, body) => {
     setPendingAction(action.id)
@@ -193,6 +273,8 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
             loom_url: trimmedLoom || null,
             summary: trimmedSummary || null,
             environments: environments.length > 0 ? environments : null,
+            mention_account_ids:
+              mentionAccountIds.length > 0 ? mentionAccountIds : null,
           }
         : undefined
       runAction(noteForAction, body)
@@ -213,6 +295,8 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
         reason: trimmedReason,
         loom_url: trimmedLoom || null,
         image_urls: images.length > 0 ? images : null,
+        mention_account_ids:
+          mentionAccountIds.length > 0 ? mentionAccountIds : null,
       }
       runAction(noteForAction, body)
     }
@@ -296,6 +380,29 @@ function WorkflowActions({ ticketKey, currentStatus, description, comments, onAc
                 disabled={pendingAction !== null}
               />
             </label>
+          )}
+          {mentionCandidates.length > 0 && (
+            <div className="workflow-note-field">
+              <span>Notify (optional)</span>
+              <div className="workflow-env-chips" role="group" aria-label="People to notify">
+                {mentionCandidates.map((person) => {
+                  const selected = mentionAccountIds.includes(person.accountId)
+                  return (
+                    <button
+                      key={person.accountId}
+                      type="button"
+                      className={`workflow-env-chip${selected ? ' is-selected' : ''}`}
+                      aria-pressed={selected}
+                      onClick={() => toggleMention(person.accountId)}
+                      disabled={pendingAction !== null}
+                      title={person.isAssignee ? 'Current assignee' : 'Prior assignee or commenter'}
+                    >
+                      {person.isAssignee ? `★ ${person.name}` : person.name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           )}
           <div className="workflow-note-form-actions">
             <button

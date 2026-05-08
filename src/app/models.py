@@ -136,6 +136,7 @@ class JiraComment:
     body: str  # Plain text extracted from ADF
     created: str
     updated: str | None = None
+    author_account_id: str | None = None  # For ADF mention nodes
 
 
 @dataclass
@@ -234,7 +235,11 @@ class JiraIssue:
     labels: list[str]
     issue_type: str
     assignee: str | None = None  # Current Jira assignee display name
+    assignee_account_id: str | None = None  # For ADF mention nodes
     assignee_history: list[str] | None = None  # All unique people ever assigned (from changelog)
+    # Parallel to assignee_history; same length, same order. None when the
+    # changelog item didn't carry an accountId (e.g. anonymized older changes).
+    assignee_history_account_ids: list[str | None] | None = None
     development_info: DevelopmentInfo | None = None
     attachments: list[Attachment] | None = None
     comments: list[JiraComment] | None = None  # Filtered testing-related comments
@@ -353,6 +358,8 @@ class WorkflowActionRequest(BaseModel):
     environments: list[str] | None = None
     reason: str | None = None
     image_urls: list[str] | None = None
+    # Optional list of Jira accountIds to @mention in the comment body.
+    mention_account_ids: list[str] | None = None
 
 
 class BugAnalysisRequest(BaseModel):
