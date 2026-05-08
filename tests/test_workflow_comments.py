@@ -8,6 +8,7 @@ from src.app.jira_client import (
     QA_FAIL_MARKER,
     QA_PASS_EXPAND_TITLE,
     QA_PASS_MARKER,
+    _build_mentions_paragraph,
     _build_qa_fail_adf,
     _build_qa_pass_adf,
     _normalize_environments,
@@ -165,3 +166,78 @@ def test_build_qa_fail_adf_dedups_images_and_drops_blanks():
         and p.get("content") and p["content"][0].get("text", "").startswith("🖼️")
     ]
     assert len(image_paragraphs) == 1
+
+
+# ---------- _build_mentions_paragraph ----------
+
+def test_build_mentions_paragraph_returns_none_when_empty():
+    assert _build_mentions_paragraph(None) is None
+    assert _build_mentions_paragraph([]) is None
+    assert _build_mentions_paragraph(["", "  "]) is None
+
+
+def test_build_mentions_paragraph_emits_mention_nodes_with_cc_prefix():
+    para = _build_mentions_paragraph(["acct-1", "acct-2"])
+    assert para is not None
+    assert para["type"] == "paragraph"
+    nodes = para["content"]
+    assert nodes[0] == {"type": "text", "text": "cc: "}
+    mention_nodes = [n for n in nodes if n.get("type") == "mention"]
+    assert [n["attrs"]["id"] for n in mention_nodes] == ["acct-1", "acct-2"]
+
+
+def test_build_mentions_paragraph_dedupes_account_ids():
+    para = _build_mentions_paragraph(["acct-1", "acct-1", " acct-2 ", "acct-2"])
+    assert para is not None
+    mention_ids = [n["attrs"]["id"] for n in para["content"] if n.get("type") == "mention"]
+    assert mention_ids == ["acct-1", "acct-2"]
+
+
+# ---------- mentions integrated into pass / fail comments ----------
+
+def test_build_qa_pass_adf_appends_mentions_at_end():
+    doc = _build_qa_pass_adf(
+        "https://loom.com/x",
+        None,
+        ["Integ"],
+        ["acct-1", "acct-2"],
+    )
+    assert doc is not None
+    last = doc["content"][-1]
+    assert last["type"] == "paragraph"
+    mention_ids = [n["attrs"]["id"] for n in last["content"] if n.get("type") == "mention"]
+    assert mention_ids == ["acct-1", "acct-2"]
+
+
+def test_build_qa_pass_adf_mentions_alone_do_not_create_a_comment():
+    # No loom/summary/envs means there's nothing meaningful to post —
+    # mentions on an empty comment shouldn't trigger a notification.
+    assert _build_qa_pass_adf(None, None, None, ["acct-1"]) is None
+
+
+def test_build_qa_fail_adf_appends_mentions_after_attachments():
+    doc = _build_qa_fail_adf(
+        "Login broken",
+        "https://loom.com/x",
+        ["https://i.imgur.com/a.png"],
+        ["acct-1"],
+    )
+    assert doc is not None
+    last = doc["content"][-1]
+    assert last["type"] == "paragraph"
+    assert any(n.get("type") == "mention" and n["attrs"]["id"] == "acct-1" for n in last["content"])
+
+
+def test_build_qa_fail_adf_mentions_alone_do_not_create_a_comment():
+    # Reason is still required — pinging people with no explanation isn't useful.
+    assert _build_qa_fail_adf(None, None, None, ["acct-1"]) is None
+    assert _build_qa_fail_adf("   ", None, None, ["acct-1"]) is None
+
+
+def test_build_qa_pass_adf_no_mentions_paragraph_when_list_empty():
+    doc = _build_qa_pass_adf("https://loom.com/x", None, None, None)
+    assert doc is not None
+    assert all(
+        not any(node.get("type") == "mention" for node in para.get("content", []))
+        for para in doc["content"]
+    )
