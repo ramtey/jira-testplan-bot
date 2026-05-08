@@ -89,13 +89,107 @@ def test_build_qa_pass_adf_renders_loom_link():
 def test_build_qa_pass_adf_summary_goes_into_expand():
     doc = _build_qa_pass_adf(None, "Tested the **happy path**", None)
     assert doc is not None
-    expand = doc["content"][-1]
-    assert expand["type"] == "expand"
+    # The expand may not be the last node (mentions can append after), so
+    # find it explicitly.
+    expand = next(node for node in doc["content"] if node["type"] == "expand")
     assert expand["attrs"]["title"] == QA_PASS_EXPAND_TITLE
     # The bold marker should have survived markdown_to_adf.
     flattened = str(expand["content"])
     assert "happy path" in flattened
     assert "strong" in flattened
+
+
+def test_build_qa_pass_adf_renders_images_above_fold():
+    # Reviewers should see screenshot links without expanding anything,
+    # so images sit above the summary expand block.
+    doc = _build_qa_pass_adf(
+        None,
+        "Some test summary",
+        None,
+        None,
+        ["https://i.imgur.com/a.png", "https://i.imgur.com/b.png"],
+    )
+    assert doc is not None
+    image_paragraphs = [
+        p for p in doc["content"]
+        if p.get("type") == "paragraph"
+        and p.get("content")
+        and p["content"][0].get("text", "").startswith("🖼️")
+    ]
+    assert len(image_paragraphs) == 2
+    # Images appear before the expand block.
+    image_indices = [doc["content"].index(p) for p in image_paragraphs]
+    expand_index = next(
+        i for i, node in enumerate(doc["content"]) if node["type"] == "expand"
+    )
+    assert max(image_indices) < expand_index
+
+
+def test_build_qa_pass_adf_images_alone_create_a_comment():
+    # A screenshot is a meaningful artifact even without loom/summary/envs.
+    doc = _build_qa_pass_adf(None, None, None, None, ["https://i.imgur.com/a.png"])
+    assert doc is not None
+    image_paragraphs = [
+        p for p in doc["content"]
+        if p.get("type") == "paragraph"
+        and p.get("content")
+        and p["content"][0].get("text", "").startswith("🖼️")
+    ]
+    assert len(image_paragraphs) == 1
+
+
+def test_build_qa_pass_adf_dedups_images_and_drops_blanks():
+    doc = _build_qa_pass_adf(
+        "https://loom.com/x",
+        None,
+        None,
+        None,
+        ["https://i.imgur.com/a.png", "  ", "https://i.imgur.com/a.png", ""],
+    )
+    assert doc is not None
+    image_paragraphs = [
+        p for p in doc["content"]
+        if p.get("type") == "paragraph"
+        and p.get("content")
+        and p["content"][0].get("text", "").startswith("🖼️")
+    ]
+    assert len(image_paragraphs) == 1
+
+
+def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
+    doc = _build_qa_pass_adf(
+        "https://loom.com/x",
+        "Summary text",
+        ["Integ"],
+        ["acct-1"],
+        ["https://i.imgur.com/a.png"],
+    )
+    assert doc is not None
+    types = [node["type"] for node in doc["content"]]
+    # Marker, Loom paragraph, Image paragraph, Expand, Mentions paragraph.
+    # The Loom and image paragraphs share type "paragraph"; we identify
+    # them by content.
+    assert types[0] == "paragraph"  # marker
+    assert types.count("expand") == 1
+    expand_idx = types.index("expand")
+    # Find Loom and image paragraph indices by their leading emoji.
+    loom_idx = next(
+        i for i, p in enumerate(doc["content"])
+        if p["type"] == "paragraph"
+        and p.get("content") and p["content"][0].get("text", "").startswith("📹")
+    )
+    image_idx = next(
+        i for i, p in enumerate(doc["content"])
+        if p["type"] == "paragraph"
+        and p.get("content") and p["content"][0].get("text", "").startswith("🖼️")
+    )
+    # Mentions paragraph is the one containing a `mention` node.
+    mention_idx = next(
+        i for i, p in enumerate(doc["content"])
+        if p["type"] == "paragraph"
+        and any(n.get("type") == "mention" for n in p.get("content", []))
+    )
+    assert loom_idx < image_idx < expand_idx < mention_idx
 
 
 # ---------- _build_qa_fail_adf ----------
