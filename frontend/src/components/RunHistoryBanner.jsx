@@ -93,7 +93,6 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
                   <span className="run-history-version">v{run.version}</span>
                   <span className="run-history-when">{formatRelative(run.created_at)}</span>
                   <span className="run-history-cases">{run.case_count} cases</span>
-                  <span className="run-history-model">{run.model}</span>
                   {isMulti && otherKeys.length > 0 && (
                     <span className="run-history-multi">
                       multi: also {otherKeys.join(', ')}
