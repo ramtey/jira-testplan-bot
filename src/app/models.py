@@ -16,11 +16,10 @@ from pydantic import BaseModel
 
 @dataclass
 class DescriptionAnalysis:
-    """Analysis results for a Jira issue description."""
+    """Concrete gaps a QA reader would have to chase down before testing."""
 
     has_description: bool
-    is_weak: bool
-    warnings: list[str]
+    gaps: list[str]
     char_count: int
     word_count: int
 

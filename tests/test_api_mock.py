@@ -131,12 +131,10 @@ async def test_issue_with_no_description():
         assert data["labels"] == []
         assert data["issue_type"] == "Bug"
         assert data["description_quality"]["has_description"] is False
-        assert data["description_quality"]["is_weak"] is True
-        assert len(data["description_quality"]["warnings"]) > 0
-        assert "No description provided" in data["description_quality"]["warnings"][0]
+        assert data["description_quality"]["gaps"] == ["Missing description"]
         print("✓ Issue with no description works!")
         print(f"  Issue Type: {data['issue_type']}")
-        print(f"  Warnings: {data['description_quality']['warnings']}")
+        print(f"  Gaps: {data['description_quality']['gaps']}")
 
 
 @pytest.mark.asyncio
@@ -170,13 +168,12 @@ async def test_issue_with_weak_description():
         assert data["labels"] == ["ui", "design"]
         assert data["issue_type"] == "Task"
         assert data["description_quality"]["has_description"] is True
-        assert data["description_quality"]["is_weak"] is True
         assert data["description_quality"]["char_count"] < 50
-        assert len(data["description_quality"]["warnings"]) > 0
+        assert "Missing acceptance criteria" in data["description_quality"]["gaps"]
         print("✓ Issue with weak description works!")
         print(f"  Labels: {data['labels']}")
         print(f"  Issue Type: {data['issue_type']}")
-        print(f"  Warnings: {data['description_quality']['warnings']}")
+        print(f"  Gaps: {data['description_quality']['gaps']}")
 
 
 @pytest.mark.asyncio

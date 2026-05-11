@@ -1597,8 +1597,8 @@ class JiraClient:
         # Extract readable text from ADF format
         description_str = extract_text_from_adf(description)
 
-        # Analyze description quality
-        analysis = analyze_description(description_str)
+        # Analyze description quality (type-aware: bugs vs. stories have different gaps)
+        analysis = analyze_description(description_str, issue_type=issue_type)
 
         # Fetch development information (commits, PRs, branches)
         # This is optional and non-blocking - if it fails, we continue without it

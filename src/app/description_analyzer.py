@@ -1,102 +1,82 @@
 """
-Analyze Jira issue descriptions for quality and completeness.
+Analyze Jira issue descriptions for completeness — flag concrete gaps a QA tester
+would have to chase the reporter/PM about (missing AC, missing repro steps, etc.).
 
-Detects when descriptions are missing, too short, or lack key testing information.
+Per-issue-type rules:
+  - Bug: needs reproduction steps + expected-vs-actual behavior
+  - everything else (Story/Task/Sub-task/Improvement/…): needs acceptance criteria
+
+When the description is missing entirely, only the "Missing description" gap is
+reported — the type-specific gaps would be noise.
 """
 
 from .models import DescriptionAnalysis
 
+_AC_KEYWORDS = (
+    "acceptance criteria",
+    "ac:",
+    "acceptance:",
+    "should:",
+    "must:",
+    "given ",
+    " when ",
+    " then ",
+)
 
-def analyze_description(description: str | None) -> DescriptionAnalysis:
-    """
-    Analyze the quality of a Jira issue description.
+_REPRO_KEYWORDS = (
+    "steps to reproduce",
+    "reproduction steps",
+    "to reproduce",
+    "repro:",
+    "reproduce:",
+    "repro steps",
+)
 
-    Args:
-        description: The extracted plain text description
+_EXPECTED_ACTUAL_KEYWORDS = (
+    "expected result",
+    "expected behavior",
+    "expected behaviour",
+    "expected:",
+    "actual result",
+    "actual behavior",
+    "actual behaviour",
+    "actual:",
+)
 
-    Returns:
-        Analysis results including warnings and quality flags
-    """
-    warnings = []
 
-    # Handle missing description
-    if not description or not description.strip():
+def analyze_description(
+    description: str | None,
+    issue_type: str | None = None,
+) -> DescriptionAnalysis:
+    """Detect concrete gaps in a Jira description for a QA reader."""
+    clean_text = (description or "").strip()
+    char_count = len(clean_text)
+    word_count = len(clean_text.split()) if clean_text else 0
+
+    if not clean_text:
         return DescriptionAnalysis(
             has_description=False,
-            is_weak=True,
-            warnings=["No description provided in Jira ticket"],
+            gaps=["Missing description"],
             char_count=0,
             word_count=0,
         )
 
-    # Calculate metrics
-    clean_text = description.strip()
-    char_count = len(clean_text)
-    word_count = len(clean_text.split())
-
-    # Check if description is too short
-    is_weak = False
-    if char_count < 50:
-        warnings.append(
-            f"Description is very short ({char_count} characters). "
-            "More detail may be needed for comprehensive test planning."
-        )
-        is_weak = True
-    elif word_count < 10:
-        warnings.append(
-            f"Description contains only {word_count} words. "
-            "Consider providing more context."
-        )
-        is_weak = True
-
-    # Check for common quality indicators
     lower_text = clean_text.lower()
+    gaps: list[str] = []
+    issue_type_lower = (issue_type or "").lower()
 
-    # Check for acceptance criteria
-    has_ac = any(
-        keyword in lower_text
-        for keyword in [
-            "acceptance criteria",
-            "ac:",
-            "acceptance:",
-            "should:",
-            "must:",
-            "given",
-            "when",
-            "then",
-        ]
-    )
-
-    if not has_ac and char_count > 50:
-        warnings.append(
-            "No explicit acceptance criteria (AC) detected. "
-            "You may need to provide testing context manually."
-        )
-
-    # Check for test-related keywords
-    has_test_info = any(
-        keyword in lower_text
-        for keyword in [
-            "test",
-            "verify",
-            "validate",
-            "ensure",
-            "check",
-            "expected",
-            "behavior",
-        ]
-    )
-
-    if not has_test_info and char_count > 50:
-        warnings.append(
-            "No testing or validation keywords found. "
-            "Consider what behaviors need verification."
-        )
+    if issue_type_lower == "bug":
+        if not any(k in lower_text for k in _REPRO_KEYWORDS):
+            gaps.append("Missing reproduction steps")
+        if not any(k in lower_text for k in _EXPECTED_ACTUAL_KEYWORDS):
+            gaps.append("Missing expected vs. actual behavior")
+    else:
+        if not any(k in lower_text for k in _AC_KEYWORDS):
+            gaps.append("Missing acceptance criteria")
 
     return DescriptionAnalysis(
         has_description=True,
-        is_weak=is_weak or len(warnings) > 0,
-        warnings=warnings,
+        gaps=gaps,
         char_count=char_count,
         word_count=word_count,
     )

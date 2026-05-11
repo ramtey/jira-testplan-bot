@@ -177,42 +177,18 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
         )}
       </div>
 
-      <div className="ticket-section">
-        <h3>Description Quality Analysis</h3>
-        <div className="quality-metrics">
-          <div className="metric">
-            <span className="metric-label">Has Description:</span>
-            <span className={`metric-value ${ticketData.description_quality.has_description ? 'success' : 'warning'}`}>
-              {ticketData.description_quality.has_description ? '✓ Yes' : '✗ No'}
-            </span>
-          </div>
-          <div className="metric">
-            <span className="metric-label">Quality:</span>
-            <span className={`metric-value ${ticketData.description_quality.is_weak ? 'warning' : 'success'}`}>
-              {ticketData.description_quality.is_weak ? 'Weak' : 'Good'}
-            </span>
-          </div>
-          <div className="metric">
-            <span className="metric-label">Characters:</span>
-            <span className="metric-value">{ticketData.description_quality.char_count}</span>
-          </div>
-          <div className="metric">
-            <span className="metric-label">Words:</span>
-            <span className="metric-value">{ticketData.description_quality.word_count}</span>
-          </div>
-        </div>
-
-        {ticketData.description_quality.warnings.length > 0 && (
+      {ticketData.description_quality?.gaps?.length > 0 && (
+        <div className="ticket-section">
           <div className="warnings">
-            <h4>⚠️ Warnings</h4>
+            <h4>⚠️ Description gaps</h4>
             <ul>
-              {ticketData.description_quality.warnings.map((warning, index) => (
-                <li key={index}>{warning}</li>
+              {ticketData.description_quality.gaps.map((gap, index) => (
+                <li key={index}>{gap}</li>
               ))}
             </ul>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {ticketData.attachments && ticketData.attachments.length > 0 && (
         <div className="ticket-section">

@@ -249,8 +249,7 @@ async def get_issue(issue_key: str):
             "current_user_account_id": current_user_account_id,
             "description_quality": {
                 "has_description": issue.description_analysis.has_description,
-                "is_weak": issue.description_analysis.is_weak,
-                "warnings": issue.description_analysis.warnings,
+                "gaps": issue.description_analysis.gaps,
                 "char_count": issue.description_analysis.char_count,
                 "word_count": issue.description_analysis.word_count,
             },

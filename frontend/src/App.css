@@ -746,43 +746,6 @@ button:disabled {
   font-style: italic;
 }
 
-/* Quality metrics */
-.quality-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-
-.metric {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.75rem;
-  background: var(--bg-card);
-  border-radius: 4px;
-  border: 1px solid var(--border);
-}
-
-.metric-label {
-  font-weight: 600;
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-}
-
-.metric-value {
-  font-weight: 700;
-  font-size: 1rem;
-}
-
-.metric-value.success {
-  color: var(--success);
-}
-
-.metric-value.warning {
-  color: var(--warning);
-}
-
 /* Warnings */
 .warnings {
   background: rgba(255, 153, 31, 0.1);
@@ -920,10 +883,6 @@ button:disabled {
   button {
     width: 100%;
     min-width: unset;
-  }
-
-  .quality-metrics {
-    grid-template-columns: 1fr;
   }
 
   .ticket-header h2 {
