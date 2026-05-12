@@ -21,6 +21,34 @@ from .models import BugAnalysis, TestPlan
 
 _VALID_FIX_STATUSES = ("not_fixed", "in_testing", "fixed")
 
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_PII_PLACEHOLDER = "<test-account>"
+
+
+def _scrub_emails(text: Any) -> Any:
+    """Replace any email-shaped substring with a generic test-account placeholder.
+
+    Defense-in-depth against real customer/employee emails from Jira context
+    leaking into rendered test steps despite the system-prompt guardrail.
+    """
+    if not isinstance(text, str):
+        return text
+    return _EMAIL_RE.sub(_PII_PLACEHOLDER, text)
+
+
+def _scrub_test_case(case: Any) -> Any:
+    """Recursively scrub email-shaped PII from a test-case dict or list."""
+    if isinstance(case, dict):
+        return {k: _scrub_test_case(v) for k, v in case.items()}
+    if isinstance(case, list):
+        return [_scrub_test_case(item) for item in case]
+    return _scrub_emails(case)
+
+
+def _scrub_test_plan_data(test_plan_data: dict) -> dict:
+    """Strip email addresses from any field in the LLM-returned test plan."""
+    return {key: _scrub_test_case(value) for key, value in test_plan_data.items()}
+
 
 def _normalize_fix_status(raw: Any, legacy_is_fixed: Any = None) -> str:
     """Coerce LLM output to a valid fix_status. Falls back to legacy is_fixed boolean."""
@@ -246,6 +274,32 @@ Only test for the absence of something if:
 - The ticket explicitly mentions removing/hiding a feature
 - The PR changes show deletion of code related to that feature
 - The ticket description specifically says "without X" or "don't include X"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CRITICAL: NEVER USE REAL USERS AS TEST SUBJECTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Jira ticket context (description, comments, bounce history, PR discussion, Slack messages) frequently contains the names and email addresses of real customers, employees, reporters, and assignees. They appear there because they reported the bug, were affected by it, or discussed the fix — NOT because they are intended test subjects.
+
+**NEVER write a test step that instructs a tester to log in as, impersonate, write data to, or trigger notifications for a real person mentioned in the ticket context.** This includes:
+- Customer email addresses (anything that looks like `name@company.com` in a comment, description, or bounce reason)
+- Customer/user names that appear alongside an email or are described as a reporter/affected user
+- Internal employee names mentioned as the assignee, commenter, or developer
+- Account IDs, user IDs, or other identifiers tied to a specific real person
+
+**Why this matters:** Running write operations (uploading data, generating plans, triggering flows) against a real customer's account during QA can create production data they'll see, send them push notifications/emails, or collide with an in-flight fix on their account.
+
+**What to do instead** — substitute a generic placeholder that describes the *role* or *configuration* required:
+- ❌ BAD: `Log in as Lawrence (lawrence@modusrealestate.com)`
+- ✅ GOOD: `Log in with a test account configured for the Empire Builder goal tier`
+- ❌ BAD: `Verify Sarah's onboarding flow completes`
+- ✅ GOOD: `Verify a test user's onboarding flow completes`
+- ❌ BAD: `Replay the upload using jdoe@acme.com's profile`
+- ✅ GOOD: `Replay the upload using a test profile with the same property type and state as the reported case`
+
+**Read-only verification is the one exception** — it is acceptable to instruct the tester to *inspect* a real user's data (e.g., "verify in the admin panel that user X's duplicate rows were cleaned up") when the bug fix is specifically a backfill or repair for that user, AND the step does not write, modify, or trigger any action on the account. When in doubt, prefer a test account.
+
+**When the ticket requires a specific configuration** that a real user happens to have (e.g., a particular goal tier, account state, or feature flag), describe the *configuration* in test_data and instruct the tester to use a test account matching it. Do not name the real user as the way to obtain that configuration.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ WHAT NOT TO TEST - BUILD-TIME vs RUNTIME
@@ -1533,6 +1587,8 @@ class OllamaClient(LLMClient):
                         error_type="service_unavailable"
                     ) from e
 
+                test_plan_data = _scrub_test_plan_data(test_plan_data)
+
                 return TestPlan(
                     happy_path=test_plan_data.get("happy_path", []),
                     edge_cases=test_plan_data.get("edge_cases", []),
@@ -1591,6 +1647,8 @@ class OllamaClient(LLMClient):
                         f"Failed to parse JSON response from Ollama: {e}",
                         error_type="service_unavailable"
                     ) from e
+
+                test_plan_data = _scrub_test_plan_data(test_plan_data)
 
                 return TestPlan(
                     happy_path=test_plan_data.get("happy_path", []),
@@ -1885,7 +1943,7 @@ class ClaudeClient(LLMClient):
                         "Claude did not return a tool_use block. Unexpected response format.",
                         error_type="service_unavailable",
                     )
-                test_plan_data = tool_block["input"]
+                test_plan_data = _scrub_test_plan_data(tool_block["input"])
 
                 return TestPlan(
                     happy_path=test_plan_data.get("happy_path", []),
@@ -1986,7 +2044,7 @@ class ClaudeClient(LLMClient):
                         "Claude did not return a tool_use block. Unexpected response format.",
                         error_type="service_unavailable",
                     )
-                test_plan_data = tool_block["input"]
+                test_plan_data = _scrub_test_plan_data(tool_block["input"])
 
                 return TestPlan(
                     happy_path=test_plan_data.get("happy_path", []),
