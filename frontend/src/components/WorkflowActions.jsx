@@ -231,9 +231,13 @@ function WorkflowActions({
           ? 'unassigned'
           : `assigned to ${data.assigned_to}`
       const noteText = data.comment_posted ? ' · note posted' : ''
+      const parentText =
+        data.parent_transitioned && data.parent_key
+          ? ` · parent ${data.parent_key} also moved`
+          : ''
       setFeedback({
         kind: 'success',
-        text: `Moved to ${data.target_status} · ${assigneeText}${noteText}`,
+        text: `Moved to ${data.target_status} · ${assigneeText}${noteText}${parentText}`,
       })
       closeNoteForm()
       if (onActionComplete) onActionComplete(action.id)

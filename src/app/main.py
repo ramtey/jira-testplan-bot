@@ -531,12 +531,21 @@ async def run_workflow_action(
                     "fail-to-todo comment failed on %s: %s", issue_key, exc
                 )
 
+        parent_transitioned = False
+        parent_key: str | None = None
+        if action == "pass-to-uat":
+            parent_transitioned, parent_key = await _maybe_transition_parent_to_uat(
+                jira, issue_key, target_status
+            )
+
         return {
             "status": "ok",
             "action": action,
             "target_status": target_status,
             "assigned_to": assigned_label,
             "comment_posted": comment_posted,
+            "parent_transitioned": parent_transitioned,
+            "parent_key": parent_key if parent_transitioned else None,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -544,6 +553,67 @@ async def run_workflow_action(
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except JiraConnectionError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+async def _maybe_transition_parent_to_uat(
+    jira: JiraClient, subtask_key: str, target_status: str
+) -> tuple[bool, str | None]:
+    """If `subtask_key`'s siblings are all at-or-past UAT, move the parent too.
+
+    Best-effort: any failure is swallowed (logged) so the primary subtask
+    transition still reports success. Skipped when the parent is an Epic —
+    Epics don't auto-roll up on a child's UAT handoff.
+    """
+    import logging
+
+    target_lower = target_status.strip().lower()
+
+    def _satisfies(subtask: dict) -> bool:
+        status = ((subtask.get("fields") or {}).get("status") or {})
+        name = (status.get("name") or "").strip().lower()
+        category = (status.get("statusCategory") or {}).get("key", "")
+        return name == target_lower or category == "done"
+
+    try:
+        info = await jira.get_sibling_subtasks_info(subtask_key)
+        if not info:
+            return False, None
+        if (info.get("parent_issue_type") or "").strip().lower() == "epic":
+            return False, None
+        siblings = info.get("subtasks") or []
+        if not siblings or not all(_satisfies(s) for s in siblings):
+            return False, None
+
+        parent_key = info["parent_key"]
+        parent_transitions = await jira.list_transitions(parent_key)
+        transition = next(
+            (
+                t for t in parent_transitions
+                if (t.get("to") or {}).get("name", "").strip().lower() == target_lower
+            ),
+            None,
+        )
+        if transition is None:
+            logging.info(
+                "Skipping parent auto-transition: parent %s has no '%s' transition available",
+                parent_key,
+                target_status,
+            )
+            return False, parent_key
+
+        await jira.transition_issue(parent_key, transition["id"])
+        logging.info(
+            "Auto-transitioned parent %s to %s after last subtask %s passed to UAT",
+            parent_key,
+            target_status,
+            subtask_key,
+        )
+        return True, parent_key
+    except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+        logging.warning(
+            "Parent auto-transition failed for %s: %s", subtask_key, exc
+        )
+        return False, None
 
 
 @app.post("/generate-test-plan")

@@ -2025,6 +2025,60 @@ class JiraClient:
         JiraClient._my_account_id_cache = account_id
         return account_id
 
+    async def get_sibling_subtasks_info(self, issue_key: str) -> dict | None:
+        """Fetch the parent of `issue_key` and its current list of subtasks.
+
+        Used to decide whether passing the last sibling subtask to UAT should
+        also move the parent. Returns None when the issue has no parent.
+
+        Two GETs: one to read the issue's `parent` reference, one to read the
+        parent's `subtasks` field (each entry includes status name + category).
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        params = {"fields": "parent"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        r.raise_for_status()
+
+        parent = (r.json().get("fields") or {}).get("parent") or {}
+        parent_key = parent.get("key")
+        if not parent_key:
+            return None
+        parent_issue_type = (
+            (parent.get("fields") or {}).get("issuetype") or {}
+        ).get("name", "")
+
+        url2 = f"{self.base_url}/rest/api/3/issue/{parent_key}"
+        params2 = {"fields": "subtasks"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r2 = await client.get(url2, headers=self._headers(), params=params2)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r2.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {parent_key}")
+        if r2.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r2)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        r2.raise_for_status()
+
+        subtasks = (r2.json().get("fields") or {}).get("subtasks") or []
+        return {
+            "parent_key": parent_key,
+            "parent_issue_type": parent_issue_type,
+            "subtasks": subtasks,
+        }
+
     async def list_transitions(self, issue_key: str) -> list[dict]:
         """List available transitions from the issue's current status."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"
