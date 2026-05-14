@@ -102,25 +102,6 @@ def _is_voice_ticket(summary: str | None, description: str | None) -> bool:
     return bool(_VOICE_KEYWORDS_RE.search(combined))
 
 
-def _is_hotfix_pr(pr: dict) -> bool:
-    """Return True if a PR's title or branch identifies it as a hotfix."""
-    title = (pr.get("title") or "").lower()
-    branch = (pr.get("source_branch") or "").lower()
-    return "hotfix" in title or "hotfix" in branch
-
-
-def _filter_prs_for_test_plan(all_prs: list[dict]) -> list[dict]:
-    """Keep merged/closed PRs, plus open PRs that look like hotfixes.
-
-    Hotfix PRs frequently ship to QA before they merge, so testers need the
-    unmerged code context in the plan even though the PR is still OPEN.
-    """
-    return [
-        pr for pr in all_prs
-        if (pr.get("status") or "").upper() != "OPEN" or _is_hotfix_pr(pr)
-    ]
-
-
 VOICE_TESTING_GUIDANCE = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🎙️ VOICE / SCREEN READER — SPECIALIZED TEST GUIDANCE
@@ -1216,11 +1197,7 @@ TICKET INFORMATION
             prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             prompt += "\nThe following development work has been completed for this ticket:\n"
 
-            # Open (unmerged) PRs are filtered out so the test plan only reflects
-            # code that has actually landed — except hotfix PRs, which often need
-            # to be tested before merge.
-            all_prs = development_info.get("pull_requests", [])
-            pull_requests = _filter_prs_for_test_plan(all_prs)
+            pull_requests = development_info.get("pull_requests", [])
             if pull_requests:
                 prompt += f"\n**Pull Requests ({len(pull_requests)}):**\n"
                 for pr in pull_requests:
@@ -1419,10 +1396,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                 ticket_key = ticket["ticket_key"]
                 prompt += f"**{ticket_key} — Development:**\n"
 
-                # Open (unmerged) PRs are excluded so the plan only reflects landed code,
-                # except hotfix PRs, which often need to be tested before merge.
-                all_prs = dev_info.get("pull_requests", [])
-                pull_requests = _filter_prs_for_test_plan(all_prs)
+                pull_requests = dev_info.get("pull_requests", [])
                 for pr in pull_requests:
                     prompt += f"- PR: **{pr.get('title', 'Untitled')}** ({pr.get('status', 'UNKNOWN')})\n"
                     if pr.get("source_branch"):
