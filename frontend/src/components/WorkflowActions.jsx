@@ -10,7 +10,7 @@ const TESTING_STATUS = 'in testing'
 // Environments QA can tag onto a Pass-to-UAT comment. Add new ones here —
 // the backend accepts whatever strings are sent. Integ is preselected
 // because it's the default target for most tickets.
-const ENVIRONMENT_OPTIONS = ['Integ', 'Staging']
+const ENVIRONMENT_OPTIONS = ['Integ', 'Staging', 'Prod']
 const DEFAULT_ENVIRONMENTS = ['Integ']
 
 // Word-boundary keyword match per env. We deliberately don't match "stage"
@@ -20,6 +20,7 @@ const DEFAULT_ENVIRONMENTS = ['Integ']
 const ENV_PATTERNS = {
   Integ: /\binteg\b/i,
   Staging: /\bstaging\b/i,
+  Prod: /\bprod(uction)?\b/i,
 }
 
 // Pick the most recent piece of ticket text that names an env and return

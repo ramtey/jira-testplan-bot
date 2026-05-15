@@ -436,15 +436,28 @@ button:disabled {
 }
 
 .workflow-env-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   padding: 0.3rem 0.7rem;
   font-size: 0.8rem;
   font-weight: 500;
   color: var(--text-secondary);
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px dashed var(--border);
   border-radius: 999px;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+/* Reserve a slot for the check so chip width is stable across selection state. */
+.workflow-env-chip::before {
+  content: "✓";
+  display: inline-block;
+  width: 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  visibility: hidden;
 }
 
 .workflow-env-chip:hover:not(:disabled) {
@@ -454,8 +467,14 @@ button:disabled {
 
 .workflow-env-chip.is-selected {
   background: var(--primary);
+  border-style: solid;
   border-color: var(--primary);
   color: #ffffff;
+  font-weight: 600;
+}
+
+.workflow-env-chip.is-selected::before {
+  visibility: visible;
 }
 
 .workflow-env-chip:disabled {
