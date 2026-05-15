@@ -1104,12 +1104,34 @@ button:disabled {
 .test-steps ol li {
   padding: 0.25rem 0;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.test-preconditions {
+  overflow-wrap: anywhere;
 }
 
 .test-expected {
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+/* Inline code spans inside test steps / test data — backtick-delimited
+   LogQL queries, field names, etc. Monospace + soft background +
+   anywhere-wrap so long unbreakable tokens (pipe-delimited regex
+   alternations especially) wrap inside the panel. */
+.test-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.1em 0.35em;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .test-expected strong {
@@ -1784,6 +1806,7 @@ button:disabled {
   border-left: 3px solid var(--primary);
   border-radius: 4px;
   font-size: 0.875rem;
+  overflow-wrap: anywhere;
 }
 
 .test-data strong {

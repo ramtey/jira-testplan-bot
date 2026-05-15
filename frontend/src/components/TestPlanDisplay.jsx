@@ -11,6 +11,37 @@ const API_BASE = API_BASE_URL
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Render a string with backtick-delimited segments as inline <code> spans.
+ * The LLM prompt produces backticks around LogQL queries, field names, and
+ * configuration values; rendering them as <code> makes queries copyable and
+ * lets long unbreakable tokens wrap inside the code span instead of pushing
+ * the panel out of the frame.
+ *
+ * Unbalanced backticks fall through as literal text — the regex only matches
+ * fully closed pairs.
+ */
+function renderInline(value) {
+  if (typeof value !== 'string') return JSON.stringify(value)
+  if (!value.includes('`')) return value
+  const parts = []
+  const re = /`([^`]+)`/g
+  let cursor = 0
+  let match
+  let key = 0
+  while ((match = re.exec(value)) !== null) {
+    if (match.index > cursor) parts.push(value.slice(cursor, match.index))
+    parts.push(
+      <code key={key++} className="test-code">
+        {match[1]}
+      </code>
+    )
+    cursor = match.index + match[0].length
+  }
+  if (cursor < value.length) parts.push(value.slice(cursor))
+  return parts
+}
+
 function renderTestCase(test, index, showCategory = false) {
   return (
     <div key={index} className="test-case">
@@ -28,8 +59,7 @@ function renderTestCase(test, index, showCategory = false) {
       </h5>
       {test.preconditions && (
         <div className="test-preconditions">
-          <strong>Preconditions:</strong>{' '}
-          {typeof test.preconditions === 'string' ? test.preconditions : JSON.stringify(test.preconditions)}
+          <strong>Preconditions:</strong> {renderInline(test.preconditions)}
         </div>
       )}
       {test.steps && Array.isArray(test.steps) && test.steps.length > 0 && (
@@ -37,21 +67,19 @@ function renderTestCase(test, index, showCategory = false) {
           <strong>Steps:</strong>
           <ol>
             {test.steps.map((step, i) => (
-              <li key={i}>{typeof step === 'string' ? step : JSON.stringify(step)}</li>
+              <li key={i}>{renderInline(step)}</li>
             ))}
           </ol>
         </div>
       )}
       {test.expected && (
         <div className="test-expected">
-          <strong>Expected:</strong>{' '}
-          {typeof test.expected === 'string' ? test.expected : JSON.stringify(test.expected)}
+          <strong>Expected:</strong> {renderInline(test.expected)}
         </div>
       )}
       {test.test_data && (
         <div className="test-data">
-          <strong>Test Data:</strong>{' '}
-          {typeof test.test_data === 'string' ? test.test_data : JSON.stringify(test.test_data)}
+          <strong>Test Data:</strong> {renderInline(test.test_data)}
         </div>
       )}
     </div>
