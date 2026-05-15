@@ -183,6 +183,36 @@ If a test genuinely requires developer help (replaying requests, crossing a thre
 
 ━━ PRECONDITIONS (USE THEM) ━━
 Almost every test in this ticket type shares the same setup: "API deployed to staging; Grafana access to the org with the `grafanacloud-logs` datasource; Slack access to the alerts channel." Put that in `preconditions` ONCE — do NOT repeat "Deploy the updated API code" as step 1 of every test.
+
+━━ VERIFY THE WHOLE RULE WHEN EDITING AN EXISTING ALERT ━━
+When a test edits an existing alert rule (changing a datasource, threshold, query, or contact point), do NOT scope the test to only the field that changed. While QA is in the Edit page, have them walk every tab and confirm adjacent fields look right too — a one-line config change can silently break a `for` duration, an annotation template, or a notification routing rule.
+
+For ANY `[Alert config]` test that targets an existing rule, the steps MUST cover:
+- **Query tab** — datasource, full LogQL/PromQL expression, time window, grouping
+- **Conditions / Threshold** — operator, value, reducer, evaluator
+- **Evaluation** — evaluation interval and `for` duration
+- **Annotations** — summary and description templates render as expected
+- **Labels** — severity, team, any routing labels
+- **Notifications tab** — contact point AND notification policy match what the ticket specifies
+- **State at rest** — current rule state is `Normal` and health is `OK` (NOT `NoData`, `Error`, or unexpected `Firing`)
+
+This catches accidental regressions on fields adjacent to the change. It is cheap — QA is already on the Edit page.
+
+━━ MARK UNKNOWNS WITH [fill in] / [capture from UI] — DO NOT FABRICATE ━━
+If the ticket REFERENCES a value but does not pin it down — for example, the ticket says "the rule should route to the team Slack channel" without naming the channel, or it lists a rule UID but not the exact LogQL expression — DO NOT invent a value. Instead, write the step using one of these placeholders:
+
+  `[fill in from UI]`               — the tester captures the current value on screen and verifies it manually
+  `[capture from current config]`   — same idea, value is the source of truth in Grafana
+  `[paste expected value here]`     — the team should supply this; the test plan author didn't know it
+  `[confirm against actual receiver]` — the ticket named a value, but the test plan author is not certain it's correct
+
+Examples:
+- ❌ BAD: "Verify Contact point = `Slack - skunks-prod-alerts`" (when the ticket only said "team Slack channel" — the name might be wrong)
+- ✅ GOOD: "Verify Contact point matches the team's alerts channel [confirm against actual receiver — original ticket referenced `Slack - skunks-prod-alerts`]"
+- ❌ BAD: "Verify the Query is `count_over_time({app=\\"agent-coach-api\\"} |= \\"chat_rate_limit_exceeded\\" [24h])`" (fabricated expression — ticket didn't supply it)
+- ✅ GOOD: "Verify the Query targets the agent-coach-api app and counts chat-rate-limit events over a 24h window. [paste exact expression from current rule — capture and confirm]"
+
+This pattern is HONEST: it tells QA *what* to verify and admits *what the LLM didn't know*. A fabricated assertion that turns out to be wrong wastes the tester's time AND makes them mark a real-bug as a false positive.
 """
 
 
