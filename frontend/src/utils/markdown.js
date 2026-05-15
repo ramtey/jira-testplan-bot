@@ -2,9 +2,41 @@
  * Markdown formatting utilities
  */
 
+const formatCoversAcs = (test) => {
+  const acIds = Array.isArray(test.covers_acs)
+    ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
+    : []
+  return acIds.length > 0 ? `**Covers:** ${acIds.join(', ')}\n\n` : ''
+}
+
+const formatAcCoverageSummary = (coverage) => {
+  if (!coverage || !coverage.tickets) return ''
+  const entries = Object.entries(coverage.tickets).filter(
+    ([, info]) => info && info.total > 0
+  )
+  if (entries.length === 0) return ''
+
+  let md = '## Acceptance Criteria Coverage\n\n'
+  entries.forEach(([key, info]) => {
+    const covered = info.covered?.length ?? 0
+    const total = info.total ?? 0
+    const icon = covered === total ? '✅' : '⚠️'
+    md += `- **${key}**: ${covered}/${total} ${icon}\n`
+    if (info.uncovered && info.uncovered.length > 0) {
+      info.uncovered.forEach((u) => {
+        md += `    - ❌ \`${u.id}\` — ${u.text}\n`
+      })
+    }
+  })
+  md += '\n'
+  return md
+}
+
 export const formatTestPlanAsMarkdown = (plan, ticketData) => {
   let markdown = `# Test Plan: ${ticketData.key}\n\n`
   markdown += `## ${ticketData.summary}\n\n`
+
+  markdown += formatAcCoverageSummary(plan.ac_coverage)
 
   if (plan.happy_path && plan.happy_path.length > 0) {
     markdown += '## ✅ Happy Path Test Cases\n\n'
@@ -31,6 +63,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatCoversAcs(test)
     })
   }
 
@@ -62,6 +95,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatCoversAcs(test)
     })
   }
 
@@ -90,6 +124,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatCoversAcs(test)
     })
   }
 

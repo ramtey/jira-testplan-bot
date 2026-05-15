@@ -1469,6 +1469,35 @@ TICKET INFORMATION
 Treat all tickets as parts of one combined feature. Do NOT produce separate test plans — generate ONE plan that covers the full scope.
 
 """
+
+        # ── AC coverage matrix (must come BEFORE per-ticket details) ─────────
+        # Build a flat list of (ac_id, ac_text) the LLM must cover.
+        ac_index: list[tuple[str, str]] = []  # [(ac_id, text), ...]
+        per_ticket_acs: dict[str, list[tuple[str, str]]] = {}
+        for ticket in tickets:
+            key = ticket["ticket_key"]
+            acs = ticket.get("acceptance_criteria") or []
+            entries = [(f"{key}-AC{i}", ac) for i, ac in enumerate(acs, 1)]
+            per_ticket_acs[key] = entries
+            ac_index.extend(entries)
+
+        if ac_index:
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "ACCEPTANCE CRITERIA TO COVER (every ID below must appear in ≥1 test case's `covers_acs`)\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for key, entries in per_ticket_acs.items():
+                if not entries:
+                    continue
+                prompt += f"**{key}:**\n"
+                for ac_id, text in entries:
+                    prompt += f"- {ac_id}: {text}\n"
+                prompt += "\n"
+            prompt += (
+                "Every AC ID above must appear in the `covers_acs` field of at least one test case "
+                "(happy_path, edge_cases, or integration_tests). If a single test legitimately "
+                "exercises multiple ACs, list all of their IDs. Do NOT drop ACs to reduce duplication.\n\n"
+            )
+
         # ── Per-ticket summaries ──────────────────────────────────────────────
         for i, ticket in enumerate(tickets, 1):
             ticket_key = ticket["ticket_key"]
@@ -1479,6 +1508,14 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
             prompt += f"TICKET {i} OF {len(tickets)}: {ticket_key}\n"
             prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             prompt += f"**Summary:** {summary}\n\n"
+
+            ticket_acs = per_ticket_acs.get(ticket_key) or []
+            if ticket_acs:
+                prompt += "**Acceptance Criteria:**\n"
+                for ac_id, text in ticket_acs:
+                    prompt += f"- {ac_id}: {text}\n"
+                prompt += "\n"
+
             prompt += f"**Description:**\n{description if description else 'No description provided'}\n"
 
             parent_info = ticket.get("parent_info")
@@ -1607,7 +1644,11 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
         prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         prompt += "Generate ONE unified test plan that covers all tickets above:\n"
         prompt += "- Treat all tickets as parts of a single combined feature\n"
-        prompt += "- Do NOT duplicate test cases — merge overlapping scenarios\n"
+        prompt += "- Merge test cases ONLY when the same user action covers multiple ACs — never drop an AC to reduce duplication\n"
+        if ac_index:
+            prompt += "- **REQUIRED:** Every AC ID listed under 'ACCEPTANCE CRITERIA TO COVER' must appear in at least one test case's `covers_acs` field. When one test legitimately exercises multiple ACs, list all of their IDs in `covers_acs`.\n"
+            prompt += "- **REQUIRED:** If two ACs describe *different observable behaviours* — even within the same feature — they MUST have separate test cases. Examples: 'Add button adds PDF' and 'Preview opens overlay' are distinct user actions and need distinct tests; 'Save shows toast' and 'Save persists to file' verify different outcomes and need distinct tests. Do not collapse them into one case.\n"
+            prompt += "- **REQUIRED:** `covers_acs` must contain only IDs that appear verbatim in the 'ACCEPTANCE CRITERIA TO COVER' list. Do not invent IDs (e.g. AC9 when only 8 ACs exist), do not renumber, do not guess. The ID you tag must match a test whose steps and expected result actually verify that AC's wording.\n"
         prompt += "- Prioritise integration tests that cover how the tickets interact\n"
         prompt += "- Use shared development context to understand the full scope of changes\n"
         prompt += "- **FILTER OUT build-time changes**: focus ONLY on runtime behaviour\n"
@@ -1904,6 +1945,11 @@ TEST_CASE_SCHEMA = {
         "steps": {"type": "array", "items": {"type": "string"}},
         "expected": {"type": "string"},
         "test_data": {"type": "string"},
+        "covers_acs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Acceptance-criteria IDs this case exercises, e.g. ['SK-2137-AC1', 'SK-2139-AC2']. Only used in multi-ticket mode when an 'ACCEPTANCE CRITERIA TO COVER' section is supplied; list every ID this case legitimately validates.",
+        },
     },
     "required": ["title", "priority", "steps", "expected"],
 }

@@ -43,6 +43,9 @@ function renderInline(value) {
 }
 
 function renderTestCase(test, index, showCategory = false) {
+  const acIds = Array.isArray(test.covers_acs)
+    ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
+    : []
   return (
     <div key={index} className="test-case">
       <h5>
@@ -82,6 +85,89 @@ function renderTestCase(test, index, showCategory = false) {
           <strong>Test Data:</strong> {renderInline(test.test_data)}
         </div>
       )}
+      {acIds.length > 0 && (
+        <div className="test-covers-acs">
+          <strong>Covers:</strong>
+          {acIds.map((id) => (
+            <span key={id} className="ac-tag" data-ac-id={id}>
+              {id}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Coverage summary for multi-ticket plans. Shows X/Y per ticket and lists any
+ * uncovered AC IDs so the user can spot gaps before posting.
+ */
+function AcCoveragePanel({ coverage }) {
+  if (!coverage || !coverage.tickets) return null
+  const entries = Object.entries(coverage.tickets).filter(
+    ([, info]) => info && info.total > 0
+  )
+  if (entries.length === 0) return null
+
+  const uncoveredTotal = coverage.uncovered_total ?? 0
+  const invalidIds = Array.isArray(coverage.invalid_ids) ? coverage.invalid_ids : []
+  const status = uncoveredTotal === 0 && invalidIds.length === 0 ? 'complete' : 'gaps'
+
+  return (
+    <div className={`ac-coverage-panel ac-coverage-panel--${status}`}>
+      <div className="ac-coverage-header">
+        <strong>Acceptance criteria coverage</strong>
+        <span className="ac-coverage-summary">
+          {uncoveredTotal === 0
+            ? '✅ All ACs covered'
+            : `⚠️ ${uncoveredTotal} AC${uncoveredTotal === 1 ? '' : 's'} uncovered`}
+        </span>
+      </div>
+      {invalidIds.length > 0 && (
+        <div
+          className="ac-coverage-invalid"
+          title="The LLM tagged these IDs but they don't exist in any ticket. They were dropped from the test cases."
+        >
+          <strong>⚠️ Model invented {invalidIds.length} unknown AC ID
+            {invalidIds.length === 1 ? '' : 's'}:</strong>{' '}
+          {invalidIds.map((id) => (
+            <span key={id} className="ac-tag ac-tag--invalid">{id}</span>
+          ))}
+        </div>
+      )}
+      <ul className="ac-coverage-tickets">
+        {entries.map(([key, info]) => {
+          const covered = info.covered?.length ?? 0
+          const total = info.total ?? 0
+          const allCovered = covered === total
+          return (
+            <li key={key} className="ac-coverage-ticket">
+              <span className="ac-coverage-ticket-key">{key}</span>
+              <span
+                className={`ac-coverage-ratio ${allCovered ? 'ac-coverage-ratio--ok' : 'ac-coverage-ratio--gap'}`}
+              >
+                {covered}/{total} {allCovered ? '✅' : '⚠️'}
+              </span>
+              {info.uncovered && info.uncovered.length > 0 && (
+                <ul className="ac-coverage-uncovered">
+                  {info.uncovered.map((u) => (
+                    <li key={u.id}>
+                      <span className="ac-tag ac-tag--uncovered">{u.id}</span>
+                      <span
+                        className="ac-coverage-uncovered-text"
+                        title={u.text}
+                      >
+                        {u.text}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
@@ -255,6 +341,10 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
           </span>
         )}
       </h3>
+
+      {isMulti && testPlan.ac_coverage && (
+        <AcCoveragePanel coverage={testPlan.ac_coverage} />
+      )}
 
       {testPlan.happy_path &&
         Array.isArray(testPlan.happy_path) &&

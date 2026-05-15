@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .bug_lens_routes import router as bug_lens_router
 from .config import NON_TESTABLE_ISSUE_TYPES
 from .db.models.plan import PlanFormat
+from .description_analyzer import extract_acceptance_criteria
 from .db.models.run import RunType
 from .db.session import get_sessionmaker
 from .jira_client import (
@@ -52,6 +53,88 @@ def _derive_context_flags(request: GenerateTestPlanRequest | TicketInput) -> dic
         "linked_ticket_count": linked_count,
         "pr_count": len(prs),
         "comment_count": len(request.comments or []),
+    }
+
+
+def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
+    """Compare AC IDs declared on each test case (`covers_acs`) against the
+    flat AC index built from the request.
+
+    Side effect: strips any AC IDs from each test case's ``covers_acs`` that
+    aren't in the request's index. The LLM occasionally invents or mis-numbers
+    IDs ("SK-2138-AC9" when only 8 ACs exist, or tagging an unrelated ticket's
+    AC); leaving those in the response would inflate coverage in the UI and
+    show fake tags on test cases. Invalid IDs are surfaced separately so the
+    UI can flag the regression instead of hiding it.
+
+    Returns a structure the frontend can render directly:
+        {
+            "tickets": {
+                "SK-2137": {
+                    "covered": ["SK-2137-AC1", "SK-2137-AC2"],
+                    "uncovered": [
+                        {"id": "SK-2137-AC3", "text": "..."},
+                    ],
+                    "total": 4,
+                },
+                ...
+            },
+            "uncovered_total": 3,
+            "invalid_ids": ["SK-2138-AC9"],  # IDs the LLM made up
+        }
+    """
+    per_ticket: dict[str, list[tuple[str, str]]] = {}
+    for ticket in tickets_data:
+        key = ticket["ticket_key"]
+        acs = ticket.get("acceptance_criteria") or []
+        per_ticket[key] = [(f"{key}-AC{i}", text) for i, text in enumerate(acs, 1)]
+
+    valid_ids: set[str] = {ac_id for entries in per_ticket.values() for ac_id, _ in entries}
+
+    declared: set[str] = set()
+    invalid_ids: set[str] = set()
+    for bucket in (test_plan.happy_path, test_plan.edge_cases, test_plan.integration_tests):
+        for case in bucket or []:
+            if not isinstance(case, dict):
+                continue
+            raw = case.get("covers_acs") or []
+            if not isinstance(raw, list):
+                continue
+            kept: list[str] = []
+            for ac_id in raw:
+                if not isinstance(ac_id, str):
+                    continue
+                trimmed = ac_id.strip()
+                if not trimmed:
+                    continue
+                if trimmed in valid_ids:
+                    declared.add(trimmed)
+                    kept.append(trimmed)
+                else:
+                    invalid_ids.add(trimmed)
+            # Rewrite the case so the UI / persisted plan only show real IDs.
+            case["covers_acs"] = kept
+
+    result_tickets: dict[str, dict] = {}
+    uncovered_total = 0
+    for key, entries in per_ticket.items():
+        covered: list[str] = []
+        uncovered: list[dict] = []
+        for ac_id, text in entries:
+            if ac_id in declared:
+                covered.append(ac_id)
+            else:
+                uncovered.append({"id": ac_id, "text": text})
+        uncovered_total += len(uncovered)
+        result_tickets[key] = {
+            "covered": covered,
+            "uncovered": uncovered,
+            "total": len(entries),
+        }
+    return {
+        "tickets": result_tickets,
+        "uncovered_total": uncovered_total,
+        "invalid_ids": sorted(invalid_ids),
     }
 
 
@@ -832,6 +915,7 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
                 "comments": t.comments,
                 "parent_info": t.parent_info,
                 "linked_info": t.linked_info,
+                "acceptance_criteria": extract_acceptance_criteria(t.description),
             }
             for t in request.tickets
         ]
@@ -842,12 +926,15 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             images=all_images,
         )
 
+        ac_coverage = _compute_ac_coverage(test_plan, tickets_data)
+
         response = {
             "ticket_keys": [t.ticket_key for t in request.tickets],
             "happy_path": test_plan.happy_path,
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
+            "ac_coverage": ac_coverage,
         }
 
         await run_tracker.complete_with_plan(
