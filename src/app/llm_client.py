@@ -102,6 +102,90 @@ def _is_voice_ticket(summary: str | None, description: str | None) -> bool:
     return bool(_VOICE_KEYWORDS_RE.search(combined))
 
 
+_OBSERVABILITY_KEYWORDS_RE = re.compile(
+    r"\b("
+    r"alerting|alert rule|alert rules|alertmanager|"
+    r"grafana|loki|logql|promql|prometheus|"
+    r"datadog|new relic|newrelic|sentry|honeycomb|splunk|elastic|kibana|opensearch|"
+    r"observability|telemetry|"
+    r"structured log\w*|log line\w*|log event\w*|log spike|"
+    r"error rate\w*|failure rate\w*|"
+    r"pagerduty|opsgenie|on-call|oncall"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_observability_ticket(summary: str | None, description: str | None) -> bool:
+    """Return True if the ticket is about logging, alerting, or monitoring.
+
+    These tickets add structured log events, alert rules, dashboards, or
+    notification routing — most of what's "added" is white-box and a manual
+    QA cannot exercise it by breaking the database or mocking an SDK. The
+    detector triggers the OBSERVABILITY_TESTING_GUIDANCE block, which
+    reframes tests around what QA can actually verify (Grafana UI config
+    inspection, LogQL queries against natural traffic, one synthetic
+    end-to-end alert with dev pairing).
+
+    Word-boundary matching keeps this from firing on incidental mentions
+    like 'alert the user' or 'log in'.
+    """
+    combined = f"{summary or ''}\n{description or ''}"
+    return bool(_OBSERVABILITY_KEYWORDS_RE.search(combined))
+
+
+OBSERVABILITY_TESTING_GUIDANCE = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 OBSERVABILITY / ALERTING / LOGGING — SPECIALIZED TEST GUIDANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This ticket adds structured log events, alert rules, dashboards, or notification routing. Most of the "feature" is white-box behavior that a manual QA CANNOT exercise. Reframe the test plan around what QA can actually do.
+
+━━ WHAT QA CAN ACTUALLY DO (PREFER THESE) ━━
+1. **Inspect alert-rule configuration in the Grafana UI.** Walk QA to the exact rule: which folder, which rule name (or UID if the ticket gives one), and what to verify on the rule's Edit page — query string, datasource, evaluation interval, `for` duration, threshold, severity label, contact point / notification channel. This is high-value and 100% testable.
+2. **Run a copy-pasteable LogQL/PromQL query against real staging traffic.** After deploy, normal traffic produces some natural failures. Have QA open Grafana → Explore → paste the full query string (including label selectors and time range) and verify the event appears with the expected JSON shape and required fields.
+3. **One end-to-end synthetic alert firing test, dev-assisted.** Tag it `[Dev-assisted]` in the title. ONE test, not eight — a developer crosses the threshold (e.g. by replaying failing requests against staging), and QA confirms the rule transitions to Firing and the Slack/PagerDuty notification arrives in the named channel with the expected content. Don't fragment this per event type.
+4. **Verify notification routing.** Open the alert rule → Notifications tab (or notification policy tree) → confirm the contact point matches the channel the ticket names (e.g. `#skunks-prod-alerts`, Slack receiver name).
+5. **Dashboard panel checks** — only if the ticket changes a dashboard. Walk QA to the specific dashboard URL/UID and the panel name, and confirm the panel renders without errors against the new event data.
+
+━━ BANNED STEPS (DROP THESE — THEY ARE NOT MANUAL QA) ━━
+- ❌ "Deploy the updated API code to staging environment" — that is a developer/CI step, not a test step. Move it to `preconditions` once, not into every test.
+- ❌ "Intentionally break a generation path" / "trigger Azure to reject" / "trigger an Azure RAI rejection" — unless the ticket SUPPLIES a known-triggering prompt verbatim, QA has no concrete way to do this. Drop the test or convert it to a smoke test (`[Smoke]`) that waits for natural traffic to produce the event.
+- ❌ "Simulate a database write failure" / "use a mock that throws" / "temporarily block DB access" — QA does not have infrastructure or code-mock access. These are unit-test concerns; drop them.
+- ❌ Verifying internal log fields that have no Loki-observable consequence (e.g. "verify `level: warn` is used not `error`", "verify `command` field uses class name not method name", "verify the route-level catch detects the retries-exhausted sentinel"). If the field IS observable in Loki, write the query that reads it; otherwise drop the test — it is a unit test, not manual QA.
+- ❌ "Count the number of `generation_failed` events to verify no duplicate" — drop unless the LogQL query and time bounds are concrete. Even then, this is fragile and better left to unit tests.
+- ❌ "Verify sensitive data is redacted" without a concrete trigger — this needs an actual triggering input that would have produced sensitive content. Without one, the test is unrunnable.
+
+━━ MANDATORY: GIVE QA THE EXACT QUERY ━━
+Every Loki/Prometheus test MUST include the FULL query string in `test_data`, not a fragment. The query must be paste-ready into Grafana Explore.
+- ❌ BAD `test_data`: "Filter for |= 'generation_failed'"
+- ✅ GOOD `test_data`: "Datasource: grafanacloud-logs. Time range: Last 1 hour. Query: `{app=\\"agent-coach-api\\"} |= \\"generation_failed\\" | json | line_format \\"{{.command}} | {{.errorKind}} | {{.errorMessage}}\\"`"
+
+Same for alert-rule inspection: name the folder AND the rule (or UID), don't just say "navigate to the alert rule".
+- ❌ BAD: "Navigate to the alert rule and verify the datasource"
+- ✅ GOOD: "Grafana → Alerting → Alert rules → folder `Ayce` (uid `a78c11ec-5908-4c73-8147-a6518b61d23b`) → open `Generation Failure Spike` → click Edit → confirm Datasource = `grafanacloud-logs`, Query contains `{app=\\"agent-coach-api\\"} |= \\"generation_failed\\"`, Evaluation interval = 1m, For = 5m, Threshold > 5, Contact point = `Slack - skunks-prod-alerts`"
+
+━━ OBSERVABILITY TEST-PLAN ORGANIZATION (MANDATORY) ━━
+Prefix every test case title (in `happy_path`, `edge_cases`, and `integration_tests`) with ONE of these group tags, EXACTLY as shown:
+
+  `[Alert config]`   inspecting a Grafana alert rule in the UI: query, threshold, datasource, contact point
+  `[Log shape]`      running a LogQL/PromQL query and verifying the JSON shape / required fields of returned events
+  `[Smoke]`          post-deploy verification using natural staging traffic — no synthetic trigger
+  `[End-to-end]`     synthetic alert firing through to the notification channel (almost always `[Dev-assisted]`)
+  `[Notification]`   contact-point / receiver / channel routing checks
+  `[Dashboard]`      Grafana dashboard panel checks (only if the ticket changes a dashboard)
+
+If a test genuinely requires developer help (replaying requests, crossing a threshold deliberately), ALSO append `[Dev-assisted]` to the title. Cap `[Dev-assisted]` tests at 1–2 across the whole plan — fragmenting synthetic tests adds no coverage.
+
+━━ CONSOLIDATE AGGRESSIVELY ━━
+- Don't write one happy-path test per structured-log event. If the ticket adds five events (`generation_failed`, `generation_retries_exhausted`, `streamed_text_write_failed`, …), ONE `[Log shape]` test with a table of `{event_name → required fields → triggering condition}` in `test_data` is better than five near-identical tests.
+- Don't write one alert test per command name. Verify the rule once; the `by (command)` grouping is the rule's responsibility.
+
+━━ PRECONDITIONS (USE THEM) ━━
+Almost every test in this ticket type shares the same setup: "API deployed to staging; Grafana access to the org with the `grafanacloud-logs` datasource; Slack access to the alerts channel." Put that in `preconditions` ONCE — do NOT repeat "Deploy the updated API code" as step 1 of every test.
+"""
+
+
 VOICE_TESTING_GUIDANCE = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🎙️ VOICE / SCREEN READER — SPECIALIZED TEST GUIDANCE
@@ -1336,6 +1420,9 @@ TICKET INFORMATION
         if _is_voice_ticket(summary, description):
             prompt += VOICE_TESTING_GUIDANCE
 
+        if _is_observability_ticket(summary, description):
+            prompt += OBSERVABILITY_TESTING_GUIDANCE
+
         return prompt
 
     def _build_multi_ticket_prompt(
@@ -1500,6 +1587,9 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
 
         if any(_is_voice_ticket(t.get("summary"), t.get("description")) for t in tickets):
             prompt += VOICE_TESTING_GUIDANCE
+
+        if any(_is_observability_ticket(t.get("summary"), t.get("description")) for t in tickets):
+            prompt += OBSERVABILITY_TESTING_GUIDANCE
 
         return prompt
 

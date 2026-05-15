@@ -14,7 +14,47 @@ import pytest
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.app.llm_client import get_llm_client, LLMError
+from src.app.llm_client import get_llm_client, LLMError, _is_observability_ticket
+
+
+class TestObservabilityDetector:
+    """Pure unit tests for the observability-ticket detector."""
+
+    def test_alerting_summary_hits(self):
+        assert _is_observability_ticket(
+            "Add production alerting for elevated generative-AI error rates", ""
+        )
+
+    def test_grafana_loki_hit(self):
+        assert _is_observability_ticket("", "Wire a new Grafana alert against Loki logs")
+
+    def test_logql_hit(self):
+        assert _is_observability_ticket("Add LogQL panel", None)
+
+    def test_pagerduty_hit(self):
+        assert _is_observability_ticket("Route critical alerts to PagerDuty", None)
+
+    def test_failure_rate_hit(self):
+        assert _is_observability_ticket("Alert when failure rate exceeds 5%", None)
+
+    def test_invoice_does_not_falsely_trigger_on_alert_substring(self):
+        # 'alerted' is not in the keyword list, and 'alert' uses \b boundaries —
+        # incidental phrases shouldn't fire the guidance block.
+        assert not _is_observability_ticket("Notify the user when payment fails", "")
+
+    def test_plain_feature_ticket_is_not_observability(self):
+        assert not _is_observability_ticket(
+            "Add a Save button to the listing detail page",
+            "Tapping Save persists the listing to the user's saved list.",
+        )
+
+    def test_login_does_not_match_log_keyword(self):
+        # 'log in' / 'login' must not trigger the 'log ...' keywords —
+        # they only match 'structured log', 'log line', 'log event', 'log spike'.
+        assert not _is_observability_ticket("Fix login redirect loop", "Users can't log in")
+
+    def test_none_inputs(self):
+        assert not _is_observability_ticket(None, None)
 
 
 @pytest.mark.asyncio
