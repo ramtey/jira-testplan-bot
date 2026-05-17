@@ -471,7 +471,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
           0
         )
         return (
-          <div className="overall-progress">
+          <div className="overall-progress-sticky">
             <SectionProgress checked={checked} total={total} />
           </div>
         )

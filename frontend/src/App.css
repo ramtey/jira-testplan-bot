@@ -1074,39 +1074,78 @@ button:disabled {
   margin-bottom: 2rem;
 }
 
+/* Sticky section header. Each h4 pins right below the overall progress bar
+   (which is ~26px tall). When the next section's h4 reaches the same sticky
+   offset, the previous h4 un-sticks with its parent and the new one takes
+   over the slot — the "replace" effect. z-index sits below the overall bar
+   (20) so the overall bar covers it during the brief transition. */
 .test-plan-group h4 {
+  position: sticky;
+  top: 26px;
+  z-index: 15;
+  background: var(--bg-secondary);
   font-size: 1.25rem;
   color: var(--text-primary);
+  margin-top: 0;
   margin-bottom: 1rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 2px solid var(--border);
+  padding-top: 0.5rem;
+  padding-bottom: 0.625rem;
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: 1rem;
   flex-wrap: wrap;
+}
+
+/* Slim the section bar to match the overall sticky bar. */
+.test-plan-group h4 .section-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+}
+
+.test-plan-group h4 .section-progress-fill {
+  border-radius: 3px;
 }
 
 /* ── Manual-test progress: per-section + overall ────────────────────────── */
 
-.overall-progress {
+/* Sticky overall progress: pins to top of viewport while user scrolls
+   through the test plan. Inherits the red->green hue from .section-progress. */
+.overall-progress-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg-secondary);
+  padding: 0.5rem 0 0.625rem;
+  margin: 0 0 1rem;
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: saturate(180%) blur(6px);
+  -webkit-backdrop-filter: saturate(180%) blur(6px);
+}
+
+.overall-progress-sticky .section-progress {
   display: flex;
+  width: 100%;
+  margin-left: 0;
+  gap: 0.75rem;
   align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  margin-bottom: 1.5rem;
 }
 
-.overall-progress .section-progress {
-  flex: 1;
-}
-
-.overall-progress .section-progress-bar {
+.overall-progress-sticky .section-progress-bar {
   flex: 1;
   width: auto;
+  height: 6px;
+  border-radius: 3px;
+}
+
+.overall-progress-sticky .section-progress-fill {
+  border-radius: 3px;
+}
+
+.overall-progress-sticky .section-progress-count {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.875rem;
 }
 
 .section-progress {
