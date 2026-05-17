@@ -3,11 +3,47 @@
  * Supports both single-ticket and multi-ticket posting.
  */
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 
 const API_BASE = API_BASE_URL
+
+const PROGRESS_STORAGE_PREFIX = 'testplan-progress:'
+
+const SECTION_KEYS = ['happy_path', 'edge_cases', 'integration_tests', 'regression_checklist']
+
+function sectionLength(testPlan, key) {
+  return Array.isArray(testPlan?.[key]) ? testPlan[key].length : 0
+}
+
+function buildStorageKey(testPlan, ticketKeys) {
+  if (!ticketKeys || ticketKeys.length === 0) return null
+  const fingerprint = SECTION_KEYS.map((k) => sectionLength(testPlan, k)).join('-')
+  return `${PROGRESS_STORAGE_PREFIX}${ticketKeys.join('+')}:${fingerprint}`
+}
+
+function SectionProgress({ checked, total }) {
+  if (total === 0) return null
+  const pct = total === 0 ? 0 : (checked / total) * 100
+  // Interpolate hue from red (0) → yellow (60) → green (120) as pct rises.
+  // Saturation a touch lower so the bar doesn't scream at the user.
+  const hue = Math.round((pct / 100) * 120)
+  const fillColor = `hsl(${hue}, 70%, 45%)`
+  return (
+    <span className="section-progress">
+      <span className="section-progress-bar">
+        <span
+          className="section-progress-fill"
+          style={{ width: `${pct}%`, background: fillColor }}
+        />
+      </span>
+      <span className="section-progress-count">
+        {checked}/{total}
+      </span>
+    </span>
+  )
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -42,14 +78,27 @@ function renderInline(value) {
   return parts
 }
 
-function renderTestCase(test, index, showCategory = false) {
+function renderTestCase(test, index, opts = {}) {
+  const { showCategory = false, checked = false, onToggle, checkboxId } = opts
   const acIds = Array.isArray(test.covers_acs)
     ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
     : []
   return (
-    <div key={index} className="test-case">
+    <div key={index} className={`test-case${checked ? ' test-case--checked' : ''}`}>
       <h5>
-        {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
+        {onToggle && (
+          <input
+            type="checkbox"
+            className="test-case-checkbox"
+            checked={checked}
+            onChange={onToggle}
+            id={checkboxId}
+            aria-label="Mark test case complete"
+          />
+        )}
+        <label htmlFor={checkboxId} className="test-case-title">
+          {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
+        </label>
         {test.priority && (
           <span className={`priority-badge priority-${test.priority}`}>
             {test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'}{' '}
@@ -184,6 +233,73 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
 
   // Single-ticket posting state (backward compat)
   const [isPosting, setIsPosting] = useState(false)
+
+  // ── Per-test checkmark state (visual only, persisted to localStorage) ──────
+  // Key format: `${section}:${index}` (e.g. "happy_path:0", "regression_checklist:2")
+  const ticketKeysJoined = isMulti
+    ? allKeys.join('+')
+    : ticketData?.key || ''
+  const storageKey = useMemo(() => {
+    if (!ticketKeysJoined) return null
+    return buildStorageKey(testPlan, ticketKeysJoined.split('+'))
+  }, [testPlan, ticketKeysJoined])
+  const [checkedTests, setCheckedTests] = useState(() => {
+    if (!storageKey || typeof window === 'undefined') return new Set()
+    try {
+      const raw = window.localStorage.getItem(storageKey)
+      if (!raw) return new Set()
+      const arr = JSON.parse(raw)
+      return Array.isArray(arr) ? new Set(arr) : new Set()
+    } catch {
+      return new Set()
+    }
+  })
+
+  // Reload checks when the plan identity changes (e.g. user generates a new plan).
+  useEffect(() => {
+    if (!storageKey || typeof window === 'undefined') {
+      setCheckedTests(new Set())
+      return
+    }
+    try {
+      const raw = window.localStorage.getItem(storageKey)
+      setCheckedTests(raw ? new Set(JSON.parse(raw)) : new Set())
+    } catch {
+      setCheckedTests(new Set())
+    }
+  }, [storageKey])
+
+  // Persist on every change.
+  useEffect(() => {
+    if (!storageKey || typeof window === 'undefined') return
+    try {
+      if (checkedTests.size === 0) {
+        window.localStorage.removeItem(storageKey)
+      } else {
+        window.localStorage.setItem(storageKey, JSON.stringify([...checkedTests]))
+      }
+    } catch {
+      // localStorage full or disabled — silently skip; UI still works in-memory
+    }
+  }, [storageKey, checkedTests])
+
+  const toggleTest = (section, index) => {
+    const id = `${section}:${index}`
+    setCheckedTests((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const countSectionChecks = (section, total) => {
+    let n = 0
+    for (let i = 0; i < total; i++) {
+      if (checkedTests.has(`${section}:${i}`)) n++
+    }
+    return n
+  }
 
   // Inline notifications (replaces alert())
   const [postNotification, setPostNotification] = useState(null) // { type: 'success'|'error', message }
@@ -346,45 +462,126 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
         <AcCoveragePanel coverage={testPlan.ac_coverage} />
       )}
 
+      {(() => {
+        const totals = SECTION_KEYS.map((k) => sectionLength(testPlan, k))
+        const total = totals.reduce((a, b) => a + b, 0)
+        if (total === 0) return null
+        const checked = SECTION_KEYS.reduce(
+          (acc, k, i) => acc + countSectionChecks(k, totals[i]),
+          0
+        )
+        return (
+          <div className="overall-progress">
+            <SectionProgress checked={checked} total={total} />
+          </div>
+        )
+      })()}
+
       {testPlan.happy_path &&
         Array.isArray(testPlan.happy_path) &&
-        testPlan.happy_path.length > 0 && (
-          <div className="test-plan-group">
-            <h4>✅ Happy Path Test Cases</h4>
-            {testPlan.happy_path.map((test, i) => renderTestCase(test, i))}
-          </div>
-        )}
+        testPlan.happy_path.length > 0 && (() => {
+          const total = testPlan.happy_path.length
+          const checked = countSectionChecks('happy_path', total)
+          return (
+            <div className="test-plan-group">
+              <h4>
+                <span>✅ Happy Path Test Cases</span>
+                <SectionProgress checked={checked} total={total} />
+              </h4>
+              {testPlan.happy_path.map((test, i) =>
+                renderTestCase(test, i, {
+                  checked: checkedTests.has(`happy_path:${i}`),
+                  onToggle: () => toggleTest('happy_path', i),
+                  checkboxId: `tc-happy_path-${i}`,
+                })
+              )}
+            </div>
+          )
+        })()}
 
       {testPlan.edge_cases &&
         Array.isArray(testPlan.edge_cases) &&
-        testPlan.edge_cases.length > 0 && (
-          <div className="test-plan-group">
-            <h4>🔍 Edge Cases & Error Scenarios</h4>
-            {testPlan.edge_cases.map((test, i) => renderTestCase(test, i, true))}
-          </div>
-        )}
+        testPlan.edge_cases.length > 0 && (() => {
+          const total = testPlan.edge_cases.length
+          const checked = countSectionChecks('edge_cases', total)
+          return (
+            <div className="test-plan-group">
+              <h4>
+                <span>🔍 Edge Cases & Error Scenarios</span>
+                <SectionProgress checked={checked} total={total} />
+              </h4>
+              {testPlan.edge_cases.map((test, i) =>
+                renderTestCase(test, i, {
+                  showCategory: true,
+                  checked: checkedTests.has(`edge_cases:${i}`),
+                  onToggle: () => toggleTest('edge_cases', i),
+                  checkboxId: `tc-edge_cases-${i}`,
+                })
+              )}
+            </div>
+          )
+        })()}
 
       {testPlan.integration_tests &&
         Array.isArray(testPlan.integration_tests) &&
-        testPlan.integration_tests.length > 0 && (
-          <div className="test-plan-group">
-            <h4>🔗 Integration & Backend Tests</h4>
-            {testPlan.integration_tests.map((test, i) => renderTestCase(test, i))}
-          </div>
-        )}
+        testPlan.integration_tests.length > 0 && (() => {
+          const total = testPlan.integration_tests.length
+          const checked = countSectionChecks('integration_tests', total)
+          return (
+            <div className="test-plan-group">
+              <h4>
+                <span>🔗 Integration & Backend Tests</span>
+                <SectionProgress checked={checked} total={total} />
+              </h4>
+              {testPlan.integration_tests.map((test, i) =>
+                renderTestCase(test, i, {
+                  checked: checkedTests.has(`integration_tests:${i}`),
+                  onToggle: () => toggleTest('integration_tests', i),
+                  checkboxId: `tc-integration_tests-${i}`,
+                })
+              )}
+            </div>
+          )
+        })()}
 
       {testPlan.regression_checklist &&
         Array.isArray(testPlan.regression_checklist) &&
-        testPlan.regression_checklist.length > 0 && (
-          <div className="test-plan-group">
-            <h4>🔄 Regression Checklist</h4>
-            <ul className="checklist">
-              {testPlan.regression_checklist.map((item, i) => (
-                <li key={i}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>
-              ))}
-            </ul>
-          </div>
-        )}
+        testPlan.regression_checklist.length > 0 && (() => {
+          const total = testPlan.regression_checklist.length
+          const checked = countSectionChecks('regression_checklist', total)
+          return (
+            <div className="test-plan-group">
+              <h4>
+                <span>🔄 Regression Checklist</span>
+                <SectionProgress checked={checked} total={total} />
+              </h4>
+              <ul className="checklist">
+                {testPlan.regression_checklist.map((item, i) => {
+                  const isChecked = checkedTests.has(`regression_checklist:${i}`)
+                  const cbId = `tc-regression_checklist-${i}`
+                  return (
+                    <li
+                      key={i}
+                      className={`checklist-item${isChecked ? ' checklist-item--checked' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="test-case-checkbox"
+                        id={cbId}
+                        checked={isChecked}
+                        onChange={() => toggleTest('regression_checklist', i)}
+                        aria-label="Mark regression item complete"
+                      />
+                      <label htmlFor={cbId} className="checklist-item-text">
+                        {typeof item === 'string' ? item : JSON.stringify(item)}
+                      </label>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )
+        })()}
 
       <div className="test-plan-actions">
         {/* ── Jira post row ── */}

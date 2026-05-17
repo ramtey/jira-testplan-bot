@@ -1080,6 +1080,67 @@ button:disabled {
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
   border-bottom: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+/* ── Manual-test progress: per-section + overall ────────────────────────── */
+
+.overall-progress {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.overall-progress .section-progress {
+  flex: 1;
+}
+
+.overall-progress .section-progress-bar {
+  flex: 1;
+  width: auto;
+}
+
+.section-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-left: auto;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.section-progress-bar {
+  position: relative;
+  display: inline-block;
+  width: 220px;
+  height: 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.section-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 9px;
+  transition: width 0.25s ease, background-color 0.3s ease;
+}
+
+.section-progress-count {
+  font-variant-numeric: tabular-nums;
+  min-width: 3rem;
+  text-align: right;
 }
 
 .test-case {
@@ -1102,6 +1163,38 @@ button:disabled {
   color: var(--text-primary);
   margin-bottom: 1rem;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+}
+
+.test-case-checkbox {
+  width: 1.125rem;
+  height: 1.125rem;
+  cursor: pointer;
+  accent-color: var(--success);
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.test-case-title {
+  cursor: pointer;
+  user-select: none;
+}
+
+.test-case--checked {
+  border-left-color: var(--success);
+  opacity: 0.6;
+}
+
+.test-case--checked .test-case-title {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
+.test-case--checked:hover {
+  opacity: 0.85;
 }
 
 .test-steps {
@@ -1163,7 +1256,8 @@ button:disabled {
   padding: 0;
 }
 
-.checklist li {
+.checklist li,
+.checklist-item {
   padding: 0.5rem 1rem;
   margin-bottom: 0.25rem;
   background: var(--bg-card);
@@ -1171,6 +1265,24 @@ button:disabled {
   border-radius: 6px;
   color: var(--text-primary);
   line-height: 1.5;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.checklist-item-text {
+  cursor: pointer;
+  user-select: none;
+  flex: 1;
+}
+
+.checklist-item--checked {
+  opacity: 0.55;
+}
+
+.checklist-item--checked .checklist-item-text {
+  text-decoration: line-through;
+  color: var(--text-secondary);
 }
 
 /* Multi-ticket badge in test plan header */
