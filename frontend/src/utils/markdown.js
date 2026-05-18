@@ -12,7 +12,7 @@ const formatCoversAcs = (test) => {
 const formatAcCoverageSummary = (coverage) => {
   if (!coverage || !coverage.tickets) return ''
   const entries = Object.entries(coverage.tickets).filter(
-    ([, info]) => info && info.total > 0
+    ([, info]) => info && (info.total > 0 || (info.superseded?.length ?? 0) > 0)
   )
   if (entries.length === 0) return ''
 
@@ -32,11 +32,42 @@ const formatAcCoverageSummary = (coverage) => {
   return md
 }
 
+const formatSupersededAcs = (plan) => {
+  const list = Array.isArray(plan.superseded_acs) ? plan.superseded_acs : []
+  if (list.length === 0) return ''
+  let md = '## 🔁 Superseded Acceptance Criteria\n\n'
+  md += '_The newer ticket\'s AC overrides the older one; the older AC is intentionally not tested._\n\n'
+  list.forEach((s) => {
+    md += `- \`${s.loser_id}\` → \`${s.winner_id}\``
+    if (s.reason) md += ` — ${s.reason}`
+    md += '\n'
+    if (s.loser_text) md += `    - Older: ${s.loser_text}\n`
+    if (s.winner_text) md += `    - Newer: ${s.winner_text}\n`
+  })
+  md += '\n'
+  return md
+}
+
+const formatGroundingWarnings = (plan) => {
+  const list = Array.isArray(plan.grounding_warnings) ? plan.grounding_warnings : []
+  if (list.length === 0) return ''
+  let md = `## 🔍 UI Grounding Warnings (${list.length})\n\n`
+  md += '_The model referenced these UI elements in test steps but could not verify them in the PR diff or testID reference. Confirm before running the tests._\n\n'
+  list.forEach((w) => {
+    md += `- \`${w.ac_id}\` — **${w.missing_element}**\n`
+    md += `    - ${w.explanation}\n`
+  })
+  md += '\n'
+  return md
+}
+
 export const formatTestPlanAsMarkdown = (plan, ticketData) => {
   let markdown = `# Test Plan: ${ticketData.key}\n\n`
   markdown += `## ${ticketData.summary}\n\n`
 
   markdown += formatAcCoverageSummary(plan.ac_coverage)
+  markdown += formatSupersededAcs(plan)
+  markdown += formatGroundingWarnings(plan)
 
   if (plan.happy_path && plan.happy_path.length > 0) {
     markdown += '## ✅ Happy Path Test Cases\n\n'
