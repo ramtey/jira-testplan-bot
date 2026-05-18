@@ -197,6 +197,63 @@ in `expected_result`. If you paraphrase the outcome, no warning is needed.
 """
 
 
+API_SURFACE_PARITY_GUIDANCE = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧭 API SURFACE PARITY — ENUMERATE SIBLING CODE PATHS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A diff shows you the file(s) that changed. It does NOT show you every other
+file that calls the same endpoint, handler, or shared utility. Regressions
+hide here: a fix lands on one caller, an identical sibling caller in an
+unmodified file keeps the old (buggy) behavior, and the test plan — written
+from the diff alone — never exercises that sibling. The bug ships.
+
+For every API endpoint, handler, or shared helper that appears in the diff,
+explicitly enumerate the OTHER plausible callers/surfaces of that same
+endpoint in this app. Examples of sibling pairs to look for:
+
+- An "apply X" flow vs. an "add X during create" flow (two ViewModels /
+  screens calling the same `GET /templates`, `GET /forms`, etc.)
+- A list screen vs. a detail screen rendering from the same fetch
+- A "create" flow vs. an "edit" flow posting to the same write endpoint
+- A mobile surface vs. a web surface sharing a backend API
+- A foreground refresh path vs. a background sync path
+- A user-initiated action vs. a system-initiated action hitting the same
+  handler
+
+Rules:
+
+1. **Generate a test case (or extend an existing one) for each plausible
+   sibling surface** you can name from the ticket text, PR description, AC
+   wording, screenshots, or your reading of the diff. A new test costs less
+   than a re-opened ticket.
+
+2. **For Integration tests on API endpoints**, list every distinct caller
+   you can identify as a separate test step or separate test case —
+   *especially* for query/body parameters that the buggy caller might be
+   omitting. If `Apply Template` sends `ownedBy=<id>` and `Add Templates`
+   sends `ownedBy=''`, ONE integration test covering only the first caller
+   would have shipped the bug.
+
+3. **When you can NAME a sibling code path but CANNOT verify it in the
+   diff** (because it lives in an unmodified file you can't see), do BOTH:
+   - Still write the test case. Phrase it generically using the user-facing
+     flow ("create a new transaction → Add Templates step") rather than
+     quoting a code symbol.
+   - Add a `grounding_warning` entry: `missing_element` =
+     "<sibling code path name, e.g. 'Add Templates flow during
+     create-transaction'>", `explanation` =
+     "Endpoint X is modified in the diff for caller Y, but caller Z is a
+     plausible sibling surface that may also need the same fix and is not
+     visible in the diff. Confirm parity before sign-off."
+
+4. **Do NOT invent endpoints, ViewModels, or screen names that have no
+   evidence in the ticket or diff.** Sibling enumeration is a hypothesis,
+   not a fabrication — anchor each candidate to a real user flow named in
+   the ticket, AC, PR description, or visible code.
+"""
+
+
 OBSERVABILITY_TESTING_GUIDANCE = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📈 OBSERVABILITY / ALERTING / LOGGING — SPECIALIZED TEST GUIDANCE
@@ -609,6 +666,10 @@ If yes, enhance that existing test instead of creating a new one.
      - If there is a UI-observable outcome, describe it: "Verify the Transfer Tax field is NOT shown on screen"
      - If there is NO UI outcome (pure backend/response check), always provide explicit DevTools steps: "Open browser DevTools (F12) > Network tab > filter for '[endpoint-name]' > trigger the action > click the request > inspect the Response tab and confirm [specific field/value]"
    - ❌ NEVER write vague steps like "Verify the API returns filtered sections" or "Verify integrationInfo shows GFE status" — these are untestable without specifying the verification mechanism
+   - **PARAMETER ASSERTIONS — REQUIRE PRESENCE *AND* NON-EMPTY VALUE:** When a test verifies a request/response parameter, assert BOTH that the parameter is present AND that its value is non-empty / matches the expected shape. "Param X is sent" is not enough — a common bug class is the parameter being included but set to an empty string, `null`, `0`, or a stale default, which silently disables downstream filtering or scoping. Always state the expected concrete value (or a "must not be empty" rule when the value is dynamic).
+     - ❌ BAD: "Verify the request includes the `ownedBy` parameter."  → Passes even if `ownedBy=''`.
+     - ✅ GOOD: "Verify the request includes `ownedBy` AND that its value equals the logged-in user's profile ID (not empty, not `null`). An empty `ownedBy=''` indicates the caller is bypassing group-scoped filtering."
+     - Apply the same rule to headers, request bodies, and response fields. If the parameter has a known set of valid values, enumerate the failure values explicitly so a tester sees them in the negative case.
 
 5. **Reset/Clear Functionality**
    - Test any reset, clear, or undo operations
@@ -1441,6 +1502,7 @@ TICKET INFORMATION
                                     prompt += f"  {line}\n"
                                 total_patch_chars += len(patch)
                             prompt += "\n  ⚠️ REQUIRED: Read these diffs carefully and generate test cases for every new behaviour they introduce — especially new data sources, new fields, new API calls, and new conditional logic.\n"
+                            prompt += "  ⚠️ REQUIRED: For every API endpoint, handler, or shared helper modified above, enumerate OTHER plausible callers/surfaces that hit the same code (see 'API SURFACE PARITY' below). A diff-only view will not show sibling callers in unmodified files — name them explicitly and generate a test per surface. If a sibling surface is plausible but unverifiable in the diff, write the test against the user-facing flow AND add a `grounding_warning` entry.\n"
 
                         prompt += "\n"
 
@@ -1518,6 +1580,7 @@ TICKET INFORMATION
             prompt += OBSERVABILITY_TESTING_GUIDANCE
 
         prompt += UI_GROUNDING_GUIDANCE
+        prompt += API_SURFACE_PARITY_GUIDANCE
 
         return prompt
 
@@ -1689,6 +1752,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                                     prompt += f"  {line}\n"
                                 total_patch_chars += len(patch)
                             prompt += "\n  ⚠️ REQUIRED: Read these diffs and generate test cases for every new behaviour introduced.\n"
+                            prompt += "  ⚠️ REQUIRED: For every API endpoint or shared helper modified above, enumerate OTHER plausible callers/surfaces (see 'API SURFACE PARITY' below) and generate a test per surface. Sibling callers in unmodified files will NOT appear in the diff — name them explicitly. If a sibling is plausible but unverifiable, add a `grounding_warning` entry.\n"
 
                         prompt += "\n"
 
@@ -1761,6 +1825,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
             prompt += OBSERVABILITY_TESTING_GUIDANCE
 
         prompt += UI_GROUNDING_GUIDANCE
+        prompt += API_SURFACE_PARITY_GUIDANCE
 
         return prompt
 
