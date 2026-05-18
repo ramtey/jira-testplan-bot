@@ -738,6 +738,12 @@ async def run_workflow_action(
                 jira, issue_key, target_status
             )
 
+        cascaded_subtasks: list[str] = []
+        if payload is not None and payload.cascade_to_subtasks:
+            cascaded_subtasks = await _cascade_transition_to_subtasks(
+                jira, issue_key, target_status
+            )
+
         return {
             "status": "ok",
             "action": action,
@@ -746,6 +752,7 @@ async def run_workflow_action(
             "comment_posted": comment_posted,
             "parent_transitioned": parent_transitioned,
             "parent_key": parent_key if parent_transitioned else None,
+            "cascaded_subtasks": cascaded_subtasks,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -814,6 +821,68 @@ async def _maybe_transition_parent_to_uat(
             "Parent auto-transition failed for %s: %s", subtask_key, exc
         )
         return False, None
+
+
+async def _cascade_transition_to_subtasks(
+    jira: JiraClient, parent_key: str, target_status: str
+) -> list[str]:
+    """Transition every direct subtask of `parent_key` to `target_status`.
+
+    Each subtask is moved via its own transition whose `to.name` matches
+    `target_status` (case-insensitive). Subtasks already at the target are
+    skipped; subtasks whose workflow has no matching transition are skipped
+    silently — per user preference, we don't surface partial failures.
+    Returns the list of subtask keys that were actually moved.
+    """
+    import logging
+
+    moved: list[str] = []
+    target_lower = target_status.strip().lower()
+
+    try:
+        subtasks = await jira.get_subtasks_of(parent_key)
+    except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+        logging.warning(
+            "Subtask cascade aborted for %s: failed to fetch subtasks (%s)",
+            parent_key,
+            exc,
+        )
+        return moved
+
+    for sub in subtasks:
+        sub_key = sub.get("key")
+        if not sub_key:
+            continue
+        status_name = (
+            ((sub.get("fields") or {}).get("status") or {}).get("name") or ""
+        ).strip().lower()
+        if status_name == target_lower:
+            continue
+        try:
+            transitions = await jira.list_transitions(sub_key)
+            transition = next(
+                (
+                    t for t in transitions
+                    if (t.get("to") or {}).get("name", "").strip().lower()
+                    == target_lower
+                ),
+                None,
+            )
+            if transition is None:
+                logging.info(
+                    "Cascade skip: subtask %s has no transition to '%s'",
+                    sub_key,
+                    target_status,
+                )
+                continue
+            await jira.transition_issue(sub_key, transition["id"])
+            moved.append(sub_key)
+        except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+            logging.warning(
+                "Cascade transition failed for %s: %s", sub_key, exc
+            )
+
+    return moved
 
 
 @app.post("/generate-test-plan")

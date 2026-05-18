@@ -345,6 +345,20 @@ button:disabled {
   gap: 0.5rem;
 }
 
+.workflow-cascade-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--text-muted, #555);
+  cursor: pointer;
+  user-select: none;
+}
+
+.workflow-cascade-toggle input {
+  cursor: pointer;
+}
+
 .btn-workflow {
   padding: 0.5rem 1rem;
   font-size: 0.875rem;

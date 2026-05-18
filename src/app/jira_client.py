@@ -2079,6 +2079,31 @@ class JiraClient:
             "subtasks": subtasks,
         }
 
+    async def get_subtasks_of(self, issue_key: str) -> list[dict]:
+        """Return the direct subtasks of `issue_key` (empty list if none).
+
+        Used by the parent → subtasks cascade in `run_workflow_action`. Each
+        entry mirrors what Jira returns under `fields.subtasks` — at minimum
+        `key` and `fields.status` — which is enough to decide whether the
+        subtask still needs to be moved.
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        params = {"fields": "subtasks"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        r.raise_for_status()
+
+        return (r.json().get("fields") or {}).get("subtasks") or []
+
     async def list_transitions(self, issue_key: str) -> list[dict]:
         """List available transitions from the issue's current status."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"

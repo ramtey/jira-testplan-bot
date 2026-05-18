@@ -371,6 +371,10 @@ class WorkflowActionRequest(BaseModel):
     image_urls: list[str] | None = None
     # Optional list of Jira accountIds to @mention in the comment body.
     mention_account_ids: list[str] | None = None
+    # When true, after the primary issue transitions, cascade the same
+    # transition (matched by target status name) to every direct subtask.
+    # Subtasks whose workflow has no matching transition are skipped silently.
+    cascade_to_subtasks: bool = False
 
 
 class BugAnalysisRequest(BaseModel):

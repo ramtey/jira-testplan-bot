@@ -153,6 +153,10 @@ function WorkflowActions({
   const [imageUrlsText, setImageUrlsText] = useState('')
   // Selected accountIds to @mention. Optional for both actions.
   const [mentionAccountIds, setMentionAccountIds] = useState([])
+  // Opt-in: when true, the backend cascades the transition to every direct
+  // subtask after the parent moves. Off by default to avoid surprise moves
+  // on tickets where QA only wanted to flip the parent.
+  const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
 
   // Auto-dismiss success messages after 15s; errors stay until the next action.
   useEffect(() => {
@@ -184,6 +188,7 @@ function WorkflowActions({
     setReason('')
     setImageUrlsText('')
     setMentionAccountIds([])
+    setCascadeToSubtasks(false)
   }
 
   const toggleEnvironment = (env) => {
@@ -215,9 +220,14 @@ function WorkflowActions({
     setIsLeaving(false)
     try {
       const init = { method: 'POST' }
-      if (body) {
+      // Merge in the cascade flag whenever it's on — form actions already
+      // build a body, but pull-to-testing posts none, so synthesize one.
+      const effectiveBody = cascadeToSubtasks
+        ? { ...(body || {}), cascade_to_subtasks: true }
+        : body
+      if (effectiveBody) {
         init.headers = { 'Content-Type': 'application/json' }
-        init.body = JSON.stringify(body)
+        init.body = JSON.stringify(effectiveBody)
       }
       const response = await fetch(
         `${API_BASE_URL}/issue/${ticketKey}/workflow/${action.id}`,
@@ -236,9 +246,15 @@ function WorkflowActions({
         data.parent_transitioned && data.parent_key
           ? ` · parent ${data.parent_key} also moved`
           : ''
+      const cascadedCount = Array.isArray(data.cascaded_subtasks)
+        ? data.cascaded_subtasks.length
+        : 0
+      const cascadeText = cascadedCount > 0
+        ? ` · ${cascadedCount} subtask${cascadedCount === 1 ? '' : 's'} moved`
+        : ''
       setFeedback({
         kind: 'success',
-        text: `Moved to ${data.target_status} · ${assigneeText}${noteText}${parentText}`,
+        text: `Moved to ${data.target_status} · ${assigneeText}${noteText}${parentText}${cascadeText}`,
       })
       closeNoteForm()
       if (onActionComplete) onActionComplete(action.id)
@@ -312,8 +328,20 @@ function WorkflowActions({
     }
   }
 
+  const cascadeToggle = (
+    <label className="workflow-cascade-toggle">
+      <input
+        type="checkbox"
+        checked={cascadeToSubtasks}
+        onChange={(e) => setCascadeToSubtasks(e.target.checked)}
+      />
+      <span>Also move all subtasks</span>
+    </label>
+  )
+
   return (
     <div className="workflow-actions">
+      {cascadeToggle}
       {noteForAction ? (
         <form className="workflow-note-form" onSubmit={onNoteSubmit}>
           <div className="workflow-note-form-header">
