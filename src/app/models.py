@@ -266,6 +266,14 @@ class TestPlan:
     # ticket's AC about the same observable behaviour. Each entry:
     # {"loser_id": "SK-2138-AC3", "winner_id": "SK-2194-AC1", "reason": "..."}
     superseded_acs: list[dict] | None = None
+    # UI elements the LLM referenced in test steps but couldn't verify against
+    # the PR diff or testID reference. Lets the reviewer spot tests that lean
+    # on the AC's English description even though the actual code doesn't add
+    # the named button/modal/field. Each entry:
+    # {"ac_id": "SK-2138-AC5", "missing_element": "Edit button on popover",
+    #  "explanation": "Searched the bulk-fill diff and testID reference; no
+    #  control matching 'Edit' was found."}
+    grounding_warnings: list[dict] | None = None
 
 
 # ============================================================================

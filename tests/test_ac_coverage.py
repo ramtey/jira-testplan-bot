@@ -2,7 +2,7 @@
 
 from src.app.adf_parser import extract_text_from_adf
 from src.app.description_analyzer import extract_acceptance_criteria
-from src.app.main import _compute_ac_coverage
+from src.app.main import _compute_ac_coverage, _normalize_grounding_warnings
 from src.app.models import TestPlan as _TestPlan
 
 
@@ -477,6 +477,88 @@ def test_supersede_rejects_invalid_ac_ids():
     assert cov["superseded_acs"] == []
     # SK-1-AC1 is still tagged as covered since neither supersede applied.
     assert cov["tickets"]["SK-1"]["covered"] == ["SK-1-AC1"]
+
+
+# ─── grounding_warnings normalization ─────────────────────────────────────────
+
+
+def test_grounding_warnings_normalize_strips_whitespace_and_dedupes():
+    """Whitespace-padded fields are trimmed; duplicate (ac_id, missing_element)
+    pairs collapse to one entry (case-insensitive on the element)."""
+    plan = _TestPlan(
+        happy_path=[], edge_cases=[], integration_tests=[], regression_checklist=[],
+        grounding_warnings=[
+            {"ac_id": " SK-2138-AC5 ", "missing_element": "Edit button",
+             "explanation": "Not in diff."},
+            {"ac_id": "SK-2138-AC5", "missing_element": "edit button",  # dupe
+             "explanation": "Different explanation."},
+            {"ac_id": "SK-2141-AC2", "missing_element": "HOA dues field",
+             "explanation": "Not in testID reference."},
+        ],
+    )
+    out = _normalize_grounding_warnings(plan)
+    assert len(out) == 2
+    assert out[0] == {
+        "ac_id": "SK-2138-AC5",
+        "missing_element": "Edit button",
+        "explanation": "Not in diff.",
+    }
+    assert out[1]["ac_id"] == "SK-2141-AC2"
+
+
+def test_grounding_warnings_normalize_drops_malformed_entries():
+    """Non-dict items, empty fields, and wrong-type fields are skipped."""
+    plan = _TestPlan(
+        happy_path=[], edge_cases=[], integration_tests=[], regression_checklist=[],
+        grounding_warnings=[
+            "not a dict",                                                 # wrong type
+            {"ac_id": "", "missing_element": "x", "explanation": "y"},   # empty ac_id
+            {"ac_id": "SK-1-AC1", "missing_element": "", "explanation": "y"},  # empty element
+            {"ac_id": "SK-1-AC1", "missing_element": "x", "explanation": ""},  # empty explanation
+            {"ac_id": "SK-1-AC1", "missing_element": "x", "explanation": "y"},  # keeper
+        ],
+    )
+    out = _normalize_grounding_warnings(plan)
+    assert out == [{"ac_id": "SK-1-AC1", "missing_element": "x", "explanation": "y"}]
+
+
+def test_grounding_warnings_drops_unknown_ac_id_when_valid_set_supplied():
+    """For multi-ticket plans, an entry naming an AC ID that doesn't exist in
+    the request is discarded — the model paraphrased instead of citing."""
+    plan = _TestPlan(
+        happy_path=[], edge_cases=[], integration_tests=[], regression_checklist=[],
+        grounding_warnings=[
+            {"ac_id": "SK-9999-AC1", "missing_element": "ghost button",
+             "explanation": "Not in diff."},
+            {"ac_id": "SK-2138-AC5", "missing_element": "Edit button",
+             "explanation": "Not in diff."},
+        ],
+    )
+    out = _normalize_grounding_warnings(plan, valid_ac_ids={"SK-2138-AC5", "SK-2194-AC1"})
+    assert [w["ac_id"] for w in out] == ["SK-2138-AC5"]
+
+
+def test_grounding_warnings_keeps_unknown_ac_id_when_no_valid_set():
+    """Single-ticket plans don't have a canonical AC ID format, so any non-empty
+    ac_id string is accepted when ``valid_ac_ids`` is None."""
+    plan = _TestPlan(
+        happy_path=[], edge_cases=[], integration_tests=[], regression_checklist=[],
+        grounding_warnings=[
+            {"ac_id": "AC3", "missing_element": "Calculate button",
+             "explanation": "Not in diff."},
+        ],
+    )
+    out = _normalize_grounding_warnings(plan)
+    assert len(out) == 1
+    assert out[0]["ac_id"] == "AC3"
+
+
+def test_grounding_warnings_returns_empty_when_absent():
+    plan = _TestPlan(
+        happy_path=[], edge_cases=[], integration_tests=[], regression_checklist=[],
+    )
+    assert _normalize_grounding_warnings(plan) == []
+    assert _normalize_grounding_warnings(plan, valid_ac_ids={"SK-1-AC1"}) == []
 
 
 def test_supersede_absent_field_keeps_existing_behaviour():

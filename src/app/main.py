@@ -56,6 +56,47 @@ def _derive_context_flags(request: GenerateTestPlanRequest | TicketInput) -> dic
     }
 
 
+def _normalize_grounding_warnings(test_plan, valid_ac_ids: set[str] | None = None) -> list[dict]:
+    """Sanitize the LLM-returned ``grounding_warnings`` so the UI can render
+    them safely.
+
+    The model is asked to flag every UI element it referenced in a test step
+    but couldn't trace back to the PR diff, testID reference, or attached
+    mockups. We validate the shape (dict with three non-empty string fields),
+    strip whitespace, and dedupe entries that point at the same
+    ``(ac_id, missing_element)``.
+
+    For multi-ticket plans, ``valid_ac_ids`` should contain every legal
+    ``<ticket>-AC<n>`` ID; entries with an unrecognized ``ac_id`` are
+    discarded — they're almost always a sign the model paraphrased the AC
+    instead of citing it. For single-ticket plans, leave ``valid_ac_ids`` as
+    ``None`` to skip that check (there's no canonical ID format there).
+    """
+    raw = getattr(test_plan, "grounding_warnings", None) or []
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        ac_id = (entry.get("ac_id") or "").strip()
+        missing = (entry.get("missing_element") or "").strip()
+        explanation = (entry.get("explanation") or "").strip()
+        if not ac_id or not missing or not explanation:
+            continue
+        if valid_ac_ids is not None and ac_id not in valid_ac_ids:
+            continue
+        dedupe_key = (ac_id, missing.lower())
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        out.append({
+            "ac_id": ac_id,
+            "missing_element": missing,
+            "explanation": explanation,
+        })
+    return out
+
+
 def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
     """Compare AC IDs declared on each test case (`covers_acs`) against the
     flat AC index built from the request.
@@ -867,6 +908,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
+            "grounding_warnings": _normalize_grounding_warnings(test_plan),
         }
 
         await run_tracker.complete_with_plan(
@@ -1003,6 +1045,12 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
         )
 
         ac_coverage = _compute_ac_coverage(test_plan, tickets_data)
+        valid_ac_ids = {
+            f"{t['ticket_key']}-AC{i}"
+            for t in tickets_data
+            for i in range(1, len(t.get("acceptance_criteria") or []) + 1)
+        }
+        grounding_warnings = _normalize_grounding_warnings(test_plan, valid_ac_ids)
 
         response = {
             "ticket_keys": [t.ticket_key for t in request.tickets],
@@ -1012,6 +1060,7 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             "integration_tests": test_plan.integration_tests or [],
             "ac_coverage": ac_coverage,
             "superseded_acs": ac_coverage.get("superseded_acs", []),
+            "grounding_warnings": grounding_warnings,
         }
 
         await run_tracker.complete_with_plan(

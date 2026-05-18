@@ -248,6 +248,30 @@ function AcCoveragePanel({ coverage }) {
   )
 }
 
+function GroundingWarningsPanel({ warnings }) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return null
+  return (
+    <div
+      className="grounding-warnings-panel"
+      title="The model wrote tests for these UI elements but couldn't verify they exist in the PR diff or testID reference. Confirm before running the tests."
+    >
+      <strong>
+        🔍 {warnings.length} UI element{warnings.length === 1 ? '' : 's'} not
+        found in code — verify before testing:
+      </strong>
+      <ul className="grounding-warnings-list">
+        {warnings.map((w, idx) => (
+          <li key={`${w.ac_id}-${idx}`}>
+            <span className="ac-tag ac-tag--grounding">{w.ac_id}</span>
+            <span className="grounding-warning-element">{w.missing_element}</span>
+            <span className="grounding-warning-explanation">{w.explanation}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
@@ -488,6 +512,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
       {isMulti && testPlan.ac_coverage && (
         <AcCoveragePanel coverage={testPlan.ac_coverage} />
       )}
+
+      <GroundingWarningsPanel warnings={testPlan.grounding_warnings} />
 
       {(() => {
         const totals = SECTION_KEYS.map((k) => sectionLength(testPlan, k))

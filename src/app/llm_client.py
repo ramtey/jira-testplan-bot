@@ -156,6 +156,47 @@ def _is_observability_ticket(summary: str | None, description: str | None) -> bo
     return bool(_OBSERVABILITY_KEYWORDS_RE.search(combined))
 
 
+UI_GROUNDING_GUIDANCE = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔎 UI GROUNDING — DO NOT INVENT UI ELEMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Acceptance criteria are written from the *intended* user experience, not the
+shipped one. Engineering scope often shifts: an AC says "tap the Edit button"
+but the PR replaces the button with a pencil icon, or drops it entirely. If
+you take AC wording at face value, you will write tests for controls that
+don't exist.
+
+For every UI element you name in a test step — buttons, links, modals,
+popovers, fields, tabs, toasts — you must be able to point to it in ONE of
+these sources:
+
+1. **The PR diffs / "Key Code Changes" section above** — the literal element
+   appears in added/modified code (component label, JSX text, testID,
+   string constant, route, icon name).
+2. **The testID reference** — the element appears in the testID list (when
+   one is provided for this app).
+3. **The ticket description or attached screenshots** — the element is
+   shown or described concretely.
+
+When you CANNOT find the element in any of those sources:
+
+- Do NOT invent the literal label. Either describe the action generically
+  ("trigger the bulk-fill edit flow") OR use the wording from the AC and
+  flag the test in `grounding_warnings`.
+- Add one entry to `grounding_warnings`:
+  `{ac_id: "<AC ID>", missing_element: "<element you couldn't verify>",
+    explanation: "<one sentence: where you looked and what you didn't find>"}`.
+- Keep the test in the plan — a reviewer will confirm whether the AC's
+  UI claim was actually implemented. Do not drop coverage just because you
+  couldn't ground a label.
+
+This rule is about elements you SAY THE USER INTERACTS WITH. Outcome text
+(toast messages, error copy) only needs grounding when you quote it verbatim
+in `expected_result`. If you paraphrase the outcome, no warning is needed.
+"""
+
+
 OBSERVABILITY_TESTING_GUIDANCE = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📈 OBSERVABILITY / ALERTING / LOGGING — SPECIALIZED TEST GUIDANCE
@@ -1451,7 +1492,7 @@ TICKET INFORMATION
             prompt += "\n**Use this development context to:**\n"
             prompt += "- Understand the project structure and architecture from the README documentation\n"
             prompt += "- Use project-specific terminology, UI component names, and navigation patterns from the documentation\n"
-            prompt += "- Generate test steps with actual screen names, button labels, and menu items (not generic placeholders)\n"
+            prompt += "- Generate test steps with actual screen names, button labels, and menu items grounded in the PR diff or testID reference (see 'UI GROUNDING' below). If you can't find a UI element in either source, do not invent the label — flag it in `grounding_warnings`.\n"
             prompt += "- Infer what functionality was implemented from commit messages and PR titles\n"
             prompt += "- Analyze the modified files to identify which components/modules were changed\n"
             prompt += "- **FILTER OUT build-time changes**: Ignore ESLint configs, TypeScript configs, build tool settings, CI configs - focus ONLY on runtime code (UI components, API logic, business logic, data models)\n"
@@ -1474,6 +1515,8 @@ TICKET INFORMATION
 
         if _is_observability_ticket(summary, description):
             prompt += OBSERVABILITY_TESTING_GUIDANCE
+
+        prompt += UI_GROUNDING_GUIDANCE
 
         return prompt
 
@@ -1703,6 +1746,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
         prompt += "- Prioritise integration tests that cover how the tickets interact\n"
         prompt += "- Use shared development context to understand the full scope of changes\n"
         prompt += "- **FILTER OUT build-time changes**: focus ONLY on runtime behaviour\n"
+        prompt += "- **Ground every named UI element** in the PR diff, testID reference, or attached screenshots (see 'UI GROUNDING' below). If you can't, flag the test in `grounding_warnings` rather than inventing a label that may not ship.\n"
 
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups from one or more tickets are attached. Use them for UI-specific test cases.\n"
@@ -1712,6 +1756,8 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
 
         if any(_is_observability_ticket(t.get("summary"), t.get("description")) for t in tickets):
             prompt += OBSERVABILITY_TESTING_GUIDANCE
+
+        prompt += UI_GROUNDING_GUIDANCE
 
         return prompt
 
@@ -1781,6 +1827,7 @@ class OllamaClient(LLMClient):
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
+                    grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -1843,6 +1890,7 @@ class OllamaClient(LLMClient):
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
+                    grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -2061,6 +2109,28 @@ SUBMIT_TEST_PLAN_TOOL = {
                     "required": ["loser_id", "winner_id", "reason"],
                 },
             },
+            "grounding_warnings": {
+                "type": "array",
+                "description": "UI elements you referenced in a test step but couldn't verify against the PR diff or testID reference (see 'UI GROUNDING' instructions). One entry per (ac_id, missing_element) pair. Leave empty when every named UI element is grounded.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "ac_id": {
+                            "type": "string",
+                            "description": "The AC ID whose test you couldn't fully ground (e.g. 'SK-2138-AC5'). Must match an ID from 'ACCEPTANCE CRITERIA TO COVER'.",
+                        },
+                        "missing_element": {
+                            "type": "string",
+                            "description": "The UI element you couldn't find — e.g. 'Edit button on bulk-fill popover', 'HOA dues input field'.",
+                        },
+                        "explanation": {
+                            "type": "string",
+                            "description": "One sentence: where you looked (PR diff, testID reference) and why you couldn't confirm the element exists.",
+                        },
+                    },
+                    "required": ["ac_id", "missing_element", "explanation"],
+                },
+            },
         },
         "required": ["happy_path", "edge_cases", "regression_checklist"],
     },
@@ -2166,6 +2236,7 @@ class ClaudeClient(LLMClient):
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
+                    grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 )
 
         except httpx.HTTPStatusError as e:
@@ -2268,6 +2339,7 @@ class ClaudeClient(LLMClient):
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
+                    grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 )
 
         except httpx.HTTPStatusError as e:
