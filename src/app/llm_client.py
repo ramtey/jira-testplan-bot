@@ -1502,6 +1502,7 @@ TICKET INFORMATION
             prompt += "- Generate specific test cases targeting the modified files and their dependencies\n"
             prompt += "- Focus testing on high-risk areas (authentication, payments, data handling, etc.)\n"
             prompt += "- Consider edge cases related to the specific code changes made\n"
+            prompt += "- **Budget your output across all four required sections**: `happy_path`, `edge_cases`, `integration_tests`, and `regression_checklist` are ALL required — do not omit any to make room for more happy-path cases. Aim for one happy-path case per AC (combine ACs when a single flow exercises several). Trim repeated preamble (login, feature-flag setup) from individual steps and state preconditions once at the case level.\n"
 
         # Add user-provided context if available
         if testing_context.get("acceptanceCriteria"):
@@ -1747,6 +1748,8 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
         prompt += "- Use shared development context to understand the full scope of changes\n"
         prompt += "- **FILTER OUT build-time changes**: focus ONLY on runtime behaviour\n"
         prompt += "- **Ground every named UI element** in the PR diff, testID reference, or attached screenshots (see 'UI GROUNDING' below). If you can't, flag the test in `grounding_warnings` rather than inventing a label that may not ship.\n"
+        prompt += "- **Budget your output**: aim for ONE `happy_path` case per AC (combine ACs into the same case when one user flow exercises several). Additional scenarios — boundary values, error paths, permission/feature-flag variants — belong in `edge_cases`, not duplicated happy paths. `edge_cases`, `integration_tests`, and `regression_checklist` are all REQUIRED sections; do not omit them to make room for more happy paths.\n"
+        prompt += "- **Trim step preambles**: state the precondition once per case (e.g. 'On a buyer forms file with feature flags enabled') and skip repeating login/flag steps in every test — they cost output budget and add nothing for the tester.\n"
 
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups from one or more tickets are attached. Use them for UI-specific test cases.\n"
@@ -2202,7 +2205,11 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 8192,
+                        # 8192 wasn't enough once the prompt grew (UI grounding,
+                        # AC conflict resolution) — happy_path consumed the whole
+                        # budget and edge_cases/integration_tests/regression got
+                        # silently truncated. Opus 4.x supports 16k output.
+                        "max_tokens": 16384,
                         "system": [
                             {
                                 "type": "text",
@@ -2219,6 +2226,19 @@ class ClaudeClient(LLMClient):
                 response.raise_for_status()
 
                 data = response.json()
+                # When Anthropic hits the output cap, the JSON inside the
+                # tool_use block is silently truncated — usually `happy_path`
+                # is full but `edge_cases`/`integration_tests`/`regression`
+                # are missing. Fail loudly so the caller can retry with a
+                # smaller batch instead of shipping a half-empty plan.
+                if data.get("stop_reason") == "max_tokens":
+                    out_toks = (data.get("usage") or {}).get("output_tokens")
+                    raise LLMError(
+                        "Claude truncated the test plan at the output-token cap"
+                        + (f" ({out_toks} tokens)" if out_toks else "")
+                        + ". Try fewer tickets per batch or split high-AC tickets.",
+                        error_type="service_unavailable",
+                    )
                 tool_block = next(
                     (b for b in data["content"] if b.get("type") == "tool_use"),
                     None,
@@ -2305,7 +2325,11 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 8192,
+                        # 8192 wasn't enough once the prompt grew (UI grounding,
+                        # AC conflict resolution) — happy_path consumed the whole
+                        # budget and edge_cases/integration_tests/regression got
+                        # silently truncated. Opus 4.x supports 16k output.
+                        "max_tokens": 16384,
                         "system": [
                             {
                                 "type": "text",
@@ -2322,6 +2346,19 @@ class ClaudeClient(LLMClient):
                 response.raise_for_status()
 
                 data = response.json()
+                # When Anthropic hits the output cap, the JSON inside the
+                # tool_use block is silently truncated — usually `happy_path`
+                # is full but `edge_cases`/`integration_tests`/`regression`
+                # are missing. Fail loudly so the caller can retry with a
+                # smaller batch instead of shipping a half-empty plan.
+                if data.get("stop_reason") == "max_tokens":
+                    out_toks = (data.get("usage") or {}).get("output_tokens")
+                    raise LLMError(
+                        "Claude truncated the test plan at the output-token cap"
+                        + (f" ({out_toks} tokens)" if out_toks else "")
+                        + ". Try fewer tickets per batch or split high-AC tickets.",
+                        error_type="service_unavailable",
+                    )
                 tool_block = next(
                     (b for b in data["content"] if b.get("type") == "tool_use"),
                     None,
@@ -2464,6 +2501,19 @@ class ClaudeClient(LLMClient):
                 response.raise_for_status()
 
                 data = response.json()
+                # When Anthropic hits the output cap, the JSON inside the
+                # tool_use block is silently truncated — usually `happy_path`
+                # is full but `edge_cases`/`integration_tests`/`regression`
+                # are missing. Fail loudly so the caller can retry with a
+                # smaller batch instead of shipping a half-empty plan.
+                if data.get("stop_reason") == "max_tokens":
+                    out_toks = (data.get("usage") or {}).get("output_tokens")
+                    raise LLMError(
+                        "Claude truncated the test plan at the output-token cap"
+                        + (f" ({out_toks} tokens)" if out_toks else "")
+                        + ". Try fewer tickets per batch or split high-AC tickets.",
+                        error_type="service_unavailable",
+                    )
                 tool_block = next(
                     (b for b in data["content"] if b.get("type") == "tool_use"),
                     None,
