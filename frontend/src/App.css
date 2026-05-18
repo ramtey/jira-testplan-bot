@@ -2112,6 +2112,56 @@ button:disabled {
   margin-right: 0.25rem;
 }
 
+.ac-coverage-superseded {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(102, 126, 234, 0.06);
+  border: 1px solid rgba(102, 126, 234, 0.25);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+}
+
+.ac-coverage-superseded > strong {
+  color: #5b6cd9;
+  display: block;
+  margin-bottom: 0.375rem;
+}
+
+.ac-coverage-superseded-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.ac-coverage-superseded-list li {
+  display: flex;
+  gap: 0.375rem;
+  padding: 0.2rem 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.ac-coverage-supersede-arrow {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.ac-coverage-supersede-reason {
+  color: var(--text-secondary);
+  font-style: italic;
+  overflow-wrap: anywhere;
+  cursor: help;
+}
+
+.ac-tag--superseded {
+  margin-left: 0;
+  background: rgba(102, 126, 234, 0.1);
+  color: #5b6cd9;
+  border-color: rgba(102, 126, 234, 0.35);
+  text-decoration: line-through;
+  text-decoration-color: rgba(91, 108, 217, 0.6);
+}
+
 .test-covers-acs {
   margin-top: 0.75rem;
   font-size: 0.875rem;

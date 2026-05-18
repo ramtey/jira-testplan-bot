@@ -24,6 +24,28 @@ _VALID_FIX_STATUSES = ("not_fixed", "in_testing", "fixed")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _PII_PLACEHOLDER = "<test-account>"
 
+_TICKET_KEY_NUM_RE = re.compile(r"(\d+)\s*$")
+
+
+def _ticket_key_recency(ticket_key: str) -> int:
+    """Numeric suffix of a Jira key, used to rank tickets by recency.
+
+    Higher number = newer (SK-2194 > SK-2138). Tickets whose key has no
+    trailing number sort last (treated as oldest) so they don't accidentally
+    win a conflict on bad input.
+    """
+    match = _TICKET_KEY_NUM_RE.search(ticket_key or "")
+    return int(match.group(1)) if match else -1
+
+
+def _sort_tickets_newest_first(tickets: list[dict]) -> list[dict]:
+    """Return tickets ordered newest-first by numeric suffix of ticket_key."""
+    return sorted(
+        tickets,
+        key=lambda t: _ticket_key_recency(t.get("ticket_key", "")),
+        reverse=True,
+    )
+
 
 def _scrub_emails(text: Any) -> Any:
     """Replace any email-shaped substring with a generic test-account placeholder.
@@ -1460,9 +1482,17 @@ TICKET INFORMATION
         tickets: list[dict],
         has_images: bool = False,
     ) -> str:
-        """Build a combined prompt for multiple related tickets sharing code changes."""
+        """Build a combined prompt for multiple related tickets sharing code changes.
+
+        Tickets are reordered newest-first by the numeric suffix of the ticket
+        key (e.g. SK-2194 before SK-2138) so the conflict-resolution rule
+        ("newer ticket wins on AC conflicts") is unambiguous to both the LLM
+        and any human reading the prompt log.
+        """
+        tickets = _sort_tickets_newest_first(tickets)
         ticket_keys = [t["ticket_key"] for t in tickets]
         keys_str = ", ".join(ticket_keys)
+        recency_str = " > ".join(ticket_keys)  # newest > … > oldest
 
         prompt = f"""**Your Task:** Create a single, unified, deduplicated test plan covering the following related Jira tickets that share code changes: {keys_str}.{"  (screenshots/mockups attached)" if has_images else ""}
 
@@ -1497,6 +1527,27 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                 "(happy_path, edge_cases, or integration_tests). If a single test legitimately "
                 "exercises multiple ACs, list all of their IDs. Do NOT drop ACs to reduce duplication.\n\n"
             )
+
+            # ── Conflict resolution: newer ticket wins ──────────────────────
+            if len(tickets) > 1:
+                prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                prompt += "AC CONFLICT RESOLUTION — NEWER TICKET WINS\n"
+                prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                prompt += f"Ticket recency (newest → oldest): {recency_str}\n\n"
+                prompt += (
+                    "Two ACs from different tickets in this batch may describe the *same observable behaviour* "
+                    "with *different requirements* (e.g. SK-2138-AC3 says 'modal stays open after Save' but "
+                    "SK-2194-AC1 says 'modal closes after Save'). When that happens:\n\n"
+                    "- The newer ticket's AC is the source of truth — write tests against IT, not the older one.\n"
+                    "- Do NOT add the older (superseded) AC ID to any test case's `covers_acs`. It is overridden.\n"
+                    "- Do NOT write a separate test for the older AC's behaviour — that behaviour no longer applies.\n"
+                    "- Report the override in the top-level `superseded_acs` array: "
+                    "`{loser_id: '<older AC ID>', winner_id: '<newer AC ID>', reason: '<one sentence>'}`.\n\n"
+                    "Only flag a conflict when two ACs are about the *same observable behaviour* and *disagree*. "
+                    "ACs that describe *different* behaviours are not conflicts — both must be tested.\n"
+                    "ACs that say the *same* thing in different words are duplicates, not conflicts — cover them "
+                    "with one test that tags both IDs in `covers_acs` (don't put them in `superseded_acs`).\n\n"
+                )
 
         # ── Per-ticket summaries ──────────────────────────────────────────────
         for i, ticket in enumerate(tickets, 1):
@@ -1646,7 +1697,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
         prompt += "- Treat all tickets as parts of a single combined feature\n"
         prompt += "- Merge test cases ONLY when the same user action covers multiple ACs — never drop an AC to reduce duplication\n"
         if ac_index:
-            prompt += "- **REQUIRED:** Every AC ID listed under 'ACCEPTANCE CRITERIA TO COVER' must appear in at least one test case's `covers_acs` field. When one test legitimately exercises multiple ACs, list all of their IDs in `covers_acs`.\n"
+            prompt += "- **REQUIRED:** Every AC ID listed under 'ACCEPTANCE CRITERIA TO COVER' must appear in at least one test case's `covers_acs` field — UNLESS the ID has been superseded by a newer ticket's AC (see 'AC CONFLICT RESOLUTION'). Superseded IDs are exempt from coverage and must be reported in the top-level `superseded_acs` array instead.\n"
             prompt += "- **REQUIRED:** If two ACs describe *different observable behaviours* — even within the same feature — they MUST have separate test cases. Examples: 'Add button adds PDF' and 'Preview opens overlay' are distinct user actions and need distinct tests; 'Save shows toast' and 'Save persists to file' verify different outcomes and need distinct tests. Do not collapse them into one case.\n"
             prompt += "- **REQUIRED:** `covers_acs` must contain only IDs that appear verbatim in the 'ACCEPTANCE CRITERIA TO COVER' list. Do not invent IDs (e.g. AC9 when only 8 ACs exist), do not renumber, do not guess. The ID you tag must match a test whose steps and expected result actually verify that AC's wording.\n"
         prompt += "- Prioritise integration tests that cover how the tickets interact\n"
@@ -1729,6 +1780,7 @@ class OllamaClient(LLMClient):
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
+                    superseded_acs=test_plan_data.get("superseded_acs") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -1790,6 +1842,7 @@ class OllamaClient(LLMClient):
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
+                    superseded_acs=test_plan_data.get("superseded_acs") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -1986,6 +2039,28 @@ SUBMIT_TEST_PLAN_TOOL = {
                 "type": "array",
                 "items": {"type": "string"},
             },
+            "superseded_acs": {
+                "type": "array",
+                "description": "Multi-ticket only. ACs from older tickets that were overridden by a newer ticket's AC about the same observable behaviour. Leave empty when there are no conflicts.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "loser_id": {
+                            "type": "string",
+                            "description": "The older ticket's AC ID (e.g. 'SK-2138-AC3'). Must match an ID from 'ACCEPTANCE CRITERIA TO COVER'.",
+                        },
+                        "winner_id": {
+                            "type": "string",
+                            "description": "The newer ticket's AC ID that overrides loser_id. Must match an ID from 'ACCEPTANCE CRITERIA TO COVER'.",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "One sentence: which observable behaviour both ACs disagree on, and how the newer one changes it.",
+                        },
+                    },
+                    "required": ["loser_id", "winner_id", "reason"],
+                },
+            },
         },
         "required": ["happy_path", "edge_cases", "regression_checklist"],
     },
@@ -2090,6 +2165,7 @@ class ClaudeClient(LLMClient):
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
+                    superseded_acs=test_plan_data.get("superseded_acs") or None,
                 )
 
         except httpx.HTTPStatusError as e:
@@ -2191,6 +2267,7 @@ class ClaudeClient(LLMClient):
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
+                    superseded_acs=test_plan_data.get("superseded_acs") or None,
                 )
 
         except httpx.HTTPStatusError as e:

@@ -154,13 +154,17 @@ function renderTestCase(test, index, opts = {}) {
  */
 function AcCoveragePanel({ coverage }) {
   if (!coverage || !coverage.tickets) return null
+  // Keep tickets where there's *something* to show: real ACs, or a supersede
+  // that needs explaining (a ticket whose only AC was overridden still has 0
+  // total but should still appear so the user sees why it dropped off).
   const entries = Object.entries(coverage.tickets).filter(
-    ([, info]) => info && info.total > 0
+    ([, info]) => info && (info.total > 0 || (info.superseded?.length ?? 0) > 0)
   )
   if (entries.length === 0) return null
 
   const uncoveredTotal = coverage.uncovered_total ?? 0
   const invalidIds = Array.isArray(coverage.invalid_ids) ? coverage.invalid_ids : []
+  const superseded = Array.isArray(coverage.superseded_acs) ? coverage.superseded_acs : []
   const status = uncoveredTotal === 0 && invalidIds.length === 0 ? 'complete' : 'gaps'
 
   return (
@@ -183,6 +187,29 @@ function AcCoveragePanel({ coverage }) {
           {invalidIds.map((id) => (
             <span key={id} className="ac-tag ac-tag--invalid">{id}</span>
           ))}
+        </div>
+      )}
+      {superseded.length > 0 && (
+        <div
+          className="ac-coverage-superseded"
+          title="These ACs from older tickets were overridden by a newer ticket's AC about the same behaviour. The newer one is what the test plan verifies."
+        >
+          <strong>🔁 Newer ticket overrides {superseded.length} older AC
+            {superseded.length === 1 ? '' : 's'}:</strong>
+          <ul className="ac-coverage-superseded-list">
+            {superseded.map((s) => (
+              <li key={s.loser_id}>
+                <span className="ac-tag ac-tag--superseded">{s.loser_id}</span>
+                <span className="ac-coverage-supersede-arrow">→</span>
+                <span className="ac-tag">{s.winner_id}</span>
+                {s.reason && (
+                  <span className="ac-coverage-supersede-reason" title={s.reason}>
+                    {s.reason}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
       <ul className="ac-coverage-tickets">

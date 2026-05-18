@@ -67,6 +67,12 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
     show fake tags on test cases. Invalid IDs are surfaced separately so the
     UI can flag the regression instead of hiding it.
 
+    Multi-ticket only: if the LLM reported ``superseded_acs`` (older ACs
+    overridden by a newer ticket's AC), those loser IDs are excluded from
+    the per-ticket "uncovered" list — they're intentionally not tested,
+    not gaps. They're surfaced as their own top-level array so the UI
+    can show the override and the reason.
+
     Returns a structure the frontend can render directly:
         {
             "tickets": {
@@ -75,12 +81,21 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
                     "uncovered": [
                         {"id": "SK-2137-AC3", "text": "..."},
                     ],
+                    "superseded": [
+                        {"id": "SK-2138-AC3", "text": "...", "winner_id": "SK-2194-AC1"},
+                    ],
                     "total": 4,
                 },
                 ...
             },
             "uncovered_total": 3,
             "invalid_ids": ["SK-2138-AC9"],  # IDs the LLM made up
+            "superseded_acs": [
+                {"loser_id": "SK-2138-AC3", "loser_text": "...",
+                 "loser_ticket": "SK-2138", "winner_id": "SK-2194-AC1",
+                 "winner_text": "...", "winner_ticket": "SK-2194",
+                 "reason": "..."},
+            ],
         }
     """
     per_ticket: dict[str, list[tuple[str, str]]] = {}
@@ -90,6 +105,50 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
         per_ticket[key] = [(f"{key}-AC{i}", text) for i, text in enumerate(acs, 1)]
 
     valid_ids: set[str] = {ac_id for entries in per_ticket.values() for ac_id, _ in entries}
+    id_to_text: dict[str, str] = {
+        ac_id: text for entries in per_ticket.values() for ac_id, text in entries
+    }
+
+    def _ticket_of(ac_id: str) -> str:
+        # "SK-2138-AC3" → "SK-2138"
+        return ac_id.rsplit("-AC", 1)[0] if "-AC" in ac_id else ""
+
+    # ── Validate superseded_acs from the LLM ─────────────────────────────
+    raw_superseded = getattr(test_plan, "superseded_acs", None) or []
+    superseded_pairs: list[dict] = []
+    superseded_loser_ids: set[str] = set()
+    seen_losers: set[str] = set()
+    for entry in raw_superseded:
+        if not isinstance(entry, dict):
+            continue
+        loser = (entry.get("loser_id") or "").strip()
+        winner = (entry.get("winner_id") or "").strip()
+        reason = (entry.get("reason") or "").strip()
+        if not loser or not winner or loser == winner:
+            continue
+        if loser not in valid_ids or winner not in valid_ids:
+            continue
+        if loser in seen_losers:
+            continue  # one supersede per loser; first one wins
+        seen_losers.add(loser)
+        loser_ticket = _ticket_of(loser)
+        winner_ticket = _ticket_of(winner)
+        # Sanity: winner must come from a strictly newer ticket than loser.
+        # If the LLM got recency backwards, drop the entry — better to leave
+        # the AC as "uncovered" than to silently honour a wrong override.
+        from .llm_client import _ticket_key_recency
+        if _ticket_key_recency(winner_ticket) <= _ticket_key_recency(loser_ticket):
+            continue
+        superseded_loser_ids.add(loser)
+        superseded_pairs.append({
+            "loser_id": loser,
+            "loser_text": id_to_text.get(loser, ""),
+            "loser_ticket": loser_ticket,
+            "winner_id": winner,
+            "winner_text": id_to_text.get(winner, ""),
+            "winner_ticket": winner_ticket,
+            "reason": reason,
+        })
 
     declared: set[str] = set()
     invalid_ids: set[str] = set()
@@ -108,6 +167,11 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
                 if not trimmed:
                     continue
                 if trimmed in valid_ids:
+                    # Drop any test-case tag pointing at a superseded AC — the
+                    # newer AC is the source of truth, and leaving the old ID
+                    # here would mislead the UI into showing it as "covered".
+                    if trimmed in superseded_loser_ids:
+                        continue
                     declared.add(trimmed)
                     kept.append(trimmed)
                 else:
@@ -117,11 +181,19 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
 
     result_tickets: dict[str, dict] = {}
     uncovered_total = 0
+    winner_by_loser = {p["loser_id"]: p["winner_id"] for p in superseded_pairs}
     for key, entries in per_ticket.items():
         covered: list[str] = []
         uncovered: list[dict] = []
+        superseded: list[dict] = []
         for ac_id, text in entries:
-            if ac_id in declared:
+            if ac_id in superseded_loser_ids:
+                superseded.append({
+                    "id": ac_id,
+                    "text": text,
+                    "winner_id": winner_by_loser[ac_id],
+                })
+            elif ac_id in declared:
                 covered.append(ac_id)
             else:
                 uncovered.append({"id": ac_id, "text": text})
@@ -129,12 +201,16 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
         result_tickets[key] = {
             "covered": covered,
             "uncovered": uncovered,
-            "total": len(entries),
+            "superseded": superseded,
+            # `total` excludes superseded ACs so the X/Y ratio in the UI
+            # reflects what was actually expected to be tested.
+            "total": len(entries) - len(superseded),
         }
     return {
         "tickets": result_tickets,
         "uncovered_total": uncovered_total,
         "invalid_ids": sorted(invalid_ids),
+        "superseded_acs": superseded_pairs,
     }
 
 
@@ -935,6 +1011,7 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
             "ac_coverage": ac_coverage,
+            "superseded_acs": ac_coverage.get("superseded_acs", []),
         }
 
         await run_tracker.complete_with_plan(

@@ -316,7 +316,12 @@ def test_coverage_returns_empty_tickets_when_no_acs_supplied():
     )
     cov = _compute_ac_coverage(plan, tickets)
     assert cov["uncovered_total"] == 0
-    assert cov["tickets"]["SK-1"] == {"covered": [], "uncovered": [], "total": 0}
+    assert cov["tickets"]["SK-1"] == {
+        "covered": [],
+        "uncovered": [],
+        "superseded": [],
+        "total": 0,
+    }
 
 
 def test_coverage_drops_invalid_ids_from_cases_and_reports_them():
@@ -372,3 +377,119 @@ def test_coverage_handles_non_list_covers_acs_gracefully():
     cov = _compute_ac_coverage(plan, tickets)
     assert cov["uncovered_total"] == 1
     assert cov["invalid_ids"] == []
+
+
+# ─── superseded_acs (newer ticket wins on conflicts) ──────────────────────────
+
+
+def test_supersede_excludes_loser_from_uncovered_and_surfaces_pair():
+    """When the LLM marks SK-2138-AC3 as superseded by SK-2194-AC1, the older
+    AC must be excluded from "uncovered" (it's overridden, not missed) and
+    surfaced in the top-level `superseded_acs` list."""
+    tickets = [
+        {"ticket_key": "SK-2138", "acceptance_criteria": ["modal stays open"]},
+        {"ticket_key": "SK-2194", "acceptance_criteria": ["modal closes after Save"]},
+    ]
+    plan = _TestPlan(
+        happy_path=[{"title": "t", "covers_acs": ["SK-2194-AC1"]}],
+        edge_cases=[], integration_tests=[], regression_checklist=[],
+        superseded_acs=[
+            {
+                "loser_id": "SK-2138-AC1",
+                "winner_id": "SK-2194-AC1",
+                "reason": "Modal close behaviour reversed in SK-2194.",
+            }
+        ],
+    )
+    cov = _compute_ac_coverage(plan, tickets)
+    assert cov["uncovered_total"] == 0
+    assert cov["tickets"]["SK-2138"]["uncovered"] == []
+    assert cov["tickets"]["SK-2138"]["superseded"] == [
+        {"id": "SK-2138-AC1", "text": "modal stays open", "winner_id": "SK-2194-AC1"}
+    ]
+    # `total` excludes the superseded AC so X/Y reflects what was actually expected.
+    assert cov["tickets"]["SK-2138"]["total"] == 0
+    assert cov["superseded_acs"] == [{
+        "loser_id": "SK-2138-AC1",
+        "loser_text": "modal stays open",
+        "loser_ticket": "SK-2138",
+        "winner_id": "SK-2194-AC1",
+        "winner_text": "modal closes after Save",
+        "winner_ticket": "SK-2194",
+        "reason": "Modal close behaviour reversed in SK-2194.",
+    }]
+
+
+def test_supersede_strips_loser_id_from_case_covers_acs():
+    """If the LLM tags a test case with the loser ID, it must be stripped — the
+    newer AC is the source of truth and the test verifies that one only."""
+    tickets = [
+        {"ticket_key": "SK-2138", "acceptance_criteria": ["old behaviour"]},
+        {"ticket_key": "SK-2194", "acceptance_criteria": ["new behaviour"]},
+    ]
+    case = {"title": "t", "covers_acs": ["SK-2138-AC1", "SK-2194-AC1"]}
+    plan = _TestPlan(
+        happy_path=[case], edge_cases=[], integration_tests=[], regression_checklist=[],
+        superseded_acs=[
+            {"loser_id": "SK-2138-AC1", "winner_id": "SK-2194-AC1", "reason": "x"}
+        ],
+    )
+    _compute_ac_coverage(plan, tickets)
+    assert case["covers_acs"] == ["SK-2194-AC1"]
+
+
+def test_supersede_rejects_backwards_recency():
+    """If the LLM gets recency backwards (winner is older than loser), the
+    entry must be discarded — better to show the AC as uncovered than to
+    silently honour a wrong override."""
+    tickets = [
+        {"ticket_key": "SK-2138", "acceptance_criteria": ["a"]},
+        {"ticket_key": "SK-2194", "acceptance_criteria": ["b"]},
+    ]
+    plan = _TestPlan(
+        happy_path=[{"title": "t", "covers_acs": ["SK-2138-AC1"]}],
+        edge_cases=[], integration_tests=[], regression_checklist=[],
+        superseded_acs=[
+            # SK-2194 is newer but the LLM marked it as the loser — reject.
+            {"loser_id": "SK-2194-AC1", "winner_id": "SK-2138-AC1", "reason": "x"}
+        ],
+    )
+    cov = _compute_ac_coverage(plan, tickets)
+    assert cov["superseded_acs"] == []
+    assert [u["id"] for u in cov["tickets"]["SK-2194"]["uncovered"]] == ["SK-2194-AC1"]
+
+
+def test_supersede_rejects_invalid_ac_ids():
+    """A supersede entry referencing an AC ID that doesn't exist must be dropped."""
+    tickets = [
+        {"ticket_key": "SK-1", "acceptance_criteria": ["a"]},
+        {"ticket_key": "SK-2", "acceptance_criteria": ["b"]},
+    ]
+    plan = _TestPlan(
+        happy_path=[{"title": "t", "covers_acs": ["SK-2-AC1", "SK-1-AC1"]}],
+        edge_cases=[], integration_tests=[], regression_checklist=[],
+        superseded_acs=[
+            {"loser_id": "SK-1-AC9", "winner_id": "SK-2-AC1", "reason": "x"},  # AC9 doesn't exist
+            {"loser_id": "SK-1-AC1", "winner_id": "SK-9-AC1", "reason": "x"},  # SK-9 doesn't exist
+        ],
+    )
+    cov = _compute_ac_coverage(plan, tickets)
+    assert cov["superseded_acs"] == []
+    # SK-1-AC1 is still tagged as covered since neither supersede applied.
+    assert cov["tickets"]["SK-1"]["covered"] == ["SK-1-AC1"]
+
+
+def test_supersede_absent_field_keeps_existing_behaviour():
+    """Single-ticket plans (and any plan without superseded_acs) must behave
+    exactly as before — the field is optional."""
+    tickets = [{"ticket_key": "SK-1", "acceptance_criteria": ["a", "b"]}]
+    plan = _TestPlan(
+        happy_path=[{"title": "t", "covers_acs": ["SK-1-AC1"]}],
+        edge_cases=[], integration_tests=[], regression_checklist=[],
+        # superseded_acs defaults to None
+    )
+    cov = _compute_ac_coverage(plan, tickets)
+    assert cov["superseded_acs"] == []
+    assert cov["tickets"]["SK-1"]["superseded"] == []
+    assert cov["tickets"]["SK-1"]["total"] == 2
+    assert [u["id"] for u in cov["tickets"]["SK-1"]["uncovered"]] == ["SK-1-AC2"]

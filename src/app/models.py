@@ -262,6 +262,10 @@ class TestPlan:
     edge_cases: list[dict]
     regression_checklist: list[str]
     integration_tests: list[dict] | None = None  # New: Optional integration tests
+    # Multi-ticket only: ACs from older tickets that were overridden by a newer
+    # ticket's AC about the same observable behaviour. Each entry:
+    # {"loser_id": "SK-2138-AC3", "winner_id": "SK-2194-AC1", "reason": "..."}
+    superseded_acs: list[dict] | None = None
 
 
 # ============================================================================
