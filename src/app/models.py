@@ -163,6 +163,24 @@ class ParentIssue:
 
 
 @dataclass
+class ChildIssue:
+    """A direct child (sub-task / story under an Epic) of the current ticket.
+
+    Lightweight by design: enough for the LLM to understand each child's
+    scope when writing an integration-focused parent test plan, without
+    pulling per-child PR diffs or attachments (those live with the child's
+    own test plan).
+    """
+
+    key: str
+    summary: str
+    description: str | None
+    issue_type: str
+    status: str | None = None
+    status_category: str | None = None
+
+
+@dataclass
 class LinkedIssue:
     """Represents a linked issue (blocks, is blocked by, etc.)."""
 
@@ -243,6 +261,10 @@ class JiraIssue:
     attachments: list[Attachment] | None = None
     comments: list[JiraComment] | None = None  # Filtered testing-related comments
     parent: ParentIssue | None = None  # Parent ticket context with design resources
+    # Direct children (sub-tasks / Epic children). Populated for parent tickets
+    # so the test-plan prompt can write integration-focused coverage rather than
+    # treating the ticket as a leaf.
+    children: list[ChildIssue] | None = None
     linked_issues: LinkedIssues | None = None  # Linked tickets (blocks, blocked by, etc.)
     status: str | None = None  # Workflow status name (e.g. "To Do", "In Progress", "In Testing", "Done")
     status_category: str | None = None  # Stable category key: "new" | "indeterminate" | "done"
@@ -322,6 +344,9 @@ class GenerateTestPlanRequest(BaseModel):
     image_urls: list[str] | None = None  # URLs of images to download and analyze
     comments: list[dict] | None = None  # Filtered testing-related Jira comments
     parent_info: dict | None = None  # Parent ticket context (key, summary, description, resources)
+    # Direct subtasks/Epic children of this ticket. When present, the prompt
+    # treats this ticket as a parent and writes integration-focused coverage.
+    child_info: list[dict] | None = None
     linked_info: dict | None = None  # Linked issues (blocks, blocked_by, causes, caused_by)
     bounce_history: list[dict] | None = None  # Prior QA/UAT bounce-back events with reasons
 
@@ -338,6 +363,7 @@ class TicketInput(BaseModel):
     image_urls: list[str] | None = None
     comments: list[dict] | None = None
     parent_info: dict | None = None
+    child_info: list[dict] | None = None
     linked_info: dict | None = None
     bounce_history: list[dict] | None = None
 

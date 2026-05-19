@@ -408,6 +408,13 @@ async def get_issue(issue_key: str):
             if issue.parent.figma_context:
                 parent_info_dict["figma_context"] = asdict(issue.parent.figma_context)
 
+        # Serialize children (direct sub-tasks / Epic children) if present.
+        # The frontend echoes these back to /generate-test-plan so the prompt
+        # can switch into parent/integration-test mode.
+        children_list = None
+        if issue.children:
+            children_list = [asdict(child) for child in issue.children]
+
         # Serialize linked issues if available
         linked_info_dict = None
         if issue.linked_issues:
@@ -457,6 +464,7 @@ async def get_issue(issue_key: str):
             "attachments": attachments_list,
             "comments": comments_list,
             "parent": parent_info_dict,
+            "children": children_list,
             "linked_issues": linked_info_dict,
             "status": issue.status,
             "status_category": issue.status_category,
@@ -965,6 +973,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             images=images,
             comments=request.comments,
             parent_info=request.parent_info,
+            child_info=request.child_info,
             linked_info=request.linked_info,
             slack_messages=slack_messages_for_prompt,
             seed_regressions=seed_regressions or None,
@@ -1101,6 +1110,7 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
                 "development_info": t.development_info,
                 "comments": t.comments,
                 "parent_info": t.parent_info,
+                "child_info": t.child_info,
                 "linked_info": t.linked_info,
                 "acceptance_criteria": extract_acceptance_criteria(t.description),
             }

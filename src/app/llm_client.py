@@ -882,6 +882,7 @@ class LLMClient(ABC):
         images: list[tuple[str, str]] | None = None,
         comments: list[dict] | None = None,
         parent_info: dict | None = None,
+        child_info: list[dict] | None = None,
         linked_info: dict | None = None,
         slack_messages: list[dict] | None = None,
         seed_regressions: list[dict] | None = None,
@@ -1104,6 +1105,7 @@ class LLMClient(ABC):
         has_images: bool = False,
         comments: list[dict] | None = None,
         parent_info: dict | None = None,
+        child_info: list[dict] | None = None,
         linked_info: dict | None = None,
         slack_messages: list[dict] | None = None,
         seed_regressions: list[dict] | None = None,
@@ -1158,6 +1160,54 @@ TICKET INFORMATION
             prompt += "- Use design specifications from parent Figma files and mockups\n"
             prompt += "- Validate that this sub-task fulfills its role in the broader feature\n"
             prompt += "- Consider integration points with other sub-tasks under the same parent\n"
+
+        # Parent-of context: when THIS ticket has direct children, switch the
+        # prompt into integration-test mode rather than treating it as a leaf.
+        # Each child gets its own test plan elsewhere, so this section steers
+        # the model toward end-to-end and cross-subtask coverage instead of
+        # duplicating per-child detail.
+        if child_info:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "THIS IS A PARENT TICKET — SUBTASKS BELOW\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += (
+                f"\nThis ticket has {len(child_info)} direct child ticket"
+                f"{'s' if len(child_info) != 1 else ''}. Each child carries its own scope,\n"
+                "code changes, and (likely) its own test plan. Use the children below as the\n"
+                "**ground truth for what this feature actually contains**, not just the parent's\n"
+                "description.\n"
+            )
+            for idx, child in enumerate(child_info, start=1):
+                key = _safe_get(child, "key", "UNKNOWN")
+                child_summary = _safe_get(child, "summary", "")
+                child_type = _safe_get(child, "issue_type", "")
+                child_status = _safe_get(child, "status", "")
+                child_desc = _safe_get(child, "description", "")
+                status_suffix = f" · {child_status}" if child_status else ""
+                type_prefix = f"[{child_type}] " if child_type else ""
+                prompt += f"\n**{idx}. {key}** — {type_prefix}{child_summary}{status_suffix}\n"
+                if child_desc:
+                    desc_preview = child_desc[:400] + "..." if len(child_desc) > 400 else child_desc
+                    prompt += f"   {desc_preview}\n"
+
+            prompt += "\n**How to write tests for a parent ticket:**\n"
+            prompt += (
+                "- **Focus on integration and end-to-end flows.** Cover the user journey that\n"
+                "  exercises multiple subtasks in sequence — that's the layer the per-subtask\n"
+                "  plans miss.\n"
+                "- **Cross-subtask regressions.** When two subtasks touch related state\n"
+                "  (e.g. one writes data, another reads it), call out the combined flow.\n"
+                "- **Don't duplicate per-subtask coverage.** Each subtask above will have its\n"
+                "  own happy-path / edge-case plan; assume that work is done elsewhere. Only\n"
+                "  add per-subtask detail here when the subtask is critical to the parent's\n"
+                "  acceptance criteria and you can't reach it via an integration test.\n"
+                "- **Scope-gap call-out.** If the children above don't appear to fully cover\n"
+                "  the parent's stated acceptance criteria, list the gap explicitly in the\n"
+                "  test plan so QA knows to push back rather than silently approve.\n"
+                "- **Prefer real workflows.** Use the children's statuses to sequence tests\n"
+                "  (e.g. test subtasks marked 'Done' first; flag any 'To Do' children as\n"
+                "  blockers for full integration coverage).\n"
+            )
 
         # Add linked issues context if available
         if linked_info:
@@ -1847,6 +1897,7 @@ class OllamaClient(LLMClient):
         images: list[tuple[str, str]] | None = None,
         comments: list[dict] | None = None,
         parent_info: dict | None = None,
+        child_info: list[dict] | None = None,
         linked_info: dict | None = None,
         slack_messages: list[dict] | None = None,
         seed_regressions: list[dict] | None = None,
@@ -1858,7 +1909,7 @@ class OllamaClient(LLMClient):
             print("Warning: Ollama does not support image analysis. Images will be ignored.")
 
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history
         )
 
         try:
@@ -2228,6 +2279,7 @@ class ClaudeClient(LLMClient):
         images: list[tuple[str, str]] | None = None,
         comments: list[dict] | None = None,
         parent_info: dict | None = None,
+        child_info: list[dict] | None = None,
         linked_info: dict | None = None,
         slack_messages: list[dict] | None = None,
         seed_regressions: list[dict] | None = None,
@@ -2235,7 +2287,7 @@ class ClaudeClient(LLMClient):
     ) -> TestPlan:
         """Generate test plan using Claude API with optional image support."""
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history
         )
 
         # Build message content (text + images if provided)

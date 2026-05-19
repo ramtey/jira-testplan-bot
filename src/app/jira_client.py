@@ -9,7 +9,7 @@ from .config import settings
 from .description_analyzer import analyze_description
 from .figma_client import FigmaClient
 from .github_client import GitHubClient
-from .models import Attachment, BounceEvent, Commit, DevelopmentInfo, DescriptionAnalysis, EpicChildSummary, FileChange, JiraComment, JiraIssue, LinkedIssue, LinkedIssues, ParentIssue, PRComment, PullRequest, RepositoryContext
+from .models import Attachment, BounceEvent, ChildIssue, Commit, DevelopmentInfo, DescriptionAnalysis, EpicChildSummary, FileChange, JiraComment, JiraIssue, LinkedIssue, LinkedIssues, ParentIssue, PRComment, PullRequest, RepositoryContext
 
 logger = logging.getLogger(__name__)
 
@@ -1211,6 +1211,90 @@ class JiraClient:
             logger.error(f"Unexpected error fetching parent issue {issue_key}: {type(e).__name__}: {e}")
             return None
 
+    # Bound on how many child summaries we ship to the LLM. Parents with more
+    # children than this are still handled — we just include the first N in
+    # creation order and lean on the integration-test guidance to keep coverage
+    # at the cross-subtask layer rather than per-child detail.
+    _MAX_CHILDREN_FOR_PROMPT: int = 15
+    # Trim each child description before sending it into the prompt. Children
+    # contribute scope context, not full specs; their own test plans cover the
+    # detailed coverage.
+    _CHILD_DESCRIPTION_CHAR_CAP: int = 600
+
+    async def _get_children(self, issue_key: str) -> list[ChildIssue]:
+        """Fetch direct children of `issue_key` (sub-tasks or Epic stories).
+
+        Uses the broad `parent = X` JQL so it works for both Epics (whose
+        children are Stories/Tasks linked by epic-parent) and Stories/Tasks
+        (whose children are sub-tasks). Returns at most `_MAX_CHILDREN_FOR_PROMPT`
+        entries in creation order; failures degrade to an empty list so the
+        rest of the ticket fetch still succeeds.
+        """
+        if not re.match(r"^[A-Z][A-Z0-9_]*-\d+$", issue_key):
+            return []
+
+        url = f"{self.base_url}/rest/api/3/search/jql"
+        payload = {
+            "jql": f"parent = {issue_key} ORDER BY created ASC",
+            "fields": ["summary", "description", "issuetype", "status"],
+            "maxResults": self._MAX_CHILDREN_FOR_PROMPT,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(
+                    url,
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json=payload,
+                )
+                r.raise_for_status()
+                body = r.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning(
+                f"Failed to fetch children for {issue_key} (HTTP {e.response.status_code})"
+            )
+            return []
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            logger.warning(f"Failed to fetch children for {issue_key}: {e}")
+            return []
+        except Exception as e:
+            logger.error(
+                f"Unexpected error fetching children for {issue_key}: {type(e).__name__}: {e}"
+            )
+            return []
+
+        if not isinstance(body, dict):
+            return []
+        issues = body.get("issues") or []
+        if not isinstance(issues, list):
+            return []
+        children: list[ChildIssue] = []
+        for issue in issues:
+            fields = issue.get("fields") or {}
+            description = fields.get("description")
+            description_str: str | None = None
+            try:
+                description_str = extract_text_from_adf(description) if description else None
+            except Exception:
+                # Children with malformed ADF descriptions are still useful as
+                # scope signals — drop the description and keep the rest.
+                description_str = None
+            if description_str and len(description_str) > self._CHILD_DESCRIPTION_CHAR_CAP:
+                description_str = description_str[: self._CHILD_DESCRIPTION_CHAR_CAP] + "..."
+
+            status_field = fields.get("status") or {}
+            children.append(
+                ChildIssue(
+                    key=issue.get("key", ""),
+                    summary=fields.get("summary") or "",
+                    description=description_str,
+                    issue_type=(fields.get("issuetype") or {}).get("name") or "Unknown",
+                    status=status_field.get("name"),
+                    status_category=(status_field.get("statusCategory") or {}).get("key"),
+                )
+            )
+        return children
+
     async def _get_linked_issues(self, issue_links_data: list[dict]) -> LinkedIssues | None:
         """
         Fetch and parse linked issues focusing on blocking relationships.
@@ -1699,6 +1783,13 @@ class JiraClient:
                     if resources:
                         logger.info(f"Parent {parent_key} has: {', '.join(resources)}")
 
+        # Fetch direct children (sub-tasks / Epic children). When present, the
+        # test-plan prompt will switch to integration/cross-subtask coverage
+        # rather than treating this ticket as a leaf. Empty list is a no-op.
+        children = await self._get_children(issue_key)
+        if children:
+            logger.info(f"{issue_key} has {len(children)} direct child ticket(s) for context")
+
         # Fetch linked issues (blocks, blocked by, causes, caused by)
         # These provide horizontal dependency context to complement parent hierarchy
         linked_issues = None
@@ -1735,6 +1826,7 @@ class JiraClient:
             attachments=attachments if attachments else None,
             comments=filtered_comments if filtered_comments else None,
             parent=parent_issue,
+            children=children if children else None,
             linked_issues=linked_issues,
             status=status_name,
             status_category=status_category,

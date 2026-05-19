@@ -57,6 +57,7 @@ function EpicChildRow({ child }) {
     image_urls: td.attachments ? td.attachments.map((a) => a.url) : null,
     comments: td.comments || null,
     parent_info: td.parent || null,
+    child_info: td.children || null,
     linked_info: td.linked_issues || null,
     bounce_history: td.bounce_history || null,
   })
