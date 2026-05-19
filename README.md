@@ -36,9 +36,12 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input)
 - **Jira Bug Lens**: analyze bug tickets for root cause, fix complexity, affected flow, and regression tests
 - **Test plan history**: previous test plans for a ticket are surfaced as a banner with view-side-by-side and diff-against-previous-version actions
+- **Per-AC coverage**: multi-ticket plans extract acceptance criteria from each ticket, tag every test case with the AC IDs it exercises, and surface a per-ticket coverage matrix with uncovered ACs and a hallucinated-ID guard
+- **UI grounding flags**: test steps that reference UI elements not present in the PR diff or simulator `testID` reference are tagged so QA can verify wording before running them
+- **PII scrub**: real customer/employee names and emails from Jira/PR context are replaced with generic test-account placeholders before the plan is rendered
 - **Epic children view**: fetching an Epic lists every child ticket with per-row Generate and Analyze buttons that render results inline beneath the row
 - **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does
-- **Inline UX feedback**: auto-scroll to results and inline button-state feedback (no alert dialogs)
+- **Inline UX feedback**: auto-scroll to results, per-test checkmarks, and a viewport-pinned overall + per-section progress bar
 
 ## Key Features
 
@@ -64,15 +67,21 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **GitHub enrichment**: PR code diffs (actual source changes injected into LLM context), review comments, and repository documentation
 - **Simulator test context**: Automatically pulls testID references and screen guides from `.agents/skills/simulator-testing/references/` in the target repo (when present), so Claude references real UI test IDs in generated test steps
 - **Jira development data**: Commits, branches, and PR statuses with clickable links
-- **Open-PR handling**: Open (un-merged) PRs are excluded from the LLM prompt so plans only reflect merged code — *except* PRs whose title or branch contain `hotfix`, which are kept so QA can plan coverage before they merge
+- **Open-PR handling**: Open (un-merged) PRs are included in the LLM prompt and flagged as open in the UI header so QA can plan coverage for code that hasn't merged yet
 - **Token health monitoring**: Real-time validation with expiration warnings
 
 ### Test Plan Generation
 - **Claude Opus 4.6**: Fast (5-10s), high-quality test plans with structured JSON tool-use output
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
-- **Multiple export formats**: Markdown, Jira-formatted text, or JSON
+- **Multiple export formats**: Markdown, Jira-formatted text, or JSON. The markdown export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
 - **Issue type validation**: Generates plans for Story, Bug, Task, and Sub-task; skips Epics and Spikes (Epics open the children view instead)
 - **Epic launcher view**: Fetching an Epic renders its child tickets as a list with per-row Generate (test plan) and Analyze (Bug Lens) buttons; results expand inline so multiple children can be reviewed without navigating away
+- **Multi-ticket AC coverage**: For comma-separated multi-ticket plans, ACs are extracted per ticket, fed to the LLM as a coverage matrix, and each test case must tag the AC IDs it covers. The UI shows per-ticket coverage ratios, lists uncovered ACs, and surfaces a red banner if the model invents AC IDs that don't exist. When two tickets disagree on an AC, the newer ticket's version wins and the older AC is marked superseded
+- **No silent truncation**: Multi-ticket plans detect when Claude hits the max-tokens cap and surface the truncation explicitly instead of returning a partial plan
+- **UI element grounding**: Test steps that name a UI element not present in the PR diff or the target repo's simulator `testID` reference are flagged in the rendered plan so QA can sanity-check the wording before running them
+- **Sibling API caller awareness**: Prompt asks the model to enumerate sibling code paths that hit the same API surface (so a fix on one ViewModel doesn't ship with an identical buggy sibling), with a grounding warning when the model can't verify them from the diff. Integration-test rule requires assertions to check that request params are both *present and non-empty*, catching empty-string regressions
+- **Observability ticket mode**: Logging / alerting / monitoring tickets switch to a QA-runnable test style — Grafana UI inspection, paste-ready LogQL queries against natural traffic, walking every tab of the affected rule, and `[fill in from UI]` placeholders for values the ticket references but doesn't supply. Bans white-box steps QA can't execute (e.g. "deploy the code", "simulate a DB failure")
+- **PII protection**: System prompt forbids naming real customers/employees from ticket context as test subjects; a regex pass scrubs any remaining email-shaped strings from the rendered plan as defense-in-depth
 
 ### Jira Browser Side Rail
 
@@ -118,17 +127,39 @@ second project needs it.
   fresh plan is generated automatically — re-pulls and bounce-backs reuse the
   existing plan rather than re-spending on the LLM
 - **Pass to UAT**: shown when the ticket is in *In Testing*. Opens an inline
-  note form with a "Tested in" chip row (Integ / Staging multi-select,
-  preselected from the latest comment / description / Integ default), an
-  optional Loom URL field, and an optional markdown summary. Submitting
-  transitions to *Ready for UAT*, reassigns to the dev who handed it over,
-  and posts a Jira comment whose marker line (e.g. `✅ QA Passed (Integ +
-  Staging) — ready for UAT`) stays visible with the summary tucked into a
-  collapsible expand block. Submitting the form empty preserves the original
-  one-click pass with no comment
+  note form with a "Tested in" chip row (Integ / Staging / Prod multi-select,
+  preselected by scanning the latest comment + description for the
+  corresponding env name, with selected chips rendered as solid ✓-prefixed
+  pills and unselected chips as dashed-border outlines for dark-mode clarity),
+  an optional Loom URL, an optional Image URLs textarea (one URL per line,
+  each rendered as a clickable 🖼️ link), and an optional markdown summary.
+  Submitting transitions to *Ready for UAT*, reassigns to the dev who handed
+  it over, and posts a Jira comment whose marker line (e.g. `✅ QA Passed
+  (Integ + Staging) — ready for UAT`) stays visible with the summary tucked
+  into a collapsible expand block. Submitting the form empty preserves the
+  original one-click pass with no comment. If this is the last sibling
+  sub-task to reach Ready for UAT (others already passed or Done), the parent
+  ticket is auto-promoted to Ready for UAT in the same call (Epics excluded;
+  best-effort, won't fail the primary transition)
 - **Fail back to To Do**: shown when the ticket is in *In Testing*.
   Transitions to *To Do* (so failed QA drops back into the dev queue rather
-  than staying in flight) and reassigns for rework
+  than staying in flight) and reassigns for rework. Opens the same inline
+  form pattern as Pass to UAT — a *required* Reason field (markdown,
+  autofocused, rendered above the fold so devs see *why* without expanding),
+  plus optional Loom URL and image links. Empty submit is rejected because a
+  fail-back without a reason has no value. The transition still runs even if
+  the comment post fails, matching Pass to UAT
+- **Notify chip picker**: Both forms expose an optional Notify row that
+  @mentions selected users in the posted comment via a real ADF mention node
+  in a trailing `cc:` paragraph (so Jira actually delivers notifications, not
+  just text that looks like a tag). Candidates come from people already on
+  the ticket: current assignee (starred), prior assignees from the changelog,
+  and recent commenters; the configured bot user is filtered out
+- **Also move all subtasks**: Workflow forms include an opt-in "Also move all
+  subtasks" checkbox. When checked, after the parent transitions the backend
+  re-applies the same target status to each direct subtask; subtasks whose
+  workflow has no matching transition are skipped silently so a partial
+  workflow doesn't break the primary action
 - **Assignee fallback chain** (Pass to UAT / Fail back): walks the issue
   changelog for the prior assignee (skipping the bot's own account, since
   Pull to Testing parks the ticket there). If none is found, falls back to
@@ -400,7 +431,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
-- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - One-click transition + reassignment for the SK project (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`); rejects non-SK keys with 400
+- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment for the SK project (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`); rejects non-SK keys with 400. Accepts optional comment fields (envs, Loom, image URLs, summary, reason), `mention_account_ids` for ADF @mentions, and `cascade_to_subtasks` to re-apply the same transition to each direct subtask
 
 See `/docs` for detailed API documentation and schemas.
 
@@ -447,7 +478,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Jira browser rail + QA workflow shortcuts for the SK project; sub-tasks now testable; prompt quality hardening ongoing
+**Current:** Multi-ticket AC coverage tracking, UI-element grounding flags, and observability-aware prompts shipped; QA workflow forms now cover Pass / Fail / cascade-to-subtasks / parent auto-promotion; prompt quality hardening ongoing
 
 ## Roadmap
 
@@ -483,6 +514,24 @@ uv run pytest tests/ -v
 - ✅ **Auto test plan after Pull to Testing**: First *Pull to Testing* on a ticket with no stored run kicks off a generation automatically; subsequent re-pulls/bounce-backs reuse the existing plan
 - ✅ **Pass-to-UAT note form**: Inline form on Pass to UAT with env chips (Integ/Staging, preselected by scanning the latest comment / description), optional Loom URL, and markdown summary; posts a marker-line + collapsible-block Jira comment, or stays one-click when submitted empty
 - ✅ **Fail back to To Do**: Renamed from *Fail back to In Progress* and retargeted at *To Do* so failing QA drops the ticket back into the dev queue
+- ✅ **Fail-back form**: Reason (required, autofocused, markdown) + optional Loom + image URL list, mirroring the Pass-to-UAT pattern
+- ✅ **Pass-to-UAT Image URLs**: Optional textarea for screenshot links, rendered as clickable 🖼️ entries above the test-summary expand block
+- ✅ **Prod env chip**: Pass-to-UAT now offers Integ / Staging / Prod with auto-selection from the ticket text and clearer selected/unselected styling
+- ✅ **Notify @mentions**: Optional chip picker on both QA workflow forms emits real ADF mention nodes so Jira sends notifications to selected ticket participants
+- ✅ **Cascade to subtasks**: Opt-in "Also move all subtasks" checkbox on workflow actions re-applies the parent's transition to each direct subtask
+- ✅ **Parent auto-promotion**: Passing the last sibling sub-task to Ready for UAT also moves the parent (Epics excluded), removing the manual follow-up
+- ✅ **Per-AC coverage (multi-ticket)**: Acceptance criteria are extracted per ticket, fed to the LLM as a coverage matrix, and each test case must tag the AC IDs it covers; the UI surfaces ratios, uncovered ACs, and a hallucinated-ID guard
+- ✅ **AC conflict resolution**: When two tickets in a multi-ticket plan disagree on the same AC, the newer ticket wins and the older AC is shown as superseded in the UI and markdown export
+- ✅ **No-truncation guard**: Multi-ticket plans detect Claude's max-tokens cap and surface truncation instead of silently returning a partial plan
+- ✅ **UI element grounding**: Test steps that reference UI elements not present in the PR diff or the target repo's `testID` reference are flagged in the rendered plan
+- ✅ **Sibling API caller / non-empty param rules**: Prompt asks for sibling code paths hitting the same API surface, with grounding warnings for unverifiable callers, and integration-test rule requires present-AND-non-empty assertions on request params
+- ✅ **Observability ticket reframing**: Logging/alerting/monitoring tickets switch to QA-runnable Grafana-UI steps with paste-ready LogQL queries, full-rule walks, and `[fill in]` placeholders instead of white-box infrastructure tampering
+- ✅ **PII scrub**: System-prompt guardrail plus regex pass replaces real customer/employee emails in rendered test plans with `<test-account>` placeholders
+- ✅ **Open PRs back in prompt**: Open (un-merged) PRs are again included in the LLM context (still flagged as open in the UI header), replacing the earlier hotfix-only carve-out
+- ✅ **Per-test progress UI**: Per-test checkmarks plus a gradient overall + per-section progress bar pinned to the top of the viewport while scrolling
+- ✅ **Gaps-only description panel**: Replaced the description-quality metrics + Weak/Good label with a panel that lists concrete gaps (missing AC for stories, missing repro / expected-vs-actual for bugs) and hides itself entirely when nothing is missing
+- ✅ **Markdown export parity**: Export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
+- ✅ **Historical-plan export buttons**: Copy/Download show on the historical plan view when no live plan exists, so reviewers can still get markdown out of an older run
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
