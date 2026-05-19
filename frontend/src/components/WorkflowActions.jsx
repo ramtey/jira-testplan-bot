@@ -146,7 +146,7 @@ function WorkflowActions({
   // When set, the inline note form is showing instead of the buttons row.
   // Both `pass-to-uat` and `fail-to-todo` open it; the form adapts per action.
   const [noteForAction, setNoteForAction] = useState(null)
-  const [loomUrl, setLoomUrl] = useState('')
+  const [loomUrlsText, setLoomUrlsText] = useState('')
   const [summary, setSummary] = useState('')
   const [environments, setEnvironments] = useState(DEFAULT_ENVIRONMENTS)
   const [reason, setReason] = useState('')
@@ -182,7 +182,7 @@ function WorkflowActions({
 
   const closeNoteForm = () => {
     setNoteForAction(null)
-    setLoomUrl('')
+    setLoomUrlsText('')
     setSummary('')
     setEnvironments(DEFAULT_ENVIRONMENTS)
     setReason('')
@@ -283,7 +283,10 @@ function WorkflowActions({
   const onNoteSubmit = (e) => {
     e.preventDefault()
     if (!noteForAction) return
-    const trimmedLoom = loomUrl.trim()
+    const looms = loomUrlsText
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
 
     const images = imageUrlsText
       .split(/\r?\n/)
@@ -293,13 +296,13 @@ function WorkflowActions({
     if (noteForAction.id === 'pass-to-uat') {
       const trimmedSummary = summary.trim()
       const hasAnyField =
-        trimmedLoom ||
+        looms.length > 0 ||
         trimmedSummary ||
         environments.length > 0 ||
         images.length > 0
       const body = hasAnyField
         ? {
-            loom_url: trimmedLoom || null,
+            loom_urls: looms.length > 0 ? looms : null,
             summary: trimmedSummary || null,
             environments: environments.length > 0 ? environments : null,
             image_urls: images.length > 0 ? images : null,
@@ -319,7 +322,7 @@ function WorkflowActions({
       }
       const body = {
         reason: trimmedReason,
-        loom_url: trimmedLoom || null,
+        loom_urls: looms.length > 0 ? looms : null,
         image_urls: images.length > 0 ? images : null,
         mention_account_ids:
           mentionAccountIds.length > 0 ? mentionAccountIds : null,
@@ -386,12 +389,12 @@ function WorkflowActions({
             </label>
           )}
           <label className="workflow-note-field">
-            <span>Loom URL</span>
-            <input
-              type="url"
-              placeholder="https://www.loom.com/share/…"
-              value={loomUrl}
-              onChange={(e) => setLoomUrl(e.target.value)}
+            <span>Loom URLs (optional, one per line)</span>
+            <textarea
+              rows={3}
+              placeholder={'https://www.loom.com/share/…\nhttps://www.loom.com/share/…'}
+              value={loomUrlsText}
+              onChange={(e) => setLoomUrlsText(e.target.value)}
               disabled={pendingAction !== null}
             />
           </label>

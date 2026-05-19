@@ -711,7 +711,7 @@ async def run_workflow_action(
             try:
                 result = await jira.post_qa_pass_comment(
                     issue_key,
-                    payload.loom_url,
+                    payload.loom_urls,
                     payload.summary,
                     payload.environments,
                     payload.mention_account_ids,
@@ -729,7 +729,7 @@ async def run_workflow_action(
                 result = await jira.post_qa_fail_comment(
                     issue_key,
                     payload.reason,
-                    payload.loom_url,
+                    payload.loom_urls,
                     payload.image_urls,
                     payload.mention_account_ids,
                 )

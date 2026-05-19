@@ -172,7 +172,7 @@ def _normalize_environments(environments: list[str] | None) -> list[str]:
 
 
 def _build_qa_pass_adf(
-    loom_url: str | None,
+    loom_urls: list[str] | None,
     summary: str | None,
     environments: list[str] | None = None,
     mention_account_ids: list[str] | None = None,
@@ -183,22 +183,22 @@ def _build_qa_pass_adf(
     The marker paragraph is always first so future flows can detect this
     comment the same way test-plan comments are detected. The environments
     tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
-    stays visible without expanding. The Loom link sits above the fold,
-    image links sit just below it (also above-fold so reviewers see proof
-    without expanding), and the freeform summary is wrapped in an `expand`
-    node. When mentions are supplied, a final "cc:" paragraph triggers
-    Jira notifications.
+    stays visible without expanding. Loom links sit above the fold (one
+    paragraph per URL), image links sit just below them (also above-fold
+    so reviewers see proof without expanding), and the freeform summary
+    is wrapped in an `expand` node. When mentions are supplied, a final
+    "cc:" paragraph triggers Jira notifications.
 
     Mentions alone don't justify posting a comment — the function still
     returns None unless at least one substantive field
-    (loom/summary/envs/images) is populated, so QA accidentally selecting
+    (looms/summary/envs/images) is populated, so QA accidentally selecting
     a chip with no other content stays a one-click pass.
     """
-    loom_url = (loom_url or "").strip()
+    looms = _normalize_url_list(loom_urls)
     summary = (summary or "").strip()
     envs = _normalize_environments(environments)
     images = _normalize_url_list(image_urls)
-    if not loom_url and not summary and not envs and not images:
+    if not looms and not summary and not envs and not images:
         return None
 
     if envs:
@@ -212,7 +212,7 @@ def _build_qa_pass_adf(
         {"type": "paragraph", "content": [{"type": "text", "text": marker_text}]}
     ]
 
-    if loom_url:
+    for loom_url in looms:
         content.append({
             "type": "paragraph",
             "content": [
@@ -289,7 +289,7 @@ def _build_mentions_paragraph(account_ids: list[str] | None) -> dict | None:
 
 def _build_qa_fail_adf(
     reason: str | None,
-    loom_url: str | None,
+    loom_urls: list[str] | None,
     image_urls: list[str] | None = None,
     mention_account_ids: list[str] | None = None,
 ) -> dict | None:
@@ -298,17 +298,18 @@ def _build_qa_fail_adf(
     The reason is the load-bearing field — devs need to see *why* the
     ticket bounced without expanding anything, so it's rendered above the
     fold (not inside an expand node). Loom + image links sit below as
-    clickable references; mentioned accountIds get a final "cc:" paragraph
-    that triggers Jira notifications. Returns None if no reason is
-    supplied: callers use that signal to skip posting (the transition
-    still runs). Mentions without a reason still return None — there's
-    no value in pinging people on an empty comment.
+    clickable references (one paragraph per Loom URL); mentioned
+    accountIds get a final "cc:" paragraph that triggers Jira
+    notifications. Returns None if no reason is supplied: callers use
+    that signal to skip posting (the transition still runs). Mentions
+    without a reason still return None — there's no value in pinging
+    people on an empty comment.
     """
     reason = (reason or "").strip()
     if not reason:
         return None
 
-    loom_url = (loom_url or "").strip()
+    looms = _normalize_url_list(loom_urls)
     images = _normalize_url_list(image_urls)
 
     content: list[dict] = [
@@ -318,7 +319,7 @@ def _build_qa_fail_adf(
     reason_doc = markdown_to_adf(reason)
     content.extend(reason_doc.get("content", []))
 
-    if loom_url:
+    for loom_url in looms:
         content.append({
             "type": "paragraph",
             "content": [
@@ -1924,20 +1925,20 @@ class JiraClient:
     async def post_qa_pass_comment(
         self,
         issue_key: str,
-        loom_url: str | None,
+        loom_urls: list[str] | None,
         summary: str | None,
         environments: list[str] | None = None,
         mention_account_ids: list[str] | None = None,
         image_urls: list[str] | None = None,
     ) -> dict | None:
-        """Post a QA→UAT pass comment with optional environments / Loom / summary / images.
+        """Post a QA→UAT pass comment with optional environments / Looms / summary / images.
 
         Returns None when no fields are populated (nothing to post). Always
         creates a new comment — these are point-in-time records of each
         QA pass, not a single living document like the test plan.
         """
         body = _build_qa_pass_adf(
-            loom_url, summary, environments, mention_account_ids, image_urls
+            loom_urls, summary, environments, mention_account_ids, image_urls
         )
         if body is None:
             return None
@@ -1969,7 +1970,7 @@ class JiraClient:
         self,
         issue_key: str,
         reason: str | None,
-        loom_url: str | None,
+        loom_urls: list[str] | None,
         image_urls: list[str] | None = None,
         mention_account_ids: list[str] | None = None,
     ) -> dict | None:
@@ -1978,7 +1979,7 @@ class JiraClient:
         Returns None when no reason is supplied (nothing to post — the
         caller still runs the transition). Always creates a new comment.
         """
-        body = _build_qa_fail_adf(reason, loom_url, image_urls, mention_account_ids)
+        body = _build_qa_fail_adf(reason, loom_urls, image_urls, mention_account_ids)
         if body is None:
             return None
 

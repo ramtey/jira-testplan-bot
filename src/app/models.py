@@ -384,13 +384,13 @@ class PostCommentRequest(BaseModel):
 class WorkflowActionRequest(BaseModel):
     """Optional payload for /issue/{key}/workflow/{action}.
 
-    `pass-to-uat` reads loom_url + summary + environments; `fail-to-todo`
-    reads reason (required for the comment to be posted) + loom_url +
+    `pass-to-uat` reads loom_urls + summary + environments; `fail-to-todo`
+    reads reason (required for the comment to be posted) + loom_urls +
     image_urls. All fields are optional at the schema level; the per-action
     handlers decide what's needed before posting.
     """
 
-    loom_url: str | None = None
+    loom_urls: list[str] | None = None
     summary: str | None = None
     environments: list[str] | None = None
     reason: str | None = None

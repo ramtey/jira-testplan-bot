@@ -55,7 +55,7 @@ def test_normalize_url_list_handles_none():
 
 def test_build_qa_pass_adf_returns_none_when_all_fields_empty():
     assert _build_qa_pass_adf(None, None, None) is None
-    assert _build_qa_pass_adf("", "  ", []) is None
+    assert _build_qa_pass_adf([], "  ", []) is None
 
 
 def test_build_qa_pass_adf_marker_only_when_only_envs():
@@ -69,13 +69,13 @@ def test_build_qa_pass_adf_marker_only_when_only_envs():
 
 
 def test_build_qa_pass_adf_marker_unchanged_without_envs():
-    doc = _build_qa_pass_adf("https://loom.com/x", None, None)
+    doc = _build_qa_pass_adf(["https://loom.com/x"], None, None)
     assert doc is not None
     assert _marker_text(doc) == QA_PASS_MARKER
 
 
 def test_build_qa_pass_adf_renders_loom_link():
-    doc = _build_qa_pass_adf("https://loom.com/abc", None, None)
+    doc = _build_qa_pass_adf(["https://loom.com/abc"], None, None)
     assert doc is not None
     loom_para = doc["content"][1]
     assert loom_para["type"] == "paragraph"
@@ -84,6 +84,36 @@ def test_build_qa_pass_adf_renders_loom_link():
     )
     assert link_node["text"] == "https://loom.com/abc"
     assert link_node["marks"][0] == {"type": "link", "attrs": {"href": "https://loom.com/abc"}}
+
+
+def test_build_qa_pass_adf_renders_multiple_loom_links_in_order():
+    doc = _build_qa_pass_adf(
+        ["https://loom.com/a", "https://loom.com/b"], None, None
+    )
+    assert doc is not None
+    loom_paragraphs = [
+        p for p in doc["content"]
+        if p.get("type") == "paragraph"
+        and p.get("content") and p["content"][0].get("text", "").startswith("📹")
+    ]
+    assert len(loom_paragraphs) == 2
+    hrefs = [p["content"][1]["marks"][0]["attrs"]["href"] for p in loom_paragraphs]
+    assert hrefs == ["https://loom.com/a", "https://loom.com/b"]
+
+
+def test_build_qa_pass_adf_dedups_loom_urls_and_drops_blanks():
+    doc = _build_qa_pass_adf(
+        ["https://loom.com/a", "  ", "https://loom.com/a", ""],
+        None,
+        None,
+    )
+    assert doc is not None
+    loom_paragraphs = [
+        p for p in doc["content"]
+        if p.get("type") == "paragraph"
+        and p.get("content") and p["content"][0].get("text", "").startswith("📹")
+    ]
+    assert len(loom_paragraphs) == 1
 
 
 def test_build_qa_pass_adf_summary_goes_into_expand():
@@ -140,7 +170,7 @@ def test_build_qa_pass_adf_images_alone_create_a_comment():
 
 def test_build_qa_pass_adf_dedups_images_and_drops_blanks():
     doc = _build_qa_pass_adf(
-        "https://loom.com/x",
+        ["https://loom.com/x"],
         None,
         None,
         None,
@@ -158,7 +188,7 @@ def test_build_qa_pass_adf_dedups_images_and_drops_blanks():
 
 def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
     doc = _build_qa_pass_adf(
-        "https://loom.com/x",
+        ["https://loom.com/x"],
         "Summary text",
         ["Integ"],
         ["acct-1"],
@@ -196,8 +226,8 @@ def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
 
 def test_build_qa_fail_adf_returns_none_without_reason():
     # Reason is the load-bearing field — without it nothing should post.
-    assert _build_qa_fail_adf(None, "https://loom.com/x", ["https://i.imgur.com/a.png"]) is None
-    assert _build_qa_fail_adf("   ", "https://loom.com/x", ["https://i.imgur.com/a.png"]) is None
+    assert _build_qa_fail_adf(None, ["https://loom.com/x"], ["https://i.imgur.com/a.png"]) is None
+    assert _build_qa_fail_adf("   ", ["https://loom.com/x"], ["https://i.imgur.com/a.png"]) is None
 
 
 def test_build_qa_fail_adf_minimum_is_marker_plus_reason():
@@ -232,7 +262,7 @@ def test_build_qa_fail_adf_renders_markdown_in_reason():
 def test_build_qa_fail_adf_appends_loom_then_images_in_order():
     doc = _build_qa_fail_adf(
         "Reason here",
-        "https://loom.com/x",
+        ["https://loom.com/x"],
         ["https://i.imgur.com/a.png", "https://i.imgur.com/b.png"],
     )
     assert doc is not None
@@ -291,7 +321,7 @@ def test_build_mentions_paragraph_dedupes_account_ids():
 
 def test_build_qa_pass_adf_appends_mentions_at_end():
     doc = _build_qa_pass_adf(
-        "https://loom.com/x",
+        ["https://loom.com/x"],
         None,
         ["Integ"],
         ["acct-1", "acct-2"],
@@ -312,7 +342,7 @@ def test_build_qa_pass_adf_mentions_alone_do_not_create_a_comment():
 def test_build_qa_fail_adf_appends_mentions_after_attachments():
     doc = _build_qa_fail_adf(
         "Login broken",
-        "https://loom.com/x",
+        ["https://loom.com/x"],
         ["https://i.imgur.com/a.png"],
         ["acct-1"],
     )
@@ -329,7 +359,7 @@ def test_build_qa_fail_adf_mentions_alone_do_not_create_a_comment():
 
 
 def test_build_qa_pass_adf_no_mentions_paragraph_when_list_empty():
-    doc = _build_qa_pass_adf("https://loom.com/x", None, None, None)
+    doc = _build_qa_pass_adf(["https://loom.com/x"], None, None, None)
     assert doc is not None
     assert all(
         not any(node.get("type") == "mention" for node in para.get("content", []))
