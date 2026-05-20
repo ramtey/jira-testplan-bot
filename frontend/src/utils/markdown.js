@@ -9,6 +9,11 @@ const formatCoversAcs = (test) => {
   return acIds.length > 0 ? `**Covers:** ${acIds.join(', ')}\n\n` : ''
 }
 
+const formatNeedsVerification = (test) => {
+  if (!test.needs_manual_verification) return ''
+  return '> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference. See UI Grounding Warnings above for details.\n\n'
+}
+
 const formatAcCoverageSummary = (coverage) => {
   if (!coverage || !coverage.tickets) return ''
   const entries = Object.entries(coverage.tickets).filter(
@@ -78,6 +83,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += ` ${emoji} *${test.priority}*`
       }
       markdown += '\n\n'
+      markdown += formatNeedsVerification(test)
       if (test.preconditions) {
         markdown += `**Preconditions:** ${test.preconditions}\n\n`
       }
@@ -110,6 +116,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += ` [${test.category}]`
       }
       markdown += '\n\n'
+      markdown += formatNeedsVerification(test)
       if (test.preconditions) {
         markdown += `**Preconditions:** ${test.preconditions}\n\n`
       }
@@ -139,6 +146,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += ` ${emoji} *${test.priority}*`
       }
       markdown += '\n\n'
+      markdown += formatNeedsVerification(test)
       if (test.preconditions) {
         markdown += `**Preconditions:** ${test.preconditions}\n\n`
       }
@@ -300,6 +308,9 @@ export const formatTestPlanAsJira = (plan) => {
       }
       title += '**'
       jira += `${title}\n\n`
+      if (test.needs_manual_verification) {
+        jira += '⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n'
+      }
       if (test.preconditions) {
         jira += `Preconditions: ${test.preconditions}\n\n`
       }
@@ -333,6 +344,9 @@ export const formatTestPlanAsJira = (plan) => {
       }
       title += '**'
       jira += `${title}\n\n`
+      if (test.needs_manual_verification) {
+        jira += '⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n'
+      }
       if (test.preconditions) {
         jira += `Preconditions: ${test.preconditions}\n\n`
       }
@@ -363,6 +377,9 @@ export const formatTestPlanAsJira = (plan) => {
       }
       title += '**'
       jira += `${title}\n\n`
+      if (test.needs_manual_verification) {
+        jira += '⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n'
+      }
       if (test.preconditions) {
         jira += `Preconditions: ${test.preconditions}\n\n`
       }

@@ -179,17 +179,33 @@ these sources:
 3. **The ticket description or attached screenshots** — the element is
    shown or described concretely.
 
-When you CANNOT find the element in any of those sources:
+When you CANNOT find the element in any of those sources, ALL of the
+following are REQUIRED (do not pick one — do all three):
 
-- Do NOT invent the literal label. Either describe the action generically
-  ("trigger the bulk-fill edit flow") OR use the wording from the AC and
-  flag the test in `grounding_warnings`.
-- Add one entry to `grounding_warnings`:
-  `{ac_id: "<AC ID>", missing_element: "<element you couldn't verify>",
-    explanation: "<one sentence: where you looked and what you didn't find>"}`.
-- Keep the test in the plan — a reviewer will confirm whether the AC's
-  UI claim was actually implemented. Do not drop coverage just because you
-  couldn't ground a label.
+1. **Still write the test case** in the appropriate section (happy_path,
+   edge_cases, or integration_tests). Do NOT drop coverage just because
+   you couldn't ground a label. The reviewer needs the test so they can
+   spot-check whether the AC's UI claim was actually implemented; a
+   missing test means the gap ships silently.
+
+2. **Mark the test case with `needs_manual_verification: true`** in its
+   JSON object. This is the schema flag that surfaces the test to the
+   reviewer as "trust but verify." Phrase the test's steps generically
+   using the user-facing flow ("trigger the bulk-fill edit flow") OR use
+   the wording from the AC verbatim — either is acceptable when paired
+   with this flag. Do NOT silently invent a literal label without the
+   flag set.
+
+3. **Add a matching entry to top-level `grounding_warnings`:**
+   `{ac_id: "<AC ID>", missing_element: "<element you couldn't verify>",
+     explanation: "<one sentence: where you looked and what you didn't find>"}`.
+   The `ac_id` here MUST also appear in the `covers_acs` of the test case
+   you wrote in step 1.
+
+**Anti-pattern to avoid:** emitting only the `grounding_warnings` entry
+and skipping the test case itself. That hides the coverage gap behind a
+warning the reviewer may not connect to a specific behavior. If the AC
+says it, the test exists — flag the uncertainty, don't omit the test.
 
 This rule is about elements you SAY THE USER INTERACTS WITH. Outcome text
 (toast messages, error copy) only needs grounding when you quote it verbatim
@@ -2267,6 +2283,10 @@ TEST_CASE_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
             "description": "Acceptance-criteria IDs this case exercises, e.g. ['SK-2137-AC1', 'SK-2139-AC2']. Only used in multi-ticket mode when an 'ACCEPTANCE CRITERIA TO COVER' section is supplied; list every ID this case legitimately validates.",
+        },
+        "needs_manual_verification": {
+            "type": "boolean",
+            "description": "Set true when this test was written from AC text but the named UI element / API surface could NOT be verified in the PR diff or testID reference (see 'UI GROUNDING' instructions). When true, a matching entry MUST also appear in the top-level `grounding_warnings` array whose `ac_id` matches one of this case's `covers_acs`. Default false / omitted means the test is fully grounded.",
         },
     },
     "required": ["title", "priority", "steps", "expected"],

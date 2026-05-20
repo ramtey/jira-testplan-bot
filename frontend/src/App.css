@@ -1983,6 +1983,19 @@ button:disabled {
   border: 1px solid rgba(102, 126, 234, 0.3);
 }
 
+.needs-verification-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: rgba(234, 179, 8, 0.15);
+  color: #b45309;
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  cursor: help;
+}
+
 /* AC coverage panel — multi-ticket only. Sits between the heading and the
    happy-path block. Two visual states: complete (green) and gaps (amber). */
 .ac-coverage-panel {

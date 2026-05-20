@@ -211,6 +211,8 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
                 title += f" {emoji} {priority.upper()}"
             title += "**"
             jira += f"{title}\n\n"
+            if test.get("needs_manual_verification"):
+                jira += "⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n"
             if test.get("steps"):
                 jira += "Steps:\n"
                 for step_index, step in enumerate(test["steps"]):
@@ -234,6 +236,8 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
                 title += f" [{test['category']}]"
             title += "**"
             jira += f"{title}\n\n"
+            if test.get("needs_manual_verification"):
+                jira += "⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n"
             if test.get("steps"):
                 jira += "Steps:\n"
                 for step_index, step in enumerate(test["steps"]):
@@ -255,6 +259,8 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
                 title += f" {emoji} {priority.upper()}"
             title += "**"
             jira += f"{title}\n\n"
+            if test.get("needs_manual_verification"):
+                jira += "⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n"
             if test.get("steps"):
                 jira += "Steps:\n"
                 for step_index, step in enumerate(test["steps"]):
@@ -352,6 +358,11 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
             for i, test in enumerate(test_plan_dict["happy_path"], 1):
                 output.append(f"### Test {i}: {test['title']}")
                 output.append("")
+                if test.get("needs_manual_verification"):
+                    output.append(
+                        "> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference."
+                    )
+                    output.append("")
                 output.append("**Steps:**")
                 for step_num, step in enumerate(test.get("steps", []), 1):
                     output.append(f"{step_num}. {step}")
@@ -367,6 +378,11 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
             for i, test in enumerate(test_plan_dict["edge_cases"], 1):
                 output.append(f"### Test {i}: {test['title']}")
                 output.append("")
+                if test.get("needs_manual_verification"):
+                    output.append(
+                        "> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference."
+                    )
+                    output.append("")
                 output.append("**Steps:**")
                 for step_num, step in enumerate(test.get("steps", []), 1):
                     output.append(f"{step_num}. {step}")

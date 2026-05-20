@@ -108,6 +108,14 @@ function renderTestCase(test, index, opts = {}) {
         {showCategory && test.category && (
           <span className="category-badge">{test.category}</span>
         )}
+        {test.needs_manual_verification && (
+          <span
+            className="needs-verification-badge"
+            title="The AC element referenced in this test could not be verified in the PR diff or testID reference. See the UI Grounding Warnings panel above for details."
+          >
+            ⚠️ needs manual verification
+          </span>
+        )}
       </h5>
       {test.preconditions && (
         <div className="test-preconditions">

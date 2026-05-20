@@ -311,6 +311,13 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
         for i, test in enumerate(test_plan["happy_path"], 1):
             lines.append(f"### Test {i}: {test['title']}\n" if format == "markdown" else f"Test {i}: {test['title']}")
             lines.append("")
+            if test.get("needs_manual_verification"):
+                lines.append(
+                    "> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference."
+                    if format == "markdown"
+                    else "⚠ Needs manual verification — AC element not found in PR diff/testID reference."
+                )
+                lines.append("")
             if test.get("preconditions"):
                 lines.append("**Preconditions:**" if format == "markdown" else "Preconditions:")
                 lines.append(test["preconditions"])
@@ -336,6 +343,13 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
         for i, test in enumerate(test_plan["edge_cases"], 1):
             lines.append(f"### Test {i}: {test['title']}\n" if format == "markdown" else f"Test {i}: {test['title']}")
             lines.append("")
+            if test.get("needs_manual_verification"):
+                lines.append(
+                    "> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference."
+                    if format == "markdown"
+                    else "⚠ Needs manual verification — AC element not found in PR diff/testID reference."
+                )
+                lines.append("")
             if test.get("preconditions"):
                 lines.append("**Preconditions:**" if format == "markdown" else "Preconditions:")
                 lines.append(test["preconditions"])
