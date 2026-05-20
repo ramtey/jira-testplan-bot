@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     llm_model: str = "claude-opus-4-5-20251101"  # For Claude: claude-opus-4-5-20251101, claude-sonnet-4-5-20250929; For Ollama: llama3.1, qwen2.5, etc.
     anthropic_api_key: str | None = None  # For Claude API (required when using Claude)
     ollama_base_url: str = "http://localhost:11434"  # Ollama server URL (only needed if using Ollama)
+    # Read timeout (seconds) for Claude test-plan generation. Large parents
+    # (e.g. an Epic + many subtasks) push the prompt big enough that Opus can
+    # spend several minutes producing 16k output tokens; 120s would surface as
+    # "Claude API request timed out" mid-generation.
+    claude_api_timeout_seconds: float = 600.0
 
     # GitHub (for PR diff fetching - Phase 3a)
     github_token: str | None = None  # GitHub personal access token (optional - enables PR diff fetching)

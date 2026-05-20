@@ -2269,6 +2269,16 @@ class ClaudeClient(LLMClient):
         self.api_key = settings.anthropic_api_key
         self.model = settings.llm_model or "claude-opus-4-6"
 
+    def _temperature_kwargs(self, value: float) -> dict:
+        # Opus 4.7 (and likely later reasoning-class models) returns a hard
+        # 400 — "temperature is deprecated for this model" — when the param
+        # is sent at all. Detect those models by name and drop the field
+        # rather than letting the whole request fail.
+        model = (self.model or "").lower()
+        if "opus-4-7" in model:
+            return {}
+        return {"temperature": value}
+
     async def generate_test_plan(
         self,
         ticket_key: str,
@@ -2312,7 +2322,7 @@ class ClaudeClient(LLMClient):
         })
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=settings.claude_api_timeout_seconds) as client:
                 response = await client.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={
@@ -2335,7 +2345,7 @@ class ClaudeClient(LLMClient):
                             }
                         ],
                         "messages": [{"role": "user", "content": content}],
-                        "temperature": 0.1,
+                        **self._temperature_kwargs(0.1),
                         "tools": [SUBMIT_TEST_PLAN_TOOL],
                         "tool_choice": {"type": "tool", "name": "submit_test_plan"},
                     },
@@ -2432,7 +2442,7 @@ class ClaudeClient(LLMClient):
         content.append({"type": "text", "text": prompt})
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=settings.claude_api_timeout_seconds) as client:
                 response = await client.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={
@@ -2455,7 +2465,7 @@ class ClaudeClient(LLMClient):
                             }
                         ],
                         "messages": [{"role": "user", "content": content}],
-                        "temperature": 0.1,
+                        **self._temperature_kwargs(0.1),
                         "tools": [SUBMIT_TEST_PLAN_TOOL],
                         "tool_choice": {"type": "tool", "name": "submit_test_plan"},
                     },
@@ -2576,7 +2586,7 @@ class ClaudeClient(LLMClient):
                         "model": self.model,
                         "max_tokens": 256,
                         "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.3,
+                        **self._temperature_kwargs(0.3),
                     },
                 )
                 response.raise_for_status()
@@ -2610,7 +2620,7 @@ class ClaudeClient(LLMClient):
                             }
                         ],
                         "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.1,
+                        **self._temperature_kwargs(0.1),
                         "tools": [SUBMIT_BUG_ANALYSIS_TOOL],
                         "tool_choice": {"type": "tool", "name": "submit_bug_analysis"},
                     },
