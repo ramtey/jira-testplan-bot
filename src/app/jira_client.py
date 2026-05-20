@@ -6,7 +6,7 @@ import httpx
 
 from .adf_parser import extract_text_from_adf
 from .config import settings
-from .description_analyzer import analyze_description
+from .description_analyzer import analyze_description, extract_acceptance_criteria
 from .figma_client import FigmaClient
 from .github_client import GitHubClient
 from .models import Attachment, BounceEvent, ChildIssue, Commit, DevelopmentInfo, DescriptionAnalysis, EpicChildSummary, FileChange, JiraComment, JiraIssue, LinkedIssue, LinkedIssues, ParentIssue, PRComment, PullRequest, RepositoryContext
@@ -1214,13 +1214,16 @@ class JiraClient:
 
     # Bound on how many child summaries we ship to the LLM. Parents with more
     # children than this are still handled — we just include the first N in
-    # creation order and lean on the integration-test guidance to keep coverage
-    # at the cross-subtask layer rather than per-child detail.
+    # creation order.
     _MAX_CHILDREN_FOR_PROMPT: int = 15
-    # Trim each child description before sending it into the prompt. Children
-    # contribute scope context, not full specs; their own test plans cover the
-    # detailed coverage.
-    _CHILD_DESCRIPTION_CHAR_CAP: int = 600
+    # Trim each child description before sending it into the prompt. The
+    # parent test plan is the only artifact QA sees for many parents, so each
+    # child's full scope (including enumerated entry-point / surface lists
+    # that often live deep in the description body) needs to reach the LLM.
+    # Acceptance criteria are also extracted structurally onto the
+    # `ChildIssue.acceptance_criteria` field — see `_get_children` — so the
+    # description below is supporting context, not the sole source of truth.
+    _CHILD_DESCRIPTION_CHAR_CAP: int = 4000
 
     async def _get_children(self, issue_key: str) -> list[ChildIssue]:
         """Fetch direct children of `issue_key` (sub-tasks or Epic stories).
@@ -1280,6 +1283,11 @@ class JiraClient:
                 # Children with malformed ADF descriptions are still useful as
                 # scope signals — drop the description and keep the rest.
                 description_str = None
+            # Extract ACs from the FULL description before truncation —
+            # enumerated entry-point / surface lists otherwise get cut and the
+            # parent test plan can no longer ground per-subtask coverage.
+            acs = extract_acceptance_criteria(description_str) or None
+
             if description_str and len(description_str) > self._CHILD_DESCRIPTION_CHAR_CAP:
                 description_str = description_str[: self._CHILD_DESCRIPTION_CHAR_CAP] + "..."
 
@@ -1292,6 +1300,7 @@ class JiraClient:
                     issue_type=(fields.get("issuetype") or {}).get("name") or "Unknown",
                     status=status_field.get("name"),
                     status_category=(status_field.get("statusCategory") or {}).get("key"),
+                    acceptance_criteria=acs,
                 )
             )
         return children

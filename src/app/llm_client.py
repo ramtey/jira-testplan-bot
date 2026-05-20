@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .description_analyzer import extract_acceptance_criteria
 from .models import BugAnalysis, TestPlan
 
 _VALID_FIX_STATUSES = ("not_fixed", "in_testing", "fixed")
@@ -1289,12 +1290,24 @@ TICKET INFORMATION
                 child_type = _safe_get(child, "issue_type", "")
                 child_status = _safe_get(child, "status", "")
                 child_desc = _safe_get(child, "description", "")
+                # acceptance_criteria is a structured field on ChildIssue, but
+                # child_info arrives here as a list of dicts (asdict'd by main).
+                child_acs = child.get("acceptance_criteria") if isinstance(child, dict) else None
                 status_suffix = f" · {child_status}" if child_status else ""
                 type_prefix = f"[{child_type}] " if child_type else ""
                 prompt += f"\n**{idx}. {key}** — {type_prefix}{child_summary}{status_suffix}\n"
+                if child_acs:
+                    prompt += "   **Acceptance Criteria:**\n"
+                    for ac_idx, ac_text in enumerate(child_acs, start=1):
+                        prompt += f"   - {key}-AC{ac_idx}: {ac_text}\n"
                 if child_desc:
-                    desc_preview = child_desc[:400] + "..." if len(child_desc) > 400 else child_desc
-                    prompt += f"   {desc_preview}\n"
+                    # Description is already capped to ~4000 chars upstream
+                    # in jira_client. ACs above are the structured ground
+                    # truth — the description is supporting context, so we
+                    # do NOT re-truncate here (which previously chopped to
+                    # 400 chars and lost enumerated entry-point lists).
+                    prompt += "   **Description:**\n"
+                    prompt += f"   {child_desc}\n"
 
             prompt += "\n**How to write tests for a parent ticket:**\n"
             prompt += (
@@ -1322,6 +1335,63 @@ TICKET INFORMATION
                 "  'To Do' is still in scope for this plan — flag it as a blocker in the\n"
                 "  test, but DO write the test.\n"
             )
+
+            # ── AC coverage matrix for parent-of-children ─────────────────────
+            # Mirror the multi-ticket forcing mechanism: enumerate every parent
+            # AC and every subtask AC with a stable ID, then require each one
+            # to appear in ≥1 test case's `covers_acs`. Without this, the LLM
+            # collapses six-entry-point ACs into a single test — exactly the
+            # SK-2184 pattern that the prompt rules alone couldn't fix.
+            parent_acs = extract_acceptance_criteria(description) or []
+            parent_ac_entries = [
+                (f"{ticket_key}-AC{i}", text)
+                for i, text in enumerate(parent_acs, start=1)
+            ]
+            per_subtask_ac_entries: list[tuple[str, list[tuple[str, str]]]] = []
+            for child in child_info:
+                key = _safe_get(child, "key", "")
+                child_acs = (
+                    child.get("acceptance_criteria")
+                    if isinstance(child, dict)
+                    else None
+                )
+                if not key or not child_acs:
+                    continue
+                entries = [
+                    (f"{key}-AC{i}", text)
+                    for i, text in enumerate(child_acs, start=1)
+                ]
+                per_subtask_ac_entries.append((key, entries))
+
+            total_acs = len(parent_ac_entries) + sum(
+                len(e) for _, e in per_subtask_ac_entries
+            )
+            if total_acs > 0:
+                prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                prompt += "ACCEPTANCE CRITERIA TO COVER (every ID below must appear in ≥1 test case's `covers_acs`)\n"
+                prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                if parent_ac_entries:
+                    prompt += f"**{ticket_key} (parent):**\n"
+                    for ac_id, text in parent_ac_entries:
+                        prompt += f"- {ac_id}: {text}\n"
+                    prompt += "\n"
+                for key, entries in per_subtask_ac_entries:
+                    prompt += f"**{key} (subtask):**\n"
+                    for ac_id, text in entries:
+                        prompt += f"- {ac_id}: {text}\n"
+                    prompt += "\n"
+                prompt += (
+                    "Every AC ID above must appear in the `covers_acs` field of at "
+                    "least one test case (happy_path, edge_cases, or integration_tests). "
+                    "If a single test legitimately exercises multiple ACs, list all of "
+                    "their IDs. Do NOT drop ACs to reduce duplication — see the "
+                    "AC ENUMERATION rule for how to split enumerated-list ACs into "
+                    "discrete tests.\n\n"
+                    "Subtask ACs are NOT covered by 'separate per-subtask plans' — "
+                    "this is the only plan that exists for this parent. If you tag a "
+                    "subtask AC ID in `covers_acs`, the test must actually exercise the "
+                    "behavior named in that AC (not just touch the subtask's topic).\n\n"
+                )
 
         # Add linked issues context if available
         if linked_info:
@@ -2282,7 +2352,7 @@ TEST_CASE_SCHEMA = {
         "covers_acs": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Acceptance-criteria IDs this case exercises, e.g. ['SK-2137-AC1', 'SK-2139-AC2']. Only used in multi-ticket mode when an 'ACCEPTANCE CRITERIA TO COVER' section is supplied; list every ID this case legitimately validates.",
+            "description": "Acceptance-criteria IDs this case exercises, e.g. ['SK-2137-AC1', 'SK-2139-AC2', 'SK-2175-AC3']. Used whenever an 'ACCEPTANCE CRITERIA TO COVER' section is supplied — that includes multi-ticket plans AND single-ticket parent plans whose subtasks contributed ACs. List every ID this case legitimately validates; subtask IDs (e.g. SK-2175-AC1 on a SK-2112 plan) are equally required.",
         },
         "needs_manual_verification": {
             "type": "boolean",

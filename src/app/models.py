@@ -178,6 +178,11 @@ class ChildIssue:
     issue_type: str
     status: str | None = None
     status_category: str | None = None
+    # Acceptance criteria parsed out of the child's description. Surfaced
+    # structurally so the parent test plan can enumerate every per-subtask AC
+    # as a discrete test, rather than relying on a truncated description blob
+    # that may have cut the enumerated entry-point / surface list.
+    acceptance_criteria: list[str] | None = None
 
 
 @dataclass
