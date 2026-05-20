@@ -422,6 +422,23 @@ If you answer "no" or "not sure" to question 1 or 4, DO NOT include that test ca
 - If the ticket mentions a field/selector, only use the specific values explicitly named in the ticket description, acceptance criteria, or test data provided
 ❌ Ticket: "Handle Transfer Tax payor selection" → Don't test "undefined" payor unless the ticket explicitly describes that state
 
+**DO NOT EXTEND ENUMERATED AC LISTS:**
+When an AC enumerates supported, unsupported, eligible, or excluded values
+(representation types, roles, states, file types, etc.), the test plan
+must use EXACTLY that list — no additions, no inferred siblings.
+
+- ❌ AC says "unsupported representation types: Tenant, Landlord" → Do NOT
+  add "Broker" or "Investor" to the unsupported-types test on the grounds
+  that they "probably also don't redirect." If the AC didn't list it, you
+  don't know.
+- ❌ AC says "eligible states: CA, TX, FL" → Do NOT add NY, IL, or any
+  other state as eligible.
+- ✅ If you genuinely suspect the AC missed a value, do NOT silently add
+  it. Either omit it OR flag the ambiguity in the `expected` field as a
+  question for QA review (e.g. "Verify Broker is also unsupported — AC
+  enumerates only Tenant/Landlord; confirm with PM whether this list is
+  exhaustive").
+
 **DO NOT INVENT FORM FIELDS:**
 - NEVER include a form field in test steps unless it is: (a) explicitly named in the ticket description, (b) visible in the testID reference or screen guide, or (c) confirmed in the PR diff
 - Domain knowledge about what fields "should" exist in a real-world form is NOT a valid reason to include a field
@@ -637,6 +654,45 @@ Combine related validations when they're part of the same user flow. Only create
 **Before adding a test case, ask yourself:** "Does another test already cover this user flow?"
 If yes, enhance that existing test instead of creating a new one.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ AC ENUMERATION — DO NOT COLLAPSE LISTS INTO ONE TEST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The deduplication rules above are about removing *redundant tests of the
+same behavior*. They do NOT permit collapsing an AC that enumerates multiple
+discrete behaviors into a single test. Each enumerated item in an AC is a
+separate observable behavior and needs its own test (or its own assertion
+inside a parameterized table — never a silent omission).
+
+**When an AC names multiple discrete behaviors, surfaces, entry points, or
+values, generate one test per item.** Examples:
+
+- AC: "Users are redirected from the net-sheet tab, the promo banner, the
+  file-creation toggle, the quick-create config, the bulk-fill Edit button,
+  and the saved-PDF kebab menu" → SIX tests (or one parameterized test with
+  a six-row entry-point table), NOT one "redirect works" test.
+- AC: "Product naming reads 'Home Estimate' on the page title, the primary
+  save button, the preview save button, the save-success toast, the email
+  subject, and the generated PDF filename" → SIX assertions, each verifying
+  a distinct surface. Do not test only the page title.
+- AC: "Heap events fire: Add Net Sheet, Net Sheet Saved, Exit, Download,
+  Print, Calculate, Useful" → one test per event name (or one parameterized
+  test with a row per event), NOT one "heap analytics fire" test.
+- AC: "State-specific label overrides apply (WI: Settlement Fee, …)" →
+  one test per named state override, NOT one generic "labels are
+  state-aware" test.
+
+**Self-check before submitting:** for each AC ID you tagged in `covers_acs`,
+count the enumerated items in that AC. If you wrote fewer tests than items
+AND did not put the items in a parameterized table inside `test_data`, you
+collapsed the AC — go back and split.
+
+**This is in tension with the AVOID REDUNDANCY rule above. Resolve as
+follows:** "same behavior, different angles" → ONE test. "Different
+behaviors that happen to share a verb (redirect, fire, render)" → ONE TEST
+PER BEHAVIOR. When in doubt, split — a redundant test is cheap; a missing
+test is a shipped bug.
+
 **INCLUDE THESE TEST TYPES:**
 
 1. **Positive Scenarios (Happy Path)**
@@ -650,6 +706,22 @@ If yes, enhance that existing test instead of creating a new one.
    - Verify proper error messages and recovery mechanisms
    - Include specific examples: invalid email formats, wrong passwords, etc.
    - These should test DIFFERENT scenarios, not the same flow with valid data
+   - **INVERSE-TRIGGER RULE:** For every state-changing happy-path test
+     (action X causes side-effect Y), include at least one edge case verifying
+     the inverse: action ≠ X, or no-change-X, does NOT cause Y. A common bug
+     class is firing the side-effect on every trigger event, including ones
+     that didn't change anything. Examples:
+     - Happy path: "Editing the address triggers a PATCH /files/{id}." →
+       Edge case: "Editing the address then reverting to the original value
+       does NOT trigger a PATCH." Also: "Editing an unrelated field does NOT
+       trigger an address PATCH."
+     - Happy path: "Dismissing the discount-points popover saves edits." →
+       Edge case: "Dismissing the popover via outside-click / Escape does
+       NOT discard in-progress edits." (Explicit ACs about "X does not Y"
+       MUST become tests; do not skip them as obvious.)
+     - Happy path: "Buyer flag on + buyer file → redirect to Pilot." →
+       Edge case: "Buyer flag on + seller file → no redirect. Seller flag
+       on + buyer file → no redirect."
 
 3. **Edge Cases (Boundary Conditions)** - ONLY for boundaries and unusual inputs
    - Test minimum/maximum values, empty states, special characters
@@ -819,6 +891,24 @@ The regression checklist must contain ONLY runtime behaviors that can be manuall
 - "API endpoints return expected data"
 
 **Why?** Build-time checks fail automatically if broken. Regression checklists are for manually verifying existing features still work.
+
+**FEATURE-FLAG-OFF LEGACY REGRESSION — REQUIRED WHEN APPLICABLE:**
+If the change is gated by one or more feature flags (LaunchDarkly toggles,
+config booleans, environment switches), you MUST include at least one
+regression case verifying that the *legacy* behavior is unchanged when the
+flag is off. The flag-on path is covered by happy_path; the flag-off path
+is what the rest of the user base sees today and is the silent-regression
+risk.
+
+- Add a regression-checklist item AND a happy_path or integration test for
+  the off path. Example checklist line: "🔴 Legacy in-Forms net sheet still
+  renders for buyer/seller files when isBuyerNetSheetExternal /
+  isSellerNetSheetExternal are off (behaves as today)."
+- When multiple flags are involved, include the mixed-state combinations
+  in edge_cases (flag A on + flag B off, etc.) per the INVERSE-TRIGGER
+  RULE above.
+- Do not skip this on the grounds that "it's tested in production today" —
+  the change being shipped is the risk to legacy behavior.
 
 **CRITICAL ORDERING REQUIREMENT - READ THIS FIRST:**
 YOU MUST ORDER ALL TEST CASES BY PRIORITY WITHIN EACH SECTION.
@@ -1192,21 +1282,29 @@ TICKET INFORMATION
 
             prompt += "\n**How to write tests for a parent ticket:**\n"
             prompt += (
-                "- **Focus on integration and end-to-end flows.** Cover the user journey that\n"
-                "  exercises multiple subtasks in sequence — that's the layer the per-subtask\n"
-                "  plans miss.\n"
-                "- **Cross-subtask regressions.** When two subtasks touch related state\n"
-                "  (e.g. one writes data, another reads it), call out the combined flow.\n"
-                "- **Don't duplicate per-subtask coverage.** Each subtask above will have its\n"
-                "  own happy-path / edge-case plan; assume that work is done elsewhere. Only\n"
-                "  add per-subtask detail here when the subtask is critical to the parent's\n"
-                "  acceptance criteria and you can't reach it via an integration test.\n"
-                "- **Scope-gap call-out.** If the children above don't appear to fully cover\n"
-                "  the parent's stated acceptance criteria, list the gap explicitly in the\n"
-                "  test plan so QA knows to push back rather than silently approve.\n"
-                "- **Prefer real workflows.** Use the children's statuses to sequence tests\n"
-                "  (e.g. test subtasks marked 'Done' first; flag any 'To Do' children as\n"
-                "  blockers for full integration coverage).\n"
+                "- **Treat every subtask's scope as IN-SCOPE for this plan.** This plan is\n"
+                "  the only artifact the QA team will see for this parent. Do NOT assume each\n"
+                "  subtask has its own separate plan — that's often not true. Enumerate every\n"
+                "  concrete behavior named in the subtasks above (each redirect entry point,\n"
+                "  each UI surface where a label/string appears, each analytics event, each\n"
+                "  per-state override, each toggle/flag combination) and write a discrete\n"
+                "  test for it. If a subtask description lists five entry points, you owe\n"
+                "  five tests — not one collapsed 'redirect works' test.\n"
+                "- **Add integration / end-to-end flows ON TOP of the per-subtask coverage,**\n"
+                "  not instead of it. Cross-subtask journeys (one subtask writes state,\n"
+                "  another reads it) belong in `integration_tests`; per-subtask behaviors\n"
+                "  belong in `happy_path` / `edge_cases`.\n"
+                "- **Mixed-state / negative combinations.** When subtasks introduce feature\n"
+                "  flags, role gates, or per-state overrides, include the off/wrong-context\n"
+                "  cases (e.g. flag A on + flag B off, role X with feature Y) — those are\n"
+                "  the cases that ship broken because the happy-path test only covers the\n"
+                "  fully-enabled state.\n"
+                "- **Scope-gap call-out.** If the subtasks above don't appear to fully cover\n"
+                "  the parent's stated acceptance criteria, list the gap explicitly so QA\n"
+                "  knows to push back rather than silently approve.\n"
+                "- **Use subtask statuses for prioritization, not coverage.** A subtask in\n"
+                "  'To Do' is still in scope for this plan — flag it as a blocker in the\n"
+                "  test, but DO write the test.\n"
             )
 
         # Add linked issues context if available
