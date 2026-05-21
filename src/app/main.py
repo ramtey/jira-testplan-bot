@@ -361,6 +361,7 @@ def get_config():
 
     return {
         "jira_base_url": settings.jira_url,
+        "workflow_project_prefixes": settings.workflow_project_prefixes,
     }
 
 

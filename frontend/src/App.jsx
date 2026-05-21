@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
 import { API_BASE_URL, fetchConfig } from './config'
+import { loadStored, saveStored } from './utils/sessionStorage'
+import { useTestPlan } from './hooks/useTestPlan'
+import { useBugLens } from './hooks/useBugLens'
 import TicketForm from './components/TicketForm'
 import TicketDetails from './components/TicketDetails'
 import ActionButtons from './components/ActionButtons'
@@ -15,34 +18,12 @@ import JiraBrowser from './components/JiraBrowser'
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
 
-// Keys used to persist state across reloads (e.g. after laptop sleep → Vite HMR reload)
+// Keys used to persist state across reloads (e.g. after laptop sleep → Vite HMR reload).
+// The plan/analysis keys are owned by the respective hooks.
 const STORAGE_KEYS = {
   issueKey: 'jtb.issueKey',
   ticketsData: 'jtb.ticketsData',
-  testPlan: 'jtb.testPlan',
-  bugAnalysis: 'jtb.bugAnalysis',
   runHistory: 'jtb.runHistory',
-}
-
-const loadStored = (key, fallback) => {
-  try {
-    const raw = sessionStorage.getItem(key)
-    return raw === null ? fallback : JSON.parse(raw)
-  } catch {
-    return fallback
-  }
-}
-
-const saveStored = (key, value) => {
-  try {
-    if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) {
-      sessionStorage.removeItem(key)
-    } else {
-      sessionStorage.setItem(key, JSON.stringify(value))
-    }
-  } catch {
-    // storage quota / disabled — ignore
-  }
 }
 
 function App() {
@@ -54,21 +35,12 @@ function App() {
   const [ticketsData, setTicketsData] = useState(() => loadStored(STORAGE_KEYS.ticketsData, []))
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
 
-  // Test plan generation state
-  const [generatingPlan, setGeneratingPlan] = useState(false)
-  const [testPlan, setTestPlan] = useState(() => loadStored(STORAGE_KEYS.testPlan, null))
-  const [planError, setPlanError] = useState(null)
-  const [abortController, setAbortController] = useState(null)
+  const testPlan = useTestPlan()
+  const bugLens = useBugLens()
 
   // Scroll refs for auto-scrolling to results
   const testPlanRef = useRef(null)
   const bugAnalysisRef = useRef(null)
-
-  // Bug Lens state
-  const [analyzingBug, setAnalyzingBug] = useState(false)
-  const [bugAnalysis, setBugAnalysis] = useState(() => loadStored(STORAGE_KEYS.bugAnalysis, null))
-  const [bugAnalysisError, setBugAnalysisError] = useState(null)
-  const [bugAbortController, setBugAbortController] = useState(null)
 
   // Run history (single-ticket only — multi-ticket scope deferred)
   const [runHistory, setRunHistory] = useState(() => loadStored(STORAGE_KEYS.runHistory, []))
@@ -78,8 +50,6 @@ function App() {
 
   useEffect(() => saveStored(STORAGE_KEYS.issueKey, issueKey), [issueKey])
   useEffect(() => saveStored(STORAGE_KEYS.ticketsData, ticketsData), [ticketsData])
-  useEffect(() => saveStored(STORAGE_KEYS.testPlan, testPlan), [testPlan])
-  useEffect(() => saveStored(STORAGE_KEYS.bugAnalysis, bugAnalysis), [bugAnalysis])
   useEffect(() => saveStored(STORAGE_KEYS.runHistory, runHistory), [runHistory])
 
   // Fetch config on mount to get Jira base URL
@@ -89,16 +59,16 @@ function App() {
 
   // Auto-scroll to results when they appear
   useEffect(() => {
-    if (testPlan && testPlanRef.current) {
+    if (testPlan.plan && testPlanRef.current) {
       testPlanRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-  }, [testPlan])
+  }, [testPlan.plan])
 
   useEffect(() => {
-    if (bugAnalysis && bugAnalysisRef.current) {
+    if (bugLens.analysis && bugAnalysisRef.current) {
       bugAnalysisRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-  }, [bugAnalysis])
+  }, [bugLens.analysis])
 
   const isMultiTicket = ticketsData.length > 1
   // For single-ticket backward-compat: expose first ticket as ticketData
@@ -130,10 +100,8 @@ function App() {
     setError(null)
     setTicketsData([])
     setIsDescriptionExpanded(false)
-    setTestPlan(null)
-    setPlanError(null)
-    setBugAnalysis(null)
-    setBugAnalysisError(null)
+    testPlan.reset()
+    bugLens.reset()
     setRunHistory([])
     setHistoryPreview(null)
 
@@ -210,14 +178,14 @@ function App() {
     // this session, so re-pulls and bounce-backs don't re-spend on the LLM.
     if (actionId !== 'pull-to-testing') return
     if (NON_TESTABLE_ISSUE_TYPES.has(refreshed.issue_type)) return
-    if (testPlan) return
+    if (testPlan.plan) return
     try {
       const res = await fetch(`${API_BASE_URL}/runs/by-ticket/${key}`)
       const data = res.ok ? await res.json() : { runs: [] }
       const runs = Array.isArray(data.runs) ? data.runs : []
       setRunHistory(runs)
       if (runs.length === 0) {
-        handleGenerateTestPlan()
+        handleGenerateTestPlan([refreshed])
       }
     } catch {
       // network blip — leave the user to click Generate manually
@@ -229,10 +197,8 @@ function App() {
     setTicketsData([])
     setError(null)
     setIsDescriptionExpanded(false)
-    setTestPlan(null)
-    setPlanError(null)
-    setBugAnalysis(null)
-    setBugAnalysisError(null)
+    testPlan.reset()
+    bugLens.reset()
     setRunHistory([])
     setHistoryPreview(null)
   }
@@ -241,190 +207,19 @@ function App() {
     setIsDescriptionExpanded(!isDescriptionExpanded)
   }
 
-  const handleGenerateTestPlan = async () => {
-    if (ticketsData.length === 0) return
-
-    const controller = new AbortController()
-    setAbortController(controller)
-
-    setGeneratingPlan(true)
-    setPlanError(null)
-    setTestPlan(null)
-    setBugAnalysis(null)
-    setBugAnalysisError(null)
-
-    try {
-      if (!isMultiTicket) {
-        // ── Single ticket — existing flow unchanged ────────────────────────
-        const td = ticketsData[0]
-        const imageUrls = td.attachments ? td.attachments.map((att) => att.url) : null
-
-        const response = await fetch(`${API_BASE_URL}/generate-test-plan`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ticket_key: td.key,
-            summary: td.summary,
-            description: td.description,
-            issue_type: td.issue_type,
-            testing_context: {},
-            development_info: td.development_info,
-            image_urls: imageUrls,
-            comments: td.comments || null,
-            parent_info: td.parent || null,
-            child_info: td.children || null,
-            linked_info: td.linked_issues || null,
-            bounce_history: td.bounce_history || null,
-          }),
-          signal: controller.signal,
-        })
-
-        if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.detail || 'Failed to generate test plan')
-        }
-
-        const data = await response.json()
-        setTestPlan(data)
-        // Refresh history so the new run appears in the banner with a bumped version.
-        loadRunHistory(td.key)
-      } else {
-        // ── Multi-ticket ───────────────────────────────────────────────────
-        const response = await fetch(`${API_BASE_URL}/generate-test-plan/multi`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tickets: ticketsData.map((td) => ({
-              ticket_key: td.key,
-              summary: td.summary,
-              description: td.description,
-              issue_type: td.issue_type,
-              testing_context: {},
-              development_info: td.development_info,
-              image_urls: td.attachments ? td.attachments.map((a) => a.url) : null,
-              comments: td.comments || null,
-              parent_info: td.parent || null,
-              child_info: td.children || null,
-              linked_info: td.linked_issues || null,
-              bounce_history: td.bounce_history || null,
-            })),
-          }),
-          signal: controller.signal,
-        })
-
-        if (!response.ok) {
-          const errorData = await response.json()
-          if (errorData.detail === 'TICKETS_NO_SHARED_CONTEXT') {
-            alert(
-              "These tickets don't share any code changes or repository context.\n\n" +
-                'Please select tickets with related development work (same repository or overlapping files changed).'
-            )
-            return
-          }
-          throw new Error(errorData.detail || 'Failed to generate test plan')
-        }
-
-        const data = await response.json()
-        setTestPlan(data)
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        setPlanError('Test plan generation was cancelled')
-      } else {
-        setPlanError(err.message)
-      }
-    } finally {
-      setGeneratingPlan(false)
-      setAbortController(null)
-    }
-  }
-
-  const handleStopGeneration = () => {
-    if (abortController) {
-      abortController.abort()
-    }
+  const handleGenerateTestPlan = async (overrideTickets) => {
+    const tickets = overrideTickets || ticketsData
+    if (tickets.length === 0) return
+    bugLens.reset()
+    const plan = await testPlan.generate(tickets)
+    // Refresh history so the new run appears in the banner with a bumped version.
+    if (plan && tickets.length === 1) loadRunHistory(tickets[0].key)
   }
 
   const handleAnalyzeBug = async () => {
     if (ticketsData.length === 0) return
-
-    const controller = new AbortController()
-    setBugAbortController(controller)
-    setAnalyzingBug(true)
-    setBugAnalysisError(null)
-    setBugAnalysis(null)
-    setTestPlan(null)
-    setPlanError(null)
-
-    try {
-      if (!isMultiTicket) {
-        const td = ticketsData[0]
-        const response = await fetch(`${API_BASE_URL}/bug-lens/analyze`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ticket_key: td.key,
-            summary: td.summary,
-            description: td.description,
-            issue_type: td.issue_type,
-            development_info: td.development_info,
-            comments: td.comments || null,
-            parent_info: td.parent || null,
-            child_info: td.children || null,
-            linked_info: td.linked_issues || null,
-            status: td.status || null,
-            status_category: td.status_category || null,
-          }),
-          signal: controller.signal,
-        })
-        if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.detail || 'Failed to analyze bug')
-        }
-        setBugAnalysis(await response.json())
-      } else {
-        const response = await fetch(`${API_BASE_URL}/bug-lens/analyze/multi`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tickets: ticketsData.map((td) => ({
-              ticket_key: td.key,
-              summary: td.summary,
-              description: td.description,
-              issue_type: td.issue_type,
-              development_info: td.development_info,
-              comments: td.comments || null,
-              parent_info: td.parent || null,
-              child_info: td.children || null,
-              linked_info: td.linked_issues || null,
-              status: td.status || null,
-              status_category: td.status_category || null,
-            })),
-          }),
-          signal: controller.signal,
-        })
-        if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.detail || 'Failed to analyze bugs')
-        }
-        setBugAnalysis(await response.json())
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        setBugAnalysisError('Bug analysis was cancelled')
-      } else {
-        setBugAnalysisError(err.message)
-      }
-    } finally {
-      setAnalyzingBug(false)
-      setBugAbortController(null)
-    }
-  }
-
-  const handleStopBugAnalysis = () => {
-    if (bugAbortController) {
-      bugAbortController.abort()
-    }
+    testPlan.reset()
+    await bugLens.analyze(ticketsData)
   }
 
   // For multi-ticket: block generation if any ticket has a non-testable type
@@ -508,8 +303,8 @@ function App() {
               <>
                 {!isMultiTicket &&
                   runHistory.length > 0 &&
-                  !analyzingBug &&
-                  !bugAnalysis && (
+                  !bugLens.analyzing &&
+                  !bugLens.analysis && (
                     <RunHistoryBanner
                       runs={runHistory}
                       ticketData={ticketData}
@@ -521,51 +316,51 @@ function App() {
 
                 <ActionButtons
                   onGenerateTestPlan={handleGenerateTestPlan}
-                  onStopGeneration={handleStopGeneration}
-                  generatingPlan={generatingPlan}
+                  onStopGeneration={testPlan.stop}
+                  generatingPlan={testPlan.generating}
                   onAnalyzeBug={handleAnalyzeBug}
-                  onStopBugAnalysis={handleStopBugAnalysis}
-                  analyzingBug={analyzingBug}
+                  onStopBugAnalysis={bugLens.stop}
+                  analyzingBug={bugLens.analyzing}
                   showBugLens={isBugTickets}
                 />
 
-                {planError && (
+                {testPlan.error && (
                   <div className="alert alert-error">
-                    <strong>Error:</strong> {planError}
+                    <strong>Error:</strong> {testPlan.error}
                   </div>
                 )}
 
-                {bugAnalysisError && (
+                {bugLens.error && (
                   <div className="alert alert-error">
-                    <strong>Error:</strong> {bugAnalysisError}
+                    <strong>Error:</strong> {bugLens.error}
                   </div>
                 )}
 
-                {testPlan && (
+                {testPlan.plan && (
                   <div ref={testPlanRef}>
                     <TestPlanDisplay
-                      testPlan={testPlan}
+                      testPlan={testPlan.plan}
                       ticketData={ticketData}
                       ticketsData={isMultiTicket ? ticketsData : null}
                     />
                   </div>
                 )}
 
-                {!isMultiTicket && historyPreview && !bugAnalysis && !analyzingBug && (
+                {!isMultiTicket && historyPreview && !bugLens.analysis && !bugLens.analyzing && (
                   <HistoricalPlanPreview
                     key={historyPreview.planId}
                     plan={historyPreview.plan}
                     version={historyPreview.version}
                     createdAt={historyPreview.createdAt}
                     ticketData={ticketData}
-                    showActions={!testPlan}
+                    showActions={!testPlan.plan}
                     onClose={() => setHistoryPreview(null)}
                   />
                 )}
 
-                {bugAnalysis && (
+                {bugLens.analysis && (
                   <div ref={bugAnalysisRef}>
-                    <BugAnalysisDisplay analysis={bugAnalysis} />
+                    <BugAnalysisDisplay analysis={bugLens.analysis} />
                   </div>
                 )}
               </>

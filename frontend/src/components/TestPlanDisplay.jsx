@@ -11,7 +11,16 @@ const API_BASE = API_BASE_URL
 
 const PROGRESS_STORAGE_PREFIX = 'testplan-progress:'
 
-const SECTION_KEYS = ['happy_path', 'edge_cases', 'integration_tests', 'regression_checklist']
+// Sections render in this order. `renderer` picks between the card view
+// (full test case with steps/expected/etc.) and the checklist view (plain
+// strings, no metadata). Adding a new section means adding one row here.
+const SECTIONS = [
+  { key: 'happy_path', label: '✅ Happy Path Test Cases', renderer: 'card' },
+  { key: 'edge_cases', label: '🔍 Edge Cases & Error Scenarios', renderer: 'card', showCategory: true },
+  { key: 'integration_tests', label: '🔗 Integration & Backend Tests', renderer: 'card' },
+  { key: 'regression_checklist', label: '🔄 Regression Checklist', renderer: 'checklist' },
+]
+const SECTION_KEYS = SECTIONS.map((s) => s.key)
 
 function sectionLength(testPlan, key) {
   return Array.isArray(testPlan?.[key]) ? testPlan[key].length : 0
@@ -21,6 +30,57 @@ function buildStorageKey(testPlan, ticketKeys) {
   if (!ticketKeys || ticketKeys.length === 0) return null
   const fingerprint = SECTION_KEYS.map((k) => sectionLength(testPlan, k)).join('-')
   return `${PROGRESS_STORAGE_PREFIX}${ticketKeys.join('+')}:${fingerprint}`
+}
+
+function TestPlanSection({ section, items, checkedTests, onToggle }) {
+  const total = items.length
+  let checked = 0
+  for (let i = 0; i < total; i++) {
+    if (checkedTests.has(`${section.key}:${i}`)) checked++
+  }
+  return (
+    <div className="test-plan-group">
+      <h4>
+        <span>{section.label}</span>
+        <SectionProgress checked={checked} total={total} />
+      </h4>
+      {section.renderer === 'checklist' ? (
+        <ul className="checklist">
+          {items.map((item, i) => {
+            const isChecked = checkedTests.has(`${section.key}:${i}`)
+            const cbId = `tc-${section.key}-${i}`
+            return (
+              <li
+                key={i}
+                className={`checklist-item${isChecked ? ' checklist-item--checked' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  className="test-case-checkbox"
+                  id={cbId}
+                  checked={isChecked}
+                  onChange={() => onToggle(section.key, i)}
+                  aria-label="Mark regression item complete"
+                />
+                <label htmlFor={cbId} className="checklist-item-text">
+                  {typeof item === 'string' ? item : JSON.stringify(item)}
+                </label>
+              </li>
+            )
+          })}
+        </ul>
+      ) : (
+        items.map((test, i) =>
+          renderTestCase(test, i, {
+            showCategory: section.showCategory,
+            checked: checkedTests.has(`${section.key}:${i}`),
+            onToggle: () => onToggle(section.key, i),
+            checkboxId: `tc-${section.key}-${i}`,
+          })
+        )
+      )}
+    </div>
+  )
 }
 
 function SectionProgress({ checked, total }) {
@@ -538,111 +598,19 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
         )
       })()}
 
-      {testPlan.happy_path &&
-        Array.isArray(testPlan.happy_path) &&
-        testPlan.happy_path.length > 0 && (() => {
-          const total = testPlan.happy_path.length
-          const checked = countSectionChecks('happy_path', total)
-          return (
-            <div className="test-plan-group">
-              <h4>
-                <span>✅ Happy Path Test Cases</span>
-                <SectionProgress checked={checked} total={total} />
-              </h4>
-              {testPlan.happy_path.map((test, i) =>
-                renderTestCase(test, i, {
-                  checked: checkedTests.has(`happy_path:${i}`),
-                  onToggle: () => toggleTest('happy_path', i),
-                  checkboxId: `tc-happy_path-${i}`,
-                })
-              )}
-            </div>
-          )
-        })()}
-
-      {testPlan.edge_cases &&
-        Array.isArray(testPlan.edge_cases) &&
-        testPlan.edge_cases.length > 0 && (() => {
-          const total = testPlan.edge_cases.length
-          const checked = countSectionChecks('edge_cases', total)
-          return (
-            <div className="test-plan-group">
-              <h4>
-                <span>🔍 Edge Cases & Error Scenarios</span>
-                <SectionProgress checked={checked} total={total} />
-              </h4>
-              {testPlan.edge_cases.map((test, i) =>
-                renderTestCase(test, i, {
-                  showCategory: true,
-                  checked: checkedTests.has(`edge_cases:${i}`),
-                  onToggle: () => toggleTest('edge_cases', i),
-                  checkboxId: `tc-edge_cases-${i}`,
-                })
-              )}
-            </div>
-          )
-        })()}
-
-      {testPlan.integration_tests &&
-        Array.isArray(testPlan.integration_tests) &&
-        testPlan.integration_tests.length > 0 && (() => {
-          const total = testPlan.integration_tests.length
-          const checked = countSectionChecks('integration_tests', total)
-          return (
-            <div className="test-plan-group">
-              <h4>
-                <span>🔗 Integration & Backend Tests</span>
-                <SectionProgress checked={checked} total={total} />
-              </h4>
-              {testPlan.integration_tests.map((test, i) =>
-                renderTestCase(test, i, {
-                  checked: checkedTests.has(`integration_tests:${i}`),
-                  onToggle: () => toggleTest('integration_tests', i),
-                  checkboxId: `tc-integration_tests-${i}`,
-                })
-              )}
-            </div>
-          )
-        })()}
-
-      {testPlan.regression_checklist &&
-        Array.isArray(testPlan.regression_checklist) &&
-        testPlan.regression_checklist.length > 0 && (() => {
-          const total = testPlan.regression_checklist.length
-          const checked = countSectionChecks('regression_checklist', total)
-          return (
-            <div className="test-plan-group">
-              <h4>
-                <span>🔄 Regression Checklist</span>
-                <SectionProgress checked={checked} total={total} />
-              </h4>
-              <ul className="checklist">
-                {testPlan.regression_checklist.map((item, i) => {
-                  const isChecked = checkedTests.has(`regression_checklist:${i}`)
-                  const cbId = `tc-regression_checklist-${i}`
-                  return (
-                    <li
-                      key={i}
-                      className={`checklist-item${isChecked ? ' checklist-item--checked' : ''}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="test-case-checkbox"
-                        id={cbId}
-                        checked={isChecked}
-                        onChange={() => toggleTest('regression_checklist', i)}
-                        aria-label="Mark regression item complete"
-                      />
-                      <label htmlFor={cbId} className="checklist-item-text">
-                        {typeof item === 'string' ? item : JSON.stringify(item)}
-                      </label>
-                    </li>
-                  )
-                })}
-              </ul>
-            </div>
-          )
-        })()}
+      {SECTIONS.map((section) => {
+        const items = testPlan[section.key]
+        if (!Array.isArray(items) || items.length === 0) return null
+        return (
+          <TestPlanSection
+            key={section.key}
+            section={section}
+            items={items}
+            checkedTests={checkedTests}
+            onToggle={toggleTest}
+          />
+        )
+      })}
 
       <div className="test-plan-actions">
         {/* ── Jira post row ── */}

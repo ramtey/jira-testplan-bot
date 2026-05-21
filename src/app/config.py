@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # App
     app_env: str = "local"
 
+    # QA workflow buttons (Pull-to-Testing / Pass-to-UAT / Fail-back) only show
+    # for tickets whose key starts with one of these prefixes. Empty list
+    # disables the workflow UI entirely. Set via env as JSON, e.g.
+    # WORKFLOW_PROJECT_PREFIXES='["SK","SL"]'.
+    workflow_project_prefixes: list[str] = ["SK"]
+
     # Database (Neon Postgres)
     database_url: str | None = None
 

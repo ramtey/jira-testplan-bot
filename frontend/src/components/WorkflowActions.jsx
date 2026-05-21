@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { API_BASE_URL } from '../config'
+import { API_BASE_URL, isWorkflowEnabledForTicket } from '../config'
 
 // Match the CSS exit duration for .workflow-message.is-leaving so the element
 // stays in the DOM long enough to play its fade-out.
@@ -72,10 +72,6 @@ const ACTIONS = [
 
 function normalize(status) {
   return (status || '').trim().toLowerCase()
-}
-
-function isSKProject(ticketKey) {
-  return (ticketKey || '').toUpperCase().startsWith('SK-')
 }
 
 // Build a deduped, accountId-keyed list of people the form can @mention.
@@ -175,7 +171,7 @@ function WorkflowActions({
     return () => clearTimeout(t)
   }, [isLeaving])
 
-  if (!isSKProject(ticketKey)) return null
+  if (!isWorkflowEnabledForTicket(ticketKey)) return null
 
   const visibleActions = ACTIONS.filter((a) => a.showWhen(currentStatus))
   if (visibleActions.length === 0) return null
