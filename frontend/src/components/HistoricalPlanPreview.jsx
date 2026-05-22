@@ -1,13 +1,10 @@
 /**
  * Renders a previously-stored test plan beside the live one for comparison.
- *
- * Wraps TestPlanDisplay in a muted (gray) container with a header that
- * identifies the version and a Close button. Used when the user clicks "View"
- * on a row in RunHistoryBanner — the live plan is preserved, this one appears
- * below it for side-by-side reading.
  */
 
 import TestPlanDisplay from './TestPlanDisplay'
+import Icon from './Icon'
+import { Btn } from './ui'
 
 function formatRelative(iso) {
   if (!iso) return ''
@@ -30,21 +27,38 @@ export default function HistoricalPlanPreview({
   createdAt,
   ticketData,
   onClose,
-  showActions = false,
 }) {
-  const className = `history-preview${showActions ? ' history-preview--actionable' : ''}`
   return (
-    <section className={className} aria-label="Historical test plan preview">
-      <header className="history-preview-header">
-        <span className="history-preview-label">
-          History preview · <strong>v{version}</strong> · {formatRelative(createdAt)}
+    <section
+      aria-label="Historical test plan preview"
+      style={{
+        marginTop: 'var(--s-7)',
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--line)',
+        borderRadius: 'var(--r-md)',
+        overflow: 'hidden',
+        opacity: 0.85,
+      }}
+    >
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--s-3)',
+          padding: 'var(--s-4) var(--s-5)',
+          background: 'var(--bg-panel)',
+          borderBottom: '1px solid var(--line)',
+        }}
+      >
+        <Icon name="history" size={14} style={{ color: 'var(--fg-muted)' }} />
+        <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+          History preview · <strong style={{ color: 'var(--fg)' }}>v{version}</strong> · {formatRelative(createdAt)}
         </span>
-        <button type="button" className="history-preview-close" onClick={onClose}>
-          Close preview
-        </button>
+        <span style={{ flex: 1 }} />
+        <Btn variant="ghost" size="sm" icon="x" onClick={onClose}>Close preview</Btn>
       </header>
 
-      <div className="history-preview-body">
+      <div style={{ padding: 'var(--s-5)' }}>
         <TestPlanDisplay testPlan={plan} ticketData={ticketData} />
       </div>
     </section>

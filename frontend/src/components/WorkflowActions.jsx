@@ -1,31 +1,22 @@
 import { useEffect, useState } from 'react'
 import { API_BASE_URL, isWorkflowEnabledForTicket } from '../config'
+import Icon from './Icon'
+import { Btn, Cbx, Alert } from './ui'
 
-// Match the CSS exit duration for .workflow-message.is-leaving so the element
-// stays in the DOM long enough to play its fade-out.
+// Match the CSS exit duration so the feedback element stays in the DOM long enough.
 const MESSAGE_EXIT_MS = 220
 
 const TESTING_STATUS = 'in testing'
 
-// Environments QA can tag onto a Pass-to-UAT comment. Add new ones here —
-// the backend accepts whatever strings are sent. Integ is preselected
-// because it's the default target for most tickets.
 const ENVIRONMENT_OPTIONS = ['Integ', 'Staging', 'Prod']
 const DEFAULT_ENVIRONMENTS = ['Integ']
 
-// Word-boundary keyword match per env. We deliberately don't match "stage"
-// (too noisy: "early stage", "staged rollout") or "integration" (clashes
-// with "integration test"); the bare "integ" / "staging" tokens almost
-// always refer to the env in QA chatter.
 const ENV_PATTERNS = {
   Integ: /\binteg\b/i,
   Staging: /\bstaging\b/i,
   Prod: /\bprod(uction)?\b/i,
 }
 
-// Pick the most recent piece of ticket text that names an env and return
-// the envs it mentions. Falls back to DEFAULT_ENVIRONMENTS when nothing
-// matches, so QA still sees the usual preselect.
 function detectEnvironments(description, comments) {
   const sources = []
   if (Array.isArray(comments)) {
@@ -51,21 +42,24 @@ const ACTIONS = [
     id: 'pull-to-testing',
     label: 'Pull to Testing',
     title: 'Move to In Testing and assign to me',
-    intent: 'primary',
+    variant: 'secondary',
+    icon: 'arrow-down-right',
     showWhen: (status) => normalize(status) !== TESTING_STATUS,
   },
   {
     id: 'pass-to-uat',
     label: 'Pass to UAT',
     title: 'Move to UAT and reassign to the previous person',
-    intent: 'success',
+    variant: 'success-soft',
+    icon: 'check',
     showWhen: (status) => normalize(status) === TESTING_STATUS,
   },
   {
     id: 'fail-to-todo',
     label: 'Fail back to To Do',
     title: 'Move back to To Do and reassign to the previous person',
-    intent: 'warn',
+    variant: 'danger-soft',
+    icon: 'arrow-left',
     showWhen: (status) => normalize(status) === TESTING_STATUS,
   },
 ]
@@ -74,12 +68,6 @@ function normalize(status) {
   return (status || '').trim().toLowerCase()
 }
 
-// Build a deduped, accountId-keyed list of people the form can @mention.
-// Sources, in order: current assignee → prior assignees (from changelog)
-// → comment authors. Entries without an accountId are skipped — display
-// names alone can't form a valid Jira mention node. The configured bot
-// user (i.e. whoever is operating the form) is filtered out so QA isn't
-// staring at "tag yourself" as the only option.
 function buildMentionCandidates({
   assignee,
   assigneeAccountId,
@@ -88,7 +76,7 @@ function buildMentionCandidates({
   comments,
   currentUserAccountId,
 }) {
-  const seen = new Map() // accountId -> { accountId, name, isAssignee }
+  const seen = new Map()
   const skip = (id) => !id || (currentUserAccountId && id === currentUserAccountId)
 
   if (!skip(assigneeAccountId)) {
@@ -123,6 +111,22 @@ function buildMentionCandidates({
   return Array.from(seen.values())
 }
 
+function EnvPill({ value, on, onToggle, disabled }) {
+  return (
+    <button
+      type="button"
+      className="env-pill"
+      data-on={on ? 'true' : 'false'}
+      disabled={disabled}
+      onClick={onToggle}
+      aria-pressed={on}
+    >
+      {on && <Icon name="check" size={11} />}
+      {value}
+    </button>
+  )
+}
+
 function WorkflowActions({
   ticketKey,
   currentStatus,
@@ -136,32 +140,23 @@ function WorkflowActions({
   onActionComplete,
 }) {
   const [pendingAction, setPendingAction] = useState(null)
-  // {kind: 'success'|'error', text: string} — held during fade-out via isLeaving.
   const [feedback, setFeedback] = useState(null)
   const [isLeaving, setIsLeaving] = useState(false)
-  // When set, the inline note form is showing instead of the buttons row.
-  // Both `pass-to-uat` and `fail-to-todo` open it; the form adapts per action.
   const [noteForAction, setNoteForAction] = useState(null)
   const [loomUrlsText, setLoomUrlsText] = useState('')
   const [summary, setSummary] = useState('')
   const [environments, setEnvironments] = useState(DEFAULT_ENVIRONMENTS)
   const [reason, setReason] = useState('')
   const [imageUrlsText, setImageUrlsText] = useState('')
-  // Selected accountIds to @mention. Optional for both actions.
   const [mentionAccountIds, setMentionAccountIds] = useState([])
-  // Opt-in: when true, the backend cascades the transition to every direct
-  // subtask after the parent moves. Off by default to avoid surprise moves
-  // on tickets where QA only wanted to flip the parent.
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
 
-  // Auto-dismiss success messages after 15s; errors stay until the next action.
   useEffect(() => {
     if (!feedback || feedback.kind !== 'success') return
     const dismiss = setTimeout(() => setIsLeaving(true), 15000)
     return () => clearTimeout(dismiss)
   }, [feedback])
 
-  // Once isLeaving flips on, wait for the CSS exit transition then unmount.
   useEffect(() => {
     if (!isLeaving) return
     const t = setTimeout(() => {
@@ -216,8 +211,6 @@ function WorkflowActions({
     setIsLeaving(false)
     try {
       const init = { method: 'POST' }
-      // Merge in the cascade flag whenever it's on — form actions already
-      // build a body, but pull-to-testing posts none, so synthesize one.
       const effectiveBody = cascadeToSubtasks
         ? { ...(body || {}), cascade_to_subtasks: true }
         : body
@@ -327,160 +320,184 @@ function WorkflowActions({
     }
   }
 
-  const cascadeToggle = (
-    <label className="workflow-cascade-toggle">
-      <input
-        type="checkbox"
-        checked={cascadeToSubtasks}
-        onChange={(e) => setCascadeToSubtasks(e.target.checked)}
-      />
-      <span>Also move all subtasks</span>
-    </label>
-  )
+  const isFail = noteForAction?.id === 'fail-to-todo'
 
   return (
-    <div className="workflow-actions">
-      {cascadeToggle}
-      {noteForAction ? (
-        <form className="workflow-note-form" onSubmit={onNoteSubmit}>
-          <div className="workflow-note-form-header">
-            {noteForAction.id === 'fail-to-todo'
-              ? 'Fail back to To Do — reason required'
-              : 'Pass to UAT — optional note'}
+    <div>
+      {!noteForAction && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 600, marginRight: 'var(--s-2)' }}>
+            Workflow
+          </span>
+          {visibleActions.map((action) => (
+            <Btn
+              key={action.id}
+              variant={action.variant}
+              icon={action.icon}
+              title={action.title}
+              disabled={pendingAction !== null}
+              loading={pendingAction === action.id}
+              onClick={() => onActionClick(action)}
+            >
+              {action.label}
+            </Btn>
+          ))}
+          <span style={{ flex: 1 }} />
+          <Cbx
+            checked={cascadeToSubtasks}
+            onChange={setCascadeToSubtasks}
+            label="Also move all subtasks"
+          />
+        </div>
+      )}
+
+      {noteForAction && (
+        <form
+          onSubmit={onNoteSubmit}
+          style={{
+            background: isFail ? 'rgba(239,68,68,.04)' : 'rgba(34,197,94,.03)',
+            border: '1px solid ' + (isFail ? 'rgba(239,68,68,.25)' : 'rgba(34,197,94,.22)'),
+            borderRadius: 'var(--r-md)',
+            padding: 'var(--s-6)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: 'var(--s-5)' }}>
+            <Icon
+              name={isFail ? 'arrow-left' : 'check-circle'}
+              size={14}
+              style={{ color: isFail ? 'var(--danger)' : 'var(--success)' }}
+            />
+            <span style={{ fontWeight: 600, color: 'var(--fg-strong)' }}>
+              {isFail ? 'Fail back to To Do' : 'Pass to UAT'}
+            </span>
+            <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-sm)' }}>
+              {isFail ? 'Will be returned to development.' : 'Will be moved to UAT.'}
+            </span>
+            <button type="button" className="hbtn" style={{ marginLeft: 'auto' }} onClick={closeNoteForm} disabled={pendingAction !== null}>
+              <Icon name="x" size={13} />
+            </button>
           </div>
-          {noteForAction.id === 'pass-to-uat' && (
-            <div className="workflow-note-field">
-              <span>Tested in</span>
-              <div className="workflow-env-chips" role="group" aria-label="Environments tested">
-                {ENVIRONMENT_OPTIONS.map((env) => {
-                  const selected = environments.includes(env)
-                  return (
-                    <button
-                      key={env}
-                      type="button"
-                      className={`workflow-env-chip${selected ? ' is-selected' : ''}`}
-                      aria-pressed={selected}
-                      onClick={() => toggleEnvironment(env)}
-                      disabled={pendingAction !== null}
-                    >
-                      {env}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-          {noteForAction.id === 'fail-to-todo' && (
-            <label className="workflow-note-field">
-              <span>Reason (markdown supported)</span>
+
+          {isFail && (
+            <div style={{ marginBottom: 'var(--s-5)' }}>
+              <span className="lbl req">Reason</span>
               <textarea
-                rows={4}
-                placeholder="What broke, where, and how to reproduce…"
+                className="inp"
+                style={{ minHeight: 70, borderColor: 'rgba(239,68,68,.45)', boxShadow: '0 0 0 3px rgba(239,68,68,.10)' }}
+                placeholder="Required. What broke, where, and how to reproduce…"
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 disabled={pendingAction !== null}
                 required
                 autoFocus
               />
-            </label>
-          )}
-          <label className="workflow-note-field">
-            <span>Loom URLs (optional, one per line)</span>
-            <textarea
-              rows={3}
-              placeholder={'https://www.loom.com/share/…\nhttps://www.loom.com/share/…'}
-              value={loomUrlsText}
-              onChange={(e) => setLoomUrlsText(e.target.value)}
-              disabled={pendingAction !== null}
-            />
-          </label>
-          {noteForAction.id === 'pass-to-uat' && (
-            <label className="workflow-note-field">
-              <span>Test summary (markdown supported)</span>
-              <textarea
-                rows={4}
-                placeholder="Brief notes about what was tested…"
-                value={summary}
-                onChange={(e) => setSummary(e.target.value)}
-                disabled={pendingAction !== null}
-              />
-            </label>
-          )}
-          <label className="workflow-note-field">
-            <span>Image URLs (optional, one per line)</span>
-            <textarea
-              rows={3}
-              placeholder={'https://example.com/screenshot1.png\nhttps://example.com/screenshot2.png'}
-              value={imageUrlsText}
-              onChange={(e) => setImageUrlsText(e.target.value)}
-              disabled={pendingAction !== null}
-            />
-          </label>
-          {mentionCandidates.length > 0 && (
-            <div className="workflow-note-field">
-              <span>Notify (optional)</span>
-              <div className="workflow-env-chips" role="group" aria-label="People to notify">
-                {mentionCandidates.map((person) => {
-                  const selected = mentionAccountIds.includes(person.accountId)
-                  return (
-                    <button
-                      key={person.accountId}
-                      type="button"
-                      className={`workflow-env-chip${selected ? ' is-selected' : ''}`}
-                      aria-pressed={selected}
-                      onClick={() => toggleMention(person.accountId)}
-                      disabled={pendingAction !== null}
-                      title={person.isAssignee ? 'Current assignee' : 'Prior assignee or commenter'}
-                    >
-                      {person.isAssignee ? `★ ${person.name}` : person.name}
-                    </button>
-                  )
-                })}
+              <div style={{ marginTop: 6, fontSize: 'var(--t-xs)', color: 'var(--danger)' }}>
+                This becomes the bounce-back history. Be specific.
               </div>
             </div>
           )}
-          <div className="workflow-note-form-actions">
-            <button
-              type="button"
-              className="btn-workflow-link"
-              onClick={closeNoteForm}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 'var(--s-6) var(--s-7)', alignItems: 'start' }}>
+            {noteForAction.id === 'pass-to-uat' && (
+              <>
+                <span className="lbl">Tested on</span>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {ENVIRONMENT_OPTIONS.map((env) => (
+                    <EnvPill
+                      key={env}
+                      value={env}
+                      on={environments.includes(env)}
+                      onToggle={() => toggleEnvironment(env)}
+                      disabled={pendingAction !== null}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+
+            <span className="lbl">Loom URL{loomUrlsText.includes('\n') ? 's' : ''}</span>
+            <textarea
+              className="inp mono"
+              rows={2}
+              placeholder="https://www.loom.com/share/…"
+              value={loomUrlsText}
+              onChange={(e) => setLoomUrlsText(e.target.value)}
               disabled={pendingAction !== null}
-            >
-              Cancel
-            </button>
-            <button
+              style={{ minHeight: 40 }}
+            />
+
+            {noteForAction.id === 'pass-to-uat' && (
+              <>
+                <span className="lbl">Notes</span>
+                <textarea
+                  className="inp"
+                  rows={3}
+                  placeholder="Optional. Markdown supported."
+                  value={summary}
+                  onChange={(e) => setSummary(e.target.value)}
+                  disabled={pendingAction !== null}
+                />
+              </>
+            )}
+
+            <span className="lbl">Image URLs</span>
+            <textarea
+              className="inp mono"
+              rows={2}
+              placeholder="One per line. Markdown links are also fine."
+              value={imageUrlsText}
+              onChange={(e) => setImageUrlsText(e.target.value)}
+              disabled={pendingAction !== null}
+              style={{ minHeight: 40 }}
+            />
+
+            {mentionCandidates.length > 0 && (
+              <>
+                <span className="lbl">Notify</span>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {mentionCandidates.map((person) => {
+                    const selected = mentionAccountIds.includes(person.accountId)
+                    return (
+                      <EnvPill
+                        key={person.accountId}
+                        value={person.isAssignee ? `★ ${person.name}` : person.name}
+                        on={selected}
+                        onToggle={() => toggleMention(person.accountId)}
+                        disabled={pendingAction !== null}
+                      />
+                    )
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginTop: 'var(--s-6)' }}>
+            <Cbx
+              checked={cascadeToSubtasks}
+              onChange={setCascadeToSubtasks}
+              label="Also move all subtasks"
+            />
+            <span style={{ flex: 1 }} />
+            <Btn variant="ghost" onClick={closeNoteForm} disabled={pendingAction !== null}>Cancel</Btn>
+            <Btn
               type="submit"
-              className={`btn-workflow btn-workflow-${noteForAction.intent}`}
+              variant={isFail ? 'danger' : 'primary'}
+              icon={isFail ? 'arrow-left' : 'check'}
               disabled={pendingAction !== null}
+              loading={pendingAction === noteForAction.id}
             >
-              {pendingAction === noteForAction.id
-                ? 'Working…'
-                : noteForAction.label}
-            </button>
+              {noteForAction.label}
+            </Btn>
           </div>
         </form>
-      ) : (
-        <div className="workflow-actions-buttons">
-          {visibleActions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className={`btn-workflow btn-workflow-${action.intent}`}
-              title={action.title}
-              disabled={pendingAction !== null}
-              onClick={() => onActionClick(action)}
-            >
-              {pendingAction === action.id ? 'Working…' : action.label}
-            </button>
-          ))}
-        </div>
       )}
+
       {feedback && (
-        <div
-          className={`workflow-message ${feedback.kind} ${isLeaving ? 'is-leaving' : 'is-shown'}`}
-          role={feedback.kind === 'error' ? 'alert' : 'status'}
-        >
-          {feedback.text}
+        <div style={{ marginTop: 'var(--s-4)', opacity: isLeaving ? 0 : 1, transition: `opacity ${MESSAGE_EXIT_MS}ms` }}>
+          <Alert tone={feedback.kind === 'error' ? 'danger' : 'success'} title={feedback.kind === 'error' ? 'Action failed' : 'Success'}>
+            {feedback.text}
+          </Alert>
         </div>
       )}
     </div>

@@ -7,21 +7,21 @@ import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL, getJiraTicketUrl } from '../config'
 import TestPlanDisplay from './TestPlanDisplay'
 import BugAnalysisDisplay from './BugAnalysisDisplay'
+import Icon from './Icon'
+import { Btn, ItChip, StatPill, Alert } from './ui'
 
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
 
-function StatusBadge({ status, statusCategory }) {
-  if (!status) return null
-  const cat = (statusCategory || '').toLowerCase()
-  return (
-    <span className={`epic-child-status epic-child-status-${cat || 'unknown'}`}>
-      {status}
-    </span>
-  )
+function statusCat(s) {
+  const v = (s || '').toLowerCase()
+  if (v === 'done' || v === 'complete') return 'done'
+  if (v === 'indeterminate' || v === 'inprogress' || v === 'in progress') return 'inprogress'
+  if (v === 'blocked') return 'blocked'
+  return 'todo'
 }
 
 function EpicChildRow({ child }) {
-  const [busy, setBusy] = useState(null) // 'generate' | 'analyze' | null
+  const [busy, setBusy] = useState(null)
   const [error, setError] = useState(null)
   const [testPlan, setTestPlan] = useState(null)
   const [bugAnalysis, setBugAnalysis] = useState(null)
@@ -126,80 +126,53 @@ function EpicChildRow({ child }) {
   }
 
   const jiraUrl = getJiraTicketUrl(child.key)
+  const cat = statusCat(child.status_category || child.status)
 
   return (
-    <div className="epic-child-row">
-      <div className="epic-child-row-header">
-        <div className="epic-child-row-meta">
-          {jiraUrl ? (
-            <a
-              href={jiraUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="epic-child-key"
-            >
-              {child.key}
-            </a>
-          ) : (
-            <span className="epic-child-key">{child.key}</span>
-          )}
-          <span className="epic-child-type">{child.issue_type}</span>
-          <StatusBadge status={child.status} statusCategory={child.status_category} />
-          <span className="epic-child-summary">{child.summary}</span>
-        </div>
-        <div className="epic-child-row-actions">
+    <div>
+      <div className="card" data-interactive="true" style={{ padding: '10px var(--s-5)', display: 'flex', alignItems: 'center', gap: 'var(--s-4)' }}>
+        {child.issue_type && <ItChip type={child.issue_type} label={child.issue_type} />}
+        {jiraUrl ? (
+          <a href={jiraUrl} target="_blank" rel="noopener noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--accent)', flexShrink: 0 }}>
+            {child.key}
+          </a>
+        ) : (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--fg)', flexShrink: 0 }}>{child.key}</span>
+        )}
+        <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--t-sm)', color: 'var(--fg)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+          {child.summary}
+        </span>
+        {child.status && <StatPill cat={cat}>{child.status}</StatPill>}
+        <span style={{ display: 'flex', gap: 4 }}>
           {isTestable && (
-            <button
-              type="button"
-              className="btn-generate btn-small"
-              onClick={handleGenerate}
-              disabled={busy !== null}
-            >
-              {busy === 'generate' ? (
-                <>
-                  <span className="spinner"></span>Generating
-                </>
-              ) : (
-                'Generate'
-              )}
-            </button>
+            <Btn variant="ghost" size="sm" icon="beaker" onClick={handleGenerate} disabled={busy !== null} loading={busy === 'generate'}>
+              Generate
+            </Btn>
           )}
           {isBug && (
-            <button
-              type="button"
-              className="btn-generate btn-bug-lens btn-small"
-              onClick={handleAnalyze}
-              disabled={busy !== null}
-            >
-              {busy === 'analyze' ? (
-                <>
-                  <span className="spinner"></span>Analyzing
-                </>
-              ) : (
-                'Analyze'
-              )}
-            </button>
+            <Btn variant="ghost" size="sm" icon="scan" onClick={handleAnalyze} disabled={busy !== null} loading={busy === 'analyze'}>
+              Analyze
+            </Btn>
           )}
           {hasResult && (
-            <button
-              type="button"
-              className="btn-collapse"
-              onClick={() => setCollapsed((c) => !c)}
-            >
-              {collapsed ? 'Show result' : 'Collapse'}
-            </button>
+            <Btn variant="ghost" size="sm" icon={collapsed ? 'chevron-down' : 'chevron-up'} onClick={() => setCollapsed((c) => !c)}>
+              {collapsed ? 'Show' : 'Hide'}
+            </Btn>
           )}
-        </div>
+        </span>
       </div>
 
       {error && (
-        <div className="alert alert-error epic-child-row-error">
-          <strong>Error:</strong> {error}
+        <div style={{ marginTop: 'var(--s-3)', marginLeft: 24, paddingLeft: 'var(--s-5)', borderLeft: '2px solid var(--line-strong)' }}>
+          <Alert tone="danger" title="Failed">{error}</Alert>
         </div>
       )}
 
       {hasResult && !collapsed && (
-        <div className="epic-child-row-result" ref={resultRef}>
+        <div
+          ref={resultRef}
+          style={{ marginTop: 'var(--s-3)', marginLeft: 24, paddingLeft: 'var(--s-5)', borderLeft: '2px solid var(--line-strong)' }}
+        >
           {testPlan && (
             <TestPlanDisplay
               testPlan={testPlan}

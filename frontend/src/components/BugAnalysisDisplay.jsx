@@ -3,9 +3,94 @@
  */
 
 import { formatBugAnalysisAsMarkdown } from '../utils/markdown'
+import Icon from './Icon'
+import { Btn, Chip } from './ui'
+
+function Section({ icon, title, description, children, style }) {
+  return (
+    <section style={{ marginTop: 'var(--s-7)', ...style }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: 'var(--s-3)' }}>
+        <Icon name={icon} size={14} style={{ color: 'var(--accent)' }} />
+        <h3 style={{ margin: 0, fontSize: 'var(--t-md)', fontWeight: 600, color: 'var(--fg-strong)' }}>{title}</h3>
+      </header>
+      {description && (
+        <p style={{ margin: '0 0 var(--s-3)', color: 'var(--fg-subtle)', fontSize: 'var(--t-sm)' }}>{description}</p>
+      )}
+      {children}
+    </section>
+  )
+}
+
+function BulletList({ items }) {
+  return (
+    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--t-sm)', lineHeight: '20px', color: 'var(--fg)' }}>
+      {items.map((item, i) => <li key={i}>{item}</li>)}
+    </ul>
+  )
+}
+
+function NumberedList({ items }) {
+  return (
+    <ol style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--t-sm)', lineHeight: '20px', color: 'var(--fg)' }}>
+      {items.map((item, i) => <li key={i}>{item.replace(/^\s*\d+[.)]\s+/, '')}</li>)}
+    </ol>
+  )
+}
+
+function FixStatusCard({ analysis, fixStatus }) {
+  const tone = {
+    fixed: { color: 'var(--success)', bg: 'rgba(34,197,94,.14)', icon: 'check-circle', label: 'Fixed' },
+    in_testing: { color: 'var(--info)', bg: 'rgba(59,130,246,.14)', icon: 'beaker', label: 'In testing — awaiting QA' },
+    not_fixed: { color: 'var(--warning)', bg: 'rgba(245,158,11,.14)', icon: 'alert', label: 'Not yet fixed' },
+  }[fixStatus] || { color: 'var(--warning)', bg: 'rgba(245,158,11,.14)', icon: 'alert', label: 'Not yet fixed' }
+
+  return (
+    <div className="card" style={{ padding: 'var(--s-5)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <Icon name="shield" size={12} style={{ color: 'var(--fg-subtle)' }} />
+        <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: '.04em', fontWeight: 600 }}>Fix status</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+        <span style={{ width: 28, height: 28, borderRadius: 'var(--r-md)', background: tone.bg, display: 'grid', placeItems: 'center' }}>
+          <Icon name={tone.icon} size={14} style={{ color: tone.color }} />
+        </span>
+        <div style={{ fontSize: 'var(--t-md)', fontWeight: 600, color: tone.color }}>{tone.label}</div>
+      </div>
+    </div>
+  )
+}
+
+function OriginCard({ analysis }) {
+  if (analysis.is_regression == null) return null
+  const isReg = analysis.is_regression
+  const color = isReg ? 'var(--warning)' : 'var(--info)'
+  const bg = isReg ? 'rgba(245,158,11,.14)' : 'rgba(59,130,246,.14)'
+  const icon = isReg ? 'history' : 'sparkles'
+  return (
+    <div className="card" style={{ padding: 'var(--s-5)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <Icon name="history" size={12} style={{ color: 'var(--fg-subtle)' }} />
+        <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: '.04em', fontWeight: 600 }}>Origin</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+        <span style={{ width: 28, height: 28, borderRadius: 'var(--r-md)', background: bg, display: 'grid', placeItems: 'center' }}>
+          <Icon name={icon} size={14} style={{ color }} />
+        </span>
+        <div>
+          <div style={{ fontSize: 'var(--t-md)', fontWeight: 600, color }}>{isReg ? 'Regression' : 'Never worked'}</div>
+          {isReg && analysis.regression_introduced_by && (
+            <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>Introduced by {analysis.regression_introduced_by}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function BugAnalysisDisplay({ analysis }) {
   const isMulti = Array.isArray(analysis.ticket_keys)
+  const allKeys = isMulti ? analysis.ticket_keys : [analysis.ticket_key]
+  const fixStatus = analysis.fix_status || (analysis.is_fixed ? 'fixed' : 'not_fixed')
 
   const handleDownloadMarkdown = () => {
     const markdown = formatBugAnalysisAsMarkdown(analysis)
@@ -22,129 +107,86 @@ function BugAnalysisDisplay({ analysis }) {
     URL.revokeObjectURL(url)
   }
 
-  const allKeys = isMulti ? analysis.ticket_keys : [analysis.ticket_key]
-
-  const fixStatus = analysis.fix_status || (analysis.is_fixed ? 'fixed' : 'not_fixed')
-  const fixStatusBadge = {
-    fixed: { label: '✅ Fixed', className: 'priority-high' },
-    in_testing: { label: '🧪 In testing — fix awaiting QA', className: 'priority-medium' },
-    not_fixed: { label: '⚠️ Not yet fixed', className: 'priority-critical' },
-  }[fixStatus] || { label: '⚠️ Not yet fixed', className: 'priority-critical' }
+  const codeEvidenceWithHits = (analysis.code_evidence || []).filter(
+    (e) => e.usages && e.usages.length > 0
+  )
+  const codeEvidenceMissed = (analysis.code_evidence || []).length > 0 && codeEvidenceWithHits.length === 0
 
   return (
-    <div className="test-plan-display">
-      <div className="test-plan-header">
-        <h2>
-          Bug Lens Analysis
-          <span className="multi-ticket-badge multi-ticket-badge--bug">
-            {allKeys.join(' + ')}
-          </span>
-        </h2>
+    <div style={{ marginTop: 'var(--s-7)' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-4)', marginBottom: 'var(--s-5)' }}>
+        <Icon name="scan" size={16} style={{ color: 'var(--warning)' }} />
+        <h2 style={{ margin: 0, fontSize: 'var(--t-xl)', fontWeight: 600, color: 'var(--fg-strong)' }}>Bug Lens Analysis</h2>
+        <Chip>{allKeys.join(' + ')}</Chip>
+        <span style={{ flex: 1 }} />
+        <Btn variant="ghost" size="sm" icon="download" onClick={handleDownloadMarkdown}>Download .md</Btn>
       </div>
 
-      {/* Status row: fix status + regression badges grouped together */}
-      <div className="ticket-section bug-status-row">
-        <span className={`priority-badge priority-badge--lg ${fixStatusBadge.className}`}>
-          {fixStatusBadge.label}
-        </span>
-        {analysis.is_regression != null && (
-          <span
-            className={`priority-badge priority-badge--lg ${
-              analysis.is_regression ? 'priority-critical' : 'priority-medium'
-            }`}
-          >
-            {analysis.is_regression ? '🔁 Regression' : '🆕 Never worked'}
-          </span>
-        )}
-        {analysis.is_regression && analysis.regression_introduced_by && (
-          <span className="bug-status-meta">
-            Introduced by: {analysis.regression_introduced_by}
-          </span>
-        )}
+      {/* Status row */}
+      <div style={{ display: 'grid', gridTemplateColumns: analysis.is_regression != null ? '1fr 1fr' : '1fr', gap: 'var(--s-4)', marginBottom: 'var(--s-6)' }}>
+        <FixStatusCard analysis={analysis} fixStatus={fixStatus} />
+        <OriginCard analysis={analysis} />
       </div>
 
-      {/* Bug Summary */}
       {analysis.bug_summary && (
-        <div className="ticket-section">
-          <h3>Bug Summary</h3>
-          <p>{analysis.bug_summary}</p>
-        </div>
+        <Section icon="info" title="Bug Summary">
+          <p style={{ margin: 0, color: 'var(--fg)' }}>{analysis.bug_summary}</p>
+        </Section>
       )}
 
-      {/* Root Cause */}
-      <div className="ticket-section">
-        <h3>Root Cause</h3>
+      <Section icon="alert-circle" title="Root Cause">
         {analysis.root_cause ? (
-          <p>{analysis.root_cause}</p>
+          <p style={{ margin: 0, color: 'var(--fg)' }}>{analysis.root_cause}</p>
         ) : (
-          <p className="text-muted">No code diff available — root cause derived from ticket description only.</p>
+          <p style={{ margin: 0, color: 'var(--fg-subtle)' }}>No code diff available — root cause derived from ticket description only.</p>
         )}
-      </div>
+      </Section>
 
-      {/* Affected Flow */}
       {analysis.affected_flow && analysis.affected_flow.length > 0 && (
-        <div className="ticket-section">
-          <h3>Affected Flow</h3>
-          <p className="section-description">End-to-end path from user action to the bug:</p>
-          <ol className="regression-list">
-            {analysis.affected_flow.map((step, i) => (
-              <li key={i}>{step.replace(/^\s*\d+[.)]\s+/, '')}</li>
-            ))}
-          </ol>
-        </div>
+        <Section icon="arrow-right" title="Affected Flow" description="End-to-end path from user action to the bug:">
+          <NumberedList items={analysis.affected_flow} />
+        </Section>
       )}
 
-      {/* Scope of Impact */}
       {analysis.scope_of_impact && analysis.scope_of_impact.length > 0 && (
-        <div className="ticket-section">
-          <h3>Scope of Impact</h3>
-          <p className="section-description">Other features or callers affected by the same broken code:</p>
-          <ul className="regression-list">
-            {analysis.scope_of_impact.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        </div>
+        <Section icon="layers" title="Scope of Impact" description="Other features or callers affected by the same broken code:">
+          <BulletList items={analysis.scope_of_impact} />
+        </Section>
       )}
 
-      {/* Code Evidence — deterministic grep results for suspect symbols.
-          Hide individual no-match entries; only show a fallback if ALL suspects missed. */}
-      {analysis.code_evidence && analysis.code_evidence.length > 0 && (() => {
-        const withHits = analysis.code_evidence.filter(e => e.usages && e.usages.length > 0)
-        if (withHits.length === 0) {
-          return (
-            <div className="ticket-section">
-              <h3>Code Evidence</h3>
-              <p className="text-muted">
-                Searched for the suspected symbols but none were found in the candidate repos — the bug may live in a different repo, or the suspects were off. Verify the repo mapping and the symbol names before acting.
-              </p>
-            </div>
-          )
-        }
-        return (
-          <div className="ticket-section">
-            <h3>Code Evidence</h3>
-            <p className="section-description">
-              Places the suspected symbols actually appear in the repo — verify before acting.
-            </p>
-            {withHits.map((entry, i) => (
-              <div key={i} className="code-evidence-entry">
-                <h4 className="code-evidence-heading">
-                  <code>{entry.suspect}</code>
-                  <span className="code-evidence-repo"> in {entry.repo}</span>
-                </h4>
-                <ul className="regression-list">
+      {codeEvidenceMissed && (
+        <Section icon="code" title="Code Evidence">
+          <p style={{ margin: 0, color: 'var(--fg-subtle)' }}>
+            Searched for the suspected symbols but none were found in the candidate repos — the bug may live in a different repo, or the suspects were off. Verify before acting.
+          </p>
+        </Section>
+      )}
+
+      {codeEvidenceWithHits.length > 0 && (
+        <Section icon="code" title="Code Evidence" description="Places the suspected symbols actually appear in the repo — verify before acting.">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-4)' }}>
+            {codeEvidenceWithHits.map((entry, i) => (
+              <div key={i} className="codeblock">
+                <div className="head">
+                  <code style={{ color: 'var(--fg-strong)' }}>{entry.suspect}</code>
+                  <span className="ext">in {entry.repo}</span>
+                </div>
+                <ul style={{ margin: 0, padding: 'var(--s-4) var(--s-5)', listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
                   {entry.usages.map((u, j) => (
                     <li key={j}>
                       <a
                         href={encodeURI(`https://github.com/${entry.repo}/blob/${u.ref}/${u.path}`) + `#L${u.line}`}
                         target="_blank"
                         rel="noopener noreferrer"
+                        style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: 11.5 }}
                       >
-                        <code>{u.path}:{u.line}</code>
+                        {u.path}:{u.line} <Icon name="external" size={10} style={{ verticalAlign: -1 }} />
                       </a>
                       {u.snippet && (
-                        <pre className="code-evidence-snippet"><code>{u.snippet}</code></pre>
+                        <pre style={{ margin: '6px 0 0', fontSize: 11.5, lineHeight: '17px', color: 'var(--fg)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          {u.snippet}
+                        </pre>
                       )}
                     </li>
                   ))}
@@ -152,112 +194,76 @@ function BugAnalysisDisplay({ analysis }) {
               </div>
             ))}
           </div>
-        )
-      })()}
-
-      {/* Why Tests Miss */}
-      {analysis.why_tests_miss && (
-        <div className="ticket-section">
-          <h3>Why Tests Don't Catch This</h3>
-          <p>{analysis.why_tests_miss}</p>
-        </div>
+        </Section>
       )}
 
-      {/* Fix Explanation — shown when fix is in (fixed) or in flight (in_testing) */}
+      {analysis.why_tests_miss && (
+        <Section icon="bug" title="Why Tests Don't Catch This">
+          <p style={{ margin: 0, color: 'var(--fg)' }}>{analysis.why_tests_miss}</p>
+        </Section>
+      )}
+
       {(fixStatus === 'fixed' || fixStatus === 'in_testing') && (
-        <div className="ticket-section">
-          <h3>Fix Explanation</h3>
+        <Section icon="shield" title="Fix Explanation">
           {analysis.fix_explanation ? (
-            <p>{analysis.fix_explanation}</p>
+            <p style={{ margin: 0, color: 'var(--fg)' }}>{analysis.fix_explanation}</p>
           ) : (
-            <p className="text-muted">No fix details available.</p>
+            <p style={{ margin: 0, color: 'var(--fg-subtle)' }}>No fix details available.</p>
           )}
           {fixStatus === 'in_testing' && (
-            <p className="section-description">
+            <p style={{ marginTop: 'var(--s-3)', color: 'var(--fg-subtle)', fontSize: 'var(--t-sm)' }}>
               The code change is in but QA hasn't validated it yet — confirm the fix behaves correctly before closing the ticket.
             </p>
           )}
-        </div>
+        </Section>
       )}
 
-      {/* Open Questions — surface ambiguity before the estimate */}
       {analysis.open_questions && analysis.open_questions.length > 0 && (
-        <div className="ticket-section">
-          <h3>Open Questions</h3>
-          <p className="section-description">Resolve these before committing to an estimate or fix:</p>
-          <ul className="regression-list">
-            {analysis.open_questions.map((q, i) => (
-              <li key={i}>{q}</li>
-            ))}
-          </ul>
-        </div>
+        <Section icon="help" title="Open Questions" description="Resolve these before committing to an estimate or fix:">
+          <BulletList items={analysis.open_questions} />
+        </Section>
       )}
 
-      {/* Assumptions — inferences the analysis depends on */}
       {analysis.assumptions && analysis.assumptions.length > 0 && (
-        <div className="ticket-section">
-          <h3>Assumptions</h3>
-          <p className="section-description">Inferences not directly grounded in the evidence — verify before acting:</p>
-          <ul className="regression-list">
-            {analysis.assumptions.map((a, i) => (
-              <li key={i}>{a}</li>
-            ))}
-          </ul>
-        </div>
+        <Section icon="info" title="Assumptions" description="Inferences not directly grounded in the evidence — verify before acting:">
+          <BulletList items={analysis.assumptions} />
+        </Section>
       )}
 
-      {/* Fix Complexity — only when no code change is in yet */}
       {fixStatus === 'not_fixed' && analysis.fix_complexity && (
-        <div className="ticket-section">
-          <h3>Fix Complexity</h3>
-          <div className="fix-complexity-row">
-            <span className={`fix-complexity-badge fix-complexity-${analysis.fix_complexity}`}>
+        <Section icon="layers" title="Fix Complexity">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: analysis.fix_complexity_reasoning ? 'var(--s-3)' : 0 }}>
+            <Chip dot dotColor={
+              analysis.fix_complexity === 'low' ? 'var(--success)' :
+              analysis.fix_complexity === 'medium' ? 'var(--warning)' :
+              'var(--danger)'
+            }>
               {analysis.fix_complexity.charAt(0).toUpperCase() + analysis.fix_complexity.slice(1)}
-            </span>
+            </Chip>
             {analysis.fix_effort_estimate && (
-              <span className="fix-effort-estimate">{analysis.fix_effort_estimate}</span>
+              <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{analysis.fix_effort_estimate}</span>
             )}
           </div>
           {analysis.fix_complexity_reasoning && (
-            <p className="fix-complexity-reasoning">{analysis.fix_complexity_reasoning}</p>
+            <p style={{ margin: 0, color: 'var(--fg)', fontSize: 'var(--t-sm)' }}>{analysis.fix_complexity_reasoning}</p>
           )}
-        </div>
+        </Section>
       )}
 
-      {/* Regression Tests */}
       {analysis.regression_tests && analysis.regression_tests.length > 0 && (
-        <div className="ticket-section">
-          <h3>Regression Tests</h3>
-          <p className="section-description">
-            Run these to confirm the bug does not recur:
-          </p>
-          <ul className="regression-list">
-            {analysis.regression_tests.map((test, i) => (
-              <li key={i}>{test}</li>
-            ))}
-          </ul>
-        </div>
+        <Section icon="beaker" title="Regression Tests" description="Run these to confirm the bug does not recur:">
+          <BulletList items={analysis.regression_tests} />
+        </Section>
       )}
 
-      {/* Similar Bug Patterns */}
       {analysis.similar_patterns && analysis.similar_patterns.length > 0 && (
-        <div className="ticket-section">
-          <h3>Similar Bug Patterns to Watch</h3>
-          <p className="section-description">
-            Related classes of bugs that may exist elsewhere in the codebase:
-          </p>
-          <ul className="regression-list">
-            {analysis.similar_patterns.map((pattern, i) => (
-              <li key={i}>{pattern}</li>
-            ))}
-          </ul>
-        </div>
+        <Section icon="layers" title="Similar Bug Patterns to Watch" description="Related classes of bugs that may exist elsewhere in the codebase:">
+          <BulletList items={analysis.similar_patterns} />
+        </Section>
       )}
 
-      <div className="test-plan-actions">
-        <button type="button" onClick={handleDownloadMarkdown} className="btn-download">
-          Download as .md
-        </button>
+      <div style={{ marginTop: 'var(--s-8)', display: 'flex', justifyContent: 'flex-end' }}>
+        <Btn variant="ghost" icon="download" onClick={handleDownloadMarkdown}>Download as .md</Btn>
       </div>
     </div>
   )

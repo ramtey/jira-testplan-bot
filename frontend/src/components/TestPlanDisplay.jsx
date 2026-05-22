@@ -6,19 +6,18 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
+import Icon from './Icon'
+import { Btn, Chip, ACTag, Pri, Cbx, Alert } from './ui'
 
 const API_BASE = API_BASE_URL
 
 const PROGRESS_STORAGE_PREFIX = 'testplan-progress:'
 
-// Sections render in this order. `renderer` picks between the card view
-// (full test case with steps/expected/etc.) and the checklist view (plain
-// strings, no metadata). Adding a new section means adding one row here.
 const SECTIONS = [
-  { key: 'happy_path', label: '✅ Happy Path Test Cases', renderer: 'card' },
-  { key: 'edge_cases', label: '🔍 Edge Cases & Error Scenarios', renderer: 'card', showCategory: true },
-  { key: 'integration_tests', label: '🔗 Integration & Backend Tests', renderer: 'card' },
-  { key: 'regression_checklist', label: '🔄 Regression Checklist', renderer: 'checklist' },
+  { key: 'happy_path', label: 'Happy Path', icon: 'check-circle', renderer: 'card' },
+  { key: 'edge_cases', label: 'Edge & Error', icon: 'alert', renderer: 'card', showCategory: true },
+  { key: 'integration_tests', label: 'Integration & Backend', icon: 'circuit', renderer: 'card' },
+  { key: 'regression_checklist', label: 'Regression Checklist', icon: 'history', renderer: 'checklist' },
 ]
 const SECTION_KEYS = SECTIONS.map((s) => s.key)
 
@@ -32,90 +31,8 @@ function buildStorageKey(testPlan, ticketKeys) {
   return `${PROGRESS_STORAGE_PREFIX}${ticketKeys.join('+')}:${fingerprint}`
 }
 
-function TestPlanSection({ section, items, checkedTests, onToggle }) {
-  const total = items.length
-  let checked = 0
-  for (let i = 0; i < total; i++) {
-    if (checkedTests.has(`${section.key}:${i}`)) checked++
-  }
-  return (
-    <div className="test-plan-group">
-      <h4>
-        <span>{section.label}</span>
-        <SectionProgress checked={checked} total={total} />
-      </h4>
-      {section.renderer === 'checklist' ? (
-        <ul className="checklist">
-          {items.map((item, i) => {
-            const isChecked = checkedTests.has(`${section.key}:${i}`)
-            const cbId = `tc-${section.key}-${i}`
-            return (
-              <li
-                key={i}
-                className={`checklist-item${isChecked ? ' checklist-item--checked' : ''}`}
-              >
-                <input
-                  type="checkbox"
-                  className="test-case-checkbox"
-                  id={cbId}
-                  checked={isChecked}
-                  onChange={() => onToggle(section.key, i)}
-                  aria-label="Mark regression item complete"
-                />
-                <label htmlFor={cbId} className="checklist-item-text">
-                  {typeof item === 'string' ? item : JSON.stringify(item)}
-                </label>
-              </li>
-            )
-          })}
-        </ul>
-      ) : (
-        items.map((test, i) =>
-          renderTestCase(test, i, {
-            showCategory: section.showCategory,
-            checked: checkedTests.has(`${section.key}:${i}`),
-            onToggle: () => onToggle(section.key, i),
-            checkboxId: `tc-${section.key}-${i}`,
-          })
-        )
-      )}
-    </div>
-  )
-}
-
-function SectionProgress({ checked, total }) {
-  if (total === 0) return null
-  const pct = total === 0 ? 0 : (checked / total) * 100
-  // Interpolate hue from red (0) → yellow (60) → green (120) as pct rises.
-  // Saturation a touch lower so the bar doesn't scream at the user.
-  const hue = Math.round((pct / 100) * 120)
-  const fillColor = `hsl(${hue}, 70%, 45%)`
-  return (
-    <span className="section-progress">
-      <span className="section-progress-bar">
-        <span
-          className="section-progress-fill"
-          style={{ width: `${pct}%`, background: fillColor }}
-        />
-      </span>
-      <span className="section-progress-count">
-        {checked}/{total}
-      </span>
-    </span>
-  )
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 /**
  * Render a string with backtick-delimited segments as inline <code> spans.
- * The LLM prompt produces backticks around LogQL queries, field names, and
- * configuration values; rendering them as <code> makes queries copyable and
- * lets long unbreakable tokens wrap inside the code span instead of pushing
- * the panel out of the frame.
- *
- * Unbalanced backticks fall through as literal text — the regex only matches
- * fully closed pairs.
  */
 function renderInline(value) {
   if (typeof value !== 'string') return JSON.stringify(value)
@@ -128,7 +45,18 @@ function renderInline(value) {
   while ((match = re.exec(value)) !== null) {
     if (match.index > cursor) parts.push(value.slice(cursor, match.index))
     parts.push(
-      <code key={key++} className="test-code">
+      <code
+        key={key++}
+        style={{
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11.5,
+          padding: '1px 5px',
+          background: 'var(--bg-input)',
+          border: '1px solid var(--line)',
+          borderRadius: 3,
+          color: 'var(--fg)',
+        }}
+      >
         {match[1]}
       </code>
     )
@@ -138,93 +66,197 @@ function renderInline(value) {
   return parts
 }
 
-function renderTestCase(test, index, opts = {}) {
-  const { showCategory = false, checked = false, onToggle, checkboxId } = opts
+function SectionChip({ checked, total }) {
+  if (total === 0) return null
+  const allDone = checked === total
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        height: 20,
+        padding: '0 8px',
+        borderRadius: 'var(--r-pill)',
+        background: allDone ? 'rgba(34,197,94,.12)' : 'var(--bg-surface)',
+        border: '1px solid',
+        borderColor: allDone ? 'rgba(34,197,94,.3)' : 'var(--line)',
+        color: allDone ? 'var(--success)' : 'var(--fg-muted)',
+        fontSize: 'var(--t-xs)',
+        fontWeight: 500,
+        fontVariantNumeric: 'tabular-nums',
+      }}
+    >
+      {allDone && <Icon name="check" size={10} />}
+      {checked} / {total}
+    </span>
+  )
+}
+
+function TestCard({ test, section, index, checked, onToggle, showCategory }) {
   const acIds = Array.isArray(test.covers_acs)
     ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
     : []
+  const checkboxId = `tc-${section.key}-${index}`
+
   return (
-    <div key={index} className={`test-case${checked ? ' test-case--checked' : ''}`}>
-      <h5>
-        {onToggle && (
-          <input
-            type="checkbox"
-            className="test-case-checkbox"
-            checked={checked}
-            onChange={onToggle}
-            id={checkboxId}
-            aria-label="Mark test case complete"
-          />
-        )}
-        <label htmlFor={checkboxId} className="test-case-title">
-          {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
-        </label>
-        {test.priority && (
-          <span className={`priority-badge priority-${test.priority}`}>
-            {test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'}{' '}
-            {test.priority}
-          </span>
-        )}
-        {showCategory && test.category && (
-          <span className="category-badge">{test.category}</span>
-        )}
-        {test.needs_manual_verification && (
-          <span
-            className="needs-verification-badge"
-            title="The AC element referenced in this test could not be verified in the PR diff or testID reference. See the UI Grounding Warnings panel above for details."
+    <div
+      className="card"
+      id={checkboxId}
+      style={{
+        borderColor: checked ? 'rgba(34,197,94,.3)' : undefined,
+        transition: 'border-color var(--d-fast)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-5)', padding: 'var(--s-6) var(--s-6) var(--s-5)' }}>
+        <span onClick={() => onToggle && onToggle()} style={{ flexShrink: 0, marginTop: 1 }}>
+          <span className="cbx" data-checked={checked ? 'true' : 'false'} role="checkbox" aria-checked={checked} />
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+            {test.priority && <Pri level={test.priority} />}
+            {acIds.map((id) => <ACTag key={id}>{id}</ACTag>)}
+            {showCategory && test.category && (
+              <span style={{ height: 18, padding: '0 6px', background: 'rgba(255,255,255,.04)', color: 'var(--fg-muted)', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center' }}>
+                {test.category}
+              </span>
+            )}
+            {test.needs_manual_verification && (
+              <span
+                title="The AC element referenced in this test could not be verified in the PR diff or testID reference."
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  height: 18,
+                  padding: '0 6px',
+                  background: 'rgba(245,158,11,.10)',
+                  border: '1px solid rgba(245,158,11,.35)',
+                  color: '#fcd34d',
+                  borderRadius: 3,
+                  fontSize: 10.5,
+                  fontWeight: 500,
+                }}
+              >
+                <Icon name="scan" size={10} />
+                Ungrounded UI ref
+              </span>
+            )}
+          </div>
+          <label
+            htmlFor={checkboxId}
+            style={{
+              fontSize: 'var(--t-md)',
+              fontWeight: 600,
+              color: checked ? 'var(--fg-muted)' : 'var(--fg-strong)',
+              textDecoration: checked ? 'line-through' : 'none',
+              textDecorationColor: 'var(--fg-faint)',
+              cursor: 'pointer',
+              display: 'block',
+            }}
           >
-            ⚠️ needs manual verification
-          </span>
+            {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
+          </label>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: '6px var(--s-6)', padding: '0 var(--s-6) var(--s-6)', alignItems: 'start' }}>
+        {test.preconditions && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Preconditions</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{renderInline(test.preconditions)}</div>
+          </>
         )}
-      </h5>
-      {test.preconditions && (
-        <div className="test-preconditions">
-          <strong>Preconditions:</strong> {renderInline(test.preconditions)}
-        </div>
-      )}
-      {test.steps && Array.isArray(test.steps) && test.steps.length > 0 && (
-        <div className="test-steps">
-          <strong>Steps:</strong>
-          <ol>
-            {test.steps.map((step, i) => (
-              <li key={i}>{renderInline(step)}</li>
-            ))}
-          </ol>
-        </div>
-      )}
-      {test.expected && (
-        <div className="test-expected">
-          <strong>Expected:</strong> {renderInline(test.expected)}
-        </div>
-      )}
-      {test.test_data && (
-        <div className="test-data">
-          <strong>Test Data:</strong> {renderInline(test.test_data)}
-        </div>
-      )}
-      {acIds.length > 0 && (
-        <div className="test-covers-acs">
-          <strong>Covers:</strong>
-          {acIds.map((id) => (
-            <span key={id} className="ac-tag" data-ac-id={id}>
-              {id}
-            </span>
-          ))}
-        </div>
-      )}
+        {test.steps && Array.isArray(test.steps) && test.steps.length > 0 && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Steps</span>
+            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--t-sm)', lineHeight: '20px', color: 'var(--fg)' }}>
+              {test.steps.map((s, i) => <li key={i}>{renderInline(s)}</li>)}
+            </ol>
+          </>
+        )}
+        {test.expected && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Expected</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>{renderInline(test.expected)}</div>
+          </>
+        )}
+        {test.test_data && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Test data</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{renderInline(test.test_data)}</div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
 
-/**
- * Coverage summary for multi-ticket plans. Shows X/Y per ticket and lists any
- * uncovered AC IDs so the user can spot gaps before posting.
- */
+function ChecklistSection({ section, items, checkedTests, onToggle }) {
+  const c = items.reduce((acc, _, i) => acc + (checkedTests.has(`${section.key}:${i}`) ? 1 : 0), 0)
+  return (
+    <section id={`sect-${section.key}`} style={{ marginTop: 'var(--s-8)' }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: 'var(--s-4)' }}>
+        <Icon name={section.icon} size={16} style={{ color: 'var(--accent)' }} />
+        <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-strong)' }}>{section.label}</h2>
+        <SectionChip checked={c} total={items.length} />
+        <span style={{ flex: 1 }} />
+        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Plain checklist · no metadata</span>
+      </header>
+      <div className="card" style={{ padding: 'var(--s-5) var(--s-6)' }}>
+        {items.map((item, i) => {
+          const id = `${section.key}:${i}`
+          const isChecked = checkedTests.has(id)
+          return (
+            <div key={i} style={{ display: 'flex', gap: 'var(--s-4)', padding: '6px 0', borderBottom: i < items.length - 1 ? '1px solid var(--divider)' : 'none', alignItems: 'center' }}>
+              <Cbx checked={isChecked} onChange={() => onToggle(section.key, i)} />
+              <span
+                style={{
+                  flex: 1,
+                  fontSize: 'var(--t-sm)',
+                  color: isChecked ? 'var(--fg-muted)' : 'var(--fg)',
+                  textDecoration: isChecked ? 'line-through' : 'none',
+                  textDecorationColor: 'var(--fg-faint)',
+                }}
+              >
+                {typeof item === 'string' ? item : JSON.stringify(item)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function CardSection({ section, items, checkedTests, onToggle }) {
+  const c = items.reduce((acc, _, i) => acc + (checkedTests.has(`${section.key}:${i}`) ? 1 : 0), 0)
+  return (
+    <section id={`sect-${section.key}`} style={{ marginTop: 'var(--s-8)' }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: 'var(--s-4)' }}>
+        <Icon name={section.icon} size={16} style={{ color: 'var(--accent)' }} />
+        <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-strong)' }}>{section.label}</h2>
+        <SectionChip checked={c} total={items.length} />
+      </header>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+        {items.map((test, i) => (
+          <TestCard
+            key={i}
+            test={test}
+            section={section}
+            index={i}
+            checked={checkedTests.has(`${section.key}:${i}`)}
+            onToggle={() => onToggle(section.key, i)}
+            showCategory={section.showCategory}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function AcCoveragePanel({ coverage }) {
   if (!coverage || !coverage.tickets) return null
-  // Keep tickets where there's *something* to show: real ACs, or a supersede
-  // that needs explaining (a ticket whose only AC was overridden still has 0
-  // total but should still appear so the user sees why it dropped off).
   const entries = Object.entries(coverage.tickets).filter(
     ([, info]) => info && (info.total > 0 || (info.superseded?.length ?? 0) > 0)
   )
@@ -233,77 +265,65 @@ function AcCoveragePanel({ coverage }) {
   const uncoveredTotal = coverage.uncovered_total ?? 0
   const invalidIds = Array.isArray(coverage.invalid_ids) ? coverage.invalid_ids : []
   const superseded = Array.isArray(coverage.superseded_acs) ? coverage.superseded_acs : []
-  const status = uncoveredTotal === 0 && invalidIds.length === 0 ? 'complete' : 'gaps'
 
   return (
-    <div className={`ac-coverage-panel ac-coverage-panel--${status}`}>
-      <div className="ac-coverage-header">
-        <strong>Acceptance criteria coverage</strong>
-        <span className="ac-coverage-summary">
-          {uncoveredTotal === 0
-            ? '✅ All ACs covered'
-            : `⚠️ ${uncoveredTotal} AC${uncoveredTotal === 1 ? '' : 's'} uncovered`}
-        </span>
+    <div className="card" style={{ padding: 'var(--s-5) var(--s-6)', marginBottom: 'var(--s-5)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: 'var(--s-4)' }}>
+        <Icon name="shield" size={14} style={{ color: 'var(--accent)' }} />
+        <span style={{ fontSize: 'var(--t-md)', fontWeight: 600, color: 'var(--fg-strong)' }}>Acceptance criteria coverage</span>
+        <span style={{ flex: 1 }} />
+        {uncoveredTotal === 0 ? (
+          <Chip dot dotColor="var(--success)">All ACs covered</Chip>
+        ) : (
+          <Chip dot dotColor="var(--warning)">{uncoveredTotal} AC{uncoveredTotal === 1 ? '' : 's'} uncovered</Chip>
+        )}
       </div>
+
       {invalidIds.length > 0 && (
-        <div
-          className="ac-coverage-invalid"
-          title="The LLM tagged these IDs but they don't exist in any ticket. They were dropped from the test cases."
-        >
-          <strong>⚠️ Model invented {invalidIds.length} unknown AC ID
-            {invalidIds.length === 1 ? '' : 's'}:</strong>{' '}
-          {invalidIds.map((id) => (
-            <span key={id} className="ac-tag ac-tag--invalid">{id}</span>
-          ))}
+        <div style={{ marginBottom: 'var(--s-4)' }}>
+          <Alert tone="danger" title={`Model invented ${invalidIds.length} unknown AC ID${invalidIds.length === 1 ? '' : 's'}`}>
+            {invalidIds.map((id) => <span key={id} style={{ display: 'inline-block', marginRight: 6 }}><ACTag>{id}</ACTag></span>)}
+            <div style={{ marginTop: 4, fontSize: 'var(--t-xs)' }}>These were dropped from the test cases.</div>
+          </Alert>
         </div>
       )}
+
       {superseded.length > 0 && (
-        <div
-          className="ac-coverage-superseded"
-          title="These ACs from older tickets were overridden by a newer ticket's AC about the same behaviour. The newer one is what the test plan verifies."
-        >
-          <strong>🔁 Newer ticket overrides {superseded.length} older AC
-            {superseded.length === 1 ? '' : 's'}:</strong>
-          <ul className="ac-coverage-superseded-list">
-            {superseded.map((s) => (
-              <li key={s.loser_id}>
-                <span className="ac-tag ac-tag--superseded">{s.loser_id}</span>
-                <span className="ac-coverage-supersede-arrow">→</span>
-                <span className="ac-tag">{s.winner_id}</span>
-                {s.reason && (
-                  <span className="ac-coverage-supersede-reason" title={s.reason}>
-                    {s.reason}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
+        <div style={{ marginBottom: 'var(--s-4)' }}>
+          <Alert tone="info" title={`Newer ticket overrides ${superseded.length} older AC${superseded.length === 1 ? '' : 's'}`}>
+            <ul style={{ margin: 4, paddingLeft: 18 }}>
+              {superseded.map((s) => (
+                <li key={s.loser_id} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <ACTag>{s.loser_id}</ACTag>
+                  <Icon name="arrow-right" size={11} style={{ color: 'var(--fg-faint)' }} />
+                  <ACTag>{s.winner_id}</ACTag>
+                  {s.reason && <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>{s.reason}</span>}
+                </li>
+              ))}
+            </ul>
+          </Alert>
         </div>
       )}
-      <ul className="ac-coverage-tickets">
+
+      <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
         {entries.map(([key, info]) => {
           const covered = info.covered?.length ?? 0
           const total = info.total ?? 0
           const allCovered = covered === total
           return (
-            <li key={key} className="ac-coverage-ticket">
-              <span className="ac-coverage-ticket-key">{key}</span>
-              <span
-                className={`ac-coverage-ratio ${allCovered ? 'ac-coverage-ratio--ok' : 'ac-coverage-ratio--gap'}`}
-              >
-                {covered}/{total} {allCovered ? '✅' : '⚠️'}
-              </span>
+            <li key={key}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--accent)', minWidth: 80 }}>{key}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)', color: allCovered ? 'var(--success)' : 'var(--warning)' }}>
+                  {covered}/{total}
+                </span>
+              </div>
               {info.uncovered && info.uncovered.length > 0 && (
-                <ul className="ac-coverage-uncovered">
+                <ul style={{ margin: '6px 0 0 88px', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {info.uncovered.map((u) => (
-                    <li key={u.id}>
-                      <span className="ac-tag ac-tag--uncovered">{u.id}</span>
-                      <span
-                        className="ac-coverage-uncovered-text"
-                        title={u.text}
-                      >
-                        {u.text}
-                      </span>
+                    <li key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+                      <ACTag>{u.id}</ACTag>
+                      <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }} title={u.text}>{u.text}</span>
                     </li>
                   ))}
                 </ul>
@@ -319,42 +339,31 @@ function AcCoveragePanel({ coverage }) {
 function GroundingWarningsPanel({ warnings }) {
   if (!Array.isArray(warnings) || warnings.length === 0) return null
   return (
-    <div
-      className="grounding-warnings-panel"
-      title="The model wrote tests for these UI elements but couldn't verify they exist in the PR diff or testID reference. Confirm before running the tests."
-    >
-      <strong>
-        🔍 {warnings.length} UI element{warnings.length === 1 ? '' : 's'} not
-        found in code — verify before testing:
-      </strong>
-      <ul className="grounding-warnings-list">
-        {warnings.map((w, idx) => (
-          <li key={`${w.ac_id}-${idx}`}>
-            <span className="ac-tag ac-tag--grounding">{w.ac_id}</span>
-            <span className="grounding-warning-element">{w.missing_element}</span>
-            <span className="grounding-warning-explanation">{w.explanation}</span>
-          </li>
-        ))}
-      </ul>
+    <div style={{ marginBottom: 'var(--s-5)' }}>
+      <Alert tone="warning" title={`${warnings.length} UI element${warnings.length === 1 ? '' : 's'} not found in code — verify before testing`}>
+        <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {warnings.map((w, idx) => (
+            <li key={`${w.ac_id}-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
+              <ACTag>{w.ac_id}</ACTag>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)', color: 'var(--fg)' }}>{w.missing_element}</span>
+              <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }}>{w.explanation}</span>
+            </li>
+          ))}
+        </ul>
+      </Alert>
     </div>
   )
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
-
 function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
   const isMulti = !!(ticketsData && ticketsData.length > 1)
 
-  // Multi-ticket: track selected tickets and per-ticket posting state
   const allKeys = isMulti ? ticketsData.map((t) => t.key) : []
   const [selectedKeys, setSelectedKeys] = useState(() => new Set(allKeys))
-  const [postingStates, setPostingStates] = useState({}) // key → 'posting' | 'done' | 'error'
+  const [postingStates, setPostingStates] = useState({})
 
-  // Single-ticket posting state (backward compat)
   const [isPosting, setIsPosting] = useState(false)
 
-  // ── Per-test checkmark state (visual only, persisted to localStorage) ──────
-  // Key format: `${section}:${index}` (e.g. "happy_path:0", "regression_checklist:2")
   const ticketKeysJoined = isMulti
     ? allKeys.join('+')
     : ticketData?.key || ''
@@ -362,6 +371,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
     if (!ticketKeysJoined) return null
     return buildStorageKey(testPlan, ticketKeysJoined.split('+'))
   }, [testPlan, ticketKeysJoined])
+
   const [checkedTests, setCheckedTests] = useState(() => {
     if (!storageKey || typeof window === 'undefined') return new Set()
     try {
@@ -374,7 +384,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
     }
   })
 
-  // Reload checks when the plan identity changes (e.g. user generates a new plan).
   useEffect(() => {
     if (!storageKey || typeof window === 'undefined') {
       setCheckedTests(new Set())
@@ -388,7 +397,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
     }
   }, [storageKey])
 
-  // Persist on every change.
   useEffect(() => {
     if (!storageKey || typeof window === 'undefined') return
     try {
@@ -398,7 +406,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
         window.localStorage.setItem(storageKey, JSON.stringify([...checkedTests]))
       }
     } catch {
-      // localStorage full or disabled — silently skip; UI still works in-memory
+      // localStorage full or disabled — silently skip
     }
   }, [storageKey, checkedTests])
 
@@ -420,8 +428,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
     return n
   }
 
-  // Inline notifications (replaces alert())
-  const [postNotification, setPostNotification] = useState(null) // { type: 'success'|'error', message }
+  const [postNotification, setPostNotification] = useState(null)
   const [copyNotification, setCopyNotification] = useState(null)
   const postTimerRef = useRef(null)
   const copyTimerRef = useRef(null)
@@ -432,22 +439,15 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
     timerRef.current = setTimeout(() => setter(null), type === 'success' ? 3000 : 6000)
   }
 
-  if (!testPlan) {
-    return <div className="ticket-section">No test plan data available</div>
-  }
+  if (!testPlan) return null
 
-  console.log('TestPlanDisplay - testPlan:', testPlan)
-
-  // ── Export helpers ──────────────────────────────────────────────────────────
-
-  // For markdown/download: use first available ticket context
   const primaryTicketData = ticketData || (ticketsData && ticketsData[0])
 
   const handleCopyMarkdown = () => {
     const markdown = formatTestPlanAsMarkdown(testPlan, primaryTicketData)
     navigator.clipboard
       .writeText(markdown)
-      .then(() => showNotification(setCopyNotification, copyTimerRef, 'success', 'Copied!'))
+      .then(() => showNotification(setCopyNotification, copyTimerRef, 'success', 'Copied'))
       .catch(() => showNotification(setCopyNotification, copyTimerRef, 'error', 'Failed to copy'))
   }
 
@@ -457,17 +457,14 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    const filename = isMulti
+    a.download = isMulti
       ? `test-plan-${allKeys.join('-')}.md`
       : `test-plan-${primaryTicketData.key}.md`
-    a.download = filename
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   }
-
-  // ── Single-ticket post (unchanged behaviour) ────────────────────────────────
 
   const handlePostToJira = async () => {
     setIsPosting(true)
@@ -490,16 +487,12 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
       const result = await response.json()
       const action = result.updated ? 'updated' : 'posted'
       showNotification(setPostNotification, postTimerRef, 'success', `Test plan ${action} on ${ticketData.key}`)
-      console.log('Comment ID:', result.comment_id, 'Updated:', result.updated)
     } catch (error) {
-      console.error('Error posting to Jira:', error)
       showNotification(setPostNotification, postTimerRef, 'error', error.message)
     } finally {
       setIsPosting(false)
     }
   }
-
-  // ── Multi-ticket: post to a single key ─────────────────────────────────────
 
   const postToKey = async (issueKey, otherKeys = []) => {
     setPostingStates((prev) => ({ ...prev, [issueKey]: 'posting' }))
@@ -519,12 +512,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
         throw new Error(errorData.detail || 'Failed to post to Jira')
       }
 
-      const result = await response.json()
-      const action = result.updated ? 'updated' : 'posted'
-      console.log(`Comment ${action} on ${issueKey}, ID:`, result.comment_id)
       setPostingStates((prev) => ({ ...prev, [issueKey]: 'done' }))
     } catch (error) {
-      console.error(`Error posting to ${issueKey}:`, error)
       setPostingStates((prev) => ({ ...prev, [issueKey]: 'error' }))
       showNotification(setPostNotification, postTimerRef, 'error', `${issueKey}: ${error.message}`)
     }
@@ -540,7 +529,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
       const otherKeys = keys.filter((k) => k !== key)
       await postToKey(key, otherKeys)
     }
-    // Show success if no errors were encountered
     setPostingStates((prev) => {
       const anyError = keys.some((k) => prev[k] === 'error')
       if (!anyError) {
@@ -553,29 +541,123 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
   const toggleKeySelection = (key) => {
     setSelectedKeys((prev) => {
       const next = new Set(prev)
-      if (next.has(key)) {
-        next.delete(key)
-      } else {
-        next.add(key)
-      }
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
 
   const isAnyPosting = Object.values(postingStates).includes('posting')
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // Overall progress
+  const totals = SECTION_KEYS.map((k) => sectionLength(testPlan, k))
+  const totalAll = totals.reduce((a, b) => a + b, 0)
+  const checkedAll = SECTION_KEYS.reduce(
+    (acc, k, i) => acc + countSectionChecks(k, totals[i]),
+    0
+  )
+  const pctAll = totalAll === 0 ? 0 : Math.round((checkedAll / totalAll) * 100)
 
   return (
-    <div className="ticket-section test-plan-section">
-      <h3>
-        Generated Test Plan
-        {isMulti && (
-          <span className="multi-ticket-badge">
-            {allKeys.join(' + ')}
-          </span>
-        )}
-      </h3>
+    <div style={{ marginTop: 'var(--s-7)' }}>
+      {/* Sticky progress */}
+      {totalAll > 0 && (
+        <div
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 8,
+            background: 'rgba(8,9,11,.85)',
+            backdropFilter: 'blur(10px)',
+            WebkitBackdropFilter: 'blur(10px)',
+            borderBottom: '1px solid var(--line)',
+            margin: '0 calc(-1 * var(--s-8))',
+            padding: '10px var(--s-8)',
+            marginBottom: 'var(--s-5)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-5)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+              <Icon name="beaker" size={14} style={{ color: 'var(--accent)' }} />
+              <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)' }}>
+                Test plan{isMulti ? '' : ` · ${ticketData?.key || ''}`}
+              </span>
+              {isMulti && (
+                <Chip size="sm">{allKeys.join(' + ')}</Chip>
+              )}
+            </div>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 'var(--s-4)' }}>
+              <div style={{ display: 'flex', gap: 2, flex: 1, height: 6, borderRadius: 999, overflow: 'hidden', background: 'var(--bg-input)' }}>
+                {SECTIONS.map((s, i) => {
+                  const t = totals[i]
+                  if (t === 0) return null
+                  const c = countSectionChecks(s.key, t)
+                  const segPct = (c / t) * 100
+                  const widthPct = (t / totalAll) * 100
+                  return (
+                    <div key={s.key} style={{ width: widthPct + '%', height: '100%', background: 'var(--bg-input)' }} title={`${s.label} ${c}/${t}`}>
+                      <div style={{ width: segPct + '%', height: '100%', background: 'var(--accent)', transition: 'width var(--d-base) var(--ease-out)' }} />
+                    </div>
+                  )
+                })}
+              </div>
+              <span className="tnum" style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)', minWidth: 56, textAlign: 'right' }}>
+                {checkedAll} / {totalAll}
+              </span>
+              <span className="tnum" style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-subtle)', minWidth: 32, textAlign: 'right' }}>{pctAll}%</span>
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {SECTIONS.map((s, i) => {
+                const t = totals[i]
+                if (t === 0) return null
+                const c = countSectionChecks(s.key, t)
+                const ok = c === t
+                return (
+                  <a
+                    key={s.key}
+                    href={`#sect-${s.key}`}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      padding: '2px 8px',
+                      borderRadius: 'var(--r-pill)',
+                      background: ok ? 'rgba(34,197,94,.12)' : 'var(--bg-surface)',
+                      border: '1px solid',
+                      borderColor: ok ? 'rgba(34,197,94,.3)' : 'var(--line)',
+                      color: ok ? 'var(--success)' : 'var(--fg-muted)',
+                      fontSize: 'var(--t-xs)',
+                      fontWeight: 500,
+                      textDecoration: 'none',
+                    }}
+                  >
+                    <span className="tnum">{c}/{t}</span>
+                    <span>{s.label}</span>
+                  </a>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Plan banner */}
+      <div className="card" style={{ padding: 'var(--s-5) var(--s-6)', marginBottom: 'var(--s-6)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-4)' }}>
+          <div style={{ width: 32, height: 32, borderRadius: 'var(--r-md)', background: 'rgba(59,130,246,.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+            <Icon name="beaker" size={16} style={{ color: 'var(--accent)' }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--s-3)' }}>
+              <span style={{ fontSize: 'var(--t-md)', fontWeight: 600, color: 'var(--fg-strong)' }}>Generated test plan</span>
+              {isMulti && <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>· {allKeys.join(' + ')}</span>}
+            </div>
+            <div style={{ marginTop: 2, fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+              {totalAll} test cases
+            </div>
+          </div>
+        </div>
+      </div>
 
       {isMulti && testPlan.ac_coverage && (
         <AcCoveragePanel coverage={testPlan.ac_coverage} />
@@ -583,26 +665,22 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
 
       <GroundingWarningsPanel warnings={testPlan.grounding_warnings} />
 
-      {(() => {
-        const totals = SECTION_KEYS.map((k) => sectionLength(testPlan, k))
-        const total = totals.reduce((a, b) => a + b, 0)
-        if (total === 0) return null
-        const checked = SECTION_KEYS.reduce(
-          (acc, k, i) => acc + countSectionChecks(k, totals[i]),
-          0
-        )
-        return (
-          <div className="overall-progress-sticky">
-            <SectionProgress checked={checked} total={total} />
-          </div>
-        )
-      })()}
-
       {SECTIONS.map((section) => {
         const items = testPlan[section.key]
         if (!Array.isArray(items) || items.length === 0) return null
+        if (section.renderer === 'checklist') {
+          return (
+            <ChecklistSection
+              key={section.key}
+              section={section}
+              items={items}
+              checkedTests={checkedTests}
+              onToggle={toggleTest}
+            />
+          )
+        }
         return (
-          <TestPlanSection
+          <CardSection
             key={section.key}
             section={section}
             items={items}
@@ -612,82 +690,86 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
         )
       })}
 
-      <div className="test-plan-actions">
-        {/* ── Jira post row ── */}
-        <div className="actions-row actions-row--jira">
-          {isMulti ? (
-            <div className="multi-post-panel">
-              <span className="multi-post-label">Post to Jira:</span>
-              <div className="multi-post-options">
-                {ticketsData.map((td) => {
-                  const state = postingStates[td.key]
-                  const checked = selectedKeys.has(td.key)
-                  return (
-                    <label key={td.key} className="multi-post-option">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleKeySelection(td.key)}
-                        disabled={isAnyPosting || state === 'done'}
-                      />
-                      <span className="multi-post-key">{td.key}</span>
-                      {state === 'posting' && <span className="post-state posting">Posting…</span>}
-                      {state === 'done' && <span className="post-state done">✅ Posted</span>}
-                      {state === 'error' && <span className="post-state error">❌ Failed</span>}
-                    </label>
-                  )
-                })}
-              </div>
-              <button
-                type="button"
-                onClick={handlePostSelected}
-                className={`btn-post-jira${postNotification ? ` btn-feedback--${postNotification.type}` : ''}`}
-                disabled={isAnyPosting || selectedKeys.size === 0}
-              >
-                {isAnyPosting
-                  ? 'Posting…'
-                  : postNotification?.type === 'success'
-                  ? `✓ ${postNotification.message}`
-                  : postNotification?.type === 'error'
-                  ? `✗ ${postNotification.message}`
-                  : `Post to Selected (${selectedKeys.size})`}
-              </button>
+      {/* Export & post bar */}
+      <div className="card" style={{ marginTop: 'var(--s-9)', padding: 'var(--s-6)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-5)', flexWrap: 'wrap' }}>
+          <Icon name="upload" size={14} style={{ color: 'var(--fg-muted)' }} />
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)' }}>Export this plan</div>
+            <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+              Posting to Jira updates the existing bot comment instead of duplicating.
             </div>
-          ) : (
-            <button
-              type="button"
-              onClick={handlePostToJira}
-              className={`btn-post-jira${postNotification ? ` btn-feedback--${postNotification.type}` : ''}`}
-              disabled={isPosting}
-            >
-              {isPosting
-                ? 'Posting...'
-                : postNotification?.type === 'success'
-                ? `✓ ${postNotification.message}`
-                : postNotification?.type === 'error'
-                ? `✗ ${postNotification.message}`
-                : 'Post to Jira'}
-            </button>
-          )}
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <Btn variant="ghost" icon="copy" onClick={handleCopyMarkdown}>
+              {copyNotification?.type === 'success' ? `✓ ${copyNotification.message}` : 'Copy markdown'}
+            </Btn>
+            <Btn variant="ghost" icon="download" onClick={handleDownloadMarkdown}>
+              Download .md
+            </Btn>
+            <span style={{ width: 1, height: 18, background: 'var(--line-strong)', alignSelf: 'center', margin: '0 4px' }} />
+            {!isMulti && (
+              <Btn
+                variant="primary"
+                icon="send"
+                onClick={handlePostToJira}
+                disabled={isPosting}
+                loading={isPosting}
+              >
+                {postNotification?.type === 'success'
+                  ? `✓ ${postNotification.message}`
+                  : isPosting
+                  ? 'Posting…'
+                  : 'Post to Jira'}
+              </Btn>
+            )}
+          </div>
         </div>
 
-        {/* ── Export row ── */}
-        <div className="actions-row actions-row--export">
-          <button
-            type="button"
-            onClick={handleCopyMarkdown}
-            className={`btn-copy-markdown${copyNotification ? ` btn-feedback--${copyNotification.type}` : ''}`}
-          >
-            {copyNotification?.type === 'success'
-              ? `✓ ${copyNotification.message}`
-              : copyNotification?.type === 'error'
-              ? `✗ ${copyNotification.message}`
-              : 'Copy as Markdown'}
-          </button>
-          <button type="button" onClick={handleDownloadMarkdown} className="btn-download">
-            Download as .md
-          </button>
-        </div>
+        {isMulti && (
+          <div style={{ marginTop: 'var(--s-5)', paddingTop: 'var(--s-5)', borderTop: '1px solid var(--divider)' }}>
+            <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: '.04em', fontWeight: 600, marginBottom: 'var(--s-3)' }}>
+              Post to selected tickets
+            </div>
+            <div style={{ display: 'flex', gap: 'var(--s-4)', flexWrap: 'wrap', alignItems: 'center' }}>
+              {ticketsData.map((td) => {
+                const state = postingStates[td.key]
+                const checked = selectedKeys.has(td.key)
+                return (
+                  <label key={td.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--s-3)', cursor: 'pointer' }}>
+                    <span
+                      className="cbx"
+                      data-checked={checked ? 'true' : 'false'}
+                      role="checkbox"
+                      aria-checked={checked}
+                      onClick={() => !isAnyPosting && state !== 'done' && toggleKeySelection(td.key)}
+                    />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>{td.key}</span>
+                    {state === 'posting' && <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>Posting…</span>}
+                    {state === 'done' && <Chip size="sm" dot dotColor="var(--success)">Posted</Chip>}
+                    {state === 'error' && <Chip size="sm" dot dotColor="var(--danger)">Failed</Chip>}
+                  </label>
+                )
+              })}
+              <span style={{ flex: 1 }} />
+              <Btn
+                variant="primary"
+                icon="send"
+                onClick={handlePostSelected}
+                disabled={isAnyPosting || selectedKeys.size === 0}
+                loading={isAnyPosting}
+              >
+                {isAnyPosting ? 'Posting…' : `Post to selected (${selectedKeys.size})`}
+              </Btn>
+            </div>
+          </div>
+        )}
+
+        {postNotification && postNotification.type === 'error' && (
+          <div style={{ marginTop: 'var(--s-4)' }}>
+            <Alert tone="danger" title="Post failed">{postNotification.message}</Alert>
+          </div>
+        )}
       </div>
     </div>
   )

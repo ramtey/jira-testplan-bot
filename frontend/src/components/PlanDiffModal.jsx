@@ -1,16 +1,13 @@
 /**
  * Modal that renders a unified line diff between two test plans.
- *
- * Both plans are formatted as markdown via formatTestPlanAsMarkdown so the diff
- * is human-readable rather than a JSON blob. Inputs are the *response shape*
- * (happy_path / edge_cases / integration_tests / regression_checklist) — not
- * the persisted JSON-string body.
  */
 
 import { useEffect, useMemo, useState } from 'react'
 import { diffLines } from 'diff'
 import { formatTestPlanAsMarkdown } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
+import Icon from './Icon'
+import { Alert } from './ui'
 
 function parsePlanBody(rawBody) {
   if (!rawBody) return null
@@ -28,9 +25,6 @@ async function fetchPlan(planId) {
 }
 
 export default function PlanDiffModal({ rightPlan, ticketData, onClose }) {
-  // rightPlan is the historical row being inspected: { plan_id, version, previous_plan_id, ... }
-  // The parent re-mounts this component (via `key`) when rightPlan changes, so
-  // initial state below is correct on every open and the effect only fires once.
   const [leftRaw, setLeftRaw] = useState(null)
   const [rightRaw, setRightRaw] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -79,42 +73,78 @@ export default function PlanDiffModal({ rightPlan, ticketData, onClose }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>
-            Diff — v{rightPlan.version}
-            {rightPlan.previous_plan_id ? ` vs v${rightPlan.version - 1}` : ' (no prior version)'}
-          </h3>
-          <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
-            ✕
+      <div
+        className="modal"
+        style={{ width: 'min(1040px, calc(100vw - 64px))' }}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="modal-head">
+          <Icon name="split" size={14} style={{ color: 'var(--accent)' }} />
+          <div style={{ flex: 1 }}>
+            <div className="ttl">
+              Diff · v{rightPlan.version}
+              {rightPlan.previous_plan_id ? ` vs v${rightPlan.version - 1}` : ' (no prior version)'}
+            </div>
+          </div>
+          <button type="button" className="hbtn" onClick={onClose} aria-label="Close">
+            <Icon name="x" />
           </button>
         </div>
 
         <div className="modal-body">
-          {loading && <p>Loading…</p>}
-          {error && <p className="alert alert-error">{error}</p>}
+          {loading && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', color: 'var(--fg-muted)' }}>
+              <span className="spin" />Loading…
+            </div>
+          )}
+          {error && <Alert tone="danger" title="Failed to load diff">{error}</Alert>}
           {!loading && !error && !rightPlan.previous_plan_id && (
-            <p className="modal-note">
-              This is the first version for this ticket — there's no earlier plan to diff against.
-              Showing the full plan as added content.
-            </p>
+            <div style={{ marginBottom: 'var(--s-4)' }}>
+              <Alert tone="info" title="No prior version">
+                This is the first version for this ticket. Showing the full plan as added content.
+              </Alert>
+            </div>
           )}
           {!loading && !error && diffParts && (
-            <pre className="diff-pre">
+            <pre
+              style={{
+                margin: 0,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 11.5,
+                lineHeight: '17px',
+                color: 'var(--fg)',
+                background: 'var(--bg-input)',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--r-sm)',
+                padding: 'var(--s-4) var(--s-5)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                overflowX: 'auto',
+              }}
+            >
               {diffParts.map((part, i) => {
-                const cls = part.added
-                  ? 'diff-added'
-                  : part.removed
-                  ? 'diff-removed'
-                  : 'diff-context'
-                const prefix = part.added ? '+ ' : part.removed ? '- ' : '  '
                 const lines = part.value.split('\n')
                 if (lines[lines.length - 1] === '') lines.pop()
                 return lines.map((line, j) => (
-                  <span key={`${i}-${j}`} className={cls}>
-                    {prefix}
-                    {line}
-                    {'\n'}
+                  <span
+                    key={`${i}-${j}`}
+                    style={{
+                      display: 'block',
+                      background: part.added
+                        ? 'rgba(34,197,94,.10)'
+                        : part.removed
+                        ? 'rgba(239,68,68,.10)'
+                        : 'transparent',
+                      color: part.added
+                        ? 'var(--success)'
+                        : part.removed
+                        ? 'var(--danger)'
+                        : 'var(--fg)',
+                    }}
+                  >
+                    {part.added ? '+ ' : part.removed ? '- ' : '  '}{line}
                   </span>
                 ))
               })}

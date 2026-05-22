@@ -2,6 +2,8 @@
  * Buttons for test plan generation and bug analysis actions.
  */
 
+import { Btn, Prog } from './ui'
+
 function ActionButtons({
   onGenerateTestPlan,
   onStopGeneration,
@@ -14,52 +16,52 @@ function ActionButtons({
   const isBusy = generatingPlan || analyzingBug
 
   return (
-    <div className="action-buttons">
-      <div className="action-buttons-row">
-        {/* Test Plan */}
+    <div style={{ marginTop: 'var(--s-6)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
         {!generatingPlan ? (
-          <button
-            type="button"
+          <Btn
+            variant="primary"
+            icon="beaker"
             onClick={onGenerateTestPlan}
-            className="btn-generate"
             disabled={analyzingBug}
           >
-            Generate Test Plan
-          </button>
+            Generate test plan
+          </Btn>
         ) : (
-          <button type="button" onClick={onStopGeneration} className="btn-stop">
-            <span className="spinner"></span>
-            Stop Generation
-          </button>
+          <Btn variant="danger-soft" icon="stop" onClick={onStopGeneration}>
+            Stop generation
+          </Btn>
         )}
 
-        {/* Bug Lens — only shown for Bug issue types */}
-        {showBugLens && (!analyzingBug ? (
-          <button
-            type="button"
-            onClick={onAnalyzeBug}
-            className="btn-generate btn-bug-lens"
-            disabled={isBusy}
-          >
-            Analyze Bug
-          </button>
-        ) : (
-          <button type="button" onClick={onStopBugAnalysis} className="btn-stop btn-stop-bug">
-            <span className="spinner"></span>
-            Stop Analysis
-          </button>
-        ))}
+        {showBugLens && (
+          !analyzingBug ? (
+            <Btn
+              variant="secondary"
+              icon="scan"
+              onClick={onAnalyzeBug}
+              disabled={isBusy}
+            >
+              Analyze with Bug Lens
+            </Btn>
+          ) : (
+            <Btn variant="danger-soft" icon="stop" onClick={onStopBugAnalysis}>
+              Stop analysis
+            </Btn>
+          )
+        )}
+
+        {isBusy && (
+          <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-sm)', marginLeft: 'var(--s-3)', display: 'inline-flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+            <span className="spin" style={{ color: 'var(--accent)' }} />
+            {generatingPlan ? 'Generating test plan…' : 'Analyzing bug…'}
+          </span>
+        )}
       </div>
 
-      {generatingPlan && (
-        <p className="generation-message">
-          Generating test plan<span className="dots"></span>
-        </p>
-      )}
-      {analyzingBug && (
-        <p className="generation-message">
-          Analyzing bug<span className="dots"></span>
-        </p>
+      {isBusy && (
+        <div style={{ marginTop: 'var(--s-5)' }}>
+          <Prog indeterminate />
+        </div>
       )}
     </div>
   )

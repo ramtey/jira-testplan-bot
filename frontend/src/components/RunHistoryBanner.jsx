@@ -1,14 +1,12 @@
 /**
  * "We've analyzed this ticket before" banner.
- *
- * Shows a collapsed summary when there are prior test-plan runs for the current
- * ticket. Expands to a list of versions with View (load into the active plan)
- * and Diff (open PlanDiffModal) actions.
  */
 
 import { useMemo, useState } from 'react'
 import PlanDiffModal from './PlanDiffModal'
 import { API_BASE_URL } from '../config'
+import Icon from './Icon'
+import { Btn, Alert } from './ui'
 
 function formatRelative(iso) {
   if (!iso) return ''
@@ -34,7 +32,7 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
   const latest = runs[0]
   const summary = useMemo(() => {
     if (!latest) return ''
-    return `Last test plan generated ${formatRelative(latest.created_at)} (v${latest.version})`
+    return `${formatRelative(latest.created_at)} · v${latest.version} · ${latest.case_count} cases`
   }, [latest])
 
   if (!runs || runs.length === 0) return null
@@ -65,65 +63,72 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
   }
 
   return (
-    <div className="run-history-banner">
-      <div className="run-history-summary">
-        <span className="run-history-icon" aria-hidden="true">🕘</span>
-        <span className="run-history-text">
-          <strong>{runs.length}</strong> prior run{runs.length === 1 ? '' : 's'} for this ticket — {summary}
+    <div className="card" style={{ marginTop: 'var(--s-5)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-4)', padding: '10px var(--s-5)' }}>
+        <Icon name="history" size={14} style={{ color: 'var(--accent)' }} />
+        <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)' }}>
+          v{latest.version}
         </span>
-        <button
-          type="button"
-          className="run-history-toggle"
-          onClick={() => setExpanded((v) => !v)}
-        >
-          {expanded ? 'Hide' : 'Show history'}
-        </button>
+        <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--t-sm)' }}>· {summary}</span>
+        <span style={{ flex: 1 }} />
+        <Btn variant="ghost" size="sm" iconRight={expanded ? 'chevron-up' : 'chevron-down'} onClick={() => setExpanded((v) => !v)}>
+          {runs.length} version{runs.length === 1 ? '' : 's'}
+        </Btn>
       </div>
 
-      {error && <div className="alert alert-error">{error}</div>}
+      {error && (
+        <div style={{ padding: '0 var(--s-5) var(--s-4)' }}>
+          <Alert tone="danger" title="Failed to load">{error}</Alert>
+        </div>
+      )}
 
       {expanded && (
-        <ul className="run-history-list">
-          {runs.map((run) => {
+        <div style={{ borderTop: '1px solid var(--divider)' }}>
+          {runs.map((run, i) => {
             const isMulti = run.run_type === 'test_plan_multi'
             const otherKeys = (run.ticket_keys || []).filter((k) => k !== ticketData?.key)
             return (
-              <li key={run.run_id} className="run-history-item">
-                <div className="run-history-meta">
-                  <span className="run-history-version">v{run.version}</span>
-                  <span className="run-history-when">{formatRelative(run.created_at)}</span>
-                  <span className="run-history-cases">{run.case_count} cases</span>
-                  {isMulti && otherKeys.length > 0 && (
-                    <span className="run-history-multi">
-                      multi: also {otherKeys.join(', ')}
-                    </span>
-                  )}
-                </div>
-                <div className="run-history-actions">
-                  <button
-                    type="button"
-                    onClick={() => handleView(run)}
-                    disabled={loadingPlanId === run.plan_id}
-                  >
-                    {loadingPlanId === run.plan_id ? 'Loading…' : 'View'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDiffTarget(run)}
-                    disabled={!run.previous_plan_id}
-                    title={
-                      run.previous_plan_id
-                        ? 'Compare this version with the one before it'
-                        : 'No earlier version to diff against'
-                    }
-                  >
-                    Diff
-                  </button>
-                </div>
-              </li>
+              <div
+                key={run.run_id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--s-4)',
+                  padding: '10px var(--s-5)',
+                  borderBottom: i < runs.length - 1 ? '1px solid var(--divider)' : 'none',
+                }}
+              >
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--accent)', fontWeight: 600 }}>v{run.version}</span>
+                <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>{formatRelative(run.created_at)}</span>
+                <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--t-xs)' }}>{run.case_count} cases</span>
+                {isMulti && otherKeys.length > 0 && (
+                  <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>multi: also {otherKeys.join(', ')}</span>
+                )}
+                <span style={{ flex: 1 }} />
+                <Btn
+                  variant="ghost"
+                  size="sm"
+                  icon="eye"
+                  onClick={() => handleView(run)}
+                  disabled={loadingPlanId === run.plan_id}
+                  loading={loadingPlanId === run.plan_id}
+                >
+                  View
+                </Btn>
+                <Btn
+                  variant="ghost"
+                  size="sm"
+                  icon="split"
+                  onClick={() => setDiffTarget(run)}
+                  disabled={!run.previous_plan_id}
+                  title={run.previous_plan_id ? 'Compare to previous version' : 'No earlier version'}
+                >
+                  Diff
+                </Btn>
+              </div>
             )
           })}
-        </ul>
+        </div>
       )}
 
       {diffTarget && (

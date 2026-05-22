@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
+// Order matters: load old App.css first, then the new design-system layers
+// so the new tokens/base/components win cleanly without !important.
 import './App.css'
+import './styles/tokens.css'
+import './styles/base.css'
+import './styles/components.css'
 import { API_BASE_URL, fetchConfig } from './config'
 import { loadStored, saveStored } from './utils/sessionStorage'
 import { useTestPlan } from './hooks/useTestPlan'
@@ -14,22 +19,25 @@ import RunHistoryBanner from './components/RunHistoryBanner'
 import HistoricalPlanPreview from './components/HistoricalPlanPreview'
 import EpicChildrenList from './components/EpicChildrenList'
 import JiraBrowser from './components/JiraBrowser'
+import Icon from './components/Icon'
+import { Alert } from './components/ui'
 
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
 
 // Keys used to persist state across reloads (e.g. after laptop sleep → Vite HMR reload).
-// The plan/analysis keys are owned by the respective hooks.
 const STORAGE_KEYS = {
   issueKey: 'jtb.issueKey',
   ticketsData: 'jtb.ticketsData',
   runHistory: 'jtb.runHistory',
+  railCollapsed: 'jtb.railCollapsed',
 }
 
 function App() {
   const [issueKey, setIssueKey] = useState(() => loadStored(STORAGE_KEYS.issueKey, ''))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [railCollapsed, setRailCollapsed] = useState(() => loadStored(STORAGE_KEYS.railCollapsed, false))
 
   // ticketsData is always an array; single-ticket mode uses ticketsData[0]
   const [ticketsData, setTicketsData] = useState(() => loadStored(STORAGE_KEYS.ticketsData, []))
@@ -42,15 +50,14 @@ function App() {
   const testPlanRef = useRef(null)
   const bugAnalysisRef = useRef(null)
 
-  // Run history (single-ticket only — multi-ticket scope deferred)
+  // Run history (single-ticket only)
   const [runHistory, setRunHistory] = useState(() => loadStored(STORAGE_KEYS.runHistory, []))
-  // Historical plan preview opened from the banner — sits beside the live plan,
-  // not in place of it. Not persisted: it's an ephemeral comparison view.
   const [historyPreview, setHistoryPreview] = useState(null)
 
   useEffect(() => saveStored(STORAGE_KEYS.issueKey, issueKey), [issueKey])
   useEffect(() => saveStored(STORAGE_KEYS.ticketsData, ticketsData), [ticketsData])
   useEffect(() => saveStored(STORAGE_KEYS.runHistory, runHistory), [runHistory])
+  useEffect(() => saveStored(STORAGE_KEYS.railCollapsed, railCollapsed), [railCollapsed])
 
   // Fetch config on mount to get Jira base URL
   useEffect(() => {
@@ -71,11 +78,8 @@ function App() {
   }, [bugLens.analysis])
 
   const isMultiTicket = ticketsData.length > 1
-  // For single-ticket backward-compat: expose first ticket as ticketData
   const ticketData = ticketsData.length === 1 ? ticketsData[0] : null
 
-  // Fetch prior test-plan runs for a ticket. Silently no-op on failure so the
-  // banner just doesn't appear — DB outages shouldn't block the main flow.
   const loadRunHistory = async (key) => {
     try {
       const res = await fetch(`${API_BASE_URL}/runs/by-ticket/${key}`)
@@ -107,7 +111,6 @@ function App() {
 
     try {
       if (keys.length === 1) {
-        // ── Single ticket — existing flow unchanged ──────────────────────────
         const response = await fetch(`${API_BASE_URL}/issue/${keys[0]}`)
         if (!response.ok) {
           const errorData = await response.json()
@@ -115,15 +118,11 @@ function App() {
         }
         const data = await response.json()
         setTicketsData([data])
-        // Fire-and-forget: history fetch happens in parallel with the user
-        // reading the ticket — don't block the main render.
         loadRunHistory(data.key)
       } else {
-        // ── Multiple tickets — fetch in parallel ─────────────────────────────
         const responses = await Promise.all(
           keys.map((k) => fetch(`${API_BASE_URL}/issue/${k}`))
         )
-
         const results = []
         for (let i = 0; i < responses.length; i++) {
           if (!responses[i].ok) {
@@ -157,8 +156,6 @@ function App() {
     await fetchTicketsByKeys([key.toUpperCase()])
   }
 
-  // Refresh just the current ticket's metadata in place — used after workflow
-  // actions so the user keeps their generated test plan, history, etc.
   const refreshCurrentTicket = async (actionId) => {
     if (ticketsData.length !== 1) return
     const key = ticketsData[0].key
@@ -172,10 +169,6 @@ function App() {
       return
     }
 
-    // After Pull-to-Testing, auto-generate a test plan if none has ever been
-    // generated for this ticket — saves the QA tester an extra click.
-    // Skipped when a prior run already exists in the DB or one is loaded in
-    // this session, so re-pulls and bounce-backs don't re-spend on the LLM.
     if (actionId !== 'pull-to-testing') return
     if (NON_TESTABLE_ISSUE_TYPES.has(refreshed.issue_type)) return
     if (testPlan.plan) return
@@ -212,7 +205,6 @@ function App() {
     if (tickets.length === 0) return
     bugLens.reset()
     const plan = await testPlan.generate(tickets)
-    // Refresh history so the new run appears in the banner with a bumped version.
     if (plan && tickets.length === 1) loadRunHistory(tickets[0].key)
   }
 
@@ -222,153 +214,170 @@ function App() {
     await bugLens.analyze(ticketsData)
   }
 
-  // For multi-ticket: block generation if any ticket has a non-testable type
   const nonTestableTicket = ticketsData.find((td) =>
     NON_TESTABLE_ISSUE_TYPES.has(td.issue_type)
   )
 
-  // Only show Bug Lens if every fetched ticket is a Bug
   const isBugTickets = ticketsData.length > 0 && ticketsData.every((td) => td.issue_type === 'Bug')
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1><img src="/favicon.svg" alt="logo" style={{ width: '1.2em', height: '1.2em', verticalAlign: 'middle', marginRight: '0.4em' }} />Jira Test Plan Bot</h1>
-        <p>Fetch Jira tickets and analyze description quality</p>
+    <div className="app" data-rail={railCollapsed ? 'collapsed' : 'open'}>
+      <header className="hdr appHeader">
+        <div className="hdr-brand">
+          <img src="/favicon.svg" alt="" style={{ width: 22, height: 22, borderRadius: 'var(--r-sm)' }} />
+          <span>Jira Test Plan</span>
+          <span style={{ color: 'var(--fg-faint)', fontWeight: 400, marginLeft: 2 }}>·</span>
+          <span style={{ color: 'var(--fg-muted)', fontWeight: 500, marginLeft: 2 }}>Bot</span>
+        </div>
+        <span className="hdr-sep" />
+        <button
+          type="button"
+          className="hbtn"
+          onClick={() => setRailCollapsed(!railCollapsed)}
+          title="Toggle rail"
+          aria-label="Toggle rail"
+        >
+          <Icon name="panel-left" size={15} />
+        </button>
+        <span className="hdr-sep" />
+        <div className="hdr-search" role="button" tabIndex={0}>
+          <Icon name="search" size={13} />
+          <span>{ticketData?.key || (ticketsData.length > 1 ? ticketsData.map(t => t.key).join(', ') : 'Jump to ticket…')}</span>
+        </div>
+        <div className="hdr-spacer" />
+        <div className="hdr-actions">
+          <TokenStatus />
+        </div>
       </header>
 
-      <div className="app-shell">
+      <aside className="appRail">
         <JiraBrowser
           onSelectIssue={handleSelectFromBrowser}
           selectedIssueKey={ticketData?.key || null}
+          railCollapsed={railCollapsed}
         />
+      </aside>
 
-        <main className="app-main">
-          <TokenStatus />
-
+      <main className="appMain main-shell">
+        <div className="main-inner">
           <TicketForm
-          issueKey={issueKey}
-          setIssueKey={setIssueKey}
-          loading={loading}
-          onSubmit={handleFetchTicket}
-          onClear={handleClear}
-          hasTicketData={ticketsData.length > 0}
-        />
+            issueKey={issueKey}
+            setIssueKey={setIssueKey}
+            loading={loading}
+            onSubmit={handleFetchTicket}
+            onClear={handleClear}
+            hasTicketData={ticketsData.length > 0}
+          />
 
-        {error && (
-          <div className="alert alert-error">
-            <strong>Error:</strong> {error}
-          </div>
-        )}
+          {error && (
+            <div style={{ marginTop: 'var(--s-5)' }}>
+              <Alert tone="danger" title="Error">{error}</Alert>
+            </div>
+          )}
 
-        {ticketsData.length > 0 && (
-          <>
-            {isMultiTicket ? (
-              // ── Multi-ticket: show a compact header per ticket ─────────────
-              <div className="multi-ticket-list">
-                {ticketsData.map((td) => (
-                  <TicketDetails
-                    key={td.key}
-                    ticketData={td}
-                    isDescriptionExpanded={isDescriptionExpanded}
-                    onToggleDescription={toggleDescription}
-                    compact={true}
-                  />
-                ))}
-              </div>
-            ) : (
-              // ── Single ticket: original full view ──────────────────────────
-              <TicketDetails
-                ticketData={ticketData}
-                isDescriptionExpanded={isDescriptionExpanded}
-                onToggleDescription={toggleDescription}
-                onActionComplete={refreshCurrentTicket}
-              />
-            )}
-
-            {nonTestableTicket ? (
-              !isMultiTicket && nonTestableTicket.issue_type === 'Epic' ? (
-                <EpicChildrenList epicKey={nonTestableTicket.key} />
-              ) : (
-                <div className="ticket-section">
-                  <div className="alert alert-info">
-                    <strong>ℹ️ Note:</strong> Test plans are not generated for{' '}
-                    {nonTestableTicket.issue_type} tickets ({nonTestableTicket.key}).
-                    <br />
-                    Test plan generation is available for Story, Task, and Bug issues only.
-                  </div>
+          {ticketsData.length > 0 && (
+            <>
+              {isMultiTicket ? (
+                <div className="multi-ticket-list" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)', marginTop: 'var(--s-6)' }}>
+                  {ticketsData.map((td) => (
+                    <TicketDetails
+                      key={td.key}
+                      ticketData={td}
+                      isDescriptionExpanded={isDescriptionExpanded}
+                      onToggleDescription={toggleDescription}
+                      compact={true}
+                    />
+                  ))}
                 </div>
-              )
-            ) : (
-              <>
-                {!isMultiTicket &&
-                  runHistory.length > 0 &&
-                  !bugLens.analyzing &&
-                  !bugLens.analysis && (
-                    <RunHistoryBanner
-                      runs={runHistory}
+              ) : (
+                <TicketDetails
+                  ticketData={ticketData}
+                  isDescriptionExpanded={isDescriptionExpanded}
+                  onToggleDescription={toggleDescription}
+                  onActionComplete={refreshCurrentTicket}
+                />
+              )}
+
+              {nonTestableTicket ? (
+                !isMultiTicket && nonTestableTicket.issue_type === 'Epic' ? (
+                  <EpicChildrenList epicKey={nonTestableTicket.key} />
+                ) : (
+                  <div style={{ marginTop: 'var(--s-6)' }}>
+                    <Alert tone="info" title={`Test plans not generated for ${nonTestableTicket.issue_type}`}>
+                      Skipped for {nonTestableTicket.key}. Test plan generation runs for Story, Task, and Bug issues.
+                    </Alert>
+                  </div>
+                )
+              ) : (
+                <>
+                  {!isMultiTicket &&
+                    runHistory.length > 0 &&
+                    !bugLens.analyzing &&
+                    !bugLens.analysis && (
+                      <RunHistoryBanner
+                        runs={runHistory}
+                        ticketData={ticketData}
+                        onViewPlan={(plan, meta) =>
+                          setHistoryPreview({ plan, ...meta })
+                        }
+                      />
+                    )}
+
+                  <ActionButtons
+                    onGenerateTestPlan={handleGenerateTestPlan}
+                    onStopGeneration={testPlan.stop}
+                    generatingPlan={testPlan.generating}
+                    onAnalyzeBug={handleAnalyzeBug}
+                    onStopBugAnalysis={bugLens.stop}
+                    analyzingBug={bugLens.analyzing}
+                    showBugLens={isBugTickets}
+                  />
+
+                  {testPlan.error && (
+                    <div style={{ marginTop: 'var(--s-4)' }}>
+                      <Alert tone="danger" title="Error">{testPlan.error}</Alert>
+                    </div>
+                  )}
+
+                  {bugLens.error && (
+                    <div style={{ marginTop: 'var(--s-4)' }}>
+                      <Alert tone="danger" title="Error">{bugLens.error}</Alert>
+                    </div>
+                  )}
+
+                  {testPlan.plan && (
+                    <div ref={testPlanRef}>
+                      <TestPlanDisplay
+                        testPlan={testPlan.plan}
+                        ticketData={ticketData}
+                        ticketsData={isMultiTicket ? ticketsData : null}
+                      />
+                    </div>
+                  )}
+
+                  {!isMultiTicket && historyPreview && !bugLens.analysis && !bugLens.analyzing && (
+                    <HistoricalPlanPreview
+                      key={historyPreview.planId}
+                      plan={historyPreview.plan}
+                      version={historyPreview.version}
+                      createdAt={historyPreview.createdAt}
                       ticketData={ticketData}
-                      onViewPlan={(plan, meta) =>
-                        setHistoryPreview({ plan, ...meta })
-                      }
+                      showActions={!testPlan.plan}
+                      onClose={() => setHistoryPreview(null)}
                     />
                   )}
 
-                <ActionButtons
-                  onGenerateTestPlan={handleGenerateTestPlan}
-                  onStopGeneration={testPlan.stop}
-                  generatingPlan={testPlan.generating}
-                  onAnalyzeBug={handleAnalyzeBug}
-                  onStopBugAnalysis={bugLens.stop}
-                  analyzingBug={bugLens.analyzing}
-                  showBugLens={isBugTickets}
-                />
-
-                {testPlan.error && (
-                  <div className="alert alert-error">
-                    <strong>Error:</strong> {testPlan.error}
-                  </div>
-                )}
-
-                {bugLens.error && (
-                  <div className="alert alert-error">
-                    <strong>Error:</strong> {bugLens.error}
-                  </div>
-                )}
-
-                {testPlan.plan && (
-                  <div ref={testPlanRef}>
-                    <TestPlanDisplay
-                      testPlan={testPlan.plan}
-                      ticketData={ticketData}
-                      ticketsData={isMultiTicket ? ticketsData : null}
-                    />
-                  </div>
-                )}
-
-                {!isMultiTicket && historyPreview && !bugLens.analysis && !bugLens.analyzing && (
-                  <HistoricalPlanPreview
-                    key={historyPreview.planId}
-                    plan={historyPreview.plan}
-                    version={historyPreview.version}
-                    createdAt={historyPreview.createdAt}
-                    ticketData={ticketData}
-                    showActions={!testPlan.plan}
-                    onClose={() => setHistoryPreview(null)}
-                  />
-                )}
-
-                {bugLens.analysis && (
-                  <div ref={bugAnalysisRef}>
-                    <BugAnalysisDisplay analysis={bugLens.analysis} />
-                  </div>
-                )}
-              </>
-            )}
-          </>
-        )}
-        </main>
-      </div>
+                  {bugLens.analysis && (
+                    <div ref={bugAnalysisRef}>
+                      <BugAnalysisDisplay analysis={bugLens.analysis} />
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </main>
     </div>
   )
 }

@@ -6,6 +6,8 @@
 import { useEffect, useState } from 'react'
 import { API_BASE_URL } from '../config'
 import EpicChildRow from './EpicChildRow'
+import Icon from './Icon'
+import { Btn, Alert, SectLbl } from './ui'
 
 function EpicChildrenList({ epicKey }) {
   const [children, setChildren] = useState(null)
@@ -37,43 +39,49 @@ function EpicChildrenList({ epicKey }) {
 
   if (loading) {
     return (
-      <div className="epic-children-section">
-        <p className="epic-children-loading">
-          <span className="spinner"></span> Loading child tickets…
-        </p>
+      <div style={{ marginTop: 'var(--s-7)', display: 'flex', alignItems: 'center', gap: 'var(--s-3)', color: 'var(--fg-muted)' }}>
+        <span className="spin" style={{ color: 'var(--accent)' }} />
+        Loading child tickets…
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="epic-children-section">
-        <div className="alert alert-error">
-          <strong>Error:</strong> {error}
-        </div>
-        <button type="button" className="btn-generate btn-small" onClick={load}>
-          Retry
-        </button>
+      <div style={{ marginTop: 'var(--s-7)' }}>
+        <Alert tone="danger" title="Failed to load children" action={<Btn variant="ghost" size="sm" onClick={load} icon="refresh">Retry</Btn>}>
+          {error}
+        </Alert>
       </div>
     )
   }
 
   if (!children || children.length === 0) {
     return (
-      <div className="epic-children-section">
-        <div className="alert alert-info">
-          <strong>ℹ️ No child tickets found under {epicKey}.</strong>
-        </div>
+      <div style={{ marginTop: 'var(--s-7)' }}>
+        <Alert tone="muted" title={`No child tickets under ${epicKey}`}>
+          This Epic has no linked sub-tasks or stories yet.
+        </Alert>
       </div>
     )
   }
 
   return (
-    <div className="epic-children-section">
-      <h3 className="epic-children-heading">
-        Tickets under {epicKey} ({children.length})
-      </h3>
-      <div className="epic-children-list">
+    <div style={{ marginTop: 'var(--s-7)' }}>
+      <SectLbl
+        action={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+            <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', fontFamily: 'var(--font-mono)' }}>{children.length} children</span>
+            <Btn variant="ghost" size="sm" icon="refresh" onClick={load}>Refresh</Btn>
+          </span>
+        }
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+          <Icon name="layers" size={12} style={{ color: 'var(--accent)' }} />
+          Tickets under {epicKey}
+        </span>
+      </SectLbl>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
         {children.map((child) => (
           <EpicChildRow key={child.key} child={child} />
         ))}
