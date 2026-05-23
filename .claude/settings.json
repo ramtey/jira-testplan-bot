@@ -4,8 +4,11 @@
       "Bash(gh api:*)",
       "Bash(gh pr checks:*)",
       "Bash(gh pr view:*)",
-      "Bash(uv run pytest:*)"
+      "Bash(uv run pytest:*)",
+      "Bash(git -C /Users/Rteymouri/jira-testplan-bot checkout -b feat/ac-coverage-multi-ticket)"
     ]
   },
-  "enabledMcpjsonServers": ["neon"]
+  "enabledMcpjsonServers": [
+    "neon"
+  ]
 }
