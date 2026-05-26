@@ -352,12 +352,126 @@ def _build_qa_fail_adf(
     return {"type": "doc", "version": 1, "content": content}
 
 
+# A test case title paragraph looks like `**1. Title here 🔴 CRITICAL**` —
+# a single bold span whose plain text starts with `<digits>. `.
+_TEST_CASE_TITLE_RE = re.compile(r'^\s*\d+\.\s')
+# Section banner paragraphs emitted by formatTestPlanAsJira start with one of
+# these emojis. Used to terminate a test case's "details" range so the
+# Regression Checklist doesn't get sucked into the last edge case.
+_SECTION_PREFIXES = ('✅', '🔍', '🔗', '🔄')
+
+
+def _adf_paragraph_text(node: dict) -> str:
+    return "".join(
+        child.get("text", "") for child in node.get("content", [])
+        if child.get("type") == "text"
+    )
+
+
+def _test_case_title(node: dict) -> str | None:
+    """Return the plain title if `node` is a `**N. Title**` paragraph."""
+    if node.get("type") != "paragraph":
+        return None
+    children = node.get("content", [])
+    if not children:
+        return None
+    first = children[0]
+    if first.get("type") != "text":
+        return None
+    if not any(m.get("type") == "strong" for m in first.get("marks", [])):
+        return None
+    text = _adf_paragraph_text(node).strip()
+    if not _TEST_CASE_TITLE_RE.match(text):
+        return None
+    return text
+
+
+def _is_section_heading(node: dict) -> bool:
+    if node.get("type") not in ("paragraph", "heading"):
+        return False
+    return _adf_paragraph_text(node).strip().startswith(_SECTION_PREFIXES)
+
+
+def _is_divider_paragraph(node: dict) -> bool:
+    if node.get("type") != "paragraph":
+        return False
+    text = _adf_paragraph_text(node).strip()
+    return bool(text) and all(c == "─" for c in text)
+
+
+def _is_regression_checklist_heading(node: dict) -> bool:
+    if node.get("type") not in ("paragraph", "heading"):
+        return False
+    return _adf_paragraph_text(node).strip().startswith("🔄")
+
+
+def _collect_until_next_section(nodes: list, start: int) -> tuple[list, int]:
+    """Walk forward collecting details until the next test case title or
+    section heading. Dividers are skipped. Returns (details, next_index)."""
+    details: list = []
+    j = start
+    n = len(nodes)
+    while j < n:
+        nxt = nodes[j]
+        if _is_divider_paragraph(nxt):
+            j += 1
+            continue
+        if _test_case_title(nxt) is not None or _is_section_heading(nxt):
+            break
+        details.append(nxt)
+        j += 1
+    if not details:
+        details = [{"type": "paragraph", "content": [{"type": "text", "text": ""}]}]
+    return details, j
+
+
+def _group_test_cases_into_nested_expands(nodes: list) -> list:
+    """Wrap each `**N. Title**` paragraph plus its trailing details in an ADF
+    `nestedExpand`, so reviewers see titles after the first click and steps
+    only after clicking a specific case. The Regression Checklist banner is
+    also wrapped so its bullets stay hidden until the section is opened.
+    `──` dividers are dropped — the collapse boundary already delineates
+    each case.
+    """
+    result: list = []
+    i = 0
+    n = len(nodes)
+    while i < n:
+        node = nodes[i]
+        if _is_divider_paragraph(node):
+            i += 1
+            continue
+        if _is_regression_checklist_heading(node):
+            details, i = _collect_until_next_section(nodes, i + 1)
+            title = _adf_paragraph_text(node).strip()
+            result.append({
+                "type": "nestedExpand",
+                "attrs": {"title": title},
+                "content": details,
+            })
+            continue
+        title = _test_case_title(node)
+        if title is None:
+            result.append(node)
+            i += 1
+            continue
+        details, i = _collect_until_next_section(nodes, i + 1)
+        result.append({
+            "type": "nestedExpand",
+            "attrs": {"title": title},
+            "content": details,
+        })
+    return result
+
+
 def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
                          title: str = TEST_PLAN_EXPAND_TITLE) -> dict:
     """Wrap everything after the marker paragraph in an ADF `expand` node.
 
     Keeps the marker paragraph as content[0] so existing comment-update detection
-    (which reads content[0]'s text) continues to work.
+    (which reads content[0]'s text) continues to work. Inside the outer expand,
+    each test case is further wrapped in a `nestedExpand` so reviewers see only
+    titles until they click a specific case.
     """
     content = adf_doc.get("content", [])
     if len(content) < 2:
@@ -371,6 +485,7 @@ def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
     )
     if marker not in first_text:
         return adf_doc
+    inner = _group_test_cases_into_nested_expands(content[1:])
     return {
         **adf_doc,
         "content": [
@@ -378,7 +493,7 @@ def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
             {
                 "type": "expand",
                 "attrs": {"title": title},
-                "content": content[1:],
+                "content": inner,
             },
         ],
     }

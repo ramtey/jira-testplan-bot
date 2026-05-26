@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.app.jira_client import JiraClient
+from src.app.jira_client import (
+    JiraClient,
+    TEST_PLAN_MARKER,
+    _wrap_body_in_expand,
+    markdown_to_adf,
+)
 
 
 @pytest.mark.asyncio
@@ -171,6 +176,61 @@ async def test_post_comment_fallback_on_error():
 
             assert result["id"] == "12345"
             assert result["updated"] is False
+
+
+def test_wrap_body_in_expand_collapses_each_test_case():
+    """Each test case should become its own `nestedExpand` so reviewers see
+    titles after the first click and steps only after clicking a case.
+    Section banners stay visible; the `──` dividers are dropped."""
+    markdown = (
+        f"{TEST_PLAN_MARKER}\n\n"
+        "✅ HAPPY PATH TEST CASES\n\n"
+        "**1. Logs in with valid creds 🔴 CRITICAL**\n\n"
+        "Steps:\n"
+        "1. Open /login\n"
+        "2. Submit valid creds\n\n"
+        "Expected Result: dashboard loads\n\n"
+        "────────────────────────────────────────────\n\n"
+        "**2. Resets password 🟡 HIGH**\n\n"
+        "Steps:\n"
+        "1. Click 'forgot password'\n\n"
+        "Expected Result: reset email sent\n\n"
+        "🔄 REGRESSION CHECKLIST\n\n"
+        "  • verify SSO still works\n"
+    )
+    wrapped = _wrap_body_in_expand(markdown_to_adf(markdown))
+
+    outer = wrapped["content"][1]
+    assert outer["type"] == "expand"
+    inner = outer["content"]
+    nested = [n for n in inner if n.get("type") == "nestedExpand"]
+    assert [n["attrs"]["title"] for n in nested] == [
+        "1. Logs in with valid creds 🔴 CRITICAL",
+        "2. Resets password 🟡 HIGH",
+        "🔄 REGRESSION CHECKLIST",
+    ]
+    # Steps live inside the per-case nestedExpand, not at the outer level.
+    flat_outer_text = " ".join(
+        _txt
+        for n in inner if n.get("type") != "nestedExpand"
+        for _txt in [
+            "".join(c.get("text", "") for c in n.get("content", []) if c.get("type") == "text")
+        ]
+    )
+    assert "Open /login" not in flat_outer_text
+    assert "Submit valid creds" not in flat_outer_text
+    # The regression checklist bullets are inside its nestedExpand, not at the outer level.
+    assert "verify SSO" not in flat_outer_text
+    regression = next(n for n in nested if n["attrs"]["title"].startswith("🔄"))
+    regression_text = " ".join(
+        "".join(c.get("text", "") for c in child.get("content", []) if c.get("type") == "text")
+        for child in regression["content"]
+    )
+    assert "verify SSO" in regression_text
+    # And no leftover ── divider paragraphs anywhere in the body.
+    import json as _json
+    body = _json.dumps(wrapped)
+    assert "────" not in body
 
 
 if __name__ == "__main__":
