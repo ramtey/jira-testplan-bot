@@ -50,23 +50,29 @@ function projectMark(project, size = 14) {
   const idx = Math.abs(
     (project.key || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0)
   ) % colors.length
+  const fs = Math.max(9, Math.round(size * 0.55))
   return (
-    <span
-      style={{
-        width: size,
-        height: size,
-        borderRadius: 3,
-        background: colors[idx],
-        color: 'white',
-        display: 'grid',
-        placeItems: 'center',
-        fontSize: 9,
-        fontWeight: 700,
-        flexShrink: 0,
-      }}
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      style={{ flexShrink: 0, display: 'block' }}
+      aria-hidden="true"
     >
-      {initials}
-    </span>
+      <rect width={size} height={size} rx="3" fill={colors[idx]} />
+      <text
+        x="50%"
+        y="50%"
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill="white"
+        fontSize={fs}
+        fontWeight="700"
+        fontFamily="var(--font-sans)"
+      >
+        {initials}
+      </text>
+    </svg>
   )
 }
 
@@ -79,7 +85,7 @@ function RefreshBtn({ busy, onClick }) {
       disabled={busy}
       aria-label="Refresh"
       title="Refresh"
-      style={{ width: 22, height: 22 }}
+      style={{ width: 22, height: 22, padding: 0, flex: '0 0 auto' }}
     >
       <Icon name="refresh" size={11} />
     </button>
@@ -352,18 +358,20 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
       {/* ─── Statuses view ─────────────────────────────────────────────── */}
       {activeProject && !activeStatus && (
         <>
-          <div style={{ padding: 'var(--s-3) var(--s-4)', display: 'flex', alignItems: 'center', gap: 'var(--s-3)', borderBottom: '1px solid var(--divider)' }}>
+          <div style={{ padding: 'var(--s-3) var(--s-4)', display: 'flex', alignItems: 'center', gap: 'var(--s-3)', borderBottom: '1px solid var(--divider)', height: 36, boxSizing: 'border-box' }}>
             <button
               type="button"
               className="hbtn"
               onClick={goBackToProjects}
               title="Back to projects"
-              style={{ width: 22, height: 22 }}
+              style={{ width: 22, height: 22, padding: 0, flex: '0 0 auto' }}
             >
               <Icon name="chevron-left" size={12} />
             </button>
-            {projectMark(activeProject)}
-            <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', flex: '0 0 auto' }}>
+              {projectMark(activeProject, 22)}
+            </span>
+            <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)', flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1 }}>
               {activeProject.name}
             </span>
             <RefreshBtn busy={statusesLoading} onClick={() => refreshActiveRef.current()} />
@@ -423,20 +431,20 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
       {/* ─── Issues view ───────────────────────────────────────────────── */}
       {activeProject && activeStatus && (
         <>
-          <div style={{ padding: 'var(--s-3) var(--s-4)', display: 'flex', alignItems: 'center', gap: 'var(--s-3)', borderBottom: '1px solid var(--divider)' }}>
+          <div style={{ padding: 'var(--s-3) var(--s-4)', display: 'flex', alignItems: 'center', gap: 'var(--s-3)', borderBottom: '1px solid var(--divider)', height: 36, boxSizing: 'border-box' }}>
             <button
               type="button"
               className="hbtn"
               onClick={goBackToStatuses}
               title={`Back to ${activeProject.key}`}
-              style={{ width: 22, height: 22 }}
+              style={{ width: 22, height: 22, padding: 0, flex: '0 0 auto' }}
             >
               <Icon name="chevron-left" size={12} />
             </button>
-            <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)', flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1 }}>
               {activeStatus.name}
             </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>{activeProject.key}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', lineHeight: 1, flex: '0 0 auto' }}>{activeProject.key}</span>
             <RefreshBtn busy={issuesLoading} onClick={() => refreshActiveRef.current()} />
           </div>
 
