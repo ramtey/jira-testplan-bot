@@ -22,7 +22,7 @@ function ActionButtons({
           <Btn
             variant="primary"
             icon="beaker"
-            onClick={onGenerateTestPlan}
+            onClick={() => onGenerateTestPlan()}
             disabled={analyzingBug}
           >
             Generate test plan

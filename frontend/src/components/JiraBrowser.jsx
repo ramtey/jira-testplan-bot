@@ -477,12 +477,12 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
 
 function ProjectRow({ project, isPinned, onSelect, onTogglePin }) {
   return (
-    <div style={{ position: 'relative', display: 'flex' }}>
+    <div style={{ position: 'relative' }}>
       <button
         type="button"
         className="rail-row"
         onClick={() => onSelect(project)}
-        style={{ paddingRight: 36 }}
+        style={{ paddingRight: 28 }}
       >
         {projectMark(project)}
         <span className="name">{project.name}</span>
@@ -495,20 +495,21 @@ function ProjectRow({ project, isPinned, onSelect, onTogglePin }) {
         title={isPinned ? 'Unpin' : 'Pin to top'}
         style={{
           position: 'absolute',
-          right: 6,
+          right: 4,
           top: '50%',
           transform: 'translateY(-50%)',
-          width: 22,
-          height: 22,
+          width: 18,
+          height: 18,
           display: 'grid',
           placeItems: 'center',
+          padding: 0,
           background: 'transparent',
           border: 0,
           cursor: 'pointer',
           color: isPinned ? 'var(--warning)' : 'var(--fg-faint)',
         }}
       >
-        <Icon name="star" size={12} stroke={isPinned ? 2 : 1.5} />
+        <Icon name="star" size={11} stroke={isPinned ? 2 : 1.5} />
       </button>
     </div>
   )

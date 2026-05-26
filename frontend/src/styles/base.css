@@ -59,8 +59,8 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
 .app[data-rail="collapsed"] { grid-template-columns: var(--rail-w-collapsed) 1fr; }
 
 .appHeader { grid-area: header; }
-.appRail   { grid-area: rail;   border-right: 1px solid var(--line); }
-.appMain   { grid-area: main; overflow: auto; }
+.appRail   { grid-area: rail;   border-right: 1px solid var(--line); min-height: 0; }
+.appMain   { grid-area: main; overflow: auto; min-height: 0; }
 
 /* Header */
 .hdr {
