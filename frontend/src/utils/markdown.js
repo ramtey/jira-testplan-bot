@@ -140,13 +140,21 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
   if (plan.integration_tests && plan.integration_tests.length > 0) {
     markdown += '## 🔗 Integration & Backend Tests\n\n'
     plan.integration_tests.forEach((test, index) => {
-      markdown += `### ${index + 1}. ${test.title}`
+      const titlePrefix = test.cross_project ? '[Cross-project] ' : ''
+      markdown += `### ${index + 1}. ${titlePrefix}${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
         markdown += ` ${emoji} *${test.priority}*`
       }
       markdown += '\n\n'
       markdown += formatNeedsVerification(test)
+      if (test.cross_project && test.seam) {
+        const producer = test.seam.producer_repo || '?'
+        const consumer = test.seam.consumer_repo || '?'
+        const ident = test.seam.identifier ? ` — \`${test.seam.identifier}\`` : ''
+        const verified = test.seam.verified === false ? ' (suspected)' : ''
+        markdown += `**Seam:** ${producer} → ${consumer}${ident}${verified}\n\n`
+      }
       if (test.preconditions) {
         markdown += `**Preconditions:** ${test.preconditions}\n\n`
       }

@@ -271,6 +271,66 @@ Rules:
 """
 
 
+CROSS_PROJECT_GUIDANCE = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌐 CROSS-PROJECT INTEGRATION — TEST THE SEAM, NOT JUST EACH SIDE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The tickets in this batch touch MORE THAN ONE repository (see the
+'CROSS-PROJECT INTEGRATION SEAMS' section above). Per-side test cases
+are not enough — the most common bugs in multi-repo features hide at the
+seam between projects: one side ships a contract change, the other
+side keeps the old expectation, integration breaks in staging.
+
+For EVERY verified seam listed in the SEAMS section above, you MUST
+generate at least one test case in `integration_tests` that:
+
+1. Has `cross_project: true` and a populated `seam` field whose
+   `kind`, `identifier`, `producer_repo`, and `consumer_repo` come
+   verbatim from the SEAMS section. Set `seam.verified: true`.
+
+2. Exercises BOTH sides of the contract:
+   - Producer side: the request shape it accepts (required params,
+     non-empty values, valid enum values), the response shape it
+     emits (status code, payload fields, error envelope), and any
+     error path (4xx/5xx, missing-data, downstream-unavailable).
+   - Consumer side: the observable behaviour in the consuming repo
+     given each producer outcome — UI state, persisted data, retried
+     calls, error messaging.
+
+3. Names BOTH repos in the test title or preconditions, e.g.
+   `[compliance ↔ agent-calculator] /quote returns updated tax breakdown`.
+   This makes the cross-project intent legible to QA without reading
+   the JSON `seam` field.
+
+For SUSPECTED seams (consumer-only OR producer-only — the other side
+was not located in the diffs), do BOTH:
+
+- Write a `cross_project: true` test case with `seam.verified: false`.
+  Phrase it in terms of the user-observable flow rather than quoting
+  a specific symbol that may not exist on the missing side.
+- Add a `grounding_warning` entry with `ac_id: "CROSS-<n>"` (using a
+  synthetic CROSS-1, CROSS-2 … ID — these do not need to appear in
+  ACCEPTANCE CRITERIA TO COVER), `missing_element` naming the seam,
+  and `explanation` noting which side (producer or consumer) was not
+  visible in the diffs.
+
+Rules:
+
+- Do NOT invent seams that aren't in the SEAMS section above. If a
+  seam is real but the extractor missed it, prefer omission to
+  fabrication — the SEAMS section is your source of truth.
+
+- Per-repo behaviour tests still belong in `happy_path` / `edge_cases`
+  as usual (with `cross_project` omitted or false). Cross-project mode
+  is ADDITIVE — it adds integration coverage, it does not replace
+  single-repo cases.
+
+- Echo the seam catalog in `cross_project_summary` so the UI can
+  render the producer/consumer pairs the plan covers.
+"""
+
+
 OBSERVABILITY_TESTING_GUIDANCE = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📈 OBSERVABILITY / ALERTING / LOGGING — SPECIALIZED TEST GUIDANCE
@@ -1011,6 +1071,7 @@ class LLMClient(ABC):
         self,
         tickets: list[dict],
         images: list[tuple[str, str]] | None = None,
+        cross_project: dict | None = None,
     ) -> TestPlan:
         """Generate a unified test plan from multiple related tickets.
 
@@ -1019,6 +1080,9 @@ class LLMClient(ABC):
                      issue_type, testing_context, development_info, comments,
                      parent_info, linked_info
             images: Combined image attachments from all tickets (up to 3)
+            cross_project: Seam catalog dict (verified_seams, suspected_seams, repos)
+                from ``seam_extractor.build_seam_catalog``. None for single-repo
+                multi-ticket plans.
         """
         pass
 
@@ -1822,6 +1886,7 @@ TICKET INFORMATION
         self,
         tickets: list[dict],
         has_images: bool = False,
+        cross_project: dict | None = None,
     ) -> str:
         """Build a combined prompt for multiple related tickets sharing code changes.
 
@@ -2031,6 +2096,54 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                     prompt += "\n⚠️ THE TESTID REFERENCE IS EXHAUSTIVE: every interactive element has a testID listed above. If a form field does NOT appear in the reference, it does not exist in this app — do NOT invent steps for it.\n"
                 break
 
+        # ── Cross-project seams ───────────────────────────────────────────────
+        if cross_project and (cross_project.get("verified_seams") or cross_project.get("suspected_seams")):
+            verified = cross_project.get("verified_seams") or []
+            suspected = cross_project.get("suspected_seams") or []
+            repos = cross_project.get("repos") or []
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "CROSS-PROJECT INTEGRATION SEAMS\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            if repos:
+                prompt += f"Repositories in this batch: {', '.join(repos)}\n\n"
+            if verified:
+                prompt += "**Verified seams** (producer and consumer both located in the diffs):\n"
+                for s in verified:
+                    p = s.get("producer") or {}
+                    c = s.get("consumer") or {}
+                    kind = s.get("kind", "?")
+                    ident = s.get("identifier", "?")
+                    prompt += (
+                        f"- [{kind}] `{ident}`\n"
+                        f"    producer: {p.get('repo', '?')} · {p.get('file', '?')}:{p.get('line', '?')}\n"
+                        f"    consumer: {c.get('repo', '?')} · {c.get('file', '?')}:{c.get('line', '?')}\n"
+                    )
+                prompt += "\n"
+            if suspected:
+                prompt += "**Suspected seams** (only one side located in the diffs — the other side is in an unmodified file or runtime-resolved):\n"
+                for s in suspected:
+                    kind = s.get("kind", "?")
+                    ident = s.get("identifier", "?")
+                    p = s.get("producer")
+                    c = s.get("consumer")
+                    if p:
+                        prompt += (
+                            f"- [{kind}] `{ident}` — producer-only: {p.get('repo', '?')} · {p.get('file', '?')}:{p.get('line', '?')} (no matching consumer in the diffs)\n"
+                        )
+                    elif c:
+                        prompt += (
+                            f"- [{kind}] `{ident}` — consumer-only: {c.get('repo', '?')} · {c.get('file', '?')}:{c.get('line', '?')} (no matching producer in the diffs)\n"
+                        )
+                prompt += "\n"
+            prompt += (
+                "⚠️ REQUIRED: For every VERIFIED seam above, generate at least one "
+                "`integration_tests` case with `cross_project: true` and a populated "
+                "`seam` field. For every SUSPECTED seam, generate the test AND add a "
+                "matching `grounding_warning` entry (use synthetic `ac_id: \"CROSS-1\"`, "
+                "`CROSS-2`, … to satisfy the schema). See 'CROSS-PROJECT INTEGRATION' "
+                "guidance below for the full rules.\n\n"
+            )
+
         # ── Final instructions ────────────────────────────────────────────────
         prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         prompt += "INSTRUCTIONS\n"
@@ -2048,6 +2161,8 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
         prompt += "- **Ground every named UI element** in the PR diff, testID reference, or attached screenshots (see 'UI GROUNDING' below). If you can't, flag the test in `grounding_warnings` rather than inventing a label that may not ship.\n"
         prompt += "- **Budget your output**: aim for ONE `happy_path` case per AC (combine ACs into the same case when one user flow exercises several). Additional scenarios — boundary values, error paths, permission/feature-flag variants — belong in `edge_cases`, not duplicated happy paths. `edge_cases`, `integration_tests`, and `regression_checklist` are all REQUIRED sections; do not omit them to make room for more happy paths.\n"
         prompt += "- **Trim step preambles**: state the precondition once per case (e.g. 'On a buyer forms file with feature flags enabled') and skip repeating login/flag steps in every test — they cost output budget and add nothing for the tester.\n"
+        if cross_project and (cross_project.get("verified_seams") or cross_project.get("suspected_seams")):
+            prompt += "- **CROSS-PROJECT MODE ACTIVE**: The tickets span multiple repositories. Every verified seam in the 'CROSS-PROJECT INTEGRATION SEAMS' section must have at least one `integration_tests` case with `cross_project: true` and a populated `seam` field. Suspected seams require both a test case AND a `grounding_warning` entry (use `ac_id: \"CROSS-<n>\"`). Also echo the seam catalog in `cross_project_summary`. See 'CROSS-PROJECT INTEGRATION' guidance below for the full rules.\n"
 
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups from one or more tickets are attached. Use them for UI-specific test cases.\n"
@@ -2060,6 +2175,8 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
 
         prompt += UI_GROUNDING_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
+        if cross_project and (cross_project.get("verified_seams") or cross_project.get("suspected_seams")):
+            prompt += CROSS_PROJECT_GUIDANCE
 
         return prompt
 
@@ -2131,6 +2248,7 @@ class OllamaClient(LLMClient):
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                    cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -2153,12 +2271,13 @@ class OllamaClient(LLMClient):
         self,
         tickets: list[dict],
         images: list[tuple[str, str]] | None = None,
+        cross_project: dict | None = None,
     ) -> TestPlan:
         """Generate a unified test plan for multiple related tickets using Ollama."""
         if images:
             print("Warning: Ollama does not support image analysis. Images will be ignored.")
 
-        prompt = self._build_multi_ticket_prompt(tickets, has_images=False)
+        prompt = self._build_multi_ticket_prompt(tickets, has_images=False, cross_project=cross_project)
 
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
@@ -2194,6 +2313,7 @@ class OllamaClient(LLMClient):
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                    cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -2358,6 +2478,37 @@ TEST_CASE_SCHEMA = {
             "type": "boolean",
             "description": "Set true when this test was written from AC text but the named UI element / API surface could NOT be verified in the PR diff or testID reference (see 'UI GROUNDING' instructions). When true, a matching entry MUST also appear in the top-level `grounding_warnings` array whose `ac_id` matches one of this case's `covers_acs`. Default false / omitted means the test is fully grounded.",
         },
+        "cross_project": {
+            "type": "boolean",
+            "description": "Set true ONLY in cross-project mode when this case verifies behaviour spanning >1 repository — i.e. one repo's code calls into another repo's exposed surface. When true, populate `seam` with the producer/consumer pair this case exercises. Default false / omitted means the test is scoped to a single repo.",
+        },
+        "seam": {
+            "type": "object",
+            "description": "Required when `cross_project` is true. The inter-repo seam this case exercises. Use values from the 'CROSS-PROJECT INTEGRATION SEAMS' section verbatim; do NOT invent identifiers, repos, or files.",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["http_route", "event", "package_import"],
+                },
+                "identifier": {
+                    "type": "string",
+                    "description": "Normalized seam identifier, e.g. 'GET /api/orders/{}', 'order.created', '@acme/billing'.",
+                },
+                "producer_repo": {
+                    "type": "string",
+                    "description": "Repository that exposes the surface (e.g. 'agent-calculator'). Omit only if the seam was suspected and no producer was located in the diffs.",
+                },
+                "consumer_repo": {
+                    "type": "string",
+                    "description": "Repository that calls the surface (e.g. 'compliance'). Omit only if the seam was suspected and no consumer was located in the diffs.",
+                },
+                "verified": {
+                    "type": "boolean",
+                    "description": "True when this seam appeared in the verified seams list; false when it came from the suspected list (in which case a matching `grounding_warning` entry is REQUIRED).",
+                },
+            },
+            "required": ["kind", "identifier", "verified"],
+        },
     },
     "required": ["title", "priority", "steps", "expected"],
 }
@@ -2414,6 +2565,38 @@ SUBMIT_TEST_PLAN_TOOL = {
                         },
                     },
                     "required": ["loser_id", "winner_id", "reason"],
+                },
+            },
+            "cross_project_summary": {
+                "type": "object",
+                "description": "Set ONLY in cross-project mode. Echo the seam catalog you were given so the UI can render the producer/consumer pairs the plan covers. Use synthetic `CROSS-<n>` IDs (CROSS-1, CROSS-2, …) to reference seams in a case's `covers_acs` when no real AC applies.",
+                "properties": {
+                    "verified_seams": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {"type": "string"},
+                                "identifier": {"type": "string"},
+                                "producer_repo": {"type": "string"},
+                                "consumer_repo": {"type": "string"},
+                            },
+                            "required": ["kind", "identifier"],
+                        },
+                    },
+                    "suspected_seams": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {"type": "string"},
+                                "identifier": {"type": "string"},
+                                "producer_repo": {"type": "string"},
+                                "consumer_repo": {"type": "string"},
+                            },
+                            "required": ["kind", "identifier"],
+                        },
+                    },
                 },
             },
             "grounding_warnings": {
@@ -2572,6 +2755,7 @@ class ClaudeClient(LLMClient):
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                    cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 )
 
         except httpx.HTTPStatusError as e:
@@ -2610,9 +2794,10 @@ class ClaudeClient(LLMClient):
         self,
         tickets: list[dict],
         images: list[tuple[str, str]] | None = None,
+        cross_project: dict | None = None,
     ) -> TestPlan:
         """Generate a unified test plan for multiple related tickets using Claude API."""
-        prompt = self._build_multi_ticket_prompt(tickets, has_images=bool(images))
+        prompt = self._build_multi_ticket_prompt(tickets, has_images=bool(images), cross_project=cross_project)
 
         content = []
 
@@ -2692,6 +2877,7 @@ class ClaudeClient(LLMClient):
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                    cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 )
 
         except httpx.HTTPStatusError as e:

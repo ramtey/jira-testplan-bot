@@ -142,7 +142,68 @@ function TestCard({ test, section, index, checked, onToggle, showCategory }) {
                 Ungrounded UI ref
               </span>
             )}
+            {test.cross_project && (
+              <span
+                title={
+                  test.seam?.verified === false
+                    ? 'Cross-project seam (unverified — one side not visible in the diffs).'
+                    : 'Cross-project seam: this test exercises behaviour spanning multiple repositories.'
+                }
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  height: 18,
+                  padding: '0 6px',
+                  background:
+                    test.seam?.verified === false
+                      ? 'rgba(245,158,11,.10)'
+                      : 'rgba(99,102,241,.12)',
+                  border:
+                    '1px solid ' +
+                    (test.seam?.verified === false
+                      ? 'rgba(245,158,11,.35)'
+                      : 'rgba(99,102,241,.35)'),
+                  color: test.seam?.verified === false ? '#fcd34d' : '#a5b4fc',
+                  borderRadius: 3,
+                  fontSize: 10.5,
+                  fontWeight: 500,
+                }}
+              >
+                <Icon name="circuit" size={10} />
+                Cross-project
+              </span>
+            )}
           </div>
+          {test.cross_project && test.seam && (
+            <div
+              style={{
+                fontSize: 11,
+                color: 'var(--fg-muted)',
+                fontFamily: 'var(--font-mono)',
+                marginTop: 2,
+                marginBottom: 4,
+              }}
+            >
+              {test.seam.producer_repo || '?'} → {test.seam.consumer_repo || '?'}
+              {test.seam.identifier && (
+                <>
+                  {' · '}
+                  <code
+                    style={{
+                      fontSize: 11,
+                      padding: '0 4px',
+                      background: 'var(--bg-input)',
+                      border: '1px solid var(--line)',
+                      borderRadius: 3,
+                    }}
+                  >
+                    {test.seam.identifier}
+                  </code>
+                </>
+              )}
+            </div>
+          )}
           <label
             htmlFor={checkboxId}
             style={{

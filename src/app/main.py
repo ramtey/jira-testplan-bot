@@ -1,6 +1,9 @@
 import json
 import os
+import re
 from dataclasses import asdict
+
+_CROSS_PROJECT_AC_ID_RE = re.compile(r"^CROSS-\d+$")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +31,7 @@ from .models import (
 )
 from .repositories import bug_analysis_repository
 from .runs_routes import router as runs_router
+from .seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from .services import run_tracker
 from .slack_client import resolve_slack_messages_in_text
 from .token_service import token_health_service
@@ -83,7 +87,11 @@ def _normalize_grounding_warnings(test_plan, valid_ac_ids: set[str] | None = Non
         explanation = (entry.get("explanation") or "").strip()
         if not ac_id or not missing or not explanation:
             continue
-        if valid_ac_ids is not None and ac_id not in valid_ac_ids:
+        if (
+            valid_ac_ids is not None
+            and ac_id not in valid_ac_ids
+            and not _CROSS_PROJECT_AC_ID_RE.match(ac_id)
+        ):
             continue
         dedupe_key = (ac_id, missing.lower())
         if dedupe_key in seen:
@@ -280,7 +288,8 @@ def _flatten_cases_for_persistence(test_plan) -> list[tuple[str, str, str | None
             cases.append((item.get("title", ""), _structured_case_body(item), category))
     for item in test_plan.integration_tests or []:
         if isinstance(item, dict):
-            cases.append((item.get("title", ""), _structured_case_body(item), "integration"))
+            category = "integration:cross_project" if item.get("cross_project") else "integration"
+            cases.append((item.get("title", ""), _structured_case_body(item), category))
     for item in test_plan.regression_checklist or []:
         if isinstance(item, str):
             cases.append((item, "", "regression"))
@@ -1006,47 +1015,19 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         raise
 
 
-def _check_tickets_share_context(tickets: list) -> bool:
-    """Return True if at least two tickets share a repository or an overlapping file."""
-    ticket_repos: list[set] = []
-    ticket_files: list[set] = []
-
-    for ticket in tickets:
-        dev_info = ticket.development_info if hasattr(ticket, "development_info") else None
-        if not dev_info:
-            continue
-        repos: set[str] = set()
-        files: set[str] = set()
-        for pr in dev_info.get("pull_requests", []):
-            if pr.get("repository"):
-                repos.add(pr["repository"])
-            for fc in pr.get("files_changed", []):
-                if fc.get("filename"):
-                    files.add(fc["filename"])
-        if repos or files:
-            ticket_repos.append(repos)
-            ticket_files.append(files)
-
-    if len(ticket_repos) < 2:
-        return False
-
-    for i in range(len(ticket_repos)):
-        for j in range(i + 1, len(ticket_repos)):
-            if ticket_repos[i] & ticket_repos[j]:
-                return True
-            if ticket_files[i] & ticket_files[j]:
-                return True
-
-    return False
-
-
 @app.post("/generate-test-plan/multi")
 async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
     """
     Generate a unified test plan for multiple related Jira tickets.
 
-    Tickets must share code changes (same repository or overlapping files).
-    Returns 422 with TICKETS_NO_SHARED_CONTEXT when no overlap is detected.
+    Two modes:
+    - **single_repo**: all tickets touch the same repository (or have no
+      development info). Existing behaviour — one unified plan keyed off
+      shared files.
+    - **cross_project**: tickets span multiple repositories. The endpoint
+      runs the seam extractor to find verified producer/consumer pairs
+      across repos and feeds them into the prompt so the LLM writes
+      integration tests against the seams, not just per-side behaviour.
     """
     for ticket in request.tickets:
         if ticket.issue_type in NON_TESTABLE_ISSUE_TYPES:
@@ -1054,12 +1035,6 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
                 status_code=400,
                 detail=f"Test plans are not generated for {ticket.issue_type} issues ({ticket.ticket_key}).",
             )
-
-    if not _check_tickets_share_context(request.tickets):
-        raise HTTPException(
-            status_code=422,
-            detail="TICKETS_NO_SHARED_CONTEXT",
-        )
 
     aggregated_flags = {
         "had_pr_diff": False,
@@ -1118,10 +1093,18 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             for t in request.tickets
         ]
 
+        mode = classify_multi_ticket_mode(tickets_data)
+        cross_project_payload: dict | None = None
+        if mode == "cross_project":
+            catalog = build_seam_catalog(tickets_data)
+            if not catalog.is_empty:
+                cross_project_payload = catalog.to_dict()
+
         llm = get_llm_client()
         test_plan = await llm.generate_multi_ticket_test_plan(
             tickets=tickets_data,
             images=all_images,
+            cross_project=cross_project_payload,
         )
 
         ac_coverage = _compute_ac_coverage(test_plan, tickets_data)
@@ -1142,6 +1125,10 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             "superseded_acs": ac_coverage.get("superseded_acs", []),
             "grounding_warnings": grounding_warnings,
         }
+        if cross_project_payload is not None:
+            response["cross_project_summary"] = (
+                test_plan.cross_project_summary or cross_project_payload
+            )
 
         await run_tracker.complete_with_plan(
             run_ctx,

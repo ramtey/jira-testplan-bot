@@ -301,6 +301,10 @@ class TestPlan:
     #  "explanation": "Searched the bulk-fill diff and testID reference; no
     #  control matching 'Edit' was found."}
     grounding_warnings: list[dict] | None = None
+    # Cross-project mode only. Echoes the seam catalog the LLM was given so
+    # the UI can render the producer/consumer pairs the plan covers. Shape:
+    # {"verified_seams": [...], "suspected_seams": [...], "repos": [...]}.
+    cross_project_summary: dict | None = None
 
 
 # ============================================================================

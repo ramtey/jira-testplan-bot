@@ -57,15 +57,15 @@ export function useTestPlan() {
     setError(null)
     setPlan(null)
 
-    const isMulti = ticketsData.length > 1
-    const url = isMulti
-      ? `${API_BASE_URL}/generate-test-plan/multi`
-      : `${API_BASE_URL}/generate-test-plan`
-    const body = isMulti
-      ? { tickets: ticketsData.map(buildTicketPayload) }
-      : buildTicketPayload(ticketsData[0])
-
     try {
+      const isMulti = ticketsData.length > 1
+      const url = isMulti
+        ? `${API_BASE_URL}/generate-test-plan/multi`
+        : `${API_BASE_URL}/generate-test-plan`
+      const body = isMulti
+        ? { tickets: ticketsData.map(buildTicketPayload) }
+        : buildTicketPayload(ticketsData[0])
+
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -75,12 +75,6 @@ export function useTestPlan() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        if (errorData.detail === 'TICKETS_NO_SHARED_CONTEXT') {
-          throw new Error(
-            "These tickets don't share any code changes or repository context. " +
-              'Select tickets with related development work (same repo or overlapping files).'
-          )
-        }
         throw new Error(errorData.detail || 'Failed to generate test plan')
       }
 
