@@ -137,6 +137,7 @@ function WorkflowActions({
   assigneeHistory,
   assigneeHistoryAccountIds,
   currentUserAccountId,
+  childIssues,
   onActionComplete,
 }) {
   const [pendingAction, setPendingAction] = useState(null)
@@ -170,6 +171,10 @@ function WorkflowActions({
 
   const visibleActions = ACTIONS.filter((a) => a.showWhen(currentStatus))
   if (visibleActions.length === 0) return null
+
+  const hasSubtasks =
+    Array.isArray(childIssues) &&
+    childIssues.some((c) => /sub-?task/i.test(c?.issue_type || ''))
 
   const closeNoteForm = () => {
     setNoteForAction(null)
@@ -343,11 +348,13 @@ function WorkflowActions({
             </Btn>
           ))}
           <span style={{ flex: 1 }} />
-          <Cbx
-            checked={cascadeToSubtasks}
-            onChange={setCascadeToSubtasks}
-            label="Also move all subtasks"
-          />
+          {hasSubtasks && (
+            <Cbx
+              checked={cascadeToSubtasks}
+              onChange={setCascadeToSubtasks}
+              label="Also move all subtasks"
+            />
+          )}
         </div>
       )}
 
@@ -473,11 +480,13 @@ function WorkflowActions({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginTop: 'var(--s-6)' }}>
-            <Cbx
-              checked={cascadeToSubtasks}
-              onChange={setCascadeToSubtasks}
-              label="Also move all subtasks"
-            />
+            {hasSubtasks && (
+              <Cbx
+                checked={cascadeToSubtasks}
+                onChange={setCascadeToSubtasks}
+                label="Also move all subtasks"
+              />
+            )}
             <span style={{ flex: 1 }} />
             <Btn variant="ghost" onClick={closeNoteForm} disabled={pendingAction !== null}>Cancel</Btn>
             <Btn

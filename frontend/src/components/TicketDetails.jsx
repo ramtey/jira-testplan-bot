@@ -151,6 +151,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
           assigneeHistory={ticketData.assignee_history}
           assigneeHistoryAccountIds={ticketData.assignee_history_account_ids}
           currentUserAccountId={ticketData.current_user_account_id}
+          childIssues={ticketData.children}
           onActionComplete={onActionComplete}
         />
       </div>
