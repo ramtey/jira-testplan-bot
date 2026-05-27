@@ -2321,6 +2321,26 @@ class JiraClient:
 
         return (r.json().get("fields") or {}).get("subtasks") or []
 
+    async def get_issue_status(self, issue_key: str) -> str | None:
+        """Return the current status name of `issue_key`, or None if missing."""
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+        params = {"fields": "status"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        r.raise_for_status()
+
+        status_field = ((r.json().get("fields") or {}).get("status") or {})
+        return status_field.get("name")
+
     async def list_transitions(self, issue_key: str) -> list[dict]:
         """List available transitions from the issue's current status."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"

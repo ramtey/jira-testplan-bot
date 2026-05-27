@@ -713,6 +713,22 @@ async def run_workflow_action(
             assigned_label,
         )
 
+        # Capture parent's status BEFORE the transition so the subtask
+        # cascade can match only siblings that share the parent's
+        # pre-transition state (e.g., a parent in "Ready to Test" should
+        # only pull subtasks that are also in "Ready to Test").
+        parent_pre_status: str | None = None
+        if payload is not None and payload.cascade_to_subtasks:
+            try:
+                parent_pre_status = await jira.get_issue_status(issue_key)
+            except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+                import logging
+                logging.warning(
+                    "Could not read pre-transition status for %s: %s",
+                    issue_key,
+                    exc,
+                )
+
         await jira.transition_issue(issue_key, transition["id"])
         await jira.assign_issue(issue_key, target_account_id)
 
@@ -759,7 +775,7 @@ async def run_workflow_action(
         cascaded_subtasks: list[str] = []
         if payload is not None and payload.cascade_to_subtasks:
             cascaded_subtasks = await _cascade_transition_to_subtasks(
-                jira, issue_key, target_status
+                jira, issue_key, target_status, parent_pre_status
             )
 
         return {
@@ -842,20 +858,27 @@ async def _maybe_transition_parent_to_uat(
 
 
 async def _cascade_transition_to_subtasks(
-    jira: JiraClient, parent_key: str, target_status: str
+    jira: JiraClient,
+    parent_key: str,
+    target_status: str,
+    parent_pre_status: str | None = None,
 ) -> list[str]:
-    """Transition every direct subtask of `parent_key` to `target_status`.
+    """Transition direct subtasks of `parent_key` to `target_status`.
 
-    Each subtask is moved via its own transition whose `to.name` matches
-    `target_status` (case-insensitive). Subtasks already at the target are
-    skipped; subtasks whose workflow has no matching transition are skipped
-    silently — per user preference, we don't surface partial failures.
+    Only subtasks whose current status matches `parent_pre_status` (the
+    parent's status *before* it was transitioned) are moved — so a parent
+    advancing from "Ready to Test" only pulls subtasks that were also in
+    "Ready to Test", leaving siblings in unrelated states alone. When
+    `parent_pre_status` is unknown (None), the legacy behavior of moving
+    every eligible subtask is preserved. Subtasks already at the target,
+    or whose workflow has no matching transition, are skipped silently.
     Returns the list of subtask keys that were actually moved.
     """
     import logging
 
     moved: list[str] = []
     target_lower = target_status.strip().lower()
+    parent_lower = (parent_pre_status or "").strip().lower()
 
     try:
         subtasks = await jira.get_subtasks_of(parent_key)
@@ -875,6 +898,14 @@ async def _cascade_transition_to_subtasks(
             ((sub.get("fields") or {}).get("status") or {}).get("name") or ""
         ).strip().lower()
         if status_name == target_lower:
+            continue
+        if parent_lower and status_name != parent_lower:
+            logging.info(
+                "Cascade skip: subtask %s status '%s' does not match parent's pre-transition status '%s'",
+                sub_key,
+                status_name,
+                parent_lower,
+            )
             continue
         try:
             transitions = await jira.list_transitions(sub_key)
