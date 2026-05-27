@@ -129,43 +129,46 @@ def test_build_qa_pass_adf_summary_goes_into_expand():
     assert "strong" in flattened
 
 
-def test_build_qa_pass_adf_renders_images_above_fold():
+def _image_paragraphs(doc):
+    return [
+        p for p in doc["content"]
+        if p.get("type") == "paragraph"
+        and p.get("content")
+        and p["content"][0].get("text", "").startswith("📷")
+    ]
+
+
+def test_build_qa_pass_adf_renders_image_links_above_fold():
     # Reviewers should see screenshot links without expanding anything,
-    # so images sit above the summary expand block.
+    # so image link paragraphs sit above the summary expand block.
     doc = _build_qa_pass_adf(
         None,
         "Some test summary",
         None,
         None,
-        ["https://i.imgur.com/a.png", "https://i.imgur.com/b.png"],
+        [("a.png", "https://jira.example/a"), ("b.png", "https://jira.example/b")],
     )
     assert doc is not None
-    image_paragraphs = [
-        p for p in doc["content"]
-        if p.get("type") == "paragraph"
-        and p.get("content")
-        and p["content"][0].get("text", "").startswith("🖼️")
-    ]
-    assert len(image_paragraphs) == 2
-    # Images appear before the expand block.
-    image_indices = [doc["content"].index(p) for p in image_paragraphs]
+    paragraphs = _image_paragraphs(doc)
+    assert len(paragraphs) == 2
+    hrefs = [p["content"][1]["marks"][0]["attrs"]["href"] for p in paragraphs]
+    assert hrefs == ["https://jira.example/a", "https://jira.example/b"]
+    filenames = [p["content"][1]["text"] for p in paragraphs]
+    assert filenames == ["a.png", "b.png"]
+    # Links appear before the expand block.
+    indices = [doc["content"].index(p) for p in paragraphs]
     expand_index = next(
         i for i, node in enumerate(doc["content"]) if node["type"] == "expand"
     )
-    assert max(image_indices) < expand_index
+    assert max(indices) < expand_index
 
 
 def test_build_qa_pass_adf_images_alone_create_a_comment():
     # A screenshot is a meaningful artifact even without loom/summary/envs.
-    doc = _build_qa_pass_adf(None, None, None, None, ["https://i.imgur.com/a.png"])
+    doc = _build_qa_pass_adf(None, None, None, None, [("a.png", "https://jira.example/a")])
     assert doc is not None
-    image_paragraphs = [
-        p for p in doc["content"]
-        if p.get("type") == "paragraph"
-        and p.get("content")
-        and p["content"][0].get("text", "").startswith("🖼️")
-    ]
-    assert len(image_paragraphs) == 1
+    paragraphs = _image_paragraphs(doc)
+    assert len(paragraphs) == 1
 
 
 def test_build_qa_pass_adf_dedups_images_and_drops_blanks():
@@ -174,16 +177,16 @@ def test_build_qa_pass_adf_dedups_images_and_drops_blanks():
         None,
         None,
         None,
-        ["https://i.imgur.com/a.png", "  ", "https://i.imgur.com/a.png", ""],
+        [
+            ("a.png", "https://jira.example/a"),
+            ("a.png", "  "),
+            ("a.png", "https://jira.example/a"),
+            ("", "https://jira.example/empty-name"),
+        ],
     )
     assert doc is not None
-    image_paragraphs = [
-        p for p in doc["content"]
-        if p.get("type") == "paragraph"
-        and p.get("content")
-        and p["content"][0].get("text", "").startswith("🖼️")
-    ]
-    assert len(image_paragraphs) == 1
+    paragraphs = _image_paragraphs(doc)
+    assert len(paragraphs) == 1
 
 
 def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
@@ -192,17 +195,13 @@ def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
         "Summary text",
         ["Integ"],
         ["acct-1"],
-        ["https://i.imgur.com/a.png"],
+        [("a.png", "https://jira.example/a")],
     )
     assert doc is not None
     types = [node["type"] for node in doc["content"]]
-    # Marker, Loom paragraph, Image paragraph, Expand, Mentions paragraph.
-    # The Loom and image paragraphs share type "paragraph"; we identify
-    # them by content.
     assert types[0] == "paragraph"  # marker
     assert types.count("expand") == 1
     expand_idx = types.index("expand")
-    # Find Loom and image paragraph indices by their leading emoji.
     loom_idx = next(
         i for i, p in enumerate(doc["content"])
         if p["type"] == "paragraph"
@@ -211,9 +210,8 @@ def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
     image_idx = next(
         i for i, p in enumerate(doc["content"])
         if p["type"] == "paragraph"
-        and p.get("content") and p["content"][0].get("text", "").startswith("🖼️")
+        and p.get("content") and p["content"][0].get("text", "").startswith("📷")
     )
-    # Mentions paragraph is the one containing a `mention` node.
     mention_idx = next(
         i for i, p in enumerate(doc["content"])
         if p["type"] == "paragraph"
@@ -226,8 +224,12 @@ def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
 
 def test_build_qa_fail_adf_returns_none_without_reason():
     # Reason is the load-bearing field — without it nothing should post.
-    assert _build_qa_fail_adf(None, ["https://loom.com/x"], ["https://i.imgur.com/a.png"]) is None
-    assert _build_qa_fail_adf("   ", ["https://loom.com/x"], ["https://i.imgur.com/a.png"]) is None
+    assert _build_qa_fail_adf(
+        None, ["https://loom.com/x"], [("a.png", "https://jira.example/a")]
+    ) is None
+    assert _build_qa_fail_adf(
+        "   ", ["https://loom.com/x"], [("a.png", "https://jira.example/a")]
+    ) is None
 
 
 def test_build_qa_fail_adf_minimum_is_marker_plus_reason():
@@ -259,37 +261,43 @@ def test_build_qa_fail_adf_renders_markdown_in_reason():
     assert len(bullet["content"]) == 2
 
 
-def test_build_qa_fail_adf_appends_loom_then_images_in_order():
+def test_build_qa_fail_adf_appends_loom_then_image_links_in_order():
     doc = _build_qa_fail_adf(
         "Reason here",
         ["https://loom.com/x"],
-        ["https://i.imgur.com/a.png", "https://i.imgur.com/b.png"],
+        [("a.png", "https://jira.example/a"), ("b.png", "https://jira.example/b")],
     )
     assert doc is not None
-    # Expected order after marker + reason paragraph: Loom paragraph, then images.
-    paragraphs_after_reason = doc["content"][2:]
-    assert paragraphs_after_reason[0]["content"][0]["text"].startswith("📹 Loom")
-    assert paragraphs_after_reason[1]["content"][0]["text"].startswith("🖼️")
-    assert paragraphs_after_reason[2]["content"][0]["text"].startswith("🖼️")
-    # Each image link node carries the URL as both text and href.
-    img_link = paragraphs_after_reason[1]["content"][1]
-    assert img_link["text"] == "https://i.imgur.com/a.png"
-    assert img_link["marks"][0]["attrs"]["href"] == "https://i.imgur.com/a.png"
+    # Expected order after marker + reason paragraph: Loom paragraph,
+    # then two image link paragraphs.
+    after_reason = doc["content"][2:]
+    assert after_reason[0]["content"][0]["text"].startswith("📹 Loom")
+    assert after_reason[1]["content"][0]["text"].startswith("📷")
+    assert after_reason[1]["content"][1]["text"] == "a.png"
+    assert after_reason[1]["content"][1]["marks"][0]["attrs"]["href"] == "https://jira.example/a"
+    assert after_reason[2]["content"][0]["text"].startswith("📷")
+    assert after_reason[2]["content"][1]["text"] == "b.png"
 
 
 def test_build_qa_fail_adf_dedups_images_and_drops_blanks():
     doc = _build_qa_fail_adf(
         "Reason",
         None,
-        ["https://i.imgur.com/a.png", "  ", "https://i.imgur.com/a.png", ""],
+        [
+            ("a.png", "https://jira.example/a"),
+            ("a.png", "  "),
+            ("a.png", "https://jira.example/a"),
+            ("", "https://jira.example/empty-name"),
+        ],
     )
     assert doc is not None
-    image_paragraphs = [
+    paragraphs = [
         p for p in doc["content"]
         if p.get("type") == "paragraph"
-        and p.get("content") and p["content"][0].get("text", "").startswith("🖼️")
+        and p.get("content") and p["content"][0].get("text", "").startswith("📷")
     ]
-    assert len(image_paragraphs) == 1
+    assert len(paragraphs) == 1
+    assert paragraphs[0]["content"][1]["text"] == "a.png"
 
 
 # ---------- _build_mentions_paragraph ----------
@@ -343,7 +351,7 @@ def test_build_qa_fail_adf_appends_mentions_after_attachments():
     doc = _build_qa_fail_adf(
         "Login broken",
         ["https://loom.com/x"],
-        ["https://i.imgur.com/a.png"],
+        [("a.png", "https://jira.example/a")],
         ["acct-1"],
     )
     assert doc is not None

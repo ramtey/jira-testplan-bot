@@ -203,12 +203,57 @@ def _normalize_environments(environments: list[str] | None) -> list[str]:
     return out
 
 
+def _build_attachment_link_paragraph(filename: str, url: str) -> dict:
+    """Render a single attachment as a clickable link paragraph.
+
+    Jira already displays attached images in the issue's Attachments
+    panel below the comments, so a link here is enough to point readers
+    at a specific screenshot. We tried `mediaSingle` for inline
+    rendering, but Jira's ADF renderer requires a media-services ID and
+    collection that aren't returned by the attachments endpoint.
+    """
+    return {
+        "type": "paragraph",
+        "content": [
+            {"type": "text", "text": "📷 "},
+            {
+                "type": "text",
+                "text": filename,
+                "marks": [{"type": "link", "attrs": {"href": url}}],
+            },
+        ],
+    }
+
+
+def _normalize_attachments(
+    attachments: list[tuple[str, str]] | None,
+) -> list[tuple[str, str]]:
+    """Strip blanks and dedupe attachment (filename, url) tuples by URL."""
+    if not attachments:
+        return []
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for item in attachments:
+        if not isinstance(item, tuple) or len(item) != 2:
+            continue
+        filename, url = item
+        if not isinstance(filename, str) or not isinstance(url, str):
+            continue
+        filename = filename.strip()
+        url = url.strip()
+        if not filename or not url or url in seen:
+            continue
+        seen.add(url)
+        out.append((filename, url))
+    return out
+
+
 def _build_qa_pass_adf(
     loom_urls: list[str] | None,
     summary: str | None,
     environments: list[str] | None = None,
     mention_account_ids: list[str] | None = None,
-    image_urls: list[str] | None = None,
+    image_attachments: list[tuple[str, str]] | None = None,
 ) -> dict | None:
     """Build the ADF body for a QA→UAT pass comment.
 
@@ -216,10 +261,11 @@ def _build_qa_pass_adf(
     comment the same way test-plan comments are detected. The environments
     tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
     stays visible without expanding. Loom links sit above the fold (one
-    paragraph per URL), image links sit just below them (also above-fold
-    so reviewers see proof without expanding), and the freeform summary
-    is wrapped in an `expand` node. When mentions are supplied, a final
-    "cc:" paragraph triggers Jira notifications.
+    paragraph per URL), images render inline as `mediaSingle` nodes just
+    below them (also above-fold so reviewers see proof without
+    expanding), and the freeform summary is wrapped in an `expand` node.
+    When mentions are supplied, a final "cc:" paragraph triggers Jira
+    notifications.
 
     Mentions alone don't justify posting a comment — the function still
     returns None unless at least one substantive field
@@ -229,7 +275,7 @@ def _build_qa_pass_adf(
     looms = _normalize_url_list(loom_urls)
     summary = (summary or "").strip()
     envs = _normalize_environments(environments)
-    images = _normalize_url_list(image_urls)
+    images = _normalize_attachments(image_attachments)
     if not looms and not summary and not envs and not images:
         return None
 
@@ -257,18 +303,8 @@ def _build_qa_pass_adf(
             ],
         })
 
-    for url in images:
-        content.append({
-            "type": "paragraph",
-            "content": [
-                {"type": "text", "text": "🖼️ "},
-                {
-                    "type": "text",
-                    "text": url,
-                    "marks": [{"type": "link", "attrs": {"href": url}}],
-                },
-            ],
-        })
+    for filename, url in images:
+        content.append(_build_attachment_link_paragraph(filename, url))
 
     if summary:
         summary_doc = markdown_to_adf(summary)
@@ -322,27 +358,26 @@ def _build_mentions_paragraph(account_ids: list[str] | None) -> dict | None:
 def _build_qa_fail_adf(
     reason: str | None,
     loom_urls: list[str] | None,
-    image_urls: list[str] | None = None,
+    image_attachments: list[tuple[str, str]] | None = None,
     mention_account_ids: list[str] | None = None,
 ) -> dict | None:
     """Build the ADF body for a QA→To Do fail-back comment.
 
     The reason is the load-bearing field — devs need to see *why* the
     ticket bounced without expanding anything, so it's rendered above the
-    fold (not inside an expand node). Loom + image links sit below as
-    clickable references (one paragraph per Loom URL); mentioned
-    accountIds get a final "cc:" paragraph that triggers Jira
-    notifications. Returns None if no reason is supplied: callers use
-    that signal to skip posting (the transition still runs). Mentions
-    without a reason still return None — there's no value in pinging
-    people on an empty comment.
+    fold (not inside an expand node). Loom links and inline screenshots
+    sit below as references; mentioned accountIds get a final "cc:"
+    paragraph that triggers Jira notifications. Returns None if no
+    reason is supplied: callers use that signal to skip posting (the
+    transition still runs). Mentions without a reason still return
+    None — there's no value in pinging people on an empty comment.
     """
     reason = (reason or "").strip()
     if not reason:
         return None
 
     looms = _normalize_url_list(loom_urls)
-    images = _normalize_url_list(image_urls)
+    images = _normalize_attachments(image_attachments)
 
     content: list[dict] = [
         {"type": "paragraph", "content": [{"type": "text", "text": QA_FAIL_MARKER}]}
@@ -364,18 +399,8 @@ def _build_qa_fail_adf(
             ],
         })
 
-    for url in images:
-        content.append({
-            "type": "paragraph",
-            "content": [
-                {"type": "text", "text": "🖼️ "},
-                {
-                    "type": "text",
-                    "text": url,
-                    "marks": [{"type": "link", "attrs": {"href": url}}],
-                },
-            ],
-        })
+    for filename, url in images:
+        content.append(_build_attachment_link_paragraph(filename, url))
 
     mentions_para = _build_mentions_paragraph(mention_account_ids)
     if mentions_para:
@@ -2091,6 +2116,49 @@ class JiraClient:
         result["updated"] = False
         return result
 
+    async def upload_attachments(
+        self,
+        issue_key: str,
+        files: list[tuple[str, bytes, str]],
+    ) -> list[dict]:
+        """Upload files as Jira attachments and return Jira's response objects.
+
+        Each file is `(filename, content_bytes, mime_type)`. Jira's
+        attachment endpoint requires `X-Atlassian-Token: no-check`
+        (CSRF nonce bypass — this is the documented call site, not a
+        workaround). httpx sets the multipart boundary automatically as
+        long as we don't preset `Content-Type`. Each returned object has
+        an `id` that can be inlined into an ADF `media` node so the
+        image renders directly in a comment body.
+        """
+        if not files:
+            return []
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/attachments"
+        headers = {**self._headers(), "X-Atlassian-Token": "no-check"}
+        files_payload = [
+            ("file", (name, content, mime_type))
+            for name, content, mime_type in files
+        ]
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(url, headers=headers, files=files_payload)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for this issue or verify your account has proper access.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+        return r.json()
+
     async def post_qa_pass_comment(
         self,
         issue_key: str,
@@ -2098,7 +2166,7 @@ class JiraClient:
         summary: str | None,
         environments: list[str] | None = None,
         mention_account_ids: list[str] | None = None,
-        image_urls: list[str] | None = None,
+        image_attachments: list[tuple[str, str]] | None = None,
     ) -> dict | None:
         """Post a QA→UAT pass comment with optional environments / Looms / summary / images.
 
@@ -2107,7 +2175,7 @@ class JiraClient:
         QA pass, not a single living document like the test plan.
         """
         body = _build_qa_pass_adf(
-            loom_urls, summary, environments, mention_account_ids, image_urls
+            loom_urls, summary, environments, mention_account_ids, image_attachments
         )
         if body is None:
             return None
@@ -2140,7 +2208,7 @@ class JiraClient:
         issue_key: str,
         reason: str | None,
         loom_urls: list[str] | None,
-        image_urls: list[str] | None = None,
+        image_attachments: list[tuple[str, str]] | None = None,
         mention_account_ids: list[str] | None = None,
     ) -> dict | None:
         """Post a QA→To Do fail-back comment.
@@ -2148,7 +2216,7 @@ class JiraClient:
         Returns None when no reason is supplied (nothing to post — the
         caller still runs the transition). Always creates a new comment.
         """
-        body = _build_qa_fail_adf(reason, loom_urls, image_urls, mention_account_ids)
+        body = _build_qa_fail_adf(reason, loom_urls, image_attachments, mention_account_ids)
         if body is None:
             return None
 

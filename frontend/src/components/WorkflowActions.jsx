@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL, isWorkflowEnabledForTicket } from '../config'
 import Icon from './Icon'
 import { Btn, Cbx, Alert } from './ui'
@@ -127,6 +127,118 @@ function EnvPill({ value, on, onToggle, disabled }) {
   )
 }
 
+function ImageDropzone({ files, onAdd, onRemove, disabled }) {
+  const [isDragging, setIsDragging] = useState(false)
+  const inputRef = useRef(null)
+
+  // Paste support: when the form is focused, ctrl/cmd+V drops an image
+  // from the clipboard straight into the upload list. Mirrors the
+  // existing "paste a URL" muscle memory but lands a real attachment.
+  useEffect(() => {
+    if (disabled) return
+    const handler = (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      const imageItems = Array.from(items).filter((it) => it.type.startsWith('image/'))
+      if (imageItems.length === 0) return
+      e.preventDefault()
+      const fileList = imageItems
+        .map((it) => it.getAsFile())
+        .filter(Boolean)
+      onAdd(fileList)
+    }
+    window.addEventListener('paste', handler)
+    return () => window.removeEventListener('paste', handler)
+  }, [disabled, onAdd])
+
+  const onDrop = (e) => {
+    e.preventDefault()
+    setIsDragging(false)
+    if (disabled) return
+    onAdd(e.dataTransfer.files)
+  }
+
+  return (
+    <div>
+      <div
+        onClick={() => !disabled && inputRef.current?.click()}
+        onDragOver={(e) => {
+          e.preventDefault()
+          if (!disabled) setIsDragging(true)
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={onDrop}
+        style={{
+          border: '1px dashed ' + (isDragging ? 'var(--accent)' : 'var(--border)'),
+          background: isDragging ? 'rgba(59,130,246,.06)' : 'transparent',
+          borderRadius: 'var(--r-md)',
+          padding: 'var(--s-4) var(--s-5)',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          fontSize: 'var(--t-sm)',
+          color: 'var(--fg-subtle)',
+          transition: 'background 120ms, border-color 120ms',
+        }}
+      >
+        <Icon name="image" size={13} style={{ marginRight: 6, verticalAlign: '-2px' }} />
+        Click, drag, or paste images here. PNG / JPEG / GIF / WEBP, up to 10 MB each.
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          hidden
+          onChange={(e) => {
+            onAdd(e.target.files)
+            e.target.value = ''
+          }}
+        />
+      </div>
+      {files.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+          {files.map((f, i) => (
+            <span
+              key={i}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'var(--bg-subtle)',
+                border: '1px solid var(--border)',
+                borderRadius: 999,
+                padding: '4px 10px',
+                fontSize: 'var(--t-xs)',
+              }}
+              title={`${f.name} · ${(f.size / 1024).toFixed(0)} KB`}
+            >
+              <Icon name="image" size={11} />
+              {f.name.length > 28 ? f.name.slice(0, 25) + '…' : f.name}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onRemove(i)
+                }}
+                disabled={disabled}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  color: 'var(--fg-subtle)',
+                  padding: 0,
+                  display: 'inline-flex',
+                }}
+                aria-label={`Remove ${f.name}`}
+              >
+                <Icon name="x" size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WorkflowActions({
   ticketKey,
   currentStatus,
@@ -148,7 +260,7 @@ function WorkflowActions({
   const [summary, setSummary] = useState('')
   const [environments, setEnvironments] = useState(DEFAULT_ENVIRONMENTS)
   const [reason, setReason] = useState('')
-  const [imageUrlsText, setImageUrlsText] = useState('')
+  const [imageFiles, setImageFiles] = useState([])
   const [mentionAccountIds, setMentionAccountIds] = useState([])
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
 
@@ -182,9 +294,19 @@ function WorkflowActions({
     setSummary('')
     setEnvironments(DEFAULT_ENVIRONMENTS)
     setReason('')
-    setImageUrlsText('')
+    setImageFiles([])
     setMentionAccountIds([])
     setCascadeToSubtasks(false)
+  }
+
+  const addImageFiles = (files) => {
+    const incoming = Array.from(files || []).filter((f) => f && f.type.startsWith('image/'))
+    if (incoming.length === 0) return
+    setImageFiles((prev) => [...prev, ...incoming])
+  }
+
+  const removeImageFile = (idx) => {
+    setImageFiles((prev) => prev.filter((_, i) => i !== idx))
   }
 
   const toggleEnvironment = (env) => {
@@ -210,22 +332,28 @@ function WorkflowActions({
     currentUserAccountId,
   })
 
-  const runAction = async (action, body) => {
+  const runAction = async (action, body, files = []) => {
     setPendingAction(action.id)
     setFeedback(null)
     setIsLeaving(false)
     try {
-      const init = { method: 'POST' }
+      // The backend always reads multipart/form-data on this endpoint:
+      // `payload` carries the JSON body and `images[]` carries any files.
+      // We send an empty FormData (no payload, no files) for actions like
+      // pull-to-testing that just transition.
+      const form = new FormData()
       const effectiveBody = cascadeToSubtasks
         ? { ...(body || {}), cascade_to_subtasks: true }
         : body
-      if (effectiveBody) {
-        init.headers = { 'Content-Type': 'application/json' }
-        init.body = JSON.stringify(effectiveBody)
+      if (effectiveBody && Object.keys(effectiveBody).length > 0) {
+        form.append('payload', JSON.stringify(effectiveBody))
+      }
+      for (const file of files) {
+        form.append('images', file, file.name)
       }
       const response = await fetch(
         `${API_BASE_URL}/issue/${ticketKey}/workflow/${action.id}`,
-        init
+        { method: 'POST', body: form }
       )
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
@@ -282,29 +410,23 @@ function WorkflowActions({
       .map((s) => s.trim())
       .filter(Boolean)
 
-    const images = imageUrlsText
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-
     if (noteForAction.id === 'pass-to-uat') {
       const trimmedSummary = summary.trim()
       const hasAnyField =
         looms.length > 0 ||
         trimmedSummary ||
         environments.length > 0 ||
-        images.length > 0
+        imageFiles.length > 0
       const body = hasAnyField
         ? {
             loom_urls: looms.length > 0 ? looms : null,
             summary: trimmedSummary || null,
             environments: environments.length > 0 ? environments : null,
-            image_urls: images.length > 0 ? images : null,
             mention_account_ids:
               mentionAccountIds.length > 0 ? mentionAccountIds : null,
           }
         : undefined
-      runAction(noteForAction, body)
+      runAction(noteForAction, body, imageFiles)
       return
     }
 
@@ -317,11 +439,10 @@ function WorkflowActions({
       const body = {
         reason: trimmedReason,
         loom_urls: looms.length > 0 ? looms : null,
-        image_urls: images.length > 0 ? images : null,
         mention_account_ids:
           mentionAccountIds.length > 0 ? mentionAccountIds : null,
       }
-      runAction(noteForAction, body)
+      runAction(noteForAction, body, imageFiles)
     }
   }
 
@@ -447,15 +568,12 @@ function WorkflowActions({
               </>
             )}
 
-            <span className="lbl">Image URLs</span>
-            <textarea
-              className="inp mono"
-              rows={2}
-              placeholder="One per line. Markdown links are also fine."
-              value={imageUrlsText}
-              onChange={(e) => setImageUrlsText(e.target.value)}
+            <span className="lbl">Screenshots</span>
+            <ImageDropzone
+              files={imageFiles}
+              onAdd={addImageFiles}
+              onRemove={removeImageFile}
               disabled={pendingAction !== null}
-              style={{ minHeight: 40 }}
             />
 
             {mentionCandidates.length > 0 && (

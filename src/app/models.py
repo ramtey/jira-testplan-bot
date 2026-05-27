@@ -395,16 +395,18 @@ class WorkflowActionRequest(BaseModel):
     """Optional payload for /issue/{key}/workflow/{action}.
 
     `pass-to-uat` reads loom_urls + summary + environments; `fail-to-todo`
-    reads reason (required for the comment to be posted) + loom_urls +
-    image_urls. All fields are optional at the schema level; the per-action
-    handlers decide what's needed before posting.
+    reads reason (required for the comment to be posted) + loom_urls.
+    All fields are optional at the schema level; the per-action handlers
+    decide what's needed before posting. Image attachments are uploaded
+    as multipart `images[]` files alongside this JSON payload — the
+    endpoint uploads them to Jira and inlines the resulting attachment
+    IDs in the comment.
     """
 
     loom_urls: list[str] | None = None
     summary: str | None = None
     environments: list[str] | None = None
     reason: str | None = None
-    image_urls: list[str] | None = None
     # Optional list of Jira accountIds to @mention in the comment body.
     mention_account_ids: list[str] | None = None
     # When true, after the primary issue transitions, cascade the same

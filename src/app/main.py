@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 _CROSS_PROJECT_AC_ID_RE = re.compile(r"^CROSS-\d+$")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .bug_lens_routes import router as bug_lens_router
@@ -625,13 +625,25 @@ SK_WORKFLOW_ACTIONS: dict[str, str] = {
 }
 
 
+_ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB per file; Jira allows more but this is a sane UI cap.
+
+
 @app.post("/issue/{issue_key}/workflow/{action}")
 async def run_workflow_action(
     issue_key: str,
     action: str,
-    payload: WorkflowActionRequest | None = None,
+    payload: str | None = Form(default=None),
+    images: list[UploadFile] | None = File(default=None),
 ):
-    """Execute a single-click QA workflow action: transition + reassign."""
+    """Execute a single-click QA workflow action: transition + reassign.
+
+    The endpoint takes `multipart/form-data`: a JSON-encoded
+    `WorkflowActionRequest` in the `payload` field, plus zero or more
+    `images[]` files. When images are present they are uploaded to the
+    issue as Jira attachments *before* the workflow transition runs, so
+    a failed upload aborts cleanly without moving the ticket.
+    """
     if not issue_key.upper().startswith("SK-"):
         raise HTTPException(
             status_code=400,
@@ -640,8 +652,57 @@ async def run_workflow_action(
     if action not in SK_WORKFLOW_ACTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
+    parsed_payload: WorkflowActionRequest | None = None
+    if payload:
+        try:
+            parsed_payload = WorkflowActionRequest.model_validate_json(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid payload JSON: {exc}")
+
+    image_files: list[tuple[str, bytes, str]] = []
+    if images:
+        for upload in images:
+            if upload is None or not upload.filename:
+                continue
+            mime = (upload.content_type or "").lower()
+            if mime not in _ALLOWED_IMAGE_MIME:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported image type: {mime or 'unknown'}. "
+                           f"Allowed: PNG, JPEG, GIF, WEBP.",
+                )
+            content = await upload.read()
+            if len(content) > _MAX_IMAGE_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{upload.filename} is larger than 10 MB.",
+                )
+            image_files.append((upload.filename, content, mime))
+
     target_status = SK_WORKFLOW_ACTIONS[action]
     jira = JiraClient()
+
+    # Upload attachments first so that a Jira-side failure aborts before
+    # the ticket moves. Skipped for pull-to-testing — that action has no
+    # comment flow, so any images would be orphaned attachments. We pass
+    # the filename + content URL through to the ADF builder so the
+    # comment can link to each screenshot; the image itself also auto-
+    # displays in the issue's Attachments panel.
+    image_attachments: list[tuple[str, str]] = []
+    if image_files and action in {"pass-to-uat", "fail-to-todo"}:
+        try:
+            uploaded = await jira.upload_attachments(issue_key, image_files)
+            image_attachments = [
+                (a.get("filename") or "screenshot", a.get("content") or "")
+                for a in uploaded
+                if a.get("content")
+            ]
+        except JiraNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except JiraAuthError as e:
+            raise HTTPException(status_code=e.status_code, detail=str(e))
+        except JiraConnectionError as e:
+            raise HTTPException(status_code=502, detail=str(e))
 
     try:
         transitions = await jira.list_transitions(issue_key)
@@ -719,7 +780,7 @@ async def run_workflow_action(
         # pre-transition state (e.g., a parent in "Ready to Test" should
         # only pull subtasks that are also in "Ready to Test").
         parent_pre_status: str | None = None
-        if payload is not None and payload.cascade_to_subtasks:
+        if parsed_payload is not None and parsed_payload.cascade_to_subtasks:
             try:
                 parent_pre_status = await jira.get_issue_status(issue_key)
             except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
@@ -734,34 +795,37 @@ async def run_workflow_action(
         await jira.assign_issue(issue_key, target_account_id)
 
         comment_posted = False
-        if action == "pass-to-uat" and payload is not None:
+        if action == "pass-to-uat" and parsed_payload is not None:
             try:
                 result = await jira.post_qa_pass_comment(
                     issue_key,
-                    payload.loom_urls,
-                    payload.summary,
-                    payload.environments,
-                    payload.mention_account_ids,
-                    payload.image_urls,
+                    parsed_payload.loom_urls,
+                    parsed_payload.summary,
+                    parsed_payload.environments,
+                    parsed_payload.mention_account_ids,
+                    image_attachments or None,
                 )
                 comment_posted = result is not None
-            except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+            except Exception as exc:
                 # Transition + reassign already succeeded — surface the
                 # comment failure but don't roll back the workflow move.
+                # Catches httpx.HTTPStatusError too (e.g., Jira ADF
+                # validation 400s) so the response carries CORS headers
+                # instead of bubbling as a bare 500.
                 logging.warning(
                     "pass-to-uat comment failed on %s: %s", issue_key, exc
                 )
-        elif action == "fail-to-todo" and payload is not None:
+        elif action == "fail-to-todo" and parsed_payload is not None:
             try:
                 result = await jira.post_qa_fail_comment(
                     issue_key,
-                    payload.reason,
-                    payload.loom_urls,
-                    payload.image_urls,
-                    payload.mention_account_ids,
+                    parsed_payload.reason,
+                    parsed_payload.loom_urls,
+                    image_attachments or None,
+                    parsed_payload.mention_account_ids,
                 )
                 comment_posted = result is not None
-            except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+            except Exception as exc:
                 logging.warning(
                     "fail-to-todo comment failed on %s: %s", issue_key, exc
                 )
@@ -774,7 +838,7 @@ async def run_workflow_action(
             )
 
         cascaded_subtasks: list[str] = []
-        if payload is not None and payload.cascade_to_subtasks:
+        if parsed_payload is not None and parsed_payload.cascade_to_subtasks:
             cascaded_subtasks = await _cascade_transition_to_subtasks(
                 jira, issue_key, target_status, parent_pre_status
             )
