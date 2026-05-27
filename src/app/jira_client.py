@@ -47,12 +47,12 @@ def _parse_inline_markdown(text: str) -> list:
     for match in re.finditer(pattern, text, re.DOTALL):
         full = match.group(0)
         if full.startswith('**') or full.startswith('__'):
-            inner = match.group(2) or match.group(3)
+            inner = match.group(2) or match.group(3) or ""
             nodes.append({"type": "text", "text": inner, "marks": [{"type": "strong"}]})
         elif full.startswith('`'):
-            nodes.append({"type": "text", "text": match.group(4), "marks": [{"type": "code"}]})
+            nodes.append({"type": "text", "text": match.group(4) or "", "marks": [{"type": "code"}]})
         elif full.startswith('*') or full.startswith('_'):
-            inner = match.group(5) or match.group(6)
+            inner = match.group(5) or match.group(6) or ""
             nodes.append({"type": "text", "text": inner, "marks": [{"type": "em"}]})
         elif full:
             nodes.append({"type": "text", "text": full})
@@ -148,6 +148,38 @@ def markdown_to_adf(markdown_text: str) -> dict:
 
 TEST_PLAN_MARKER = "🤖 Generated Test Plan"
 TEST_PLAN_EXPAND_TITLE = "Click to view"
+
+# Jira Cloud rejects comments larger than ~32KB of ADF JSON with
+# CONTENT_LIMIT_EXCEEDED. Cap below that to leave headroom for the
+# wrapper/expand overhead added by `_wrap_body_in_expand`.
+JIRA_COMMENT_MAX_BYTES = 30000
+_TRUNCATED_NOTICE = (
+    "\n\n---\n_⚠️ Plan truncated — full version exceeds Jira's comment "
+    "size limit. See the local app for the complete test plan._"
+)
+
+
+def _fit_to_jira_comment_limit(marked_text: str) -> str:
+    """Return `marked_text` shortened so the resulting ADF JSON fits Jira's
+    comment limit. Uses a binary search over input length, falling back to
+    the original text when it already fits. A clear notice is appended so
+    reviewers know content was dropped."""
+    import json as _json
+    body = _wrap_body_in_expand(markdown_to_adf(marked_text))
+    if len(_json.dumps(body)) <= JIRA_COMMENT_MAX_BYTES:
+        return marked_text
+    lo, hi = 1000, len(marked_text)
+    best = marked_text[:lo] + _TRUNCATED_NOTICE
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = marked_text[:mid].rstrip() + _TRUNCATED_NOTICE
+        body = _wrap_body_in_expand(markdown_to_adf(candidate))
+        if len(_json.dumps(body)) <= JIRA_COMMENT_MAX_BYTES:
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
 
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
 QA_PASS_EXPAND_TITLE = "Test summary"
@@ -363,7 +395,7 @@ _SECTION_PREFIXES = ('✅', '🔍', '🔗', '🔄')
 
 def _adf_paragraph_text(node: dict) -> str:
     return "".join(
-        child.get("text", "") for child in node.get("content", [])
+        (child.get("text") or "") for child in node.get("content", [])
         if child.get("type") == "text"
     )
 
@@ -480,7 +512,7 @@ def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
     if first.get("type") != "paragraph":
         return adf_doc
     first_text = "".join(
-        node.get("text", "") for node in first.get("content", [])
+        (node.get("text") or "") for node in first.get("content", [])
         if node.get("type") == "text"
     )
     if marker not in first_text:
@@ -682,6 +714,10 @@ class JiraNotFoundError(Exception):
 
 class JiraConnectionError(Exception):
     """Raised when Jira is unreachable or times out."""
+
+
+class JiraContentLimitError(Exception):
+    """Raised when Jira rejects content as too large (CONTENT_LIMIT_EXCEEDED)."""
 
 
 class JiraClient:
@@ -1984,6 +2020,7 @@ class JiraClient:
         # Using a marker that won't be visible to users but can be detected
         marker = TEST_PLAN_MARKER
         marked_text = f"{marker}\n\n{comment_text}"
+        marked_text = _fit_to_jira_comment_limit(marked_text)
 
         # Check if there's already a test plan comment to update
         try:
@@ -2041,6 +2078,12 @@ class JiraClient:
                 "Jira access forbidden. Check permissions for this issue or verify your account has proper access.",
                 status_code=403,
                 error_type="insufficient_permissions",
+            )
+        if r.status_code == 400 and "CONTENT_LIMIT_EXCEEDED" in r.text:
+            raise JiraContentLimitError(
+                "Test plan is too large for a single Jira comment "
+                "(Jira's limit is ~32KB). Try shortening the plan or "
+                "splitting it across multiple tickets."
             )
         r.raise_for_status()
 
@@ -2215,6 +2258,12 @@ class JiraClient:
                 "Jira access forbidden. Check permissions for this comment or verify your account has proper access.",
                 status_code=403,
                 error_type="insufficient_permissions",
+            )
+        if r.status_code == 400 and "CONTENT_LIMIT_EXCEEDED" in r.text:
+            raise JiraContentLimitError(
+                "Test plan is too large for a single Jira comment "
+                "(Jira's limit is ~32KB). Try shortening the plan or "
+                "splitting it across multiple tickets."
             )
         r.raise_for_status()
 

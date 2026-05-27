@@ -18,6 +18,7 @@ from .jira_client import (
     JiraAuthError,
     JiraClient,
     JiraConnectionError,
+    JiraContentLimitError,
     JiraNotFoundError,
     is_blocked_bot_display_name,
 )
@@ -1199,6 +1200,8 @@ async def post_comment(request: PostCommentRequest):
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except JiraConnectionError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    except JiraContentLimitError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except Exception as e:
         # Catch-all for unexpected errors
         import logging
