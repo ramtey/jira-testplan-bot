@@ -35,10 +35,9 @@ function TicketForm({ issueKey, setIssueKey, loading, onSubmit, onClear, hasTick
             type="submit"
             variant="primary"
             iconRight="arrow-right"
-            loading={loading}
             disabled={loading || !issueKey.trim()}
           >
-            {loading ? 'Fetching…' : isMulti ? 'Fetch tickets' : 'Fetch'}
+            {isMulti ? 'Fetch tickets' : 'Fetch'}
           </Btn>
         </div>
       </div>

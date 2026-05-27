@@ -216,6 +216,7 @@ class EpicChildSummary:
     issue_type: str
     status: str | None = None
     status_category: str | None = None
+    parent_key: str | None = None
 
 
 @dataclass

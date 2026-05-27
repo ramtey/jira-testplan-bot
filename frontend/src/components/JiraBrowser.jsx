@@ -459,23 +459,73 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
               <div style={{ padding: '8px 14px', color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>No issues in this column.</div>
             )}
 
-            {(issues || []).map((iss) => (
-              <button
-                key={iss.key}
-                type="button"
-                className="rail-row"
-                data-active={selectedIssueKey === iss.key ? 'true' : 'false'}
-                onClick={() => onSelectIssue(iss.key)}
-                title={`${iss.issue_type || ''} · ${iss.summary}`}
-                style={{ padding: '5px var(--s-5) 5px var(--s-4)' }}
-              >
-                {iss.issue_type && <TypeMark type={iss.issue_type} size={13} />}
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: selectedIssueKey === iss.key ? 'var(--accent)' : 'var(--fg-subtle)', flexShrink: 0 }}>
-                  {iss.key}
-                </span>
-                <span className="name">{iss.summary}</span>
-              </button>
-            ))}
+            {(() => {
+              const rows = issues || []
+              const keysInColumn = new Set(rows.map((r) => r.key))
+              // Count hidden subtasks per visible parent
+              const hiddenCountByParent = {}
+              for (const r of rows) {
+                if (r.parent_key && keysInColumn.has(r.parent_key)) {
+                  hiddenCountByParent[r.parent_key] =
+                    (hiddenCountByParent[r.parent_key] || 0) + 1
+                }
+              }
+              const visible = rows.filter(
+                (r) => !(r.parent_key && keysInColumn.has(r.parent_key)),
+              )
+              return visible.map((iss) => {
+                const subCount = hiddenCountByParent[iss.key] || 0
+                const isOrphanSub = iss.parent_key && !keysInColumn.has(iss.parent_key)
+                return (
+                  <button
+                    key={iss.key}
+                    type="button"
+                    className="rail-row"
+                    data-active={selectedIssueKey === iss.key ? 'true' : 'false'}
+                    onClick={() => onSelectIssue(iss.key)}
+                    title={
+                      subCount > 0
+                        ? `${iss.issue_type || ''} · ${iss.summary} (+${subCount} subtask${subCount === 1 ? '' : 's'} in this column)`
+                        : `${iss.issue_type || ''} · ${iss.summary}`
+                    }
+                    style={{ padding: '5px var(--s-5) 5px var(--s-4)', alignItems: isOrphanSub ? 'flex-start' : 'center' }}
+                  >
+                    {iss.issue_type && <TypeMark type={iss.issue_type} size={13} />}
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: selectedIssueKey === iss.key ? 'var(--accent)' : 'var(--fg-subtle)', flexShrink: 0 }}>
+                      {iss.key}
+                    </span>
+                    <span className="name" style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {iss.summary}
+                      </span>
+                      {isOrphanSub && (
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-faint)', lineHeight: 1 }}>
+                          ↳ {iss.parent_key}
+                        </span>
+                      )}
+                    </span>
+                    {subCount > 0 && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          color: 'var(--fg-muted)',
+                          background: 'var(--surface-2, rgba(255,255,255,0.05))',
+                          border: '1px solid var(--divider)',
+                          borderRadius: 'var(--r-sm)',
+                          padding: '1px 5px',
+                          lineHeight: 1.2,
+                          flexShrink: 0,
+                        }}
+                        aria-label={`${subCount} subtask${subCount === 1 ? '' : 's'} grouped under this ticket`}
+                      >
+                        +{subCount} sub
+                      </span>
+                    )}
+                  </button>
+                )
+              })
+            })()}
           </div>
         </>
       )}

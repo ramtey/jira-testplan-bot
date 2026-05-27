@@ -1695,7 +1695,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/search/jql"
         payload = {
             "jql": f'project = {project_key} AND status = "{escaped_status}" ORDER BY Rank ASC, created ASC',
-            "fields": ["summary", "issuetype", "status"],
+            "fields": ["summary", "issuetype", "status", "parent"],
             "maxResults": 100,
         }
 
@@ -1732,6 +1732,7 @@ class JiraClient:
         for issue in issues:
             fields = issue.get("fields") or {}
             status_field = fields.get("status") or {}
+            parent_field = fields.get("parent") or {}
             results.append(
                 EpicChildSummary(
                     key=issue.get("key", ""),
@@ -1739,6 +1740,7 @@ class JiraClient:
                     issue_type=(fields.get("issuetype") or {}).get("name") or "Unknown",
                     status=status_field.get("name"),
                     status_category=(status_field.get("statusCategory") or {}).get("key"),
+                    parent_key=parent_field.get("key") or None,
                 )
             )
         return results

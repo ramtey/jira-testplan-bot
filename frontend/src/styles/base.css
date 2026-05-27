@@ -281,6 +281,34 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Full-screen fetch overlay */
+.fetch-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  grid-auto-flow: row;
+  place-content: center;
+  justify-items: center;
+  gap: var(--s-4);
+  background: rgba(8, 9, 11, 0.55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.fetch-overlay__spinner {
+  width: 64px;
+  height: 64px;
+  border: 3px solid var(--fg-faint);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.fetch-overlay__label {
+  color: var(--fg);
+  font-size: var(--t-sm);
+  letter-spacing: 0.01em;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

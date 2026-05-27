@@ -1202,7 +1202,7 @@ async def post_comment(request: PostCommentRequest):
     except Exception as e:
         # Catch-all for unexpected errors
         import logging
-        logging.error(f"Unexpected error posting comment to {request.issue_key}: {type(e).__name__}: {e}")
+        logging.exception(f"Unexpected error posting comment to {request.issue_key}: {type(e).__name__}: {e}")
         raise HTTPException(
             status_code=500,
             detail="An unexpected error occurred while posting the comment"

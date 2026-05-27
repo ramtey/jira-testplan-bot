@@ -258,6 +258,13 @@ function App() {
         />
       </aside>
 
+      {loading && (
+        <div className="fetch-overlay" role="status" aria-live="polite">
+          <div className="fetch-overlay__spinner" aria-hidden="true" />
+          <div className="fetch-overlay__label">Fetching ticket…</div>
+        </div>
+      )}
+
       <main className="appMain main-shell">
         <div className="main-inner">
           <TicketForm
