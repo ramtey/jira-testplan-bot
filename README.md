@@ -33,7 +33,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Token health monitoring and validation
 - Post test plans directly to Jira comments
 - **Parent ticket awareness** for sub-tasks to understand broader feature context
-- **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input)
+- **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input). When the tickets span multiple repositories, the plan switches to cross-project mode and emits integration tests targeting the producer→consumer seam
 - **Jira Bug Lens**: analyze bug tickets for root cause, fix complexity, affected flow, and regression tests
 - **Test plan history**: previous test plans for a ticket are surfaced as a banner with view-side-by-side and diff-against-previous-version actions
 - **Per-AC coverage**: multi-ticket plans extract acceptance criteria from each ticket, tag every test case with the AC IDs it exercises, and surface a per-ticket coverage matrix with uncovered ACs and a hallucinated-ID guard
@@ -71,12 +71,13 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Token health monitoring**: Real-time validation with expiration warnings
 
 ### Test Plan Generation
-- **Claude Opus 4.6**: Fast (5-10s), high-quality test plans with structured JSON tool-use output
+- **Claude Opus**: Defaults to `claude-opus-4-5-20251101`; Opus 4.7 is supported (the `temperature` parameter is dropped automatically for 4.7 since the API rejects it). Read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents with many subtasks survive Opus's 16k-token output cap
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
 - **Multiple export formats**: Markdown, Jira-formatted text, or JSON. The markdown export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
 - **Issue type validation**: Generates plans for Story, Bug, Task, and Sub-task; skips Epics and Spikes (Epics open the children view instead)
 - **Epic launcher view**: Fetching an Epic renders its child tickets as a list with per-row Generate (test plan) and Analyze (Bug Lens) buttons; results expand inline so multiple children can be reviewed without navigating away
 - **Multi-ticket AC coverage**: For comma-separated multi-ticket plans, ACs are extracted per ticket, fed to the LLM as a coverage matrix, and each test case must tag the AC IDs it covers. The UI shows per-ticket coverage ratios, lists uncovered ACs, and surfaces a red banner if the model invents AC IDs that don't exist. When two tickets disagree on an AC, the newer ticket's version wins and the older AC is marked superseded
+- **Cross-project multi-ticket plans**: When the supplied tickets span multiple repositories, a seam extractor walks each PR diff for HTTP routes, events, and in-house imports, intersects exports/calls across repos, and feeds the resulting verified + suspected seams to the LLM so it emits real integration tests at the boundary. Cross-project test cases are badged with a producer → consumer line and the same metadata flows into the markdown export
 - **No silent truncation**: Multi-ticket plans detect when Claude hits the max-tokens cap and surface the truncation explicitly instead of returning a partial plan
 - **UI element grounding**: Test steps that name a UI element not present in the PR diff or the target repo's simulator `testID` reference are flagged in the rendered plan so QA can sanity-check the wording before running them
 - **Sibling API caller awareness**: Prompt asks the model to enumerate sibling code paths that hit the same API surface (so a fix on one ViewModel doesn't ship with an identical buggy sibling), with a grounding warning when the model can't verify them from the diff. Integration-test rule requires assertions to check that request params are both *present and non-empty*, catching empty-string regressions
@@ -109,16 +110,29 @@ columns → Issues**.
 - **Selection**: clicking an issue populates the existing input field and
   triggers the normal fetch flow, so the rail is purely additive; the
   paste-a-key input remains the escape hatch for power users
+- **Subtask grouping**: when an actual Sub-task issue type and its parent
+  both live in the same status column, the subtask row is hidden and its
+  parent gets a small `+N sub` pill. Sub-tasks whose parent is in another
+  column still appear, indented with a faint vertical tree-line and a
+  `SUBTASK OF KEY` caption so the relationship reads at a glance.
+  Stories/Tasks under an Epic are *not* affected — they keep their own row
+- **Fetch overlay**: while a ticket is loading the rail and main column are
+  covered by a centered overlay + spinner so the user gets clear feedback
+  instead of a stuck inline button state
 - **Auth note**: the rail surfaces only what the configured `JIRA_USERNAME` /
   `JIRA_API_TOKEN` can see. Project list is capped at the first 100 results
   from `/rest/api/3/project/search`
 
-### QA Workflow Actions (SK project)
+### QA Workflow Actions
 
 One-click status transitions plus reassignment, to remove the "transition →
-pick assignee" two-step from the QA loop. Currently scoped to the SK project
-(buttons hide for everything else); generalize via per-project config when a
-second project needs it.
+pick assignee" two-step from the QA loop. Frontend button visibility is
+config-driven via `WORKFLOW_PROJECT_PREFIXES` (default `["SK"]`) — list
+additional Jira project keys to surface the QA workflow buttons for those
+projects without code changes. The backend endpoint itself still hardcodes
+the SK-only check; widening it (e.g. honouring the same setting or a
+per-project status map) is the next step before non-SK projects can fully
+opt in.
 
 - **Pull to Testing**: shown when the ticket is *not* already in *In Testing*.
   Transitions to *In Testing* and assigns the ticket to the current Jira user
@@ -131,24 +145,28 @@ second project needs it.
   preselected by scanning the latest comment + description for the
   corresponding env name, with selected chips rendered as solid ✓-prefixed
   pills and unselected chips as dashed-border outlines for dark-mode clarity),
-  an optional Loom URL, an optional Image URLs textarea (one URL per line,
-  each rendered as a clickable 🖼️ link), and an optional markdown summary.
-  Submitting transitions to *Ready for UAT*, reassigns to the dev who handed
-  it over, and posts a Jira comment whose marker line (e.g. `✅ QA Passed
-  (Integ + Staging) — ready for UAT`) stays visible with the summary tucked
-  into a collapsible expand block. Submitting the form empty preserves the
-  original one-click pass with no comment. If this is the last sibling
-  sub-task to reach Ready for UAT (others already passed or Done), the parent
-  ticket is auto-promoted to Ready for UAT in the same call (Epics excluded;
-  best-effort, won't fail the primary transition)
+  an optional Loom URL textarea (one per line — each is rendered as its own
+  paragraph above the fold), an optional screenshot dropzone (click / drag /
+  paste — files upload directly to the Jira issue as attachments before the
+  transition runs, and the comment links each by filename), and an optional
+  markdown summary. Submitting transitions to *Ready for UAT*, reassigns to
+  the dev who handed it over, and posts a Jira comment whose marker line
+  (e.g. `✅ QA Passed (Integ + Staging) — ready for UAT`) stays visible with
+  the summary tucked into a collapsible expand block. Submitting the form
+  empty preserves the original one-click pass with no comment. If this is
+  the last sibling sub-task to reach Ready for UAT (others already passed or
+  Done), the parent ticket is auto-promoted to Ready for UAT in the same
+  call (Epics excluded; best-effort, won't fail the primary transition)
 - **Fail back to To Do**: shown when the ticket is in *In Testing*.
   Transitions to *To Do* (so failed QA drops back into the dev queue rather
   than staying in flight) and reassigns for rework. Opens the same inline
   form pattern as Pass to UAT — a *required* Reason field (markdown,
   autofocused, rendered above the fold so devs see *why* without expanding),
-  plus optional Loom URL and image links. Empty submit is rejected because a
-  fail-back without a reason has no value. The transition still runs even if
-  the comment post fails, matching Pass to UAT
+  plus an optional multi-Loom textarea and the same screenshot dropzone
+  (files attached to the issue, linked by filename in the comment). Empty
+  submit is rejected because a fail-back without a reason has no value.
+  The transition still runs even if the comment post fails, matching Pass
+  to UAT
 - **Notify chip picker**: Both forms expose an optional Notify row that
   @mentions selected users in the posted comment via a real ADF mention node
   in a trailing `cc:` paragraph (so Jira actually delivers notifications, not
@@ -156,10 +174,14 @@ second project needs it.
   the ticket: current assignee (starred), prior assignees from the changelog,
   and recent commenters; the configured bot user is filtered out
 - **Also move all subtasks**: Workflow forms include an opt-in "Also move all
-  subtasks" checkbox. When checked, after the parent transitions the backend
-  re-applies the same target status to each direct subtask; subtasks whose
-  workflow has no matching transition are skipped silently so a partial
-  workflow doesn't break the primary action
+  subtasks" checkbox (hidden when the ticket has no subtasks). When checked,
+  the backend captures the parent's *pre-transition* status, then re-applies
+  the target status only to subtasks whose current status matches that
+  pre-transition state — so a parent moving out of *Ready to Test* only
+  pulls subtasks that were also in *Ready to Test*, leaving siblings in
+  unrelated states alone. Subtasks whose workflow has no matching transition
+  are skipped silently so a partial workflow doesn't break the primary
+  action
 - **Assignee fallback chain** (Pass to UAT / Fail back): walks the issue
   changelog for the prior assignee (skipping the bot's own account, since
   Pull to Testing parks the ticket there). If none is found, falls back to
@@ -256,8 +278,12 @@ npm install
 2. Add to `.env`:
    ```
    LLM_PROVIDER=claude
-   LLM_MODEL=claude-opus-4-6
+   LLM_MODEL=claude-opus-4-5-20251101
    ANTHROPIC_API_KEY=sk-ant-api03-...
+   # Optional: raise from the 600s default when generating plans for
+   # parents with many subtasks (Opus can spend several minutes at the
+   # 16k-token output cap before the read times out).
+   # CLAUDE_API_TIMEOUT_SECONDS=900
    ```
 
 **Alternative**: Ollama (local, free) - set `LLM_PROVIDER=ollama` and `LLM_MODEL=llama3.1` in `.env`
@@ -426,12 +452,12 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Fetch issue**: `GET /issue/{issue_key}` - Returns ticket with development info
 - **List Epic children**: `GET /issue/{epic_key}/children` - Lightweight list (key, summary, issue_type, status) of tickets directly under an Epic; powers the Epic launcher view
 - **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON
-- **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets (must share a repo or overlapping files; returns `422 TICKETS_NO_SHARED_CONTEXT` otherwise)
+- **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets. Switches between *single_repo* mode (shared repo / overlapping files) and *cross_project* mode (tickets span repos — seams extracted from the PR diffs drive integration-test generation)
 - **Analyze bug**: `POST /bug-lens/analyze` - Root cause, fix explanation, and regression tests for a bug ticket
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
-- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment for the SK project (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`); rejects non-SK keys with 400. Accepts optional comment fields (envs, Loom, image URLs, summary, reason), `mention_account_ids` for ADF @mentions, and `cascade_to_subtasks` to re-apply the same transition to each direct subtask
+- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`); backend still rejects non-`SK-` keys with 400 (frontend visibility is the config-driven layer). Accepts `multipart/form-data` with optional comment fields (envs, `loom_urls` list, summary, reason, screenshot file uploads), `mention_account_ids` for ADF @mentions, and `cascade_to_subtasks` to re-apply the transition to each direct subtask whose status matched the parent's *pre-transition* status
 
 See `/docs` for detailed API documentation and schemas.
 
@@ -478,7 +504,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Multi-ticket AC coverage tracking, UI-element grounding flags, and observability-aware prompts shipped; QA workflow forms now cover Pass / Fail / cascade-to-subtasks / parent auto-promotion; prompt quality hardening ongoing
+**Current:** Cross-project multi-ticket plans, screenshot uploads + multi-Loom on QA workflow forms, rail subtask grouping with parent-aware collapse, cascade-to-subtasks restricted by pre-transition status, workflow project gate via `WORKFLOW_PROJECT_PREFIXES`, and Opus 4.7 readiness shipped on top of the previous AC-coverage / grounding-flag / observability-prompt baseline; prompt quality hardening ongoing
 
 ## Roadmap
 
@@ -532,6 +558,14 @@ uv run pytest tests/ -v
 - ✅ **Gaps-only description panel**: Replaced the description-quality metrics + Weak/Good label with a panel that lists concrete gaps (missing AC for stories, missing repro / expected-vs-actual for bugs) and hides itself entirely when nothing is missing
 - ✅ **Markdown export parity**: Export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
 - ✅ **Historical-plan export buttons**: Copy/Download show on the historical plan view when no live plan exists, so reviewers can still get markdown out of an older run
+- ✅ **Cross-project multi-ticket plans**: Tickets spanning multiple repos no longer 422; a seam extractor reads each PR diff and feeds verified + suspected producer→consumer seams to the LLM so it emits integration tests at the boundary
+- ✅ **Screenshot uploads on QA workflow**: Pass to UAT / Fail back replaced the "Image URLs" textarea with a click/drag/paste dropzone that attaches files to the Jira issue directly (multipart upload before the transition, so a Jira-side failure aborts cleanly)
+- ✅ **Multi-Loom on QA workflow**: Pass to UAT / Fail back now accept multiple Loom URLs (one per line); each renders as its own paragraph above the fold of the posted comment
+- ✅ **Cascade-to-subtasks pre-transition filter**: The "Also move all subtasks" checkbox now restricts cascade targets to subtasks whose current status matches the parent's pre-transition status, so unrelated siblings aren't dragged along
+- ✅ **Workflow project gate via config (frontend)**: Replaced the hardcoded SK-only check in `WorkflowActions` with a `WORKFLOW_PROJECT_PREFIXES` setting (frontend reads it via the existing `/config` endpoint) so additional Jira projects can surface the buttons without code changes; the backend endpoint still gates on `SK-` and is the next step before non-SK projects fully opt in
+- ✅ **Rail subtask grouping + fetch overlay**: The Jira browser rail collapses Sub-tasks under their visible parent with a `+N sub` pill, and badges orphan Sub-tasks (parent in another column) with an indented `SUBTASK OF KEY` caption. A full-screen overlay covers the app while a ticket is loading
+- ✅ **Workbench frontend redesign**: Frontend refactored around a workbench-style design system; App state extracted into dedicated hooks and TestPlanDisplay sections collapsed into one config-driven map
+- ✅ **Opus 4.7 readiness**: Claude calls drop the `temperature` parameter automatically for Opus 4.7 (the API rejects it), and the read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents survive the 16k-token output cap
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
