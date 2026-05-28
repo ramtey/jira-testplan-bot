@@ -461,21 +461,24 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
 
             {(() => {
               const rows = issues || []
+              const isSubtask = (r) =>
+                (r.issue_type || '').toLowerCase().replace(/[\s-]/g, '') === 'subtask'
               const keysInColumn = new Set(rows.map((r) => r.key))
-              // Count hidden subtasks per visible parent
+              // Count hidden subtasks per visible parent. Only true Sub-tasks
+              // are eligible — Stories/Tasks under an Epic keep their own row.
               const hiddenCountByParent = {}
               for (const r of rows) {
-                if (r.parent_key && keysInColumn.has(r.parent_key)) {
+                if (isSubtask(r) && r.parent_key && keysInColumn.has(r.parent_key)) {
                   hiddenCountByParent[r.parent_key] =
                     (hiddenCountByParent[r.parent_key] || 0) + 1
                 }
               }
               const visible = rows.filter(
-                (r) => !(r.parent_key && keysInColumn.has(r.parent_key)),
+                (r) => !(isSubtask(r) && r.parent_key && keysInColumn.has(r.parent_key)),
               )
               return visible.map((iss) => {
                 const subCount = hiddenCountByParent[iss.key] || 0
-                const isOrphanSub = iss.parent_key && !keysInColumn.has(iss.parent_key)
+                const isOrphanSub = isSubtask(iss) && iss.parent_key && !keysInColumn.has(iss.parent_key)
                 return (
                   <button
                     key={iss.key}
@@ -486,21 +489,47 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
                     title={
                       subCount > 0
                         ? `${iss.issue_type || ''} · ${iss.summary} (+${subCount} subtask${subCount === 1 ? '' : 's'} in this column)`
-                        : `${iss.issue_type || ''} · ${iss.summary}`
+                        : isOrphanSub
+                          ? `Subtask of ${iss.parent_key} · ${iss.summary}`
+                          : `${iss.issue_type || ''} · ${iss.summary}`
                     }
-                    style={{ padding: '5px var(--s-5) 5px var(--s-4)', alignItems: isOrphanSub ? 'flex-start' : 'center' }}
+                    style={{
+                      padding: isOrphanSub
+                        ? '5px var(--s-5) 5px calc(var(--s-4) + 18px)'
+                        : '5px var(--s-5) 5px var(--s-4)',
+                      alignItems: isOrphanSub ? 'flex-start' : 'center',
+                      position: 'relative',
+                    }}
                   >
+                    {isOrphanSub && (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          position: 'absolute',
+                          left: 'calc(var(--s-4) + 4px)',
+                          top: 0,
+                          bottom: 0,
+                          width: 1,
+                          background: 'var(--divider)',
+                        }}
+                      />
+                    )}
                     {iss.issue_type && <TypeMark type={iss.issue_type} size={13} />}
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: selectedIssueKey === iss.key ? 'var(--accent)' : 'var(--fg-subtle)', flexShrink: 0 }}>
                       {iss.key}
                     </span>
-                    <span className="name" style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+                    <span className="name" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {iss.summary}
                       </span>
                       {isOrphanSub && (
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-faint)', lineHeight: 1 }}>
-                          ↳ {iss.parent_key}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--fg-faint)', lineHeight: 1.1 }}>
+                          <span style={{ textTransform: 'uppercase', letterSpacing: '.04em', fontWeight: 600 }}>
+                            Subtask of
+                          </span>
+                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-subtle)' }}>
+                            {iss.parent_key}
+                          </span>
                         </span>
                       )}
                     </span>
