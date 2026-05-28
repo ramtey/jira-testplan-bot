@@ -26,6 +26,9 @@ import { Alert } from './components/ui'
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
 
 // Keys used to persist state across reloads (e.g. after laptop sleep → Vite HMR reload).
+// sessionStorage is per-tab, so multiple windows already keep independent state.
+// The URL ?key= param is the canonical source on first paint so deep links and
+// bookmarks land on the right ticket.
 const STORAGE_KEYS = {
   issueKey: 'jtb.issueKey',
   ticketsData: 'jtb.ticketsData',
@@ -33,8 +36,34 @@ const STORAGE_KEYS = {
   railCollapsed: 'jtb.railCollapsed',
 }
 
+const readKeyFromUrl = () => {
+  if (typeof window === 'undefined') return ''
+  try {
+    return new URLSearchParams(window.location.search).get('key') || ''
+  } catch {
+    return ''
+  }
+}
+
+const writeKeyToUrl = (key) => {
+  if (typeof window === 'undefined') return
+  try {
+    const url = new URL(window.location.href)
+    if (key) {
+      url.searchParams.set('key', key)
+    } else {
+      url.searchParams.delete('key')
+    }
+    window.history.replaceState(null, '', url.toString())
+  } catch {
+    // History API unavailable — ignore, app still works without deep links.
+  }
+}
+
 function App() {
-  const [issueKey, setIssueKey] = useState(() => loadStored(STORAGE_KEYS.issueKey, ''))
+  const [issueKey, setIssueKey] = useState(
+    () => readKeyFromUrl() || loadStored(STORAGE_KEYS.issueKey, '')
+  )
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [railCollapsed, setRailCollapsed] = useState(() => loadStored(STORAGE_KEYS.railCollapsed, false))
@@ -62,6 +91,33 @@ function App() {
   // Fetch config on mount to get Jira base URL
   useEffect(() => {
     fetchConfig()
+  }, [])
+
+  // Reflect the active ticket set in the URL. Comma-separated for multi-ticket.
+  // Drives bookmarkable / shareable links and lets two tabs open different
+  // tickets via URL without sharing state.
+  useEffect(() => {
+    const urlKey = ticketsData.length
+      ? ticketsData.map((t) => t.key).join(',')
+      : ''
+    writeKeyToUrl(urlKey)
+  }, [ticketsData])
+
+  // Fetch on first paint if the URL carried a ?key= but we have no ticket
+  // loaded yet (deep link or hard reload of a shared URL). Uses the same
+  // comma-separated parsing as the input form so multi-ticket URLs work too.
+  // Runs only once — the dep list is intentionally empty.
+  useEffect(() => {
+    const urlKey = readKeyFromUrl()
+    if (!urlKey || ticketsData.length > 0) return
+    const keys = urlKey
+      .split(',')
+      .map((k) => k.trim().toUpperCase())
+      .filter(Boolean)
+    if (keys.length === 0) return
+    setIssueKey(urlKey)
+    fetchTicketsByKeys(keys)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Auto-scroll to results when they appear
