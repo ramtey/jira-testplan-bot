@@ -648,24 +648,42 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
               )}
             </div>
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 'var(--s-4)' }}>
-              <div style={{ display: 'flex', gap: 2, flex: 1, height: 6, borderRadius: 999, overflow: 'hidden', background: 'var(--bg-input)' }}>
-                {SECTIONS.map((s, i) => {
-                  const t = totals[i]
-                  if (t === 0) return null
-                  const c = countSectionChecks(s.key, t)
-                  const segPct = (c / t) * 100
-                  const widthPct = (t / totalAll) * 100
-                  return (
-                    <div key={s.key} style={{ width: widthPct + '%', height: '100%', background: 'var(--bg-input)' }} title={`${s.label} ${c}/${t}`}>
-                      <div style={{ width: segPct + '%', height: '100%', background: 'var(--accent)', transition: 'width var(--d-base) var(--ease-out)' }} />
-                    </div>
-                  )
-                })}
+              <div style={{ position: 'relative', flex: 1, height: 18, borderRadius: 999, overflow: 'hidden', background: 'var(--bg-input)' }}>
+                <div style={{ display: 'flex', gap: 2, width: '100%', height: '100%' }}>
+                  {SECTIONS.map((s, i) => {
+                    const t = totals[i]
+                    if (t === 0) return null
+                    const c = countSectionChecks(s.key, t)
+                    const segPct = (c / t) * 100
+                    const widthPct = (t / totalAll) * 100
+                    return (
+                      <div key={s.key} style={{ width: widthPct + '%', height: '100%', background: 'var(--bg-input)' }} title={`${s.label} ${c}/${t}`}>
+                        <div style={{ width: segPct + '%', height: '100%', background: 'var(--accent)', transition: 'width var(--d-base) var(--ease-out)' }} />
+                      </div>
+                    )
+                  })}
+                </div>
+                <span
+                  className="tnum"
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 'var(--t-xs)',
+                    fontWeight: 600,
+                    color: 'var(--fg-strong)',
+                    textShadow: '0 1px 2px rgba(0,0,0,.45)',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {pctAll}%
+                </span>
               </div>
               <span className="tnum" style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)', minWidth: 56, textAlign: 'right' }}>
                 {checkedAll} / {totalAll}
               </span>
-              <span className="tnum" style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-subtle)', minWidth: 32, textAlign: 'right' }}>{pctAll}%</span>
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
               {SECTIONS.map((s, i) => {
