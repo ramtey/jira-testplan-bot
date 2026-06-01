@@ -48,13 +48,18 @@ async def test_search_project_issues_escapes_quotes_and_backslashes_in_status():
         # Status name containing both a backslash and a double quote.
         await client.search_project_issues("PROJ", 'Done\\" OR status = "Open')
 
-        sent_payload = mock_post.call_args.kwargs["json"]
-        sent_jql = sent_payload["jql"]
+        # The implementation fires two POSTs in parallel: the main status search
+        # and a sprint-usage probe. Pick out the main one by its JQL shape.
+        main_jql = next(
+            call.kwargs["json"]["jql"]
+            for call in mock_post.call_args_list
+            if "status = " in call.kwargs["json"]["jql"]
+        )
 
         # The injected `"` must be escaped (`\"`), and the literal backslash doubled.
         # The whole status must remain a single quoted JQL literal — no unescaped `"`
         # should appear in the middle of the value.
-        assert sent_jql == (
+        assert main_jql == (
             'project = PROJ AND status = "Done\\\\\\" OR status = \\"Open" '
             'ORDER BY Rank ASC, created ASC'
         )

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 import re
@@ -1754,19 +1755,30 @@ class JiraClient:
         escaped_status = status_name.replace("\\", "\\\\").replace('"', '\\"')
 
         url = f"{self.base_url}/rest/api/3/search/jql"
-        payload = {
+        # customfield_10007 is the Sprint field on this Jira instance — an array
+        # of sprint objects with state in {active, closed, future}. Used to mute
+        # rows that aren't in the current sprint.
+        main_payload = {
             "jql": f'project = {project_key} AND status = "{escaped_status}" ORDER BY Rank ASC, created ASC',
-            "fields": ["summary", "issuetype", "status", "parent"],
+            "fields": ["summary", "issuetype", "status", "parent", "customfield_10007"],
             "maxResults": 100,
         }
+        # Probe whether this project uses sprints at all. A Kanban project with
+        # no Scrum board returns 0; in that case we shouldn't gray out anything.
+        # When sprints ARE used, an issue with null/empty customfield_10007 is
+        # genuinely in the backlog and should render muted.
+        probe_payload = {
+            "jql": f"project = {project_key} AND sprint is not EMPTY",
+            "fields": ["summary"],
+            "maxResults": 1,
+        }
 
+        headers = {**self._headers(), "Content-Type": "application/json"}
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                r = await client.post(
-                    url,
-                    headers={**self._headers(), "Content-Type": "application/json"},
-                    json=payload,
-                )
+                main_task = client.post(url, headers=headers, json=main_payload)
+                probe_task = client.post(url, headers=headers, json=probe_payload)
+                r, probe_r = await asyncio.gather(main_task, probe_task)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
 
@@ -1781,6 +1793,20 @@ class JiraClient:
             )
         r.raise_for_status()
 
+        # Probe is best-effort — a failure shouldn't break the column. Default
+        # to "doesn't use sprints" on error, which renders everything normally.
+        project_uses_sprints = False
+        if probe_r.status_code == 200:
+            try:
+                project_uses_sprints = bool((probe_r.json() or {}).get("issues"))
+            except ValueError:
+                project_uses_sprints = False
+        else:
+            logger.warning(
+                "Sprint-usage probe for %s returned %d; assuming Kanban.",
+                project_key, probe_r.status_code,
+            )
+
         data = r.json()
         issues = data.get("issues") or []
         if data.get("nextPageToken"):
@@ -1794,6 +1820,16 @@ class JiraClient:
             fields = issue.get("fields") or {}
             status_field = fields.get("status") or {}
             parent_field = fields.get("parent") or {}
+            sprint_field = fields.get("customfield_10007")
+            if not project_uses_sprints:
+                in_active_sprint: bool | None = None
+            elif not sprint_field:
+                # Project uses sprints but this ticket has no sprint set → backlog.
+                in_active_sprint = False
+            else:
+                in_active_sprint = any(
+                    (s or {}).get("state") == "active" for s in sprint_field
+                )
             results.append(
                 EpicChildSummary(
                     key=issue.get("key", ""),
@@ -1802,6 +1838,7 @@ class JiraClient:
                     status=status_field.get("name"),
                     status_category=(status_field.get("statusCategory") or {}).get("key"),
                     parent_key=parent_field.get("key") or None,
+                    in_active_sprint=in_active_sprint,
                 )
             )
         return results

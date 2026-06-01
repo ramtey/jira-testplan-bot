@@ -217,6 +217,9 @@ class EpicChildSummary:
     status: str | None = None
     status_category: str | None = None
     parent_key: str | None = None
+    # True if the issue is in an active sprint, False if it has sprint history
+    # but no active sprint, None if the project doesn't use sprints at all.
+    in_active_sprint: bool | None = None
 
 
 @dataclass

@@ -479,6 +479,13 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
               return visible.map((iss) => {
                 const subCount = hiddenCountByParent[iss.key] || 0
                 const isOrphanSub = isSubtask(iss) && iss.parent_key && !keysInColumn.has(iss.parent_key)
+                // Only treat as out-of-sprint when the backend explicitly says
+                // false — null/undefined means the project doesn't use sprints,
+                // in which case we render normally.
+                const outOfSprint = iss.in_active_sprint === false
+                const titleColor = selectedIssueKey === iss.key
+                  ? undefined
+                  : outOfSprint ? 'var(--fg-subtle)' : undefined
                 return (
                   <button
                     key={iss.key}
@@ -488,10 +495,10 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
                     onClick={() => onSelectIssue(iss.key)}
                     title={
                       subCount > 0
-                        ? `${iss.issue_type || ''} · ${iss.summary} (+${subCount} subtask${subCount === 1 ? '' : 's'} in this column)`
+                        ? `${iss.issue_type || ''} · ${iss.summary} (+${subCount} subtask${subCount === 1 ? '' : 's'} in this column)${outOfSprint ? ' · not in active sprint' : ''}`
                         : isOrphanSub
-                          ? `Subtask of ${iss.parent_key} · ${iss.summary}`
-                          : `${iss.issue_type || ''} · ${iss.summary}`
+                          ? `Subtask of ${iss.parent_key} · ${iss.summary}${outOfSprint ? ' · not in active sprint' : ''}`
+                          : `${iss.issue_type || ''} · ${iss.summary}${outOfSprint ? ' · not in active sprint' : ''}`
                     }
                     style={{
                       padding: isOrphanSub
@@ -518,7 +525,7 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: selectedIssueKey === iss.key ? 'var(--accent)' : 'var(--fg-subtle)', flexShrink: 0 }}>
                       {iss.key}
                     </span>
-                    <span className="name" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                    <span className="name" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, color: titleColor }}>
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {iss.summary}
                       </span>
@@ -533,6 +540,26 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
                         </span>
                       )}
                     </span>
+                    {outOfSprint && (
+                      <span
+                        style={{
+                          fontSize: 9.5,
+                          fontWeight: 600,
+                          textTransform: 'uppercase',
+                          letterSpacing: '.04em',
+                          color: 'var(--fg-faint)',
+                          background: 'transparent',
+                          border: '1px solid var(--divider)',
+                          borderRadius: 'var(--r-sm)',
+                          padding: '1px 5px',
+                          lineHeight: 1.2,
+                          flexShrink: 0,
+                        }}
+                        aria-label="Not in active sprint"
+                      >
+                        Backlog
+                      </span>
+                    )}
                     {subCount > 0 && (
                       <span
                         style={{
