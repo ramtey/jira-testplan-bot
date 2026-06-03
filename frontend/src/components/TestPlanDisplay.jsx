@@ -93,14 +93,14 @@ function SectionChip({ checked, total }) {
   )
 }
 
-function TestCard({ test, section, index, checked, onToggle, showCategory }) {
+function TestCard({ test, section, index, checked, onToggle, showCategory, planHasAcs }) {
   const acIds = Array.isArray(test.covers_acs)
     ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
     : []
   const groundedIn = Array.isArray(test.grounded_in)
     ? test.grounded_in.filter((s) => typeof s === 'string' && s.trim())
     : []
-  const isUntraced = acIds.length === 0 && groundedIn.length === 0
+  const isUntraced = planHasAcs && acIds.length === 0 && groundedIn.length === 0
   const checkboxId = `tc-${section.key}-${index}`
 
   return (
@@ -338,7 +338,7 @@ function ChecklistSection({ section, items, checkedTests, onToggle }) {
   )
 }
 
-function CardSection({ section, items, checkedTests, onToggle }) {
+function CardSection({ section, items, checkedTests, onToggle, planHasAcs }) {
   const c = items.reduce((acc, _, i) => acc + (checkedTests.has(`${section.key}:${i}`) ? 1 : 0), 0)
   return (
     <section id={`sect-${section.key}`} style={{ marginTop: 'var(--s-8)' }}>
@@ -357,6 +357,7 @@ function CardSection({ section, items, checkedTests, onToggle }) {
             checked={checkedTests.has(`${section.key}:${i}`)}
             onToggle={() => onToggle(section.key, i)}
             showCategory={section.showCategory}
+            planHasAcs={planHasAcs}
           />
         ))}
       </div>
@@ -551,6 +552,16 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
   if (!testPlan) return null
 
   const primaryTicketData = ticketData || (ticketsData && ticketsData[0])
+
+  const planHasAcs = ['happy_path', 'edge_cases', 'integration_tests'].some((key) => {
+    const items = testPlan[key]
+    if (!Array.isArray(items)) return false
+    return items.some(
+      (t) =>
+        Array.isArray(t?.covers_acs) &&
+        t.covers_acs.some((id) => typeof id === 'string' && id.trim())
+    )
+  })
 
   const handleCopyMarkdown = () => {
     const markdown = formatTestPlanAsMarkdown(testPlan, primaryTicketData)
@@ -905,6 +916,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
             items={items}
             checkedTests={checkedTests}
             onToggle={toggleTest}
+            planHasAcs={planHasAcs}
           />
         )
       })}

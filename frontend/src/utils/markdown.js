@@ -9,7 +9,18 @@ const formatCoversAcs = (test) => {
   return acIds.length > 0 ? `**Covers:** ${acIds.join(', ')}\n\n` : ''
 }
 
-const formatGroundedIn = (test) => {
+const planHasAnyAcs = (plan) =>
+  ['happy_path', 'edge_cases', 'integration_tests'].some((key) => {
+    const items = plan?.[key]
+    if (!Array.isArray(items)) return false
+    return items.some(
+      (t) =>
+        Array.isArray(t?.covers_acs) &&
+        t.covers_acs.some((id) => typeof id === 'string' && id.trim())
+    )
+  })
+
+const formatGroundedIn = (test, planHasAcs) => {
   const sources = Array.isArray(test.grounded_in)
     ? test.grounded_in.filter((s) => typeof s === 'string' && s.trim())
     : []
@@ -20,7 +31,7 @@ const formatGroundedIn = (test) => {
     const formatted = sources.map((s) => `\`${s}\``).join(', ')
     return `**Grounded in:** ${formatted}\n\n`
   }
-  if (acIds.length === 0) {
+  if (planHasAcs && acIds.length === 0) {
     return '> ⚠️ **Untraced** — no AC coverage and no `grounded_in` source. Verify any specific numbers, strings, or symbols in this test before running it.\n\n'
   }
   return ''
@@ -87,6 +98,8 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
   let markdown = `# Test Plan: ${ticketData.key}\n\n`
   markdown += `## ${ticketData.summary}\n\n`
 
+  const hasAcs = planHasAnyAcs(plan)
+
   markdown += formatAcCoverageSummary(plan.ac_coverage)
   markdown += formatSupersededAcs(plan)
   markdown += formatGroundingWarnings(plan)
@@ -118,7 +131,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
       markdown += formatCoversAcs(test)
-      markdown += formatGroundedIn(test)
+      markdown += formatGroundedIn(test, hasAcs)
     })
   }
 
@@ -152,7 +165,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
       markdown += formatCoversAcs(test)
-      markdown += formatGroundedIn(test)
+      markdown += formatGroundedIn(test, hasAcs)
     })
   }
 
@@ -191,7 +204,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
       markdown += formatCoversAcs(test)
-      markdown += formatGroundedIn(test)
+      markdown += formatGroundedIn(test, hasAcs)
     })
   }
 
