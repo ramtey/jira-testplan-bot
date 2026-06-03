@@ -467,3 +467,42 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
   border: 1px solid var(--accent);
   color: #93b9fd;
 }
+
+/* Tooltip — CSS-only, shown on hover/focus of the wrapping .tip */
+.tip {
+  position: relative;
+  display: inline-flex;
+}
+.tip > .tip-body {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-2px);
+  background: var(--bg-overlay);
+  border: 1px solid var(--line);
+  color: var(--fg-strong);
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+.tip:hover > .tip-body,
+.tip:focus-within > .tip-body {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.tip[data-align="end"] > .tip-body {
+  left: auto;
+  right: 0;
+  transform: translateX(0) translateY(-2px);
+}
+.tip[data-align="end"]:hover > .tip-body,
+.tip[data-align="end"]:focus-within > .tip-body {
+  transform: translateX(0) translateY(0);
+}

@@ -764,41 +764,97 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
                 )
               })}
             </div>
-            <span style={{ width: 1, height: 16, background: 'var(--line-strong)', alignSelf: 'center' }} />
-            <div style={{ display: 'flex', gap: 4 }}>
-              <Btn
-                variant="ghost"
-                size="sm"
-                icon={copyNotification?.type === 'success' ? 'check' : 'copy'}
-                title={copyNotification?.type === 'success' ? 'Copied' : 'Copy markdown'}
-                onClick={handleCopyMarkdown}
-              />
-              <Btn
-                variant="ghost"
-                size="sm"
-                icon="download"
-                title="Download .md"
-                onClick={handleDownloadMarkdown}
-              />
-              <Btn
-                variant="primary"
-                size="sm"
-                icon={postNotification?.type === 'success' ? 'check' : 'send'}
-                title={
-                  isMulti
-                    ? `Post to selected (${selectedKeys.size})`
-                    : postNotification?.type === 'success'
-                      ? postNotification.message
-                      : 'Post to Jira'
+            <span style={{ width: 1, height: 14, background: 'var(--line-strong)', alignSelf: 'center', flexShrink: 0 }} />
+            <div style={{ display: 'inline-flex', gap: 4, flexShrink: 0 }}>
+              {(() => {
+                const base = {
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '2px 8px',
+                  borderRadius: 'var(--r-pill)',
+                  border: '1px solid var(--line)',
+                  background: 'var(--bg-surface)',
+                  color: 'var(--fg-muted)',
+                  fontSize: 'var(--t-xs)',
+                  fontWeight: 500,
+                  textDecoration: 'none',
+                  cursor: 'pointer',
+                  lineHeight: 1,
+                  height: 22,
+                  minWidth: 0,
+                  flexShrink: 0,
                 }
-                onClick={isMulti ? handlePostSelected : handlePostToJira}
-                disabled={
-                  isMulti
-                    ? isAnyPosting || selectedKeys.size === 0
-                    : isPosting
+                const primary = {
+                  ...base,
+                  background: 'var(--accent)',
+                  borderColor: 'var(--accent)',
+                  color: 'var(--accent-ink)',
                 }
-                loading={isMulti ? isAnyPosting : isPosting}
-              />
+                const isPostBusy = isMulti ? isAnyPosting : isPosting
+                const postDisabled = isMulti
+                  ? isAnyPosting || selectedKeys.size === 0
+                  : isPosting
+                const copyLabel =
+                  copyNotification?.type === 'success' ? 'Copied' : 'Copy markdown'
+                const postLabel = isMulti
+                  ? `Post to selected (${selectedKeys.size})`
+                  : postNotification?.type === 'success'
+                    ? postNotification.message
+                    : 'Post to Jira'
+                return (
+                  <>
+                    <span className="tip">
+                      <button
+                        type="button"
+                        style={base}
+                        aria-label={copyLabel}
+                        onClick={handleCopyMarkdown}
+                      >
+                        <Icon
+                          name={copyNotification?.type === 'success' ? 'check' : 'copy'}
+                          size={12}
+                        />
+                      </button>
+                      <span className="tip-body">{copyLabel}</span>
+                    </span>
+                    <span className="tip">
+                      <button
+                        type="button"
+                        style={base}
+                        aria-label="Download .md"
+                        onClick={handleDownloadMarkdown}
+                      >
+                        <Icon name="download" size={12} />
+                      </button>
+                      <span className="tip-body">Download .md</span>
+                    </span>
+                    <span className="tip" data-align="end">
+                      <button
+                        type="button"
+                        style={{
+                          ...primary,
+                          opacity: postDisabled ? 0.5 : 1,
+                          cursor: postDisabled ? 'not-allowed' : 'pointer',
+                        }}
+                        aria-label={postLabel}
+                        onClick={isMulti ? handlePostSelected : handlePostToJira}
+                        disabled={postDisabled}
+                      >
+                        {isPostBusy ? (
+                          <span className="spin" />
+                        ) : (
+                          <Icon
+                            name={postNotification?.type === 'success' ? 'check' : 'send'}
+                            size={12}
+                          />
+                        )}
+                      </button>
+                      <span className="tip-body">{postLabel}</span>
+                    </span>
+                  </>
+                )
+              })()}
             </div>
           </div>
         </div>
