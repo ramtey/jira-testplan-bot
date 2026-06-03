@@ -551,6 +551,34 @@ A unit test's fixture values (e.g. `finhoadues1: '275'`, mock API responses, see
 ✅ GOOD (user-observable): `Enter a property address known to have no HOA` instead of `fin_hoa_yn_std='N'`; `a property with annual HOA dues` instead of `fin_hoa_period_1='Annually'`
 ✅ GOOD (capture-then-compare): `Note the 'Estimated Monthly HOA Dues' value shown in the modal` ... `Verify the HOA Dues field auto-populates with the value noted above, in monthly mode`
 
+**TEST DATA MUST BE REPRODUCIBLE WHEN A BOUNDARY IS BEING TESTED:**
+When the change involves a numeric threshold, distance, radius, boundary, cutoff, or coordinate from the diff/AC (e.g., "filter results within 50km", "cap at 100 items", "reject inputs > $1M", "addresses inside the service area"), the `test_data` field MUST include concrete worked examples on BOTH sides of the boundary so two different testers reach the same verdict.
+
+This is the inverse of the "do not invent" rules above: do NOT invent values, but when the diff/AC names a real threshold, you MUST pin down concrete inputs — vague test data is just as un-runnable as fabricated test data.
+
+- ❌ BAD (non-reproducible): "Speak an address approximately 50km from the user's location"
+  → Each tester picks a different address; results aren't comparable.
+- ❌ BAD (vague region): "User in CA, speak an address in a distant state"
+  → "Distant" is not a spec; "CA" is not a coordinate.
+- ✅ GOOD (reproducible): "User location: 38.5816, -121.4944 (Sacramento City Hall). INCLUDED: 1015 K St, Sacramento (0.4km → inside 50km radius). EXCLUDED: 100 N Cabrillo Hwy, Half Moon Bay (188km → outside 50km radius). EDGE: an address ~49.8km from origin → inside; ~50.2km from origin → outside."
+
+**Forbidden hedge words** in `test_data` AND `steps` when a boundary is being tested: "approximately", "around", "roughly", "near", "far from", "distant", "in a different state", "somewhere in <region>", "approximately N-M km" (ranges are still hedges — pick a single value), plus speculative phrasing: "may return", "might return", "could return", "should return results in <city>" (when you don't actually know it will). Each must be replaced with either (a) a specific named value paired with the boundary math (`value` + `boundary` + `inside/outside`), or (b) capture-then-compare phrasing ("In step N, note the candidates returned; assert the next step keeps exactly those whose distance ≤ 50km").
+
+**STEPS MUST NAME THE SAME CONCRETE EXAMPLES AS test_data.** A common failure mode is putting "Vacaville (~49km) INCLUDED; Fairfield (~52km) EXCLUDED" in `test_data` but writing "Speak an address query that returns multiple candidates" in `steps`. That makes the test unreproducible because two testers will pick different queries. The step MUST say "Speak '<exact in-area address from test_data>' and '<exact out-of-area address from test_data>'" so the tester executes the very examples the test_data committed to.
+
+- ❌ BAD (step is generic, test_data is specific): step="Speak an address query that returns multiple candidates"; test_data="INCLUDED: 1015 K St (0.4km), EXCLUDED: 100 N Cabrillo Hwy (188km)"
+- ✅ GOOD (step names the examples): step="Speak '1015 K St' and confirm it is auto-selected (inside 50km). Repeat with '100 N Cabrillo Hwy' and confirm it is NOT auto-selected (188km, outside 50km)."
+
+If the diff names the threshold as a constant (e.g., `SERVICE_AREA_RADIUS_METERS = 50000`), quote the constant by name AND state its numeric value AND give one INCLUDED + one EXCLUDED example using real coordinates or addresses with measured distances. If you don't know plausible real coordinates for the user's domain, instruct the tester to pick a fixed origin and supply two test addresses whose distances they will compute and record — never leave the choice ambient.
+
+This rule applies to: distances, radii, timeouts, rate limits, byte sizes, dollar amounts, percentages, dates/times, item counts, string lengths — any boundary the code branches on.
+
+**ASSERT ON IDENTITY, NOT CARDINALITY, FOR FILTERED COLLECTIONS:**
+When the expected result describes a filtered, sorted, or sliced collection, assert on WHICH items, not HOW MANY. "Returns 3 candidates" passes even when the filter kept the wrong 3 items or dropped one that should have stayed.
+- ❌ BAD: "Verify 3 candidates are returned" / "Verify only in-area results are shown"
+- ✅ GOOD: "Verify the returned candidates are exactly {place_id A, place_id B, place_id C} and that {place_id D, place_id E} are NOT present."
+- ✅ GOOD (when identity is dynamic): "In step N, note the full candidate list from the unfiltered Places response. Verify the filtered list is exactly the subset of step-N items whose distance from origin is ≤ 50km."
+
 **SKIP OPTIONAL FIELDS WITH ACCEPTABLE DEFAULT VALUES:**
 - When writing form-filling steps, ONLY include a field if entering a value is necessary to execute the test
 - If a field has a default value that is acceptable for the scenario being tested, omit the step for that field entirely — do not instruct the tester to re-enter the default
@@ -645,6 +673,49 @@ Focus on compatibility regression testing:
 
 DO NOT test the features of the SDK itself - assume the SDK maintainers tested it.
 DO NOT test that the build tools work - the build process itself validates this.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CRITICAL: PICK THE RIGHT TEST LAYER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before writing UI / voice / E2E tests, inspect the code diffs. The right test layer is the LOWEST layer where the change actually lives:
+
+- **Pure function / utility / domain logic** (e.g., `filterByRadius`, `normalizeAddress`, `formatCurrency`, `searchWithinServiceArea`) → primary coverage is UNIT tests against that function. UI tests confirm wiring only.
+- **Service / handler / tRPC procedure / API endpoint / repository method** → primary coverage is INTEGRATION tests against that endpoint with mocked or real downstream dependencies. UI tests confirm wiring only.
+- **UI component logic, layout, voice / audio behavior, interaction state machines, copy, navigation** → primary coverage IS UI / E2E / voice tests.
+
+When the diff is at the lower layers, do NOT exercise that logic through 8+ user-facing tests. Manual UI/E2E for backend logic is slow, flaky, hard to reproduce, and the wrong place to catch regressions — a mocked unit test runs in 50ms in CI and asserts deterministically. **Cap UI/voice/E2E tests at 3 PER CHANGED BACKEND MODULE** in such cases — a thin smoke layer confirming wiring, not the main verification surface.
+
+**THE CAP IS PER MODULE, NOT PER TICKET.** A ticket that changes one service module (e.g., `searchWithinServiceArea`) gets at most 3 UI/voice tests covering that module's behavior — total, across `happy_path` and `edge_cases` combined. If the same ticket also touches an UNRELATED user-facing concern (e.g., a clarification-prompt UX change that only lives in UI code), that concern gets its own separate test budget. Do NOT use sibling user-facing features as an excuse to inflate UI coverage of the backend change.
+
+**HOW TO EMIT BACKEND-LAYER TESTS:**
+Place them in `integration_tests` with the title prefix `[Backend]` (mirrors the `[Voice input]` / `[Prompts]` tag convention). For each `[Backend]` test:
+- `title`: name the function or endpoint and the behavior. Example: `[Backend] searchWithinServiceArea filters Places candidates beyond 50km`
+- `steps`: describe the TEST (inputs to construct, what to mock, what to assert) — NOT click-paths. Example: "Construct a mocked Places client returning 5 candidates at distances [0.4km, 12km, 49km, 51km, 188km] from origin (38.5816, -121.4944). Call `searchWithinServiceArea(query, origin)`. Assert the returned set."
+- `expected`: assert on IDENTITY (which items), not just CARDINALITY (how many) — see the identity rule above.
+- `test_data`: name the suggested test file path if the diff suggests one (e.g. `tests/services/serviceArea.test.ts`); otherwise describe the fixture shape.
+
+**RATIO SELF-CHECK BEFORE SUBMITTING (do this counting step explicitly):**
+For each backend module the diff touches:
+  1. List every `happy_path` + `edge_cases` test whose behavior is governed by that module (i.e., the test would fail if that module's logic changed).
+  2. Count them.
+  3. If the count > 3, you over-tested at the wrong layer. Pick the 3 that best cover the module's wiring into the UI (one nominal, one fallback, one degradation) and KEEP them. Convert the rest into `[Backend]` tests in `integration_tests` — same scenario, but expressed as unit/integration assertions against the module directly.
+
+The kept UI smoke layer should verify ONLY:
+  (a) the feature is wired into the UI at all,
+  (b) the wiring passes the right parameters to the backend,
+  (c) the UI renders the backend response correctly.
+
+Do NOT keep a UI test for a backend behavior just because "it's useful to see end-to-end." End-to-end coverage for backend logic belongs in the `[Backend]` section.
+
+**PLATFORM-AWARE VERIFICATION:**
+The "browser DevTools (F12) > Network tab" recipe used in the integration-test rules below is BROWSER ONLY. If the app is mobile-first (iOS / Android / React Native / Expo), substitute ONE of:
+- Server-side log inspection (name the log file, query, or dashboard)
+- In-app debug panel / dev menu (if the diff or context references one)
+- Proxy tooling (Charles Proxy, mitmproxy) for inspecting outgoing requests
+- A `[Backend]` integration test (preferred — see above)
+
+NEVER instruct a mobile-app tester to "open browser DevTools" — they have no browser to open.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GENERATE TEST PLAN
