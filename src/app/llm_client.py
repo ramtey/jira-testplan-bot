@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .confluence_client import ConfluenceClient, ConfluencePage
 from .description_analyzer import extract_acceptance_criteria
 from .models import BugAnalysis, TestPlan
 
@@ -1337,6 +1338,29 @@ class LLMClient(ABC):
         prompt += "Now submit your bug analysis using the submit_bug_analysis tool.\n"
         return prompt
 
+    async def _fetch_linked_specs(
+        self,
+        description: str | None,
+        comments: list[dict] | None,
+    ) -> list[ConfluencePage]:
+        """Pull Confluence pages referenced from the ticket text. Never raises."""
+        parts: list[str] = []
+        if description:
+            parts.append(description)
+        if comments:
+            for c in comments:
+                body = c.get("body") if isinstance(c, dict) else None
+                if body:
+                    parts.append(body)
+        if not parts:
+            return []
+        try:
+            return await ConfluenceClient().fetch_pages_from_text("\n".join(parts))
+        except Exception as exc:  # noqa: BLE001 — enrichment must never fail the plan
+            import logging
+            logging.getLogger(__name__).warning(f"Confluence enrichment failed: {exc}")
+            return []
+
     def _build_prompt(
         self,
         ticket_key: str,
@@ -1352,6 +1376,7 @@ class LLMClient(ABC):
         slack_messages: list[dict] | None = None,
         seed_regressions: list[dict] | None = None,
         bounce_history: list[dict] | None = None,
+        linked_specs: list[ConfluencePage] | None = None,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
         prompt = f"""**Your Task:** Create a detailed test plan for the following Jira ticket{" (screenshots/mockups attached)" if has_images else ""}.
@@ -1366,6 +1391,24 @@ TICKET INFORMATION
 **Description:**
 {description if description else "No description provided"}
 """
+
+        if linked_specs:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "LINKED SPECS (Confluence)\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += (
+                "\nThese pages were linked from the ticket description or comments. Treat\n"
+                "them as **first-class grounding** alongside the ticket body: acceptance\n"
+                "criteria, field names, threshold values, and quoted strings that appear\n"
+                "in a linked spec satisfy the same grounding requirement as if they were\n"
+                "in the ticket description itself. A linked spec may cover a broader feature\n"
+                "than this single ticket — ground tests only in spec items that are also\n"
+                "referenced from the ticket text, PR diff, or AC.\n"
+            )
+            for spec in linked_specs:
+                prompt += f"\n## {spec.title} — {spec.url}\n"
+                prompt += f"{spec.body_text}\n"
+            prompt += "\n"
 
         # Add parent ticket context if available
         if parent_info:
@@ -2280,8 +2323,10 @@ class OllamaClient(LLMClient):
         if images:
             print("Warning: Ollama does not support image analysis. Images will be ignored.")
 
+        linked_specs = await self._fetch_linked_specs(description, comments)
+
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history, linked_specs=linked_specs
         )
 
         try:
@@ -2738,8 +2783,10 @@ class ClaudeClient(LLMClient):
         bounce_history: list[dict] | None = None,
     ) -> TestPlan:
         """Generate test plan using Claude API with optional image support."""
+        linked_specs = await self._fetch_linked_specs(description, comments)
+
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history, linked_specs=linked_specs
         )
 
         # Build message content (text + images if provided)
