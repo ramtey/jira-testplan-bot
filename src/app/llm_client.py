@@ -842,6 +842,60 @@ behaviors that happen to share a verb (redirect, fire, render)" → ONE TEST
 PER BEHAVIOR. When in doubt, split — a redundant test is cheap; a missing
 test is a shipped bug.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GROUNDING ATTRIBUTION (`grounded_in`)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every test case carries an optional `grounded_in` array that records the
+**non-AC sources** for the specific claims in that test. This is separate
+from `covers_acs` (which records *which AC IDs the test exercises*).
+
+**The rule:** for every claim in `steps` / `test_data` / `expected` that
+names a specific number, exact string, named function, file path, or
+testID, the reviewer must be able to point at a source. That source is
+EITHER an AC already listed in `covers_acs`, OR an entry in `grounded_in`.
+
+Use these `<kind>:<locator>` formats:
+- `spec:<section-heading-or-quoted-phrase>` — content drawn from a
+  LINKED SPECS (Confluence) section. Use the section heading verbatim
+  if there is one, otherwise a short verbatim phrase.
+- `pr:<file-path>` — content drawn from a file listed in SHARED
+  DEVELOPMENT ACTIVITY. Use the exact path the diff manifest shows.
+- `testid:<screen-or-component>` — a UI element grounded in the testID
+  reference or screen guide.
+- `ticket:<KEY>-desc` — content quoted verbatim from the ticket's own
+  description (not its AC list — those go in `covers_acs`).
+
+**Examples (do NOT use these literally — they are illustrative):**
+- A test asserting "7-second timeout fires fallback" with no matching AC
+  → `grounded_in: ["spec:Generation in Progress"]`
+- A test naming the function `getOrGenerateBaseState` and a file path
+  → `grounded_in: ["pr:apps/server/src/api/router/ai-insights/getOrGenerateBaseState.ts"]`
+- A test tapping `ai-assist-button` on the Calculator Results screen
+  → `grounded_in: ["testid:CalculatorResults"]`
+- A test with multiple specific claims may need multiple entries.
+
+**Self-check before submitting each test:**
+1. Read `steps`, `test_data`, and `expected`. Underline every specific
+   number, quoted string, exact function/file/symbol name, and testID.
+2. For EACH underline: can you name an AC ID in `covers_acs`, or a
+   `<kind>:<locator>` in `grounded_in`, that contains that exact value?
+3. If a specific claim has NO source → either remove the specificity
+   (rewrite the step to be more general), drop the test, or add the
+   real source to `grounded_in`. **NEVER fabricate a source string** —
+   `spec:<heading>` and `pr:<file>` must reference content that
+   actually appears in the prompt sections above.
+4. If `covers_acs` is empty AND `grounded_in` is empty AND the test
+   still names specific numbers / strings / symbols, the test is
+   malformed: rewrite it to be source-free or delete it.
+
+A test grounded purely in ACs (every specific value comes from an AC
+the test already covers) may emit `grounded_in: []`. A test that
+contains no specific values at all may emit `grounded_in: []` too.
+Both are valid. The forbidden combination is "specific claims AND
+empty `covers_acs` AND empty `grounded_in`" — that is an ungrounded
+test that will mislead the reviewer.
+
 **INCLUDE THESE TEST TYPES:**
 
 1. **Positive Scenarios (Happy Path)**
@@ -2589,6 +2643,31 @@ TEST_CASE_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
             "description": "Acceptance-criteria IDs this case exercises, e.g. ['SK-2137-AC1', 'SK-2139-AC2', 'SK-2175-AC3']. Used whenever an 'ACCEPTANCE CRITERIA TO COVER' section is supplied — that includes multi-ticket plans AND single-ticket parent plans whose subtasks contributed ACs. List every ID this case legitimately validates; subtask IDs (e.g. SK-2175-AC1 on a SK-2112 plan) are equally required.",
+        },
+        "grounded_in": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Non-AC provenance for this case. Every quoted string, specific "
+                "number, named function, file path, or testID that appears in "
+                "this test's `steps`, `test_data`, or `expected` must trace to "
+                "EITHER an entry in `covers_acs` OR an entry here. "
+                "Format each entry as <kind>:<locator>. Allowed kinds: "
+                "'spec:<section-heading-or-quoted-phrase>' for content from a "
+                "LINKED SPECS (Confluence) section; "
+                "'pr:<file-path>' for content from a file listed in SHARED "
+                "DEVELOPMENT ACTIVITY; "
+                "'testid:<screen-or-component>' for UI elements from the testID "
+                "reference / screen guide; "
+                "'ticket:<KEY>-desc' for content quoted verbatim from a ticket "
+                "description. "
+                "Examples: ['spec:Generation in Progress', "
+                "'pr:apps/server/src/api/router/ai-insights/getOrGenerateBaseState.ts', "
+                "'testid:CalculatorResults']. "
+                "A test that names specific numbers/strings/symbols but emits an "
+                "empty `grounded_in` AND empty `covers_acs` is malformed — drop "
+                "the test or rewrite the step to be more general."
+            ),
         },
         "needs_manual_verification": {
             "type": "boolean",
