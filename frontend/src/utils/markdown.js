@@ -9,6 +9,23 @@ const formatCoversAcs = (test) => {
   return acIds.length > 0 ? `**Covers:** ${acIds.join(', ')}\n\n` : ''
 }
 
+const formatGroundedIn = (test) => {
+  const sources = Array.isArray(test.grounded_in)
+    ? test.grounded_in.filter((s) => typeof s === 'string' && s.trim())
+    : []
+  const acIds = Array.isArray(test.covers_acs)
+    ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
+    : []
+  if (sources.length > 0) {
+    const formatted = sources.map((s) => `\`${s}\``).join(', ')
+    return `**Grounded in:** ${formatted}\n\n`
+  }
+  if (acIds.length === 0) {
+    return '> ⚠️ **Untraced** — no AC coverage and no `grounded_in` source. Verify any specific numbers, strings, or symbols in this test before running it.\n\n'
+  }
+  return ''
+}
+
 const formatNeedsVerification = (test) => {
   if (!test.needs_manual_verification) return ''
   return '> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference. See UI Grounding Warnings above for details.\n\n'
@@ -101,6 +118,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
       markdown += formatCoversAcs(test)
+      markdown += formatGroundedIn(test)
     })
   }
 
@@ -134,6 +152,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
       markdown += formatCoversAcs(test)
+      markdown += formatGroundedIn(test)
     })
   }
 
@@ -172,6 +191,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData) => {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
       markdown += formatCoversAcs(test)
+      markdown += formatGroundedIn(test)
     })
   }
 

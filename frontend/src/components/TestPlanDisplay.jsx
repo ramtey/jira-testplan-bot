@@ -97,6 +97,10 @@ function TestCard({ test, section, index, checked, onToggle, showCategory }) {
   const acIds = Array.isArray(test.covers_acs)
     ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
     : []
+  const groundedIn = Array.isArray(test.grounded_in)
+    ? test.grounded_in.filter((s) => typeof s === 'string' && s.trim())
+    : []
+  const isUntraced = acIds.length === 0 && groundedIn.length === 0
   const checkboxId = `tc-${section.key}-${index}`
 
   return (
@@ -140,6 +144,27 @@ function TestCard({ test, section, index, checked, onToggle, showCategory }) {
               >
                 <Icon name="scan" size={10} />
                 Ungrounded UI ref
+              </span>
+            )}
+            {isUntraced && (
+              <span
+                title="No AC coverage and no grounded_in source. Verify any specific numbers, strings, or symbols in this test before running it."
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  height: 18,
+                  padding: '0 6px',
+                  background: 'rgba(239,68,68,.10)',
+                  border: '1px solid rgba(239,68,68,.35)',
+                  color: '#fca5a5',
+                  borderRadius: 3,
+                  fontSize: 10.5,
+                  fontWeight: 500,
+                }}
+              >
+                <Icon name="scan" size={10} />
+                Untraced
               </span>
             )}
             {test.cross_project && (
@@ -246,6 +271,29 @@ function TestCard({ test, section, index, checked, onToggle, showCategory }) {
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Test data</span>
             <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{renderInline(test.test_data)}</div>
+          </>
+        )}
+        {groundedIn.length > 0 && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Grounded in</span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {groundedIn.map((src, i) => (
+                <code
+                  key={i}
+                  style={{
+                    fontSize: 10.5,
+                    padding: '1px 6px',
+                    background: 'var(--bg-input)',
+                    border: '1px solid var(--line)',
+                    borderRadius: 3,
+                    color: 'var(--fg-muted)',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                >
+                  {src}
+                </code>
+              ))}
+            </div>
           </>
         )}
       </div>
@@ -715,6 +763,42 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
                   </a>
                 )
               })}
+            </div>
+            <span style={{ width: 1, height: 16, background: 'var(--line-strong)', alignSelf: 'center' }} />
+            <div style={{ display: 'flex', gap: 4 }}>
+              <Btn
+                variant="ghost"
+                size="sm"
+                icon={copyNotification?.type === 'success' ? 'check' : 'copy'}
+                title={copyNotification?.type === 'success' ? 'Copied' : 'Copy markdown'}
+                onClick={handleCopyMarkdown}
+              />
+              <Btn
+                variant="ghost"
+                size="sm"
+                icon="download"
+                title="Download .md"
+                onClick={handleDownloadMarkdown}
+              />
+              <Btn
+                variant="primary"
+                size="sm"
+                icon={postNotification?.type === 'success' ? 'check' : 'send'}
+                title={
+                  isMulti
+                    ? `Post to selected (${selectedKeys.size})`
+                    : postNotification?.type === 'success'
+                      ? postNotification.message
+                      : 'Post to Jira'
+                }
+                onClick={isMulti ? handlePostSelected : handlePostToJira}
+                disabled={
+                  isMulti
+                    ? isAnyPosting || selectedKeys.size === 0
+                    : isPosting
+                }
+                loading={isMulti ? isAnyPosting : isPosting}
+              />
             </div>
           </div>
         </div>
