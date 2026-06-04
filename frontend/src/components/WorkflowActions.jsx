@@ -374,9 +374,16 @@ function WorkflowActions({
       const cascadeText = cascadedCount > 0
         ? ` · ${cascadedCount} subtask${cascadedCount === 1 ? '' : 's'} moved`
         : ''
+      const lead =
+        action.id === 'fail-to-todo'
+          ? `Bounced back to ${data.target_status}`
+          : action.id === 'pass-to-uat'
+            ? `Passed to ${data.target_status}`
+            : `Moved to ${data.target_status}`
       setFeedback({
         kind: 'success',
-        text: `Moved to ${data.target_status} · ${assigneeText}${noteText}${parentText}${cascadeText}`,
+        actionId: action.id,
+        text: `${lead} · ${assigneeText}${noteText}${parentText}${cascadeText}`,
       })
       closeNoteForm()
       if (onActionComplete) onActionComplete(action.id)
@@ -620,13 +627,24 @@ function WorkflowActions({
         </form>
       )}
 
-      {feedback && (
-        <div style={{ marginTop: 'var(--s-4)', opacity: isLeaving ? 0 : 1, transition: `opacity ${MESSAGE_EXIT_MS}ms` }}>
-          <Alert tone={feedback.kind === 'error' ? 'danger' : 'success'} title={feedback.kind === 'error' ? 'Action failed' : 'Success'}>
-            {feedback.text}
-          </Alert>
-        </div>
-      )}
+      {feedback && (() => {
+        const isError = feedback.kind === 'error'
+        const isBounce = !isError && feedback.actionId === 'fail-to-todo'
+        const tone = isError ? 'danger' : isBounce ? 'warning' : 'success'
+        const title = isError
+          ? 'Action failed'
+          : isBounce
+            ? 'Returned to dev'
+            : 'Success'
+        const icon = isBounce ? 'arrow-left' : undefined
+        return (
+          <div style={{ marginTop: 'var(--s-4)', opacity: isLeaving ? 0 : 1, transition: `opacity ${MESSAGE_EXIT_MS}ms` }}>
+            <Alert tone={tone} title={title} icon={icon}>
+              {feedback.text}
+            </Alert>
+          </div>
+        )
+      })()}
     </div>
   )
 }
