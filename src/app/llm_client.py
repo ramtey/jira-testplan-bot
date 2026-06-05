@@ -3138,35 +3138,66 @@ class ClaudeClient(LLMClient):
 
     async def summarize_ticket(self, summary: str, description: str | None) -> str:
         """Return a plain-language summary using Claude API."""
+        import asyncio
+
         desc_part = f"\n\nDescription:\n{description}" if description else ""
         prompt = (
             f"Summarize this Jira ticket in 2-3 plain sentences that a tester can quickly read. "
             f"Focus on what the feature/bug is, what it affects, and what a tester needs to know. "
             f"No jargon, no bullet points. Reply with only the summary text.\n\nTitle: {summary}{desc_part}"
         )
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": 256,
-                        "messages": [{"role": "user", "content": prompt}],
-                        **self._temperature_kwargs(0.3),
-                    },
-                )
-                response.raise_for_status()
-                result = response.json()
-                return result["content"][0]["text"].strip()
-        except httpx.HTTPStatusError as e:
-            raise LLMError(f"Claude API returned error status {e.response.status_code}", error_type="service_unavailable") from e
-        except httpx.TimeoutException as e:
-            raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
+
+        # 529 = Anthropic "Overloaded" — documented as transient, retry with backoff.
+        # 503/502/504 are upstream-gateway hiccups that behave the same way.
+        retryable_statuses = {502, 503, 504, 529}
+        max_attempts = 4
+        backoff_seconds = 1.0
+
+        last_status: int | None = None
+        for attempt in range(max_attempts):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "anthropic-version": "2023-06-01",
+                            "x-api-key": self.api_key,
+                            "content-type": "application/json",
+                        },
+                        json={
+                            "model": self.model,
+                            "max_tokens": 256,
+                            "messages": [{"role": "user", "content": prompt}],
+                            **self._temperature_kwargs(0.3),
+                        },
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    return result["content"][0]["text"].strip()
+            except httpx.HTTPStatusError as e:
+                last_status = e.response.status_code
+                if last_status in retryable_statuses and attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
+                    continue
+                if last_status == 529:
+                    raise LLMError(
+                        "Claude is temporarily overloaded. Please try again in a moment.",
+                        error_type="service_unavailable",
+                    ) from e
+                raise LLMError(
+                    f"Claude API returned error status {last_status}",
+                    error_type="service_unavailable",
+                ) from e
+            except httpx.TimeoutException as e:
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
+                    continue
+                raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
+
+        raise LLMError(
+            f"Claude API returned error status {last_status} after {max_attempts} attempts",
+            error_type="service_unavailable",
+        )
 
     async def _claude_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)
