@@ -101,6 +101,9 @@ function App() {
       ? ticketsData.map((t) => t.key).join(',')
       : ''
     writeKeyToUrl(urlKey)
+    if (typeof document !== 'undefined') {
+      document.title = urlKey || 'Jira TestPlan Bot'
+    }
   }, [ticketsData])
 
   // Fetch on first paint if the URL carried a ?key= but we have no ticket
