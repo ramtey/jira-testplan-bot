@@ -17,6 +17,13 @@ function statusCategory(status) {
   return 'todo'
 }
 
+function formatBounceTimestamp(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
 function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription, onActionComplete, compact = false }) {
   const [isAttachmentsExpanded, setIsAttachmentsExpanded] = useState(false)
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false)
@@ -24,6 +31,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState(null)
   const [isDescriptionOpen, setIsDescriptionOpen] = useState(true)
+  const [isBouncesOpen, setIsBouncesOpen] = useState(false)
 
   const handleToggleSummary = async () => {
     if (isSummaryExpanded) {
@@ -155,6 +163,48 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
           onActionComplete={onActionComplete}
         />
       </div>
+
+      {ticketData.bounce_history && ticketData.bounce_history.length > 0 && (() => {
+        const events = ticketData.bounce_history
+        const latest = events[events.length - 1]
+        const count = events.length
+        return (
+          <Coll
+            icon="history"
+            title={`Bounced back from testing · ${count}× `}
+            open={isBouncesOpen}
+            onToggle={setIsBouncesOpen}
+            preview={`Most recent: ${latest.from_status} → ${latest.to_status}`}
+            meta={<Chip>{count}</Chip>}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+              {[...events].reverse().map((b, i) => (
+                <Alert
+                  key={i}
+                  tone="warning"
+                  title={
+                    <span>
+                      <span style={{ fontFamily: 'var(--font-mono)' }}>{b.from_status} → {b.to_status}</span>
+                      <span style={{ color: 'var(--fg-subtle)', fontWeight: 400 }}>
+                        {' · '}{formatBounceTimestamp(b.timestamp)}
+                        {b.author ? ` · ${b.author}` : ''}
+                      </span>
+                    </span>
+                  }
+                >
+                  {b.reason ? (
+                    <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{b.reason}</p>
+                  ) : (
+                    <p style={{ margin: 0, color: 'var(--fg-subtle)', fontStyle: 'italic' }}>
+                      No comment found near this transition.
+                    </p>
+                  )}
+                </Alert>
+              ))}
+            </div>
+          </Coll>
+        )
+      })()}
 
       {/* Summary */}
       <Coll
