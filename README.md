@@ -42,6 +42,10 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Epic children view**: fetching an Epic lists every child ticket with per-row Generate and Analyze buttons that render results inline beneath the row
 - **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does
 - **Inline UX feedback**: auto-scroll to results, per-test checkmarks, and a viewport-pinned overall + per-section progress bar
+- **Per-test `grounded_in` attribution**: every generated test case carries a `grounded_in` list (e.g. `comments:123`, `PR:456`, `Figma:abc`) rendered as small chips under the test; tests with neither AC coverage nor grounded_in entries get an "Untraced" pill (hidden when the ticket has no ACs at all) so reviewers can spot ungrounded claims at a glance
+- **Linked Confluence specs**: Confluence URLs in the Jira description or comments are fetched and injected into the LLM prompt as a LINKED SPECS section so quoted requirements come from the actual spec page, not just the ticket body. Best-effort — per-page failures don't block plan generation
+- **Live in Jira badge**: Jira posting is update-in-place, so at most one generated version is the one teammates see on the ticket. The plan banner and run-history rows tag that version "Live in Jira" so users don't double-post or wonder which regeneration is current
+- **Shareable URLs**: the active ticket key is mirrored into the URL bar via `?key=…`, so every browser tab is a bookmarkable / refresh-safe handle on a ticket (works alongside the existing per-tab sessionStorage)
 
 ## Key Features
 
@@ -71,7 +75,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Token health monitoring**: Real-time validation with expiration warnings
 
 ### Test Plan Generation
-- **Claude Opus**: Defaults to `claude-opus-4-5-20251101`; Opus 4.7 is supported (the `temperature` parameter is dropped automatically for 4.7 since the API rejects it). Read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents with many subtasks survive Opus's 16k-token output cap
+- **Claude Opus**: Defaults to `claude-opus-4-5-20251101`; Opus 4.7 is supported (the `temperature` parameter is dropped automatically for 4.7 since the API rejects it). Read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents with many subtasks survive Opus's 16k-token output cap. Transient `529` overload errors from the plain-summary path are retried with exponential backoff so a brief Anthropic capacity blip no longer drops the ticket summary
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
 - **Multiple export formats**: Markdown, Jira-formatted text, or JSON. The markdown export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
 - **Issue type validation**: Generates plans for Story, Bug, Task, and Sub-task; skips Epics and Spikes (Epics open the children view instead)
@@ -83,6 +87,8 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Sibling API caller awareness**: Prompt asks the model to enumerate sibling code paths that hit the same API surface (so a fix on one ViewModel doesn't ship with an identical buggy sibling), with a grounding warning when the model can't verify them from the diff. Integration-test rule requires assertions to check that request params are both *present and non-empty*, catching empty-string regressions
 - **Observability ticket mode**: Logging / alerting / monitoring tickets switch to a QA-runnable test style — Grafana UI inspection, paste-ready LogQL queries against natural traffic, walking every tab of the affected rule, and `[fill in from UI]` placeholders for values the ticket references but doesn't supply. Bans white-box steps QA can't execute (e.g. "deploy the code", "simulate a DB failure")
 - **PII protection**: System prompt forbids naming real customers/employees from ticket context as test subjects; a regex pass scrubs any remaining email-shaped strings from the rendered plan as defense-in-depth
+- **Boundary & test-layer prompt rules**: Numeric-boundary changes must produce concrete inside/outside example values and matching step text; filtered-collection assertions must check identity, not just cardinality; backend logic coverage is pushed into a dedicated `[Backend]` section instead of inflating UI/voice steps; mobile tickets ban browser-DevTools instructions
+- **Sticky header quick actions**: Copy / Download / Post-to-Jira are reachable from the sticky test-plan header without scrolling to the end of the test list
 
 ### Jira Browser Side Rail
 
@@ -94,6 +100,12 @@ columns → Issues**.
   In Progress / Done) so the rail looks the same across projects with custom
   workflows. Statuses outside the three known categories appear under "Other"
   so nothing is silently hidden
+- **Backlog muting**: for projects that use Jira sprints, issues that aren't on
+  the active sprint come back with `in_active_sprint=False` and render with a
+  soft visual treatment plus a small "Backlog" tag, so the column makes it
+  clear which work is actually in flight. Kanban projects without a Sprint
+  field render normally — the backend probes per project before applying the
+  filter
 - **Issue type badges**: each issue row shows a small color-coded badge
   (Story / Bug / Task / Spike / Epic / Sub-task) using the same palette as
   the main ticket header
@@ -166,7 +178,9 @@ opt in.
   (files attached to the issue, linked by filename in the comment). Empty
   submit is rejected because a fail-back without a reason has no value.
   The transition still runs even if the comment post fails, matching Pass
-  to UAT
+  to UAT. The post-action banner is rendered in a warning tone ("Returned
+  to dev / Bounced back to …") instead of the celebratory green check used
+  for UAT pass, so the bounce-back is visually unmistakable
 - **Notify chip picker**: Both forms expose an optional Notify row that
   @mentions selected users in the posted comment via a real ADF mention node
   in a trailing `cc:` paragraph (so Jira actually delivers notifications, not
@@ -218,6 +232,11 @@ recoverable and comparable.
 - **Prior-runs banner**: When a ticket has prior successful test-plan runs, a
   banner appears above the generate area summarising the latest version and
   expanding to a list of every version with creation time, model, and case count
+- **Live in Jira badge**: Posting a plan to Jira updates the existing
+  comment in place, so at most one version is the one teammates actually
+  see. That version is tagged "Live in Jira" on the run-history rows and
+  on the plan banner so reviewers don't double-post or wonder which
+  regeneration is current
 - **Side-by-side preview**: Clicking *View* on a row renders the historical
   plan below the live one in muted gray styling, so versions can be read
   side-by-side without losing the active output. The preview is read-only —
@@ -504,7 +523,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Cross-project multi-ticket plans, screenshot uploads + multi-Loom on QA workflow forms, rail subtask grouping with parent-aware collapse, cascade-to-subtasks restricted by pre-transition status, workflow project gate via `WORKFLOW_PROJECT_PREFIXES`, and Opus 4.7 readiness shipped on top of the previous AC-coverage / grounding-flag / observability-prompt baseline; prompt quality hardening ongoing
+**Current:** Per-test `grounded_in` attribution with Untraced flagging, linked Confluence specs feeding the prompt, "Live in Jira" badge on the version that's currently posted, URL deep linking via `?key=…`, rail backlog muting, sticky-header quick actions, and tighter boundary / test-layer prompt rules shipped on top of the cross-project multi-ticket / Opus 4.7 / observability-prompt baseline; prompt quality hardening ongoing
 
 ## Roadmap
 
@@ -566,6 +585,16 @@ uv run pytest tests/ -v
 - ✅ **Rail subtask grouping + fetch overlay**: The Jira browser rail collapses Sub-tasks under their visible parent with a `+N sub` pill, and badges orphan Sub-tasks (parent in another column) with an indented `SUBTASK OF KEY` caption. A full-screen overlay covers the app while a ticket is loading
 - ✅ **Workbench frontend redesign**: Frontend refactored around a workbench-style design system; App state extracted into dedicated hooks and TestPlanDisplay sections collapsed into one config-driven map
 - ✅ **Opus 4.7 readiness**: Claude calls drop the `temperature` parameter automatically for Opus 4.7 (the API rejects it), and the read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents survive the 16k-token output cap
+- ✅ **URL deep linking**: `?key=…` seeds the fetch on first paint and the active ticket is mirrored back into the URL via `replaceState`, so every browser tab is a bookmarkable / refresh-safe handle on a ticket (and the loaded key now also appears in the browser tab title)
+- ✅ **Per-test `grounded_in` attribution**: Each generated test case carries a `grounded_in` list (e.g. `comments:123`, `PR:456`, `Figma:abc`) rendered as chips under the test; tests with neither AC coverage nor grounded_in get an "Untraced" pill (hidden when the ticket has no ACs)
+- ✅ **Linked Confluence specs**: Confluence URLs in the Jira description or comments are fetched (reusing Atlassian Cloud Basic auth) and injected into the LLM prompt as a LINKED SPECS section so quoted requirements come from the actual spec page. Best-effort — per-page fetch failures don't block plan generation
+- ✅ **Live in Jira badge**: A `posted_to_jira` marker tracks which generated plan is the one currently in the Jira comment (posting is update-in-place, so at most one); the badge is surfaced both on the active plan banner and on every matching run-history row
+- ✅ **Sticky-header quick actions**: Copy / Download / Post-to-Jira are reachable from the sticky test-plan header, not just from the end of the test list
+- ✅ **Rail backlog muting**: For sprint-using projects, issues outside the active sprint render with a soft visual treatment and a "Backlog" tag; Kanban projects without a Sprint field render normally
+- ✅ **Boundary & test-layer prompt rules**: Numeric-boundary changes force inside/outside examples and matching step text; filtered-collection assertions check identity not cardinality; backend logic gets its own `[Backend]` section; mobile tickets ban browser-DevTools instructions
+- ✅ **Fail-back distinct from pass banner**: Fail back to To Do now renders a warning-tone "Bounced back to …" banner instead of the green check used for UAT pass, so the bounce-back reads as a return-to-dev rather than progress
+- ✅ **Transient 529 retry on summarization**: The plain-summary Claude call retries Anthropic `529` overload errors with exponential backoff so a brief capacity blip doesn't drop the ticket summary
+- ✅ **Workflow routes module**: QA workflow endpoint, its constants, and the parent/subtask cascade helpers moved out of `main.py` into a dedicated `workflow_routes.py`, matching `bug_lens_routes` / `runs_routes` (same URLs, same behavior)
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
