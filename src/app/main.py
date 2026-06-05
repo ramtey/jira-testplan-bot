@@ -28,7 +28,7 @@ from .models import (
     PostCommentRequest,
     TicketInput,
 )
-from .repositories import bug_analysis_repository
+from .repositories import bug_analysis_repository, plan_repository
 from .runs_routes import router as runs_router
 from .seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from .services import run_tracker
@@ -712,12 +712,15 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             "grounding_warnings": _normalize_grounding_warnings(test_plan),
         }
 
-        await run_tracker.complete_with_plan(
+        saved = await run_tracker.complete_with_plan(
             run_ctx,
             plan_body=json.dumps(response),
             plan_format=PlanFormat.json,
             cases=_flatten_cases_for_persistence(test_plan),
         )
+        if saved:
+            response["plan_id"] = saved["plan_id"]
+            response["version"] = saved["version"]
         return response
 
     except LLMError as e:
@@ -843,12 +846,15 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
                 test_plan.cross_project_summary or cross_project_payload
             )
 
-        await run_tracker.complete_with_plan(
+        saved = await run_tracker.complete_with_plan(
             run_ctx,
             plan_body=json.dumps(response),
             plan_format=PlanFormat.json,
             cases=_flatten_cases_for_persistence(test_plan),
         )
+        if saved:
+            response["plan_id"] = saved["plan_id"]
+            response["version"] = saved["version"]
         return response
     except LLMError as e:
         await run_tracker.fail(run_ctx, error_code=f"LLMError: {e}")
@@ -869,11 +875,39 @@ async def post_comment(request: PostCommentRequest):
     jira = JiraClient()
     try:
         result = await jira.post_comment(request.issue_key, request.comment_text)
+        comment_id = result.get("id")
+        posted_at_iso: str | None = None
+        if request.plan_id is not None and comment_id:
+            try:
+                sessionmaker = get_sessionmaker()
+                async with sessionmaker() as session:
+                    await plan_repository.mark_plan_posted_to_jira(
+                        session,
+                        plan_id=request.plan_id,
+                        ticket_key=request.issue_key.upper(),
+                        jira_comment_id=str(comment_id),
+                    )
+                    plan_with_cases = await plan_repository.get_plan_with_cases(
+                        session, plan_id=request.plan_id
+                    )
+                    if plan_with_cases and plan_with_cases[0].posted_at:
+                        posted_at_iso = plan_with_cases[0].posted_at.isoformat()
+            except Exception:
+                # Posting succeeded; failing to record the mark shouldn't fail
+                # the request. The next post attempt will re-record.
+                import logging
+                logging.exception(
+                    "Failed to mark plan %s posted on %s",
+                    request.plan_id,
+                    request.issue_key,
+                )
         return {
             "success": True,
-            "comment_id": result.get("id"),
+            "comment_id": comment_id,
             "issue_key": request.issue_key,
             "updated": result.get("updated", False),
+            "plan_id": request.plan_id,
+            "posted_at": posted_at_iso,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

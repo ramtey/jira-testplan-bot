@@ -392,6 +392,10 @@ class PostCommentRequest(BaseModel):
 
     issue_key: str
     comment_text: str
+    # When the comment is a generated test plan, the frontend passes the plan's
+    # DB id so the server can record this version as the one currently live in
+    # Jira and clear that mark from superseded versions of the same ticket.
+    plan_id: int | None = None
 
 
 class WorkflowActionRequest(BaseModel):

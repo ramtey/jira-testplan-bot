@@ -109,16 +109,19 @@ async def complete_with_plan(
     prompt_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: Decimal | float = 0,
-) -> None:
+) -> dict | None:
+    """Persist the run + plan and return `{plan_id, version}` for the caller
+    to echo back to the client. Returns None when persistence is unavailable
+    (no DB context, or an exception was swallowed)."""
     if ctx.run_id is None:
-        return
+        return None
     try:
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
             run = await session.get(_run_type(), ctx.run_id)
             if run is None:
                 logger.warning("run_tracker.complete_with_plan: run_id=%s vanished", ctx.run_id)
-                return
+                return None
             await run_repository.mark_completed(
                 session,
                 run=run,
@@ -143,7 +146,7 @@ async def complete_with_plan(
                     previous_plan_id = prior.id
                     version = (prior.version or 1) + 1
 
-            await plan_repository.save_with_cases(
+            plan = await plan_repository.save_with_cases(
                 session,
                 run_id=ctx.run_id,
                 format=plan_format,
@@ -153,8 +156,10 @@ async def complete_with_plan(
                 version=version,
             )
             await session.commit()
+            return {"plan_id": plan.id, "version": plan.version}
     except Exception:
         logger.exception("run_tracker.complete_with_plan failed")
+        return None
 
 
 async def complete(

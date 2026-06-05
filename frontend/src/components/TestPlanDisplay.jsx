@@ -25,6 +25,20 @@ function sectionLength(testPlan, key) {
   return Array.isArray(testPlan?.[key]) ? testPlan[key].length : 0
 }
 
+function formatRelativeTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const mins = Math.round((Date.now() - d.getTime()) / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  if (days < 30) return `${days}d ago`
+  return d.toLocaleDateString()
+}
+
 function buildStorageKey(testPlan, ticketKeys) {
   if (!ticketKeys || ticketKeys.length === 0) return null
   const fingerprint = SECTION_KEYS.map((k) => sectionLength(testPlan, k)).join('-')
@@ -465,7 +479,7 @@ function GroundingWarningsPanel({ warnings }) {
   )
 }
 
-function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
+function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const isMulti = !!(ticketsData && ticketsData.length > 1)
 
   const allKeys = isMulti ? ticketsData.map((t) => t.key) : []
@@ -473,6 +487,15 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
   const [postingStates, setPostingStates] = useState({})
 
   const [isPosting, setIsPosting] = useState(false)
+  // Local "we just posted this version" timestamp. The parent re-fetches
+  // history asynchronously via onPosted; this lets the badge appear
+  // immediately without waiting for that round-trip. Cleared when the plan
+  // identity changes (regeneration produces a new plan_id).
+  const [localPostedAt, setLocalPostedAt] = useState(null)
+  useEffect(() => {
+    setLocalPostedAt(null)
+  }, [testPlan?.plan_id])
+  const postedAt = testPlan?.posted_at || localPostedAt
 
   const ticketKeysJoined = isMulti
     ? allKeys.join('+')
@@ -596,6 +619,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
         body: JSON.stringify({
           issue_key: ticketData.key,
           comment_text: jiraText,
+          plan_id: testPlan?.plan_id ?? null,
         }),
       })
 
@@ -606,6 +630,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
 
       const result = await response.json()
       const action = result.updated ? 'updated' : 'posted'
+      setLocalPostedAt(result.posted_at || new Date().toISOString())
+      if (onPosted) onPosted({ ticketKey: ticketData.key, planId: testPlan?.plan_id ?? null })
       showNotification(setPostNotification, postTimerRef, 'success', `Test plan ${action} on ${ticketData.key}`)
     } catch (error) {
       showNotification(setPostNotification, postTimerRef, 'error', error.message)
@@ -878,9 +904,16 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData }) {
             <Icon name="beaker" size={16} style={{ color: 'var(--accent)' }} />
           </div>
           <div style={{ flex: 1 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--s-3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
               <span style={{ fontSize: 'var(--t-md)', fontWeight: 600, color: 'var(--fg-strong)' }}>Generated test plan</span>
               {isMulti && <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>· {allKeys.join(' + ')}</span>}
+              {!isMulti && postedAt && (
+                <span title={`Posted ${new Date(postedAt).toLocaleString()}`} style={{ display: 'inline-flex' }}>
+                  <Chip size="sm" dot dotColor="var(--success)">
+                    Live in Jira · {formatRelativeTime(postedAt)}
+                  </Chip>
+                </span>
+              )}
             </div>
             <div style={{ marginTop: 2, fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
               {totalAll} test cases

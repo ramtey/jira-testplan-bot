@@ -414,6 +414,9 @@ function App() {
                         testPlan={testPlan.plan}
                         ticketData={ticketData}
                         ticketsData={isMultiTicket ? ticketsData : null}
+                        onPosted={({ ticketKey }) => {
+                          if (ticketKey) loadRunHistory(ticketKey)
+                        }}
                       />
                     </div>
                   )}

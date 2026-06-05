@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react'
 import PlanDiffModal from './PlanDiffModal'
 import { API_BASE_URL } from '../config'
 import Icon from './Icon'
-import { Btn, Alert } from './ui'
+import { Btn, Alert, Chip } from './ui'
 
 function formatRelative(iso) {
   if (!iso) return ''
@@ -34,6 +34,10 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
     if (!latest) return ''
     return `${formatRelative(latest.created_at)} · v${latest.version} · ${latest.case_count} cases`
   }, [latest])
+  const liveRun = useMemo(
+    () => runs.find((r) => r.jira_comment_id) || null,
+    [runs]
+  )
 
   if (!runs || runs.length === 0) return null
 
@@ -70,6 +74,16 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
           v{latest.version}
         </span>
         <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--t-sm)' }}>· {summary}</span>
+        {liveRun && (
+          <span
+            title={liveRun.posted_at ? `Posted ${new Date(liveRun.posted_at).toLocaleString()}` : 'Posted to Jira'}
+            style={{ display: 'inline-flex' }}
+          >
+            <Chip size="sm" dot dotColor="var(--success)">
+              Live in Jira · v{liveRun.version}
+            </Chip>
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         <Btn variant="ghost" size="sm" iconRight={expanded ? 'chevron-up' : 'chevron-down'} onClick={() => setExpanded((v) => !v)}>
           {runs.length} version{runs.length === 1 ? '' : 's'}
@@ -103,6 +117,14 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
                 <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--t-xs)' }}>{run.case_count} cases</span>
                 {isMulti && otherKeys.length > 0 && (
                   <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>multi: also {otherKeys.join(', ')}</span>
+                )}
+                {run.jira_comment_id && (
+                  <span
+                    title={run.posted_at ? `Posted ${new Date(run.posted_at).toLocaleString()}` : 'Posted to Jira'}
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <Chip size="sm" dot dotColor="var(--success)">Live in Jira</Chip>
+                  </span>
                 )}
                 <span style={{ flex: 1 }} />
                 <Btn

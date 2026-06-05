@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime, timezone
 
+from sqlalchemy import update
 from sqlmodel import desc, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -100,9 +102,48 @@ async def list_runs_with_plans_by_ticket(
             "case_count": plan.case_count,
             "version": plan.version,
             "previous_plan_id": plan.previous_plan_id,
+            "jira_comment_id": plan.jira_comment_id,
+            "posted_at": plan.posted_at.isoformat() if plan.posted_at else None,
         }
         for run, plan in rows
     ]
+
+
+async def mark_plan_posted_to_jira(
+    session: AsyncSession,
+    *,
+    plan_id: int,
+    ticket_key: str,
+    jira_comment_id: str,
+) -> None:
+    """Mark `plan_id` as the version currently live in Jira for `ticket_key`,
+    and clear the same fields on every other plan whose run touched that ticket.
+
+    Posting is update-in-place on Jira's side, so at most one plan per ticket
+    can be "live" at a time — superseded versions must be cleared, not kept.
+    """
+    now = datetime.now(timezone.utc)
+
+    clear_stmt = (
+        update(GeneratedPlan)
+        .where(
+            GeneratedPlan.id != plan_id,
+            GeneratedPlan.jira_comment_id.is_not(None),
+            GeneratedPlan.run_id.in_(
+                select(Run.id).where(Run.ticket_keys.contains([ticket_key]))
+            ),
+        )
+        .values(jira_comment_id=None, posted_at=None)
+    )
+    await session.exec(clear_stmt)
+
+    set_stmt = (
+        update(GeneratedPlan)
+        .where(GeneratedPlan.id == plan_id)
+        .values(jira_comment_id=jira_comment_id, posted_at=now)
+    )
+    await session.exec(set_stmt)
+    await session.commit()
 
 
 async def get_plan_with_cases(

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import CheckConstraint, Column, ForeignKey, Index
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 from sqlmodel import Field
 
@@ -41,6 +42,16 @@ class GeneratedPlan(TimestampedBase, table=True):
             nullable=True,
             index=True,
         ),
+    )
+
+    # Set when this version is the one currently live on the Jira ticket.
+    # Because posting is update-in-place, at most one plan per ticket has
+    # these populated at a time — posting a newer version nulls them on
+    # superseded rows.
+    jira_comment_id: str | None = Field(default=None, max_length=64, nullable=True)
+    posted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
 
 

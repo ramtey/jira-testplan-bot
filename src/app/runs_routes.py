@@ -65,6 +65,8 @@ async def get_plan(plan_id: int):
         "previous_plan_id": plan.previous_plan_id,
         "case_count": plan.case_count,
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
+        "jira_comment_id": plan.jira_comment_id,
+        "posted_at": plan.posted_at.isoformat() if plan.posted_at else None,
         "cases": [
             {
                 "position": c.position,
