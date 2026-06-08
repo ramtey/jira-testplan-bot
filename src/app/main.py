@@ -616,6 +616,42 @@ async def summarize_issue(issue_key: str, request: dict):
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@app.post("/issues/summarize-batch")
+async def summarize_issues_batch(request: dict):
+    """Summarize a bundle of related tickets in one LLM call.
+
+    Expects `{"tickets": [{"key", "summary", "description"?}, ...]}` and
+    returns `{"overview": str, "per_ticket": [{"key", "blurb"}, ...]}`.
+    Used by the multi-ticket view to give the tester a single shared
+    narrative across the batch plus a one-liner per row.
+    """
+    raw_tickets = request.get("tickets")
+    if not isinstance(raw_tickets, list) or not raw_tickets:
+        raise HTTPException(
+            status_code=400, detail="tickets is required and must be a non-empty list"
+        )
+    tickets: list[dict] = []
+    for item in raw_tickets:
+        if not isinstance(item, dict):
+            continue
+        key = (item.get("key") or "").strip()
+        summary = (item.get("summary") or "").strip()
+        if not key or not summary:
+            continue
+        tickets.append(
+            {"key": key, "summary": summary, "description": item.get("description")}
+        )
+    if not tickets:
+        raise HTTPException(
+            status_code=400, detail="No tickets had both a key and a summary."
+        )
+    try:
+        llm = get_llm_client()
+        return await llm.summarize_batch(tickets)
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @app.post("/generate-test-plan")
 async def generate_test_plan(request: GenerateTestPlanRequest):
     """

@@ -117,6 +117,51 @@ _VOICE_KEYWORDS_RE = re.compile(
 )
 
 
+def _parse_batch_summary_json(raw: str, tickets: list[dict]) -> dict:
+    """Parse the LLM's batch-summary JSON, tolerant to common deviations.
+
+    The model is instructed to return only JSON, but in practice may wrap it
+    in code fences or include trailing prose. We extract the first JSON
+    object and fall back to a structured no-data response if parsing fails
+    rather than 500-ing the API.
+    """
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        # Strip fenced code blocks like ```json … ```
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+    # If extra prose surrounds the JSON, slice between the first { and last }.
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start : end + 1]
+
+    overview = ""
+    per_ticket: list[dict] = []
+    try:
+        parsed = json.loads(text)
+        overview = str(parsed.get("overview") or "").strip()
+        raw_items = parsed.get("per_ticket") or []
+        by_key = {
+            str(item.get("key", "")).strip().upper(): str(item.get("blurb", "")).strip()
+            for item in raw_items
+            if isinstance(item, dict)
+        }
+        # Re-emit in the same order as the input so the UI can render the
+        # blurbs alongside the rows even if the model reordered them.
+        for t in tickets:
+            key = (t.get("key") or "").strip().upper()
+            per_ticket.append({"key": key, "blurb": by_key.get(key, "")})
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        # Don't fail the whole request on a malformed response — surface the
+        # raw text as the overview so the user at least sees what came back.
+        overview = text[:1000]
+        per_ticket = [{"key": (t.get("key") or "").upper(), "blurb": ""} for t in tickets]
+
+    return {"overview": overview, "per_ticket": per_ticket}
+
+
 def _is_voice_ticket(summary: str | None, description: str | None) -> bool:
     """Return True if the ticket involves voice I/O or screen-reader behavior.
 
@@ -1244,6 +1289,48 @@ class LLMClient(ABC):
     ) -> str:
         """Return a 2-3 sentence plain-language summary of the ticket."""
         pass
+
+    @abstractmethod
+    async def summarize_batch(
+        self,
+        tickets: list[dict],
+    ) -> dict:
+        """Summarize a bundle of related tickets in one LLM call.
+
+        Each ticket dict carries `key`, `summary`, and optional `description`.
+        Returns `{"overview": str, "per_ticket": [{"key": str, "blurb": str}, ...]}`.
+        """
+        pass
+
+    def _build_batch_summary_prompt(self, tickets: list[dict]) -> str:
+        """Shared prompt builder for batch summary across providers."""
+        keys = ", ".join(t.get("key", "?") for t in tickets)
+        prompt = (
+            f"You are helping a QA tester get context on {len(tickets)} related Jira tickets: {keys}.\n\n"
+            "Read every ticket below, then produce JSON with two fields:\n"
+            '  - "overview": 2-4 plain sentences describing what this whole batch delivers as a unit '
+            "(the user-visible outcome, the feature or area, and what changes when these all ship). "
+            "Do not list ticket keys in this field.\n"
+            '  - "per_ticket": an array of {"key": "<key>", "blurb": "<one short sentence>"} entries — '
+            "one entry per ticket, in the same order, each a single sentence that tells the tester what "
+            "that specific ticket does beyond what its title already says. If the title alone is "
+            "self-explanatory, the blurb may restate it more plainly.\n\n"
+            "No bullet points inside the strings. No jargon. Reply with ONLY valid JSON.\n\n"
+        )
+        for i, t in enumerate(tickets, 1):
+            key = t.get("key", f"?{i}")
+            title = t.get("summary", "")
+            desc = t.get("description") or ""
+            # Cap description to keep prompt size sane for large bundles. Most
+            # context lives in the first chunk; testers don't need legal copy.
+            if len(desc) > 2000:
+                desc = desc[:2000] + "…"
+            prompt += f"━━━ TICKET {i}: {key} ━━━\n"
+            prompt += f"Title: {title}\n"
+            if desc:
+                prompt += f"Description:\n{desc}\n"
+            prompt += "\n"
+        return prompt
 
     def _build_bug_analysis_prompt(self, tickets: list[dict]) -> str:
         """Build the prompt for bug analysis (single or multi-ticket)."""
@@ -2557,6 +2644,31 @@ class OllamaClient(LLMClient):
         except httpx.HTTPStatusError as e:
             raise LLMError(f"Ollama returned error status {e.response.status_code}", error_type="service_unavailable") from e
 
+    async def summarize_batch(self, tickets: list[dict]) -> dict:
+        """Summarize a bundle of related tickets in one Ollama call."""
+        if not tickets:
+            return {"overview": "", "per_ticket": []}
+        prompt = self._build_batch_summary_prompt(tickets)
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "format": "json",
+                        "stream": False,
+                        "options": {"temperature": 0.3},
+                    },
+                )
+                response.raise_for_status()
+                raw = (response.json().get("response") or "").strip()
+                return _parse_batch_summary_json(raw, tickets)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise LLMError(f"Cannot connect to Ollama at {self.base_url}", error_type="connection_failed") from e
+        except httpx.HTTPStatusError as e:
+            raise LLMError(f"Ollama returned error status {e.response.status_code}", error_type="service_unavailable") from e
+
     async def _ollama_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)
         schema = {
@@ -3174,6 +3286,66 @@ class ClaudeClient(LLMClient):
                     response.raise_for_status()
                     result = response.json()
                     return result["content"][0]["text"].strip()
+            except httpx.HTTPStatusError as e:
+                last_status = e.response.status_code
+                if last_status in retryable_statuses and attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
+                    continue
+                if last_status == 529:
+                    raise LLMError(
+                        "Claude is temporarily overloaded. Please try again in a moment.",
+                        error_type="service_unavailable",
+                    ) from e
+                raise LLMError(
+                    f"Claude API returned error status {last_status}",
+                    error_type="service_unavailable",
+                ) from e
+            except httpx.TimeoutException as e:
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
+                    continue
+                raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
+
+        raise LLMError(
+            f"Claude API returned error status {last_status} after {max_attempts} attempts",
+            error_type="service_unavailable",
+        )
+
+    async def summarize_batch(self, tickets: list[dict]) -> dict:
+        """Summarize a bundle of related tickets in one Claude call."""
+        import asyncio
+
+        if not tickets:
+            return {"overview": "", "per_ticket": []}
+
+        prompt = self._build_batch_summary_prompt(tickets)
+
+        retryable_statuses = {502, 503, 504, 529}
+        max_attempts = 4
+        backoff_seconds = 1.0
+
+        last_status: int | None = None
+        for attempt in range(max_attempts):
+            try:
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "anthropic-version": "2023-06-01",
+                            "x-api-key": self.api_key,
+                            "content-type": "application/json",
+                        },
+                        json={
+                            "model": self.model,
+                            "max_tokens": 1024,
+                            "messages": [{"role": "user", "content": prompt}],
+                            **self._temperature_kwargs(0.3),
+                        },
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    raw = result["content"][0]["text"].strip()
+                    return _parse_batch_summary_json(raw, tickets)
             except httpx.HTTPStatusError as e:
                 last_status = e.response.status_code
                 if last_status in retryable_statuses and attempt < max_attempts - 1:

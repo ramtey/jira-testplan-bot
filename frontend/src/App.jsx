@@ -18,6 +18,7 @@ import TokenStatus from './components/TokenStatus'
 import RunHistoryBanner from './components/RunHistoryBanner'
 import HistoricalPlanPreview from './components/HistoricalPlanPreview'
 import EpicChildrenList from './components/EpicChildrenList'
+import BatchSummary from './components/BatchSummary'
 import JiraBrowser from './components/JiraBrowser'
 import Icon from './components/Icon'
 import { Alert } from './components/ui'
@@ -372,18 +373,21 @@ function App() {
           {ticketsData.length > 0 && (
             <>
               {isMultiTicket ? (
-                <div className="multi-ticket-list" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)', marginTop: 'var(--s-6)' }}>
-                  {ticketsData.map((td) => (
-                    <TicketDetails
-                      key={td.key}
-                      ticketData={td}
-                      isDescriptionExpanded={isDescriptionExpanded}
-                      onToggleDescription={toggleDescription}
-                      onRowAction={refreshTicketInBundle}
-                      compact={true}
-                    />
-                  ))}
-                </div>
+                <>
+                  <BatchSummary tickets={ticketsData} />
+                  <div className="multi-ticket-list" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)', marginTop: 'var(--s-6)' }}>
+                    {ticketsData.map((td) => (
+                      <TicketDetails
+                        key={td.key}
+                        ticketData={td}
+                        isDescriptionExpanded={isDescriptionExpanded}
+                        onToggleDescription={toggleDescription}
+                        onRowAction={refreshTicketInBundle}
+                        compact={true}
+                      />
+                    ))}
+                  </div>
+                </>
               ) : (
                 <TicketDetails
                   ticketData={ticketData}
