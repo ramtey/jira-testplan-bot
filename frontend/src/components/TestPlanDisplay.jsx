@@ -729,7 +729,13 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                 Test plan{isMulti ? '' : ` · ${ticketData?.key || ''}`}
               </span>
               {isMulti && (
-                <Chip size="sm">{allKeys.join(' + ')}</Chip>
+                <span className="tip">
+                  <Chip size="sm">
+                    {allKeys[0]}
+                    {allKeys.length > 1 ? ` +${allKeys.length - 1} more` : ''}
+                  </Chip>
+                  <span className="tip-body">{allKeys.join(', ')}</span>
+                </span>
               )}
             </div>
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 'var(--s-4)' }}>
