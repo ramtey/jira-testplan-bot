@@ -126,7 +126,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
         transition: 'border-color var(--d-fast)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-5)', padding: 'var(--s-6) var(--s-6) var(--s-5)' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-5)', padding: checked ? 'var(--s-5) var(--s-6)' : 'var(--s-6) var(--s-6) var(--s-5)' }}>
         <span onClick={() => onToggle && onToggle()} style={{ flexShrink: 0, marginTop: 1 }}>
           <span className="cbx" data-checked={checked ? 'true' : 'false'} role="checkbox" aria-checked={checked} />
         </span>
@@ -260,6 +260,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
         </div>
       </div>
 
+      {!checked && (
       <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: '6px var(--s-6)', padding: '0 var(--s-6) var(--s-6)', alignItems: 'start' }}>
         {test.preconditions && (
           <>
@@ -311,6 +312,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
           </>
         )}
       </div>
+      )}
     </div>
   )
 }
