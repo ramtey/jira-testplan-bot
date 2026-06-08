@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { API_BASE_URL, getJiraTicketUrl } from '../config'
 import DevelopmentInfo from './DevelopmentInfo'
 import WorkflowActions from './WorkflowActions'
+import RowQuickAction from './RowQuickAction'
 import Icon from './Icon'
 import { ItChip, StatPill, Asn, Tag, Coll, Alert, ACTag, Chip } from './ui'
 
@@ -24,7 +25,7 @@ function formatBounceTimestamp(iso) {
   return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription, onActionComplete, compact = false }) {
+function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription, onActionComplete, onRowAction, compact = false }) {
   const [isAttachmentsExpanded, setIsAttachmentsExpanded] = useState(false)
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false)
   const [plainSummary, setPlainSummary] = useState(null)
@@ -92,6 +93,11 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
           {ticketData.summary}
         </span>
         {ticketData.status && <StatPill cat={cat}>{ticketData.status}</StatPill>}
+        <RowQuickAction
+          ticketKey={ticketData.key}
+          currentStatus={ticketData.status}
+          onActionComplete={onRowAction}
+        />
         {ticketData.assignee && <Asn name={ticketData.assignee} />}
       </div>
     )

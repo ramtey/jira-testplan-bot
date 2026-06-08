@@ -216,6 +216,12 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
   color: var(--fg-strong);
   border-left-color: var(--accent);
 }
+.rail-row[data-staged="true"] {
+  background: var(--accent-soft);
+  color: var(--fg-strong);
+  border-left-color: var(--accent);
+}
+.rail-row[data-staged="true"]:hover { background: var(--accent-soft); }
 .rail-row .key {
   margin-left: auto;
   font-family: var(--font-mono);

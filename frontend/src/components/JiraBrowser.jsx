@@ -24,6 +24,11 @@ const PINNED_STORAGE_KEY = 'jtb.browser.pinnedProjects'
 const RECENTS_STORAGE_KEY = 'jtb.browser.recentProjects'
 const MAX_RECENTS = 5
 
+const IS_MAC =
+  typeof navigator !== 'undefined' &&
+  /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent || '')
+const MULTI_SELECT_KEY = IS_MAC ? '⌘' : 'Ctrl'
+
 const loadStored = (key, fallback) => {
   try {
     const raw = localStorage.getItem(key)
@@ -92,7 +97,7 @@ function RefreshBtn({ busy, onClick }) {
   )
 }
 
-function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
+function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCollapsed }) {
   const [projects, setProjects] = useState(null)
   const [projectsError, setProjectsError] = useState(null)
   const [projectsLoading, setProjectsLoading] = useState(false)
@@ -110,6 +115,39 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
 
   const [pinnedKeys, setPinnedKeys] = useState(() => loadStored(PINNED_STORAGE_KEY, []))
   const [recentKeys, setRecentKeys] = useState(() => loadStored(RECENTS_STORAGE_KEY, []))
+
+  // Staged keys for multi-select fetch. ⌘/Ctrl-click adds a row here instead
+  // of firing onSelectIssue, then the footer's Fetch button hands the whole
+  // batch off to the parent. Reset whenever the issue list changes underneath.
+  const [stagedKeys, setStagedKeys] = useState([])
+
+  const toggleStaged = (key) => {
+    setStagedKeys((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    )
+  }
+
+  const clearStaged = () => setStagedKeys([])
+
+  const commitStaged = () => {
+    if (stagedKeys.length === 0) return
+    if (typeof onSelectMultiple === 'function') {
+      onSelectMultiple(stagedKeys)
+    } else {
+      // Fallback: fire single-select for the first key so we never silently no-op.
+      onSelectIssue(stagedKeys[0])
+    }
+    setStagedKeys([])
+  }
+
+  const handleIssueClick = (event, key) => {
+    if (event.metaKey || event.ctrlKey) {
+      event.preventDefault()
+      toggleStaged(key)
+      return
+    }
+    onSelectIssue(key)
+  }
 
   useEffect(() => saveStored(PINNED_STORAGE_KEY, pinnedKeys), [pinnedKeys])
   useEffect(() => saveStored(RECENTS_STORAGE_KEY, recentKeys), [recentKeys])
@@ -193,12 +231,14 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
     setActiveStatus(null)
     setIssues(null)
     setIssuesError(null)
+    setStagedKeys([])
     fetchStatuses(project.key)
   }
 
   const selectStatus = (status) => {
     if (!activeProject) return
     setActiveStatus(status)
+    setStagedKeys([])
     fetchIssues(activeProject.key, status.name)
   }
 
@@ -209,12 +249,14 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
     setActiveStatus(null)
     setIssues(null)
     setIssuesError(null)
+    setStagedKeys([])
   }
 
   const goBackToStatuses = () => {
     setActiveStatus(null)
     setIssues(null)
     setIssuesError(null)
+    setStagedKeys([])
   }
 
   const refreshActiveRef = useRef(() => {})
@@ -448,6 +490,21 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
             <RefreshBtn busy={issuesLoading} onClick={() => refreshActiveRef.current()} />
           </div>
 
+          {issues && issues.length > 0 && stagedKeys.length === 0 && (
+            <div
+              style={{
+                padding: '4px var(--s-4)',
+                fontSize: 10.5,
+                color: 'var(--fg-faint)',
+                borderBottom: '1px solid var(--divider)',
+                lineHeight: 1.3,
+              }}
+              title={`Hold ${MULTI_SELECT_KEY} and click rows to stage multiple tickets, then Fetch them together.`}
+            >
+              Tip: {MULTI_SELECT_KEY}-click to select multiple
+            </div>
+          )}
+
           <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
             {issuesLoading && issues === null && (
               <div style={{ padding: '8px 14px', color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Loading…</div>
@@ -483,6 +540,7 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
                 // false — null/undefined means the project doesn't use sprints,
                 // in which case we render normally.
                 const outOfSprint = iss.in_active_sprint === false
+                const isStaged = stagedKeys.includes(iss.key)
                 const titleColor = selectedIssueKey === iss.key
                   ? undefined
                   : outOfSprint ? 'var(--fg-subtle)' : undefined
@@ -492,7 +550,8 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
                     type="button"
                     className="rail-row"
                     data-active={selectedIssueKey === iss.key ? 'true' : 'false'}
-                    onClick={() => onSelectIssue(iss.key)}
+                    data-staged={isStaged ? 'true' : 'false'}
+                    onClick={(e) => handleIssueClick(e, iss.key)}
                     title={
                       subCount > 0
                         ? `${iss.issue_type || ''} · ${iss.summary} (+${subCount} subtask${subCount === 1 ? '' : 's'} in this column)${outOfSprint ? ' · not in active sprint' : ''}`
@@ -583,6 +642,58 @@ function JiraBrowser({ onSelectIssue, selectedIssueKey, railCollapsed }) {
               })
             })()}
           </div>
+
+          {stagedKeys.length > 0 && (
+            <div
+              style={{
+                padding: 'var(--s-3) var(--s-4)',
+                borderTop: '1px solid var(--divider)',
+                background: 'var(--bg-surface)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--s-3)',
+                flex: '0 0 auto',
+              }}
+              role="region"
+              aria-label="Staged tickets"
+            >
+              <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)', flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ fontWeight: 600, color: 'var(--fg-strong)' }}>{stagedKeys.length}</span>{' '}
+                selected{' · '}
+                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-subtle)' }}>
+                  {stagedKeys.join(', ')}
+                </span>
+              </span>
+              <button
+                type="button"
+                className="hbtn"
+                onClick={clearStaged}
+                title="Clear staged selection"
+                style={{ height: 22, padding: '0 8px', fontSize: 'var(--t-xs)', flex: '0 0 auto' }}
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={commitStaged}
+                title={`Fetch ${stagedKeys.length} ticket${stagedKeys.length === 1 ? '' : 's'}`}
+                style={{
+                  height: 22,
+                  padding: '0 10px',
+                  fontSize: 'var(--t-xs)',
+                  fontWeight: 600,
+                  background: 'var(--accent)',
+                  color: 'var(--accent-ink, white)',
+                  border: '1px solid var(--accent)',
+                  borderRadius: 'var(--r-sm)',
+                  cursor: 'pointer',
+                  flex: '0 0 auto',
+                }}
+              >
+                Fetch {stagedKeys.length}
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>

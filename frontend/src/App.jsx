@@ -215,6 +215,33 @@ function App() {
     await fetchTicketsByKeys([key.toUpperCase()])
   }
 
+  // Refresh a single row inside the multi-ticket bundle without disturbing
+  // the rest. Triggered after a per-row workflow action so the status pill
+  // and assignee chip reflect the post-transition state, which also makes
+  // RowQuickAction self-hide (it gates on status !== "In Testing").
+  const refreshTicketInBundle = async (key) => {
+    if (!key) return
+    try {
+      const response = await fetch(`${API_BASE_URL}/issue/${key}`)
+      if (!response.ok) return
+      const refreshed = await response.json()
+      setTicketsData((prev) =>
+        prev.map((t) => (t.key === refreshed.key ? refreshed : t)),
+      )
+    } catch {
+      // Network blip — leave stale data; the user can hit fetch again.
+    }
+  }
+
+  const handleSelectMultipleFromBrowser = async (keys) => {
+    const normalized = (keys || [])
+      .map((k) => (k || '').trim().toUpperCase())
+      .filter(Boolean)
+    if (normalized.length === 0) return
+    setIssueKey(normalized.join(', '))
+    await fetchTicketsByKeys(normalized)
+  }
+
   const refreshCurrentTicket = async (actionId) => {
     if (ticketsData.length !== 1) return
     const key = ticketsData[0].key
@@ -312,6 +339,7 @@ function App() {
       <aside className="appRail">
         <JiraBrowser
           onSelectIssue={handleSelectFromBrowser}
+          onSelectMultiple={handleSelectMultipleFromBrowser}
           selectedIssueKey={ticketData?.key || null}
           railCollapsed={railCollapsed}
         />
@@ -351,6 +379,7 @@ function App() {
                       ticketData={td}
                       isDescriptionExpanded={isDescriptionExpanded}
                       onToggleDescription={toggleDescription}
+                      onRowAction={refreshTicketInBundle}
                       compact={true}
                     />
                   ))}
