@@ -222,6 +222,21 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
   border-left-color: var(--accent);
 }
 .rail-row[data-staged="true"]:hover { background: var(--accent-soft); }
+/* Override the global :focus ring — rail rows go edge-to-edge, so an outset
+ * rounded ring bleeds past the rail. Use an inset ring for keyboard focus,
+ * and drop it once the row is the selected one (left accent shows state). */
+.rail-row:focus,
+.rail-row:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-radius: 0;
+  outline: none;
+}
+.rail-row[data-active="true"]:focus,
+.rail-row[data-active="true"]:focus-visible,
+.rail-row[data-staged="true"]:focus,
+.rail-row[data-staged="true"]:focus-visible {
+  box-shadow: none;
+}
 .rail-row .key {
   margin-left: auto;
   font-family: var(--font-mono);
@@ -287,11 +302,10 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Full-screen fetch overlay */
+/* Fetch overlay — scoped to the main grid area so the rail stays interactive. */
 .fetch-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
+  grid-area: main;
+  z-index: 10;
   display: grid;
   grid-auto-flow: row;
   place-content: center;

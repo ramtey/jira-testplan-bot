@@ -80,6 +80,10 @@ function App() {
   const testPlanRef = useRef(null)
   const bugAnalysisRef = useRef(null)
 
+  // Bumped on every ticket fetch. If the user clicks another ticket while one
+  // is still loading, the older fetch's response is dropped — last selection wins.
+  const fetchSeqRef = useRef(0)
+
   // Run history (single-ticket only)
   const [runHistory, setRunHistory] = useState(() => loadStored(STORAGE_KEYS.runHistory, []))
   const [historyPreview, setHistoryPreview] = useState(null)
@@ -160,6 +164,9 @@ function App() {
       return
     }
 
+    const seq = ++fetchSeqRef.current
+    const isStale = () => seq !== fetchSeqRef.current
+
     setLoading(true)
     setError(null)
     setTicketsData([])
@@ -172,17 +179,20 @@ function App() {
     try {
       if (keys.length === 1) {
         const response = await fetch(`${API_BASE_URL}/issue/${keys[0]}`)
+        if (isStale()) return
         if (!response.ok) {
           const errorData = await response.json()
           throw new Error(errorData.detail || 'Failed to fetch ticket')
         }
         const data = await response.json()
+        if (isStale()) return
         setTicketsData([data])
         loadRunHistory(data.key)
       } else {
         const responses = await Promise.all(
           keys.map((k) => fetch(`${API_BASE_URL}/issue/${k}`))
         )
+        if (isStale()) return
         const results = []
         for (let i = 0; i < responses.length; i++) {
           if (!responses[i].ok) {
@@ -193,12 +203,14 @@ function App() {
           }
           results.push(await responses[i].json())
         }
+        if (isStale()) return
         setTicketsData(results)
       }
     } catch (err) {
+      if (isStale()) return
       setError(err.message)
     } finally {
-      setLoading(false)
+      if (!isStale()) setLoading(false)
     }
   }
 
