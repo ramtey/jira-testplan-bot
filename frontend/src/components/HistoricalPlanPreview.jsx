@@ -36,7 +36,6 @@ export default function HistoricalPlanPreview({
         background: 'var(--bg-surface)',
         border: '1px solid var(--line)',
         borderRadius: 'var(--r-md)',
-        overflow: 'hidden',
         opacity: 0.85,
       }}
     >
@@ -48,6 +47,7 @@ export default function HistoricalPlanPreview({
           padding: 'var(--s-4) var(--s-5)',
           background: 'var(--bg-panel)',
           borderBottom: '1px solid var(--line)',
+          borderRadius: 'var(--r-md) var(--r-md) 0 0',
         }}
       >
         <Icon name="history" size={14} style={{ color: 'var(--fg-muted)' }} />
