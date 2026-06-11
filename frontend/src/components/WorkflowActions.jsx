@@ -139,7 +139,9 @@ function ImageDropzone({ files, onAdd, onRemove, disabled }) {
     const handler = (e) => {
       const items = e.clipboardData?.items
       if (!items) return
-      const imageItems = Array.from(items).filter((it) => it.type.startsWith('image/'))
+      const imageItems = Array.from(items).filter(
+        (it) => it.type.startsWith('image/') || it.type === 'application/pdf'
+      )
       if (imageItems.length === 0) return
       e.preventDefault()
       const fileList = imageItems
@@ -180,13 +182,14 @@ function ImageDropzone({ files, onAdd, onRemove, disabled }) {
         }}
       >
         <Icon name="image" size={13} style={{ marginRight: 6, verticalAlign: '-2px' }} />
-        Click, drag, or paste images here. PNG / JPEG / GIF / WEBP, up to 10 MB each.
+        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF, up to 10 MB each.
         <input
           ref={inputRef}
           type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
+          accept="image/png,image/jpeg,image/gif,image/webp,application/pdf"
           multiple
           hidden
+          onClick={(e) => e.stopPropagation()}
           onChange={(e) => {
             onAdd(e.target.files)
             e.target.value = ''
@@ -300,7 +303,9 @@ function WorkflowActions({
   }
 
   const addImageFiles = (files) => {
-    const incoming = Array.from(files || []).filter((f) => f && f.type.startsWith('image/'))
+    const incoming = Array.from(files || []).filter(
+      (f) => f && (f.type.startsWith('image/') || f.type === 'application/pdf')
+    )
     if (incoming.length === 0) return
     setImageFiles((prev) => [...prev, ...incoming])
   }

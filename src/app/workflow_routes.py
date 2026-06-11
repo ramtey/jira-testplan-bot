@@ -31,7 +31,14 @@ SK_WORKFLOW_ACTIONS: dict[str, str] = {
 }
 
 
-_ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+_ALLOWED_IMAGE_MIME = {
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+}
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB per file; Jira allows more but this is a sane UI cap.
 
 
@@ -74,8 +81,8 @@ async def run_workflow_action(
             if mime not in _ALLOWED_IMAGE_MIME:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Unsupported image type: {mime or 'unknown'}. "
-                           f"Allowed: PNG, JPEG, GIF, WEBP.",
+                    detail=f"Unsupported attachment type: {mime or 'unknown'}. "
+                           f"Allowed: PNG, JPEG, GIF, WEBP, PDF.",
                 )
             content = await upload.read()
             if len(content) > _MAX_IMAGE_BYTES:
