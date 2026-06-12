@@ -32,7 +32,7 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
   const latest = runs[0]
   const summary = useMemo(() => {
     if (!latest) return ''
-    return `${formatRelative(latest.created_at)} · v${latest.version} · ${latest.case_count} cases`
+    return `${formatRelative(latest.created_at)} · ${latest.case_count} cases`
   }, [latest])
   const liveRun = useMemo(
     () => runs.find((r) => r.jira_comment_id) || null,
@@ -80,7 +80,7 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
             style={{ display: 'inline-flex' }}
           >
             <Chip size="sm" dot dotColor="var(--success)">
-              Live in Jira · v{liveRun.version}
+              {liveRun.version === latest.version ? 'Live in Jira' : `Live in Jira · v${liveRun.version}`}
             </Chip>
           </span>
         )}
