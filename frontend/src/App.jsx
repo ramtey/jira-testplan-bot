@@ -66,6 +66,8 @@ function App() {
     () => readKeyFromUrl() || loadStored(STORAGE_KEYS.issueKey, '')
   )
   const [loading, setLoading] = useState(false)
+  const [fetchingKeys, setFetchingKeys] = useState([])
+  const [slowFetch, setSlowFetch] = useState(false)
   const [error, setError] = useState(null)
   const [railCollapsed, setRailCollapsed] = useState(() => loadStored(STORAGE_KEYS.railCollapsed, false))
 
@@ -128,6 +130,14 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Escalate the fetch overlay message after a beat so the user knows nothing
+  // is stuck on slow Jira responses. Reset whenever a new fetch starts.
+  useEffect(() => {
+    if (!loading) return
+    const timer = setTimeout(() => setSlowFetch(true), 3000)
+    return () => clearTimeout(timer)
+  }, [loading])
+
   // Auto-scroll to results when they appear
   useEffect(() => {
     if (testPlan.plan && testPlanRef.current) {
@@ -168,6 +178,8 @@ function App() {
     const isStale = () => seq !== fetchSeqRef.current
 
     setLoading(true)
+    setFetchingKeys(keys)
+    setSlowFetch(false)
     setError(null)
     setTicketsData([])
     setIsDescriptionExpanded(false)
@@ -210,7 +222,11 @@ function App() {
       if (isStale()) return
       setError(err.message)
     } finally {
-      if (!isStale()) setLoading(false)
+      if (!isStale()) {
+        setLoading(false)
+        setFetchingKeys([])
+        setSlowFetch(false)
+      }
     }
   }
 
@@ -361,7 +377,18 @@ function App() {
       {loading && (
         <div className="fetch-overlay" role="status" aria-live="polite">
           <div className="fetch-overlay__spinner" aria-hidden="true" />
-          <div className="fetch-overlay__label">Fetching ticket…</div>
+          <div className="fetch-overlay__label">
+            {fetchingKeys.length === 1
+              ? `Fetching ${fetchingKeys[0]}…`
+              : fetchingKeys.length > 1
+                ? `Fetching ${fetchingKeys.length} tickets…`
+                : 'Fetching ticket…'}
+          </div>
+          {slowFetch && (
+            <div className="fetch-overlay__hint">
+              Still loading from Jira — large tickets can take a few seconds.
+            </div>
+          )}
         </div>
       )}
 

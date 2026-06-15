@@ -328,6 +328,13 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
   font-size: var(--t-sm);
   letter-spacing: 0.01em;
 }
+.fetch-overlay__hint {
+  margin-top: calc(var(--s-2) * -1);
+  color: var(--fg-muted);
+  font-size: var(--t-xs);
+  max-width: 320px;
+  text-align: center;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
