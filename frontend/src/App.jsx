@@ -345,16 +345,6 @@ function App() {
           <span style={{ color: 'var(--fg-muted)', fontWeight: 500, marginLeft: 2 }}>Bot</span>
         </div>
         <span className="hdr-sep" />
-        <button
-          type="button"
-          className="hbtn"
-          onClick={() => setRailCollapsed(!railCollapsed)}
-          title="Toggle rail"
-          aria-label="Toggle rail"
-        >
-          <Icon name="panel-left" size={15} />
-        </button>
-        <span className="hdr-sep" />
         <div className="hdr-search" role="button" tabIndex={0}>
           <Icon name="search" size={13} />
           <span>{ticketData?.key || (ticketsData.length > 1 ? ticketsData.map(t => t.key).join(', ') : 'Jump to ticket…')}</span>
@@ -373,6 +363,16 @@ function App() {
           railCollapsed={railCollapsed}
         />
       </aside>
+
+      <button
+        type="button"
+        className="railToggle"
+        onClick={() => setRailCollapsed(!railCollapsed)}
+        title={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      >
+        <Icon name={railCollapsed ? 'chevron-right' : 'chevron-left'} size={15} />
+      </button>
 
       {loading && (
         <div className="fetch-overlay" role="status" aria-live="polite">

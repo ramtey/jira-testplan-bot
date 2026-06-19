@@ -49,6 +49,7 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
 
 /* App shell */
 .app {
+  position: relative;
   display: grid;
   grid-template-rows: var(--header-h) 1fr;
   grid-template-columns: var(--rail-w) 1fr;
@@ -57,6 +58,40 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
   width: 100vw;
 }
 .app[data-rail="collapsed"] { grid-template-columns: var(--rail-w-collapsed) 1fr; }
+
+/* Floating collapse/expand control sitting on the rail's right border */
+.railToggle {
+  position: absolute;
+  top: calc(var(--header-h) + 64px);
+  left: var(--rail-w);
+  margin-left: -12px; /* half the width, to straddle the border */
+  z-index: 30;
+  width: 24px; height: 24px;
+  min-width: 0;
+  display: grid; place-items: center;
+  padding: 0;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  color: var(--accent-ink);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease-out),
+              background var(--d-fast) var(--ease-out),
+              color var(--d-fast) var(--ease-out),
+              border-color var(--d-fast) var(--ease-out);
+}
+.app[data-rail="collapsed"] .railToggle { left: var(--rail-w-collapsed); opacity: 1; }
+.app:hover .railToggle { opacity: 1; }
+.railToggle:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--accent-ink);
+  transform: none;
+  box-shadow: 0 2px 6px rgba(0,0,0,.3);
+}
+.railToggle:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .appHeader { grid-area: header; }
 .appRail   { grid-area: rail;   border-right: 1px solid var(--line); min-height: 0; }
