@@ -329,6 +329,10 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
             lines.append("**Expected Result:**" if format == "markdown" else "Expected Result:")
             lines.append(test.get("expected", ""))
             lines.append("")
+            if test.get("test_data"):
+                lines.append("**Test Data:**" if format == "markdown" else "Test Data:")
+                lines.append(test["test_data"])
+                lines.append("")
 
     # Edge Cases
     if test_plan.get("edge_cases"):
@@ -361,6 +365,10 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
             lines.append("**Expected Result:**" if format == "markdown" else "Expected Result:")
             lines.append(test.get("expected", ""))
             lines.append("")
+            if test.get("test_data"):
+                lines.append("**Test Data:**" if format == "markdown" else "Test Data:")
+                lines.append(test["test_data"])
+                lines.append("")
 
     # Regression Checklist
     if test_plan.get("regression_checklist"):

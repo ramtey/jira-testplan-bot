@@ -810,6 +810,41 @@ If 3 or more test cases in a section share the same opening steps (e.g. "Log in 
 - ✅ GOOD: preconditions: "Logged in to Staging 2 with devagent account, on a listing in an enabled state"
 - Only set preconditions when the setup is genuinely shared. If a test has unique setup (e.g. "clear localStorage" is only needed for 2 of 8 tests), keep those steps in the steps list.
 
+**CONSUMABLE / TEST-ONCE STATE — TELL QA HOW TO GET BACK TO A TESTABLE STATE:**
+Some features can only be triggered ONCE per user/device/account because the
+act of testing them flips a persisted flag or starts a cooldown that then
+suppresses the very behavior under test. Common signals in the diff/ACs:
+a "has done X" boolean (`feedbackSubmitted`, `hasOnboarded`, `seenPrompt`),
+a "first run / first time" condition, a one-time prompt or nudge, a
+single-use token/invite/coupon, or a cooldown timestamp
+(`dismissedAt` + an N-day window).
+
+When a test's precondition is CONSUMED by running the test, the plan is
+broken if it just lists "user has never done X" on five different cases —
+after the first case runs, that account is permanently in the post-state and
+every later auto-trigger case silently fails to reproduce. You MUST:
+
+1. **Make the reset explicit in `preconditions`.** State HOW to return to the
+   trigger-eligible state, not just that it's required — e.g. reset the
+   specific persisted keys, or use a fresh test account/device per run.
+2. **Flag repeatability in `test_data`.** Mark each affected case as one-shot
+   (consumes the trigger; needs a reset before re-running) vs repeatable.
+3. **Prefer the repeatable entry point for UI coverage.** If a manual/proactive
+   entry point bypasses the throttle (e.g. a "Give Feedback" button that opens
+   the same modal regardless of history), route the pure UI/interaction checks
+   through it so they don't burn the one-shot, and reserve the auto-trigger
+   cases for verifying the trigger gating itself.
+
+- ❌ BAD: Three cases each with preconditions "user has never submitted
+  feedback" and no mention that running case 1 makes cases 2-3 impossible.
+- ✅ GOOD: preconditions: "isCsatFeedbackEnabled ON; reset user prefs so
+  `feedbackSubmitted` is unset and `feedbackDismissedAt` is cleared (or use a
+  fresh test account) — this case consumes the one-time auto-prompt."
+  test_data includes: "One-shot: re-running requires resetting the prefs above."
+- ✅ GOOD: the modal's field-validation / step-navigation checks are driven
+  through the repeatable "Give Feedback" button, not the consumable
+  auto-prompt.
+
 **PARAMETERIZE IDENTICAL TEST CASES:**
 If 3 or more test cases share identical steps and differ ONLY in test data (e.g. testing fallback behavior for states CT, KS, KY, LA), collapse them into ONE test case. Put the varying data in a markdown table inside the `test_data` field:
 ```
