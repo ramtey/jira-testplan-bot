@@ -17,119 +17,12 @@
   --shadow-lg: rgba(0, 0, 0, 0.5);
 }
 
-/* Light theme - follows system preference */
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg-primary: #ffffff;
-    --bg-secondary: #fafbfc;
-    --bg-card: #ffffff;
-    --bg-input: #ffffff;
-    --text-primary: #172b4d;
-    --text-secondary: #5e6c84;
-    --border: #dfe1e6;
-    --shadow: rgba(9, 30, 66, 0.08);
-    --shadow-lg: rgba(9, 30, 66, 0.15);
-  }
-
-  html, body, #root {
-    background: var(--bg-secondary);
-  }
-
-  body {
-    background: var(--bg-secondary);
-  }
-
-  .app {
-    background: var(--bg-secondary);
-  }
-
-  input[type="text"] {
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    color: var(--text-primary);
-  }
-
-  input[type="text"]:focus {
-    background: var(--bg-input);
-    border-color: var(--primary);
-  }
-
-  .description-text {
-    background: #ffffff !important;
-    color: #172b4d !important;
-    border: 1px solid var(--border);
-  }
-
-  .issue-type {
-    background: var(--bg-card);
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
-  }
-
-  .issue-type.story {
-    background: rgba(0, 135, 90, 0.1);
-    color: #00875a;
-    border-color: rgba(0, 135, 90, 0.3);
-  }
-
-  .issue-type.bug {
-    background: rgba(222, 53, 11, 0.1);
-    color: #de350b;
-    border-color: rgba(222, 53, 11, 0.3);
-  }
-
-  .issue-type.spike {
-    background: rgba(0, 82, 204, 0.1);
-    color: #0052cc;
-    border-color: rgba(0, 82, 204, 0.3);
-  }
-
-  .issue-type.task {
-    background: rgba(66, 153, 225, 0.1);
-    color: #2b6cb0;
-    border-color: rgba(66, 153, 225, 0.3);
-  }
-
-  .issue-type.epic {
-    background: rgba(128, 90, 213, 0.1);
-    color: #6b46c1;
-    border-color: rgba(128, 90, 213, 0.3);
-  }
-
-  .label {
-    background: rgba(0, 82, 204, 0.1);
-    color: var(--primary);
-    border: 1px solid rgba(0, 82, 204, 0.3);
-  }
-
-  .warnings {
-    background: #fff4e6;
-    color: #663c00;
-    border: 1px solid #ffe0b2;
-  }
-
-  .alert-error {
-    background: #ffebe6;
-    color: #bf2600;
-    border: 1px solid #ffbdad;
-  }
-
-  .form-field textarea {
-    background: var(--bg-input);
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-  }
-
-  .form-field textarea:focus {
-    background: var(--bg-input);
-    border-color: var(--primary);
-  }
-
-  .ticket-details {
-    background: var(--bg-primary);
-    border: 1px solid var(--border);
-  }
-}
+/* This app is dark-only: its design tokens (styles/tokens.css) define no light
+   palette, and the surface backgrounds resolve to dark regardless of system
+   preference. A prefers-color-scheme:light block used to live here, but it only
+   flipped text colors to navy while the backgrounds stayed dark — producing
+   invisible text (e.g. the ticket-key input value) when the OS was in light
+   mode. It has been removed so everything stays consistently dark. */
 
 * {
   box-sizing: border-box;
@@ -604,19 +497,6 @@ button:disabled {
 
 .alert-info strong {
   color: #bbdefb;
-}
-
-/* Light mode info alert */
-@media (prefers-color-scheme: light) {
-  .alert-info {
-    background: #e3f2fd;
-    border-left: 4px solid #2196f3;
-    color: #1565c0;
-  }
-
-  .alert-info strong {
-    color: #0d47a1;
-  }
 }
 
 /* Ticket details */
@@ -2270,25 +2150,6 @@ button:disabled {
   color: var(--primary);
 }
 
-/* Light theme adjustments for badges */
-@media (prefers-color-scheme: light) {
-  .priority-critical {
-    background: rgba(222, 53, 11, 0.1);
-  }
-
-  .priority-high {
-    background: rgba(255, 153, 31, 0.1);
-  }
-
-  .priority-medium {
-    background: rgba(0, 135, 90, 0.1);
-  }
-
-  .category-badge {
-    background: rgba(102, 126, 234, 0.1);
-  }
-}
-
 /* Attachments section */
 .attachments-info {
   background: var(--bg-card);
@@ -2444,12 +2305,6 @@ button:disabled {
   border-color: var(--warning);
 }
 
-@media (prefers-color-scheme: light) {
-  .token-status-widget.has-errors {
-    background: #FFF8E6;
-  }
-}
-
 .token-status-header {
   padding: 1rem 1.5rem;
   background: var(--bg-secondary);
@@ -2497,20 +2352,8 @@ button:disabled {
   border-color: var(--success);
 }
 
-@media (prefers-color-scheme: light) {
-  .token-service-valid {
-    background: #E3FCEF;
-  }
-}
-
 .token-service-error {
   border-color: var(--error);
-}
-
-@media (prefers-color-scheme: light) {
-  .token-service-error {
-    background: #FFEBE6;
-  }
 }
 
 .token-service-optional {
@@ -2594,12 +2437,6 @@ button:disabled {
   background: rgba(255, 255, 255, 0.05);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
-}
-
-@media (prefers-color-scheme: light) {
-  .token-detail {
-    background: rgba(0, 0, 0, 0.05);
-  }
 }
 
 .token-status-footer {
@@ -3301,12 +3138,6 @@ button:disabled {
 .jira-browser__group-label--new { color: #b3bac5; opacity: 1; }
 .jira-browser__group-label--indeterminate { color: #4c9aff; opacity: 1; }
 .jira-browser__group-label--done { color: #57d9a3; opacity: 1; }
-
-@media (prefers-color-scheme: light) {
-  .jira-browser__group-label--new { color: #5e6c84; opacity: 0.85; }
-  .jira-browser__group-label--indeterminate { color: #0052cc; opacity: 0.85; }
-  .jira-browser__group-label--done { color: #006644; opacity: 0.85; }
-}
 
 .jira-browser__list {
   list-style: none;
