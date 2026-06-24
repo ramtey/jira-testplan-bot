@@ -389,6 +389,7 @@ function AcCoveragePanel({ coverage }) {
   if (entries.length === 0) return null
 
   const uncoveredTotal = coverage.uncovered_total ?? 0
+  const underCoveredTotal = coverage.under_covered_total ?? 0
   const invalidIds = Array.isArray(coverage.invalid_ids) ? coverage.invalid_ids : []
   const superseded = Array.isArray(coverage.superseded_acs) ? coverage.superseded_acs : []
 
@@ -398,10 +399,17 @@ function AcCoveragePanel({ coverage }) {
         <Icon name="shield" size={14} style={{ color: 'var(--accent)' }} />
         <span style={{ fontSize: 'var(--t-md)', fontWeight: 600, color: 'var(--fg-strong)' }}>Acceptance criteria coverage</span>
         <span style={{ flex: 1 }} />
-        {uncoveredTotal === 0 ? (
+        {uncoveredTotal === 0 && underCoveredTotal === 0 ? (
           <Chip dot dotColor="var(--success)">All ACs covered</Chip>
         ) : (
-          <Chip dot dotColor="var(--warning)">{uncoveredTotal} AC{uncoveredTotal === 1 ? '' : 's'} uncovered</Chip>
+          <>
+            {uncoveredTotal > 0 && (
+              <Chip dot dotColor="var(--warning)">{uncoveredTotal} AC{uncoveredTotal === 1 ? '' : 's'} uncovered</Chip>
+            )}
+            {underCoveredTotal > 0 && (
+              <Chip dot dotColor="var(--warning)">{underCoveredTotal} AC{underCoveredTotal === 1 ? '' : 's'} partially covered</Chip>
+            )}
+          </>
         )}
       </div>
 
@@ -450,6 +458,21 @@ function AcCoveragePanel({ coverage }) {
                     <li key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
                       <ACTag>{u.id}</ACTag>
                       <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }} title={u.text}>{u.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {info.under_covered && info.under_covered.length > 0 && (
+                <ul style={{ margin: '6px 0 0 88px', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {info.under_covered.map((u) => (
+                    <li key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
+                      <ACTag>{u.id}</ACTag>
+                      <span style={{ fontSize: 'var(--t-xs)', color: 'var(--warning)' }}>
+                        missing: {(u.missing_actions || []).join(', ')}
+                      </span>
+                      <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }} title={u.text}>
+                        — enumerates {(u.actions || []).join(' · ')}
+                      </span>
                     </li>
                   ))}
                 </ul>

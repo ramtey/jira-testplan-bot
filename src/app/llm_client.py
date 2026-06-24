@@ -18,7 +18,7 @@ import httpx
 
 from .config import settings
 from .confluence_client import ConfluenceClient, ConfluencePage
-from .description_analyzer import extract_acceptance_criteria
+from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
 from .models import BugAnalysis, TestPlan
 
 _VALID_FIX_STATUSES = ("not_fixed", "in_testing", "fixed")
@@ -115,6 +115,28 @@ _VOICE_KEYWORDS_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+def _format_ac_line(ac_id: str, text: str) -> str:
+    """Render one AC as a prompt bullet, annotating compound/multi-verb ACs
+    with the discrete actions they enumerate.
+
+    A single bullet like "A calculation being created, updated, or deleted is
+    captured" hides three distinct behaviours. Surfacing them inline — right
+    where the model reads the AC — is the forcing function that makes it write
+    one case per action instead of collapsing to a subset (the SK-2290 bug:
+    created+updated covered, deleted dropped)."""
+    line = f"- {ac_id}: {text}\n"
+    facets = extract_ac_action_facets(text)
+    if facets:
+        joined = " · ".join(facets)
+        line += (
+            f"    ↳ COMPOUND AC — enumerates {len(facets)} distinct actions: {joined}. "
+            f"Cover EACH one (a separate case, or one parameterized case with a row per "
+            f"action). Do NOT cover only a subset — every action above must be exercised "
+            f"by some case that tags {ac_id}.\n"
+        )
+    return line
 
 
 def _parse_batch_summary_json(raw: str, tickets: list[dict]) -> dict:
@@ -1727,12 +1749,12 @@ TICKET INFORMATION
                 if parent_ac_entries:
                     prompt += f"**{ticket_key} (parent):**\n"
                     for ac_id, text in parent_ac_entries:
-                        prompt += f"- {ac_id}: {text}\n"
+                        prompt += _format_ac_line(ac_id, text)
                     prompt += "\n"
                 for key, entries in per_subtask_ac_entries:
                     prompt += f"**{key} (subtask):**\n"
                     for ac_id, text in entries:
-                        prompt += f"- {ac_id}: {text}\n"
+                        prompt += _format_ac_line(ac_id, text)
                     prompt += "\n"
                 prompt += (
                     "Every AC ID above must appear in the `covers_acs` field of at "
@@ -1745,6 +1767,37 @@ TICKET INFORMATION
                     "this is the only plan that exists for this parent. If you tag a "
                     "subtask AC ID in `covers_acs`, the test must actually exercise the "
                     "behavior named in that AC (not just touch the subtask's topic).\n\n"
+                )
+
+        # ── AC coverage matrix for a plain (childless) ticket ────────────────
+        # The parent-of-children branch above only fires when the ticket has
+        # subtasks. A plain Story like SK-2290 fell through with NO coverage
+        # matrix at all — the model got the raw description and silently
+        # dropped AC items (deleted, territory, the PDF half of share). Emit
+        # the same forcing mechanism here: enumerate every AC with a stable ID
+        # and require each to appear in some test case's `covers_acs`.
+        if not child_info:
+            own_acs = extract_acceptance_criteria(description) or []
+            own_ac_entries = [
+                (f"{ticket_key}-AC{i}", text)
+                for i, text in enumerate(own_acs, start=1)
+            ]
+            if own_ac_entries:
+                prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                prompt += "ACCEPTANCE CRITERIA TO COVER (every ID below must appear in ≥1 test case's `covers_acs`)\n"
+                prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                prompt += f"**{ticket_key}:**\n"
+                for ac_id, text in own_ac_entries:
+                    prompt += _format_ac_line(ac_id, text)
+                prompt += "\n"
+                prompt += (
+                    "Every AC ID above must appear in the `covers_acs` field of at least "
+                    "one test case (happy_path, edge_cases, or integration_tests). If a "
+                    "single test legitimately exercises multiple ACs, list all of their IDs. "
+                    "Do NOT drop ACs to reduce duplication — see the AC ENUMERATION rule for "
+                    "how to split enumerated-list ACs into discrete tests. For any AC marked "
+                    "COMPOUND above, every listed action must be exercised — covering a "
+                    "subset is an under-coverage gap, not done.\n\n"
                 )
 
         # Add linked issues context if available
@@ -2216,7 +2269,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                     continue
                 prompt += f"**{key}:**\n"
                 for ac_id, text in entries:
-                    prompt += f"- {ac_id}: {text}\n"
+                    prompt += _format_ac_line(ac_id, text)
                 prompt += "\n"
             prompt += (
                 "Every AC ID above must appear in the `covers_acs` field of at least one test case "

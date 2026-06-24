@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .bug_lens_routes import router as bug_lens_router
 from .config import NON_TESTABLE_ISSUE_TYPES
 from .db.models.plan import PlanFormat
-from .description_analyzer import extract_acceptance_criteria
+from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
 from .db.models.run import RunType
 from .db.session import get_sessionmaker
 from .jira_client import (
@@ -104,6 +104,71 @@ def _normalize_grounding_warnings(test_plan, valid_ac_ids: set[str] | None = Non
             "explanation": explanation,
         })
     return out
+
+
+def _facet_stem(word: str) -> str:
+    """Crude morphological stem so "deleted"/"delete"/"deletion" collapse to a
+    common root for facet matching. Not linguistically perfect — good enough to
+    match an AC's enumerated action verb against the wording of a test case."""
+    w = re.sub(r"[^a-z]", "", word.lower())
+    for suf in ("ing", "ed", "es", "s"):
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            w = w[: -len(suf)]
+            break
+    # Collapse a doubled final consonant ("resett" → "reset") so the stem of an
+    # inflected form lines up with the bare verb.
+    if len(w) >= 4 and w[-1] == w[-2]:
+        w = w[:-1]
+    return w
+
+
+# Facets whose verbs are commonly expressed with a different root in a test
+# step than in the AC ("deleted" vs "removed", "sent" vs "send/email").
+_FACET_SYNONYM_STEMS: dict[str, set[str]] = {
+    "delet": {"delet", "remov", "destroy"},
+    "remov": {"remov", "delet"},
+    "sent": {"sent", "send", "email"},
+    "send": {"send", "sent", "email"},
+    "shar": {"shar", "send", "sent"},
+}
+
+
+def _case_text_blob(case: dict) -> str:
+    """Flatten every string value in a test case (title, steps, expected,
+    test_data, preconditions, …) into one lowercase blob for keyword matching."""
+    parts: list[str] = []
+
+    def _walk(v):
+        if isinstance(v, str):
+            parts.append(v)
+        elif isinstance(v, dict):
+            for vv in v.values():
+                _walk(vv)
+        elif isinstance(v, (list, tuple)):
+            for vv in v:
+                _walk(vv)
+
+    # Don't recurse into covers_acs / grounded_in — those are IDs, not behaviour.
+    for key, value in case.items():
+        if key in ("covers_acs", "grounded_in"):
+            continue
+        _walk(value)
+    return " ".join(parts).lower()
+
+
+def _facet_is_covered(facet: str, text_stems: set[str]) -> bool:
+    """True if the AC action `facet` is mentioned anywhere in the covering
+    cases' text (matched on stems, with a small synonym set)."""
+    fstem = _facet_stem(facet)
+    if len(fstem) < 3:
+        # Too short to match reliably; treat as covered to avoid noise.
+        return True
+    candidates = _FACET_SYNONYM_STEMS.get(fstem, {fstem})
+    for cand in candidates:
+        for ts in text_stems:
+            if ts == cand or ts.startswith(cand) or cand.startswith(ts):
+                return True
+    return False
 
 
 def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
@@ -202,6 +267,9 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
 
     declared: set[str] = set()
     invalid_ids: set[str] = set()
+    # ac_id → list of case-text blobs, so a compound AC can be checked PER
+    # enumerated action against the cases that actually claim to cover it.
+    cases_by_ac: dict[str, list[str]] = {}
     for bucket in (test_plan.happy_path, test_plan.edge_cases, test_plan.integration_tests):
         for case in bucket or []:
             if not isinstance(case, dict):
@@ -224,6 +292,7 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
                         continue
                     declared.add(trimmed)
                     kept.append(trimmed)
+                    cases_by_ac.setdefault(trimmed, []).append(_case_text_blob(case))
                 else:
                     invalid_ids.add(trimmed)
             # Rewrite the case so the UI / persisted plan only show real IDs.
@@ -231,11 +300,13 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
 
     result_tickets: dict[str, dict] = {}
     uncovered_total = 0
+    under_covered_total = 0
     winner_by_loser = {p["loser_id"]: p["winner_id"] for p in superseded_pairs}
     for key, entries in per_ticket.items():
         covered: list[str] = []
         uncovered: list[dict] = []
         superseded: list[dict] = []
+        under_covered: list[dict] = []
         for ac_id, text in entries:
             if ac_id in superseded_loser_ids:
                 superseded.append({
@@ -245,13 +316,35 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
                 })
             elif ac_id in declared:
                 covered.append(ac_id)
+                # The AC ID is tagged, but if the AC enumerates multiple
+                # discrete actions (e.g. "created, updated, or deleted"),
+                # confirm EACH action is actually exercised by some covering
+                # case. A subset (only created+updated) ships the rest
+                # untested while the bullet-level check reads as fully covered.
+                facets = extract_ac_action_facets(text)
+                if facets:
+                    blob = " ".join(cases_by_ac.get(ac_id, []))
+                    text_stems = {_facet_stem(w) for w in re.findall(r"[a-z]+", blob)}
+                    missing = [f for f in facets if not _facet_is_covered(f, text_stems)]
+                    if missing:
+                        under_covered.append({
+                            "id": ac_id,
+                            "text": text,
+                            "missing_actions": missing,
+                            "actions": facets,
+                        })
             else:
                 uncovered.append({"id": ac_id, "text": text})
         uncovered_total += len(uncovered)
+        under_covered_total += len(under_covered)
         result_tickets[key] = {
             "covered": covered,
             "uncovered": uncovered,
             "superseded": superseded,
+            # ACs whose ID is tagged but whose enumerated sub-actions are not
+            # all exercised. They count as "covered" for the X/Y ratio but are
+            # surfaced so QA can see the partial coverage and push back.
+            "under_covered": under_covered,
             # `total` excludes superseded ACs so the X/Y ratio in the UI
             # reflects what was actually expected to be tested.
             "total": len(entries) - len(superseded),
@@ -259,6 +352,7 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
     return {
         "tickets": result_tickets,
         "uncovered_total": uncovered_total,
+        "under_covered_total": under_covered_total,
         "invalid_ids": sorted(invalid_ids),
         "superseded_acs": superseded_pairs,
     }

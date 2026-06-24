@@ -108,6 +108,25 @@ _STALE_AC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Well-known section names that ALWAYS terminate the AC block, even when they
+# are immediately followed by their own bullet list. Without this denylist the
+# "grouping sub-label" rule below (a heading followed by bullets keeps the AC
+# block open) would wrongly swallow an "Out of Scope" or "Implementation Notes"
+# bullet list as acceptance criteria.
+_TERMINAL_AC_SECTION_RE = re.compile(
+    r"""^(?:
+        implementation\s+notes? | technical\s+notes? | dev(?:eloper)?\s+notes? |
+        notes? | out\s+of\s+scope | in\s+scope | scope |
+        design(?:\s+notes?)? | designs? | mock-?ups? | wireframes? |
+        qa(?:\s+notes?)? | test(?:ing)?\s+notes? | test\s+plan |
+        open\s+questions? | questions? | assumptions? | risks? |
+        references? | resources? | links? | attachments? |
+        background | context | overview | summary | description |
+        tasks? | sub-?tasks? | dependencies | definition\s+of\s+done | dod
+    )$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
 # Bullet line with the text on the same line: "* Banner appears..." (markdown).
 # Requires at least one non-whitespace character after the marker so this
 # doesn't swallow bare-bullet lines (which are handled separately).
@@ -165,6 +184,146 @@ def _looks_like_section_heading(stripped: str) -> bool:
         }:
             return True
     return False
+
+
+# ─── compound / multi-verb AC facet extraction ───────────────────────────────
+#
+# A single AC bullet often enumerates several DISTINCT actions that each need
+# their own test case, e.g.:
+#   "A calculation being created, updated, or deleted is captured"
+#       → created / updated / deleted   (three distinct mutations)
+#   "A calculation being shared or sent (email/PDF) is captured"
+#       → shared / sent / email / PDF   (two actions × two output channels)
+#
+# When the generator collapses these into a subset of cases (only created+
+# updated, only the email half), coverage looks complete at the bullet level
+# while a real behaviour ships untested. ``extract_ac_action_facets`` pulls the
+# discrete facets out of one AC so coverage can be checked PER ACTION, not just
+# per bullet. It is deliberately conservative: it fires only on clear action
+# enumerations and slash-separated parentheticals, and returns ``[]`` (meaning
+# "treat as a single behaviour") when in doubt. A clarifying field list such as
+# "(name, email, phone, state/county)" is NOT split — those are attributes of
+# one action, not separate actions.
+
+# An action-like token: a gerund (-ing) or past participle (-ed), long enough
+# to not be a stopword like "and"/"red". Captured so we can pull the literal.
+_ACTION_WORD_RE = re.compile(r"^[a-z]{2,}(?:ing|ed)$")
+
+# A few high-frequency irregular action words that don't end in -ing/-ed but
+# routinely appear in enumerations alongside regular ones ("shared or sent").
+_IRREGULAR_ACTION_WORDS = {"sent", "sold", "set", "built", "kept", "drawn", "shown"}
+
+# Auxiliary / linking words that match the -ing/-ed shape but are NOT actions.
+# Without this filter "a calculation being created" would yield two "facets"
+# (being, created) and be mis-flagged as a compound AC.
+_ACTION_STOPWORDS = {
+    "being", "having", "doing", "used", "based", "related", "regarding",
+    "concerning", "including", "involving", "resulting", "containing",
+    "existing", "remaining", "corresponding", "following", "preceding",
+    "given", "added",  # "added going forward" — not an enumerated action here
+}
+
+
+def _is_action_word(token: str) -> bool:
+    t = token.strip().strip(".,;:()").lower()
+    if t in _ACTION_STOPWORDS:
+        return False
+    return bool(_ACTION_WORD_RE.match(t)) or t in _IRREGULAR_ACTION_WORDS
+
+
+def _parenthetical_variants(text: str) -> list[str]:
+    """Pull slash-separated variants out of a parenthetical, e.g.
+    "(email/PDF)" → ["email", "PDF"]. A comma-bearing parenthetical is a field
+    clarification ("(name, email, phone, state/county)"), not an enumeration of
+    distinct actions, so it is ignored.
+    """
+    out: list[str] = []
+    for inner in re.findall(r"\(([^)]*)\)", text):
+        if "," in inner:
+            continue
+        if "/" not in inner:
+            continue
+        parts = [p.strip() for p in inner.split("/") if p.strip()]
+        # Require every part to be a short single word — avoids splitting
+        # phrases like "(per user / per account basis)".
+        if len(parts) >= 2 and all(len(p.split()) == 1 and len(p) <= 12 for p in parts):
+            out.extend(parts)
+    return out
+
+
+def extract_ac_action_facets(ac_text: str) -> list[str]:
+    """Return the distinct action facets enumerated in one AC bullet.
+
+    Returns ``[]`` when the AC describes a single behaviour (the common case).
+    A non-empty result means the AC enumerates multiple actions that each need
+    their own test case / assertion. Order-preserving and de-duplicated; the
+    original surface form of each facet is kept (for display in the prompt).
+    """
+    if not ac_text:
+        return []
+
+    facets: list[str] = []
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        cleaned = token.strip().strip(".,;:()").strip()
+        if not cleaned:
+            return
+        key = cleaned.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        facets.append(cleaned)
+
+    # 1) Action-word enumeration: a run of 2+ action words joined by
+    #    ","/"or"/"and". We anchor on confirmed action words and pull in
+    #    immediate connector-siblings so irregulars ("sent") come along.
+    tokens = ac_text.split()
+    run: list[str] = []
+
+    def _flush_run() -> None:
+        # A real enumeration needs at least two action words.
+        action_members = [t for t in run if _is_action_word(t)]
+        if len(action_members) >= 2:
+            for t in action_members:
+                _add(t)
+    for raw_tok in tokens:
+        tok = raw_tok.strip()
+        bare = tok.strip(".,;:()").lower()
+        if _is_action_word(tok):
+            run.append(tok)
+        elif bare in {"or", "and", ""} or tok.endswith(","):
+            # Connector — keep the run open. A token like "sent," ends in a
+            # comma but is also an action word; handled above first.
+            continue
+        else:
+            _flush_run()
+            run = []
+    _flush_run()
+
+    # 2) Slash-separated parenthetical variants: "(email/PDF)" → email, PDF.
+    for variant in _parenthetical_variants(ac_text):
+        _add(variant)
+
+    # Only treat the AC as compound when ≥2 distinct facets were found.
+    return facets if len(facets) >= 2 else []
+
+
+def _next_nonblank_is_bullet(lines: list[str], start: int) -> bool:
+    """True if the first non-blank line at/after ``start`` is a bullet.
+
+    Used to decide whether a non-bullet line inside the AC block is a grouping
+    sub-label (e.g. "Agent mobile app") that organizes the AC bullets into
+    categories — those are followed by more bullets and must NOT terminate the
+    block — versus the start of a genuinely different section.
+    """
+    j = start
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    if j >= len(lines):
+        return False
+    line = lines[j]
+    return bool(_BULLET_RE.match(line) or _BARE_BULLET_RE.match(line.strip()))
 
 
 def extract_acceptance_criteria(description: str | None) -> list[str]:
@@ -270,10 +429,32 @@ def extract_acceptance_criteria(description: str | None) -> list[str]:
             i += 1
             continue
 
-        # Non-bullet, non-empty, non-URL line — treat as the start of a new
-        # section and stop. (We don't try to recover even if it doesn't look
-        # like a heading: free-form prose mid-AC-block is uncommon enough
-        # that "stop early" is safer than "capture noise".)
+        # Non-bullet, non-empty, non-URL line. This is one of two things:
+        #
+        #   (a) A grouping sub-label that organizes the AC bullets into
+        #       categories — e.g. "Agent mobile app", "Title rep web app",
+        #       "Admin dashboard", "General". Larger Jira stories routinely
+        #       group their ACs this way, and the labels sit *between* the AC
+        #       heading and the bullets they introduce. These must NOT end the
+        #       block — doing so drops every AC after the first label (the
+        #       SK-2290 failure: extraction returned 0 ACs, disabling the
+        #       entire coverage safety net).
+        #
+        #   (b) The start of a genuinely different section ("Implementation
+        #       Notes", "Out of Scope") — this DOES end the AC block.
+        #
+        # Distinguish them: a grouping sub-label is a short heading-like line
+        # that is immediately followed by more bullets and is not one of the
+        # well-known post-AC section names. Anything else stops the block —
+        # free-form prose mid-AC-block is uncommon enough that "stop early" is
+        # safer than "capture noise".
+        if (
+            not _TERMINAL_AC_SECTION_RE.match(bare)
+            and _looks_like_section_heading(stripped)
+            and _next_nonblank_is_bullet(lines, i + 1)
+        ):
+            i += 1
+            continue
         break
 
     # De-duplicate while preserving order; drop ultra-short entries.

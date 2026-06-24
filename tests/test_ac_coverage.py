@@ -1,7 +1,10 @@
 """Tests for acceptance-criteria extraction and multi-ticket coverage validation."""
 
 from src.app.adf_parser import extract_text_from_adf
-from src.app.description_analyzer import extract_acceptance_criteria
+from src.app.description_analyzer import (
+    extract_ac_action_facets,
+    extract_acceptance_criteria,
+)
 from src.app.main import _compute_ac_coverage, _normalize_grounding_warnings
 from src.app.models import TestPlan as _TestPlan
 
@@ -320,6 +323,7 @@ def test_coverage_returns_empty_tickets_when_no_acs_supplied():
         "covered": [],
         "uncovered": [],
         "superseded": [],
+        "under_covered": [],
         "total": 0,
     }
 
@@ -575,3 +579,233 @@ def test_supersede_absent_field_keeps_existing_behaviour():
     assert cov["tickets"]["SK-1"]["superseded"] == []
     assert cov["tickets"]["SK-1"]["total"] == 2
     assert [u["id"] for u in cov["tickets"]["SK-1"]["uncovered"]] == ["SK-1-AC2"]
+
+
+# ─── subsection-grouped AC extraction (SK-2290 regression) ────────────────────
+
+# The real SK-2290 description: ACs are grouped under plain-text sub-labels
+# ("Agent mobile app", "Title rep web app", "Admin dashboard", "General") that
+# sit between the heading and the bullets. The old extractor treated the first
+# sub-label as a section break and returned 0 ACs — disabling coverage entirely.
+SK2290_DESCRIPTION = """Today the app has no meaningful record of what users do.
+
+**Acceptance Criteria**
+
+Agent mobile app
+
+* A calculation being created, updated, or deleted is captured
+* A calculation being shared or sent (email/PDF) is captured
+* A voice session that results in a calculation being created is captured
+* A user updating their profile (name, email, phone, state/county) is captured
+* A user saving or resetting their calculator defaults or custom configuration is captured
+* A user deleting their account is captured
+
+Title rep web app
+
+* A title rep updating their own profile is captured
+* A title rep adding or removing an agent contact is captured
+
+Admin dashboard
+
+* An admin exporting a user's calculation data is captured
+* An admin granting or revoking another user's admin access is captured
+* An admin modifying a title rep's territory is captured
+* An admin updating GFE formula configuration is captured
+* An admin modifying audio prompt configuration is captured
+
+General
+
+* Each audit entry records who did it, what they did, when, and what was affected
+* Audit history for a given user is viewable in the admin dashboard
+* Audit entries are retained for at least 12 months
+* Any new endpoint or data mutation added going forward includes an audit log entry
+"""
+
+
+def test_extract_keeps_acs_grouped_under_subsection_labels():
+    """SK-2290: grouping sub-labels between the heading and bullets must NOT
+    terminate the AC block. All 17 bullets across four groups are extracted."""
+    acs = extract_acceptance_criteria(SK2290_DESCRIPTION)
+    assert len(acs) == 17
+    # The previously-dropped items (everything after the first sub-label) are present.
+    assert "A calculation being created, updated, or deleted is captured" in acs
+    assert "An admin modifying a title rep's territory is captured" in acs  # AC11
+    assert "Audit entries are retained for at least 12 months" in acs
+    # The sub-labels themselves are NOT captured as ACs.
+    assert "Agent mobile app" not in acs
+    assert "Admin dashboard" not in acs
+    assert "General" not in acs
+
+
+def test_extract_subsection_labels_work_through_adf():
+    adf = _adf_doc([
+        _heading("Acceptance Criteria"),
+        _para("Agent mobile app"),
+        _bullets("A calculation being created is captured", "A user deleting their account is captured"),
+        _para("Admin dashboard"),
+        _bullets("An admin modifying a title rep's territory is captured"),
+        _heading("Implementation Notes"),
+        _para("Mirror seller net sheet."),
+    ])
+    acs = extract_acceptance_criteria(extract_text_from_adf(adf))
+    assert acs == [
+        "A calculation being created is captured",
+        "A user deleting their account is captured",
+        "An admin modifying a title rep's territory is captured",
+    ]
+
+
+def test_extract_terminal_section_with_bullets_still_stops():
+    """A real non-AC section that happens to have its own bullets ("Out of
+    Scope") must still terminate — the sub-label rule must not swallow it."""
+    text = """## Acceptance Criteria
+
+* First AC
+* Second AC
+
+Out of Scope
+
+* Not an AC
+* Also not an AC
+"""
+    assert extract_acceptance_criteria(text) == ["First AC", "Second AC"]
+
+
+def test_extract_implementation_notes_with_bullets_still_stops():
+    text = """Acceptance Criteria
+
+* Real AC
+
+Implementation Notes
+
+* internal detail
+"""
+    assert extract_acceptance_criteria(text) == ["Real AC"]
+
+
+# ─── compound / multi-verb AC facet extraction ────────────────────────────────
+
+
+def test_facets_split_verb_enumeration():
+    assert extract_ac_action_facets(
+        "A calculation being created, updated, or deleted is captured"
+    ) == ["created", "updated", "deleted"]
+
+
+def test_facets_split_verbs_and_slashed_parenthetical():
+    assert extract_ac_action_facets(
+        "A calculation being shared or sent (email/PDF) is captured"
+    ) == ["shared", "sent", "email", "PDF"]
+
+
+def test_facets_two_verb_or():
+    assert extract_ac_action_facets(
+        "A title rep adding or removing an agent contact is captured"
+    ) == ["adding", "removing"]
+    assert extract_ac_action_facets(
+        "An admin granting or revoking another user's admin access is captured"
+    ) == ["granting", "revoking"]
+
+
+def test_facets_single_action_returns_empty():
+    # A lone action is not compound.
+    assert extract_ac_action_facets("A user deleting their account is captured") == []
+    assert extract_ac_action_facets("An admin modifying a title rep's territory is captured") == []
+
+
+def test_facets_field_clarification_not_split():
+    """A comma-list parenthetical names fields of ONE action, not separate
+    actions — it must not be split."""
+    assert extract_ac_action_facets(
+        "A user updating their profile (name, email, phone, state/county) is captured"
+    ) == []
+
+
+def test_facets_attribute_list_not_split():
+    assert extract_ac_action_facets(
+        "Each audit entry records who did it, what they did, when, and what was affected"
+    ) == []
+
+
+# ─── compound-AC under-coverage detection ─────────────────────────────────────
+
+
+def test_coverage_flags_compound_ac_missing_action():
+    """The bullet ID is tagged (so it reads as covered), but only created and
+    updated have cases — `deleted` was dropped. It must surface as under_covered."""
+    tickets = [{
+        "ticket_key": "SK-2290",
+        "acceptance_criteria": ["A calculation being created, updated, or deleted is captured"],
+    }]
+    plan = _TestPlan(
+        happy_path=[
+            {"title": "Creating a calculation is logged", "steps": ["Create a calc"],
+             "expected": "An audit entry is recorded", "covers_acs": ["SK-2290-AC1"]},
+            {"title": "Updating a calculation is logged", "steps": ["Edit/update a calc"],
+             "expected": "An audit entry is recorded", "covers_acs": ["SK-2290-AC1"]},
+        ],
+        edge_cases=[], integration_tests=[], regression_checklist=[],
+    )
+    cov = _compute_ac_coverage(plan, tickets)
+    # Bullet-level coverage still considers it covered.
+    assert cov["tickets"]["SK-2290"]["covered"] == ["SK-2290-AC1"]
+    assert cov["uncovered_total"] == 0
+    # …but the dropped sub-action is flagged.
+    assert cov["under_covered_total"] == 1
+    uc = cov["tickets"]["SK-2290"]["under_covered"]
+    assert len(uc) == 1
+    assert uc[0]["id"] == "SK-2290-AC1"
+    assert uc[0]["missing_actions"] == ["deleted"]
+
+
+def test_coverage_compound_ac_fully_covered_not_flagged():
+    tickets = [{
+        "ticket_key": "SK-2290",
+        "acceptance_criteria": ["A calculation being created, updated, or deleted is captured"],
+    }]
+    plan = _TestPlan(
+        happy_path=[
+            {"title": "Calc create/update/delete are each logged",
+             "test_data": "Exercise create, update, and delete of a calculation",
+             "covers_acs": ["SK-2290-AC1"]},
+        ],
+        edge_cases=[], integration_tests=[], regression_checklist=[],
+    )
+    cov = _compute_ac_coverage(plan, tickets)
+    assert cov["under_covered_total"] == 0
+    assert cov["tickets"]["SK-2290"]["under_covered"] == []
+
+
+def test_coverage_compound_ac_synonym_counts_as_covered():
+    """`deleted` should be satisfied by a case that says "remove"."""
+    tickets = [{
+        "ticket_key": "SK-2290",
+        "acceptance_criteria": ["A calculation being created, updated, or deleted is captured"],
+    }]
+    plan = _TestPlan(
+        happy_path=[
+            {"title": "Calc lifecycle logged",
+             "steps": ["Create a calc", "Update a calc", "Remove a calc"],
+             "covers_acs": ["SK-2290-AC1"]},
+        ],
+        edge_cases=[], integration_tests=[], regression_checklist=[],
+    )
+    cov = _compute_ac_coverage(plan, tickets)
+    assert cov["under_covered_total"] == 0
+
+
+def test_coverage_uncovered_compound_ac_not_double_reported():
+    """If the AC ID is not tagged at all it's fully uncovered — it must not
+    ALSO appear in under_covered (that's only for partially-covered ACs)."""
+    tickets = [{
+        "ticket_key": "SK-2290",
+        "acceptance_criteria": ["A calculation being created, updated, or deleted is captured"],
+    }]
+    plan = _TestPlan(
+        happy_path=[{"title": "unrelated", "covers_acs": []}],
+        edge_cases=[], integration_tests=[], regression_checklist=[],
+    )
+    cov = _compute_ac_coverage(plan, tickets)
+    assert cov["uncovered_total"] == 1
+    assert cov["under_covered_total"] == 0
+    assert cov["tickets"]["SK-2290"]["under_covered"] == []
