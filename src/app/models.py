@@ -309,6 +309,16 @@ class TestPlan:
     # the UI can render the producer/consumer pairs the plan covers. Shape:
     # {"verified_seams": [...], "suspected_seams": [...], "repos": [...]}.
     cross_project_summary: dict | None = None
+    # How hard this ticket is for a UAT tester to even get to the point of
+    # testing it: "low" | "medium" | "high". Drives whether the UI surfaces a
+    # prominent "needs a walkthrough" banner and nudges the planner to attach a
+    # Loom/screenshot before posting. Grounded in cross-project seams, grounding
+    # warnings, linked-issue count, and manual-verification flags.
+    uat_complexity: str | None = None
+    # One short, non-technical sentence (or two) for a UAT tester who skims and
+    # won't read the full plan: what observably changed + where to click to see
+    # it. Shape: {"reason": "why it's complex", "summary": "plain how-to-see-it"}.
+    how_to_see_it: dict | None = None
 
 
 # ============================================================================
@@ -396,6 +406,16 @@ class PostCommentRequest(BaseModel):
     # DB id so the server can record this version as the one currently live in
     # Jira and clear that mark from superseded versions of the same ticket.
     plan_id: int | None = None
+
+
+class WalkthroughUpdateRequest(BaseModel):
+    """Request body for saving a ticket's human-authored walkthrough (Loom link,
+    screenshot link, plain-text setup/repro notes). All fields optional; an empty
+    or omitted field clears that part of the walkthrough."""
+
+    loom_url: str | None = None
+    screenshot_url: str | None = None
+    notes: str | None = None
 
 
 class WorkflowActionRequest(BaseModel):

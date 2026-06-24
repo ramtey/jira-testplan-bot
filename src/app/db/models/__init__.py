@@ -4,6 +4,7 @@ from src.app.db.models.run import Run, RunStatus, RunType
 from src.app.db.models.plan import GeneratedPlan, PlanFormat, PlanTestCase
 from src.app.db.models.feedback import FeedbackEvent, FeedbackSignal, FeedbackTarget
 from src.app.db.models.bug_analysis import BugAnalysisRecord
+from src.app.db.models.ticket_walkthrough import TicketWalkthrough
 
 __all__ = [
     "User",
@@ -18,4 +19,5 @@ __all__ = [
     "FeedbackSignal",
     "FeedbackTarget",
     "BugAnalysisRecord",
+    "TicketWalkthrough",
 ]

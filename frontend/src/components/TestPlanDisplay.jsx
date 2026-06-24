@@ -7,7 +7,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 import Icon from './Icon'
-import { Btn, Chip, ACTag, Pri, Cbx, Alert } from './ui'
+import { Btn, Chip, ACTag, Pri, Cbx, Alert, Modal } from './ui'
 
 const API_BASE = API_BASE_URL
 
@@ -481,6 +481,266 @@ function GroundingWarningsPanel({ warnings }) {
   )
 }
 
+// Visual treatment per UAT-complexity rating. `high` gets a prominent amber
+// banner because that's the tester who'd otherwise be lost without help; lower
+// ratings stay quiet so the banner keeps its signal.
+const UAT_COMPLEXITY_META = {
+  high: {
+    label: 'Hard to UAT',
+    icon: 'alert',
+    accent: '#fbbf24',
+    border: 'rgba(245,158,11,.40)',
+    bg: 'rgba(245,158,11,.08)',
+    iconBg: 'rgba(245,158,11,.14)',
+    heading: 'Needs a walkthrough before testing',
+  },
+  medium: {
+    label: 'Some setup',
+    icon: 'info',
+    accent: '#93c5fd',
+    border: 'var(--line)',
+    bg: 'var(--bg-surface)',
+    iconBg: 'rgba(59,130,246,.12)',
+    heading: 'How to see this',
+  },
+  low: {
+    label: 'Easy to UAT',
+    icon: 'eye',
+    accent: 'var(--success)',
+    border: 'var(--line)',
+    bg: 'var(--bg-surface)',
+    iconBg: 'rgba(34,197,94,.12)',
+    heading: 'How to see this',
+  },
+}
+
+function UatComplexityBadge({ complexity }) {
+  const meta = UAT_COMPLEXITY_META[complexity]
+  if (!meta) return null
+  return (
+    <span
+      title={`UAT complexity: ${complexity}`}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        height: 20,
+        padding: '0 8px',
+        borderRadius: 'var(--r-pill)',
+        background: meta.iconBg,
+        border: `1px solid ${meta.border}`,
+        color: meta.accent,
+        fontSize: 'var(--t-xs)',
+        fontWeight: 600,
+      }}
+    >
+      <Icon name={meta.icon} size={11} />
+      {meta.label}
+    </span>
+  )
+}
+
+function hasVisualWalkthrough(walkthrough) {
+  return !!(walkthrough && (walkthrough.loom_url || walkthrough.screenshot_url))
+}
+
+function hasAnyWalkthrough(walkthrough) {
+  return !!(
+    walkthrough &&
+    (walkthrough.loom_url || walkthrough.screenshot_url || (walkthrough.notes && walkthrough.notes.trim()))
+  )
+}
+
+/**
+ * Human-authored walkthrough: a Loom link, a screenshot link, and free-text
+ * setup/repro notes. The thing the LLM can't produce — the planner records it
+ * once and it persists across regenerations. Read mode shows links/notes; edit
+ * mode (controlled by the parent so the post-gate can open it) shows the form.
+ */
+function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, saving, accent }) {
+  const wt = walkthrough || {}
+  const [loom, setLoom] = useState(wt.loom_url || '')
+  const [shot, setShot] = useState(wt.screenshot_url || '')
+  const [notes, setNotes] = useState(wt.notes || '')
+
+  // Re-seed the form whenever the saved values change or we (re)enter edit mode,
+  // so opening the editor always starts from the persisted state.
+  useEffect(() => {
+    setLoom(wt.loom_url || '')
+    setShot(wt.screenshot_url || '')
+    setNotes(wt.notes || '')
+  }, [wt.loom_url, wt.screenshot_url, wt.notes, editing])
+
+  const divider = { marginTop: 'var(--s-4)', paddingTop: 'var(--s-4)', borderTop: '1px solid var(--divider)' }
+
+  if (editing) {
+    return (
+      <div style={divider}>
+        <div style={{ display: 'grid', gap: 'var(--s-4)' }}>
+          <div>
+            <span className="lbl">Loom / video link</span>
+            <input
+              className="inp"
+              type="url"
+              placeholder="https://www.loom.com/share/…"
+              value={loom}
+              onChange={(e) => setLoom(e.target.value)}
+              disabled={saving}
+            />
+          </div>
+          <div>
+            <span className="lbl">Screenshot / image link</span>
+            <input
+              className="inp"
+              type="url"
+              placeholder="https://… (link to an image)"
+              value={shot}
+              onChange={(e) => setShot(e.target.value)}
+              disabled={saving}
+            />
+          </div>
+          <div>
+            <span className="lbl">Setup / repro notes</span>
+            <textarea
+              className="inp"
+              style={{ minHeight: 70 }}
+              placeholder="Prerequisites, feature flags, accounts, or steps to reproduce…"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              disabled={saving}
+            />
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 'var(--s-4)' }}>
+          <Btn
+            variant="primary"
+            icon="check"
+            loading={saving}
+            disabled={saving}
+            onClick={() =>
+              onSave({ loom_url: loom.trim(), screenshot_url: shot.trim(), notes: notes.trim() })
+            }
+          >
+            Save walkthrough
+          </Btn>
+          <Btn variant="ghost" onClick={() => onEditingChange(false)} disabled={saving}>
+            Cancel
+          </Btn>
+        </div>
+      </div>
+    )
+  }
+
+  const present = hasAnyWalkthrough(wt)
+  return (
+    <div style={divider}>
+      {present ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {wt.loom_url && (
+            <a href={wt.loom_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}>
+              <Icon name="play" size={13} /> Watch walkthrough
+            </a>
+          )}
+          {wt.screenshot_url && (
+            <a href={wt.screenshot_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}>
+              <Icon name="image" size={13} /> View screenshot
+            </a>
+          )}
+          {wt.notes && wt.notes.trim() && (
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', whiteSpace: 'pre-wrap', lineHeight: '20px' }}>
+              {renderInline(wt.notes)}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => onEditingChange(true)}
+            style={{ alignSelf: 'flex-start', marginTop: 2, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textDecoration: 'underline' }}
+          >
+            Edit walkthrough
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onEditingChange(true)}
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}
+        >
+          <Icon name="plus" size={13} /> Add a walkthrough (Loom, screenshot, or notes)
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * "How to see this" orientation for a UAT tester who won't read the full plan.
+ * Driven by the LLM's uat_complexity + how_to_see_it. High-complexity tickets
+ * get a prominent amber treatment; low/medium stay quiet. When `enableWalkthrough`
+ * is set, the planner's editable walkthrough (Loom/screenshot/notes) is appended.
+ */
+function UatGuideCard({
+  complexity,
+  howToSeeIt,
+  enableWalkthrough,
+  walkthrough,
+  editingWalkthrough,
+  onEditingChange,
+  onSaveWalkthrough,
+  savingWalkthrough,
+}) {
+  const summary = typeof howToSeeIt?.summary === 'string' ? howToSeeIt.summary.trim() : ''
+  const reason = typeof howToSeeIt?.reason === 'string' ? howToSeeIt.reason.trim() : ''
+  // Nothing useful to show and no walkthrough to author — bail rather than
+  // render an empty shell (e.g. an old plan generated before these fields).
+  if (!summary && !reason && !enableWalkthrough) return null
+  const meta = UAT_COMPLEXITY_META[complexity] || UAT_COMPLEXITY_META.medium
+
+  return (
+    <div
+      id="uat-guide-card"
+      className="card"
+      style={{
+        padding: 'var(--s-5) var(--s-6)',
+        marginBottom: 'var(--s-5)',
+        background: meta.bg,
+        borderColor: meta.border,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-4)' }}>
+        <div style={{ width: 32, height: 32, borderRadius: 'var(--r-md)', background: meta.iconBg, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+          <Icon name={meta.icon} size={16} style={{ color: meta.accent }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap', marginBottom: summary || reason ? 6 : 0 }}>
+            <span style={{ fontSize: 'var(--t-md)', fontWeight: 600, color: 'var(--fg-strong)' }}>{meta.heading}</span>
+            <UatComplexityBadge complexity={complexity} />
+          </div>
+          {summary && (
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
+              {renderInline(summary)}
+            </div>
+          )}
+          {reason && (
+            <div style={{ marginTop: summary ? 4 : 0, fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }}>
+              Why: {renderInline(reason)}
+            </div>
+          )}
+          {enableWalkthrough && (
+            <WalkthroughSection
+              walkthrough={walkthrough}
+              editing={editingWalkthrough}
+              onEditingChange={onEditingChange}
+              onSave={onSaveWalkthrough}
+              saving={savingWalkthrough}
+              accent={meta.accent}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const isMulti = !!(ticketsData && ticketsData.length > 1)
 
@@ -498,6 +758,37 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     setLocalPostedAt(null)
   }, [testPlan?.plan_id])
   const postedAt = testPlan?.posted_at || localPostedAt
+
+  // Human-authored walkthrough (Loom / screenshot / notes), keyed to the
+  // primary ticket so it persists across regenerations. Editing is enabled for
+  // single-ticket plans (the walkthrough belongs to one ticket).
+  const walkthroughKey = ticketData?.key || (ticketsData && ticketsData[0]?.key) || ''
+  const [walkthrough, setWalkthrough] = useState(null)
+  const [editingWalkthrough, setEditingWalkthrough] = useState(false)
+  const [savingWalkthrough, setSavingWalkthrough] = useState(false)
+  // Two-step "add a walkthrough?" gate before posting a high-complexity ticket:
+  // null → not showing, 'offer' → first prompt, 'confirm' → skip confirmation.
+  const [postGateStep, setPostGateStep] = useState(null)
+
+  useEffect(() => {
+    setEditingWalkthrough(false)
+    if (!walkthroughKey) {
+      setWalkthrough(null)
+      return
+    }
+    let cancelled = false
+    fetch(`${API_BASE}/tickets/${walkthroughKey}/walkthrough`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled) setWalkthrough(data)
+      })
+      .catch(() => {
+        /* walkthrough is optional — ignore fetch errors */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [walkthroughKey])
 
   const ticketKeysJoined = isMulti
     ? allKeys.join('+')
@@ -589,7 +880,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   })
 
   const handleCopyMarkdown = () => {
-    const markdown = formatTestPlanAsMarkdown(testPlan, primaryTicketData)
+    const markdown = formatTestPlanAsMarkdown(testPlan, primaryTicketData, walkthrough)
     navigator.clipboard
       .writeText(markdown)
       .then(() => showNotification(setCopyNotification, copyTimerRef, 'success', 'Copied'))
@@ -597,7 +888,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   }
 
   const handleDownloadMarkdown = () => {
-    const markdown = formatTestPlanAsMarkdown(testPlan, primaryTicketData)
+    const markdown = formatTestPlanAsMarkdown(testPlan, primaryTicketData, walkthrough)
     const blob = new Blob([markdown], { type: 'text/markdown' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -611,10 +902,51 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     URL.revokeObjectURL(url)
   }
 
-  const handlePostToJira = async () => {
+  const handleSaveWalkthrough = async (payload) => {
+    if (!walkthroughKey) return
+    setSavingWalkthrough(true)
+    try {
+      const res = await fetch(`${API_BASE}/tickets/${walkthroughKey}/walkthrough`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error('Failed to save walkthrough')
+      setWalkthrough(await res.json())
+      setEditingWalkthrough(false)
+    } catch {
+      showNotification(setPostNotification, postTimerRef, 'error', 'Failed to save walkthrough')
+    } finally {
+      setSavingWalkthrough(false)
+    }
+  }
+
+  const openWalkthroughEditor = () => {
+    setPostGateStep(null)
+    setEditingWalkthrough(true)
+    // Bring the card into view so the editor the planner just asked for is visible.
+    if (typeof document !== 'undefined') {
+      requestAnimationFrame(() => {
+        document.getElementById('uat-guide-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
+    }
+  }
+
+  // Gate-aware entry point. A high-complexity ticket with no Loom/screenshot
+  // gets the two-step nudge; everything else posts straight through.
+  const handlePostToJira = () => {
+    if (testPlan.uat_complexity === 'high' && !hasVisualWalkthrough(walkthrough)) {
+      setPostGateStep('offer')
+      return
+    }
+    doPostToJira()
+  }
+
+  const doPostToJira = async () => {
+    setPostGateStep(null)
     setIsPosting(true)
     try {
-      const jiraText = formatTestPlanAsJira(testPlan)
+      const jiraText = formatTestPlanAsJira(testPlan, walkthrough)
       const response = await fetch(`${API_BASE}/jira/post-comment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -645,7 +977,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const postToKey = async (issueKey, otherKeys = []) => {
     setPostingStates((prev) => ({ ...prev, [issueKey]: 'posting' }))
     try {
-      let jiraText = formatTestPlanAsJira(testPlan)
+      let jiraText = formatTestPlanAsJira(testPlan, walkthrough)
       if (otherKeys.length > 0) {
         jiraText += `\n\n----\n_Also posted to: ${otherKeys.join(', ')}_`
       }
@@ -930,7 +1262,18 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         </div>
       </div>
 
-      {isMulti && testPlan.ac_coverage && (
+      <UatGuideCard
+        complexity={testPlan.uat_complexity}
+        howToSeeIt={testPlan.how_to_see_it}
+        enableWalkthrough={!isMulti && !!walkthroughKey}
+        walkthrough={walkthrough}
+        editingWalkthrough={editingWalkthrough}
+        onEditingChange={setEditingWalkthrough}
+        onSaveWalkthrough={handleSaveWalkthrough}
+        savingWalkthrough={savingWalkthrough}
+      />
+
+      {testPlan.ac_coverage && (
         <AcCoveragePanel coverage={testPlan.ac_coverage} />
       )}
 
@@ -1043,6 +1386,55 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           </div>
         )}
       </div>
+
+      {/* Two-step "add a walkthrough?" gate for hard-to-UAT tickets. Always
+          escapable — it nudges, never blocks. */}
+      {postGateStep === 'offer' && (
+        <Modal
+          title="This ticket looks hard to UAT"
+          sub="Testers often skip the test plan — a short walkthrough helps them know what to do."
+          onClose={() => setPostGateStep(null)}
+          width={460}
+          foot={
+            <>
+              <Btn variant="ghost" onClick={() => setPostGateStep('confirm')}>
+                Skip anyway
+              </Btn>
+              <Btn variant="primary" icon="plus" onClick={openWalkthroughEditor}>
+                Add a walkthrough
+              </Btn>
+            </>
+          }
+        >
+          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
+            Add a Loom or screenshot so whoever UATs <strong>{ticketData?.key}</strong> can see
+            what changed and how to trigger it — they'll get it at the top of the Jira comment.
+          </div>
+        </Modal>
+      )}
+
+      {postGateStep === 'confirm' && (
+        <Modal
+          title="Post without a walkthrough?"
+          sub="Testers may struggle to UAT this one without a video or screenshot."
+          onClose={() => setPostGateStep(null)}
+          width={460}
+          foot={
+            <>
+              <Btn variant="ghost" onClick={() => setPostGateStep('offer')}>
+                Go back
+              </Btn>
+              <Btn variant="primary" icon="send" onClick={doPostToJira}>
+                Post without it
+              </Btn>
+            </>
+          }
+        >
+          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
+            You can always add one later — it'll update the same Jira comment.
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

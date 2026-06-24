@@ -2541,6 +2541,8 @@ class OllamaClient(LLMClient):
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
+                    uat_complexity=test_plan_data.get("uat_complexity") or None,
+                    how_to_see_it=test_plan_data.get("how_to_see_it") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -2606,6 +2608,8 @@ class OllamaClient(LLMClient):
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
+                    uat_complexity=test_plan_data.get("uat_complexity") or None,
+                    how_to_see_it=test_plan_data.get("how_to_see_it") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -2963,8 +2967,46 @@ SUBMIT_TEST_PLAN_TOOL = {
                     "required": ["ac_id", "missing_element", "explanation"],
                 },
             },
+            "uat_complexity": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": (
+                    "How hard it is for a UAT tester to even GET TO THE POINT of testing this — "
+                    "NOT how many test cases there are. Judge by: cross-project seams (multiple repos/services), "
+                    "grounding warnings, the number of linked/blocking issues, backend-only or integration-heavy work "
+                    "with no obvious UI entry point, required feature flags, special accounts, seed data, or environment setup. "
+                    "Use 'high' when a tester who opens the app cold would NOT obviously know what changed or how to trigger it "
+                    "(they'd need a walkthrough). Use 'low' for a self-evident UI change a tester can find and exercise without help. "
+                    "Use 'medium' in between. Always set this field."
+                ),
+            },
+            "how_to_see_it": {
+                "type": "object",
+                "description": (
+                    "A skimmer-friendly orientation for a UAT tester who will NOT read the full test plan. "
+                    "Plain, non-technical language. Always set this field."
+                ),
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": (
+                            "ONE or TWO short sentences: what observably changed AND where to click to see it. "
+                            "No jargon, no ticket IDs, no internal component names. "
+                            "Example: 'Upgrading a Pro account now uses a new checkout — open Billing, click Upgrade, and you'll see the new flow.'"
+                        ),
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "One short sentence: why this ticket is hard (or easy) to UAT — the main thing that makes it non-obvious. "
+                            "This justifies the uat_complexity rating. Keep it concrete (e.g. 'spans two services and needs a feature flag on')."
+                        ),
+                    },
+                },
+                "required": ["summary", "reason"],
+            },
         },
-        "required": ["happy_path", "edge_cases", "regression_checklist"],
+        "required": ["happy_path", "edge_cases", "regression_checklist", "uat_complexity", "how_to_see_it"],
     },
 }
 
@@ -3100,6 +3142,8 @@ class ClaudeClient(LLMClient):
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
+                    uat_complexity=test_plan_data.get("uat_complexity") or None,
+                    how_to_see_it=test_plan_data.get("how_to_see_it") or None,
                 )
 
         except httpx.HTTPStatusError as e:
@@ -3222,6 +3266,8 @@ class ClaudeClient(LLMClient):
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
+                    uat_complexity=test_plan_data.get("uat_complexity") or None,
+                    how_to_see_it=test_plan_data.get("how_to_see_it") or None,
                 )
 
         except httpx.HTTPStatusError as e:

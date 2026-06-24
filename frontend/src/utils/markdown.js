@@ -94,12 +94,62 @@ const formatGroundingWarnings = (plan) => {
   return md
 }
 
-export const formatTestPlanAsMarkdown = (plan, ticketData) => {
+// Pull together the LLM's "how to see it" orientation and the planner's
+// walkthrough (Loom / screenshot / notes) into one normalized shape. Returns
+// null when there's nothing worth showing, so callers can skip the section.
+const collectUatGuide = (plan, walkthrough) => {
+  const complexity = plan?.uat_complexity || null
+  const summary = typeof plan?.how_to_see_it?.summary === 'string' ? plan.how_to_see_it.summary.trim() : ''
+  const reason = typeof plan?.how_to_see_it?.reason === 'string' ? plan.how_to_see_it.reason.trim() : ''
+  const loom = walkthrough?.loom_url?.trim() || ''
+  const screenshot = walkthrough?.screenshot_url?.trim() || ''
+  const notes = walkthrough?.notes?.trim() || ''
+  if (!summary && !reason && !loom && !screenshot && !notes) return null
+  return { complexity, summary, reason, loom, screenshot, notes }
+}
+
+// Markdown variant — prepended to the exported/downloaded plan.
+const formatUatGuideMarkdown = (plan, walkthrough) => {
+  const g = collectUatGuide(plan, walkthrough)
+  if (!g) return ''
+  const heading = g.complexity === 'high' ? '## 🧭 How to test this — start here' : '## 🧭 How to test this'
+  let md = `${heading}\n\n`
+  if (g.complexity) md += `**UAT complexity:** ${g.complexity}\n\n`
+  if (g.summary) md += `${g.summary}\n\n`
+  if (g.reason) md += `*Why it's tricky: ${g.reason}*\n\n`
+  if (g.loom) md += `🎥 **Walkthrough:** ${g.loom}\n\n`
+  if (g.screenshot) md += `📷 **Screenshot:** ${g.screenshot}\n\n`
+  if (g.notes) md += `**Setup / repro notes:**\n${g.notes}\n\n`
+  md += '---\n\n'
+  return md
+}
+
+// Plain-text variant — prepended to the Jira comment so the UAT assignee sees
+// it first, above the test cases.
+const formatUatGuideJira = (plan, walkthrough) => {
+  const g = collectUatGuide(plan, walkthrough)
+  if (!g) return ''
+  const heading = g.complexity === 'high'
+    ? '🧭 HOW TO TEST THIS — START HERE'
+    : '🧭 HOW TO TEST THIS'
+  let jira = `${heading}\n\n`
+  if (g.complexity) jira += `UAT complexity: ${g.complexity.toUpperCase()}\n\n`
+  if (g.summary) jira += `${g.summary}\n\n`
+  if (g.reason) jira += `Why it's tricky: ${g.reason}\n\n`
+  if (g.loom) jira += `🎥 Walkthrough: ${g.loom}\n\n`
+  if (g.screenshot) jira += `📷 Screenshot: ${g.screenshot}\n\n`
+  if (g.notes) jira += `Setup / repro notes:\n${g.notes}\n\n`
+  jira += '════════════════════════════════════════════\n\n'
+  return jira
+}
+
+export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) => {
   let markdown = `# Test Plan: ${ticketData.key}\n\n`
   markdown += `## ${ticketData.summary}\n\n`
 
   const hasAcs = planHasAnyAcs(plan)
 
+  markdown += formatUatGuideMarkdown(plan, walkthrough)
   markdown += formatAcCoverageSummary(plan.ac_coverage)
   markdown += formatSupersededAcs(plan)
   markdown += formatGroundingWarnings(plan)
@@ -336,8 +386,10 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
   return md
 }
 
-export const formatTestPlanAsJira = (plan) => {
+export const formatTestPlanAsJira = (plan, walkthrough = null) => {
   let jira = ''
+
+  jira += formatUatGuideJira(plan, walkthrough)
 
   if (plan.happy_path && plan.happy_path.length > 0) {
     jira += '✅ HAPPY PATH TEST CASES\n\n'

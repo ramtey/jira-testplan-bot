@@ -27,8 +27,9 @@ from .models import (
     MultiTicketGenerateRequest,
     PostCommentRequest,
     TicketInput,
+    WalkthroughUpdateRequest,
 )
-from .repositories import bug_analysis_repository, plan_repository
+from .repositories import bug_analysis_repository, plan_repository, walkthrough_repository
 from .runs_routes import router as runs_router
 from .seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from .services import run_tracker
@@ -739,13 +740,30 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             bounce_history=request.bounce_history,
         )
 
+        # AC coverage for the single-ticket plan. Previously only the
+        # multi-ticket endpoint computed this, so a plain Story (no children)
+        # had no coverage safety net at all — the SK-2290 failure, where
+        # dropped AC items shipped silently. Build the same per-ticket index
+        # the multi-ticket path uses so `_compute_ac_coverage` can flag both
+        # fully-uncovered ACs and compound ACs whose sub-actions were dropped.
+        single_ticket_data = [
+            {
+                "ticket_key": request.ticket_key,
+                "acceptance_criteria": extract_acceptance_criteria(request.description),
+            }
+        ]
+        ac_coverage = _compute_ac_coverage(test_plan, single_ticket_data)
+
         response = {
             "ticket_key": request.ticket_key,
             "happy_path": test_plan.happy_path,
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
+            "ac_coverage": ac_coverage,
             "grounding_warnings": _normalize_grounding_warnings(test_plan),
+            "uat_complexity": test_plan.uat_complexity,
+            "how_to_see_it": test_plan.how_to_see_it,
         }
 
         saved = await run_tracker.complete_with_plan(
@@ -876,6 +894,8 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             "ac_coverage": ac_coverage,
             "superseded_acs": ac_coverage.get("superseded_acs", []),
             "grounding_warnings": grounding_warnings,
+            "uat_complexity": test_plan.uat_complexity,
+            "how_to_see_it": test_plan.how_to_see_it,
         }
         if cross_project_payload is not None:
             response["cross_project_summary"] = (
@@ -961,3 +981,41 @@ async def post_comment(request: PostCommentRequest):
             status_code=500,
             detail="An unexpected error occurred while posting the comment"
         )
+
+
+def _serialize_walkthrough(row) -> dict:
+    """Shape a TicketWalkthrough row (or None) into the JSON the frontend expects."""
+    if row is None:
+        return {"loom_url": None, "screenshot_url": None, "notes": None, "updated_at": None}
+    return {
+        "loom_url": row.loom_url,
+        "screenshot_url": row.screenshot_url,
+        "notes": row.notes,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@app.get("/tickets/{ticket_key}/walkthrough")
+async def get_ticket_walkthrough(ticket_key: str):
+    """Return the human-authored walkthrough (Loom link, screenshot, notes) for a
+    ticket. Kept apart from the generated plan so it survives regeneration."""
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = await walkthrough_repository.get_walkthrough(session, ticket_key=ticket_key)
+        return _serialize_walkthrough(row)
+
+
+@app.put("/tickets/{ticket_key}/walkthrough")
+async def put_ticket_walkthrough(ticket_key: str, request: WalkthroughUpdateRequest):
+    """Create or replace a ticket's walkthrough. The editor sends the full state,
+    so empty fields clear the corresponding value."""
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = await walkthrough_repository.upsert_walkthrough(
+            session,
+            ticket_key=ticket_key,
+            loom_url=request.loom_url,
+            screenshot_url=request.screenshot_url,
+            notes=request.notes,
+        )
+        return _serialize_walkthrough(row)
