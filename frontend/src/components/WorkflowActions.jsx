@@ -62,7 +62,19 @@ const ACTIONS = [
     icon: 'arrow-left',
     showWhen: (status) => normalize(status) === TESTING_STATUS,
   },
+  {
+    id: 'fail-to-in-progress',
+    label: 'Fail back to In Progress',
+    title: 'Move back to In Progress and reassign to the previous person',
+    variant: 'warning-soft',
+    icon: 'arrow-left',
+    showWhen: (status) => normalize(status) === TESTING_STATUS,
+  },
 ]
+
+// Bounce-back actions: returned to development with a required reason + note.
+const FAIL_ACTION_IDS = ['fail-to-todo', 'fail-to-in-progress']
+const isFailAction = (id) => FAIL_ACTION_IDS.includes(id)
 
 function normalize(status) {
   return (status || '').trim().toLowerCase()
@@ -408,7 +420,7 @@ function WorkflowActions({
         ? ` · ${cascadedCount} subtask${cascadedCount === 1 ? '' : 's'} moved`
         : ''
       const lead =
-        action.id === 'fail-to-todo'
+        isFailAction(action.id)
           ? `Bounced back to ${data.target_status}`
           : action.id === 'pass-to-uat'
             ? `Passed to ${data.target_status}`
@@ -434,7 +446,7 @@ function WorkflowActions({
       setFeedback(null)
       return
     }
-    if (action.id === 'fail-to-todo') {
+    if (isFailAction(action.id)) {
       setNoteForAction(action)
       setFeedback(null)
       return
@@ -497,7 +509,7 @@ function WorkflowActions({
       return
     }
 
-    if (noteForAction.id === 'fail-to-todo') {
+    if (isFailAction(noteForAction.id)) {
       const trimmedReason = reason.trim()
       if (!trimmedReason) {
         setFeedback({ kind: 'error', text: 'Reason is required.' })
@@ -513,7 +525,7 @@ function WorkflowActions({
     }
   }
 
-  const isFail = noteForAction?.id === 'fail-to-todo'
+  const isFail = isFailAction(noteForAction?.id)
 
   return (
     <div>
@@ -563,7 +575,7 @@ function WorkflowActions({
               style={{ color: isFail ? 'var(--danger)' : 'var(--success)' }}
             />
             <span style={{ fontWeight: 600, color: 'var(--fg-strong)' }}>
-              {isFail ? 'Fail back to To Do' : 'Pass to UAT'}
+              {isFail ? noteForAction.label : 'Pass to UAT'}
             </span>
             <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-sm)' }}>
               {isFail ? 'Will be returned to development.' : 'Will be moved to UAT.'}
@@ -690,7 +702,7 @@ function WorkflowActions({
 
       {feedback && (() => {
         const isError = feedback.kind === 'error'
-        const isBounce = !isError && feedback.actionId === 'fail-to-todo'
+        const isBounce = !isError && isFailAction(feedback.actionId)
         const tone = isError ? 'danger' : isBounce ? 'warning' : 'success'
         const title = isError
           ? 'Action failed'

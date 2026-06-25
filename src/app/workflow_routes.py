@@ -28,7 +28,12 @@ SK_WORKFLOW_ACTIONS: dict[str, str] = {
     "pull-to-testing": "In Testing",
     "pass-to-uat": "Ready for UAT",
     "fail-to-todo": "To Do",
+    "fail-to-in-progress": "In Progress",
 }
+
+# Bounce-back actions that return a ticket to development with a required
+# reason + fail comment. Both behave identically aside from the target column.
+_FAIL_ACTIONS = {"fail-to-todo", "fail-to-in-progress"}
 
 
 _ALLOWED_IMAGE_MIME = {
@@ -102,7 +107,7 @@ async def run_workflow_action(
     # comment can link to each screenshot; the image itself also auto-
     # displays in the issue's Attachments panel.
     image_attachments: list[tuple[str, str]] = []
-    if image_files and action in {"pass-to-uat", "fail-to-todo"}:
+    if image_files and (action == "pass-to-uat" or action in _FAIL_ACTIONS):
         try:
             uploaded = await jira.upload_attachments(issue_key, image_files)
             image_attachments = [
@@ -226,7 +231,7 @@ async def run_workflow_action(
                 logger.warning(
                     "pass-to-uat comment failed on %s: %s", issue_key, exc
                 )
-        elif action == "fail-to-todo" and parsed_payload is not None:
+        elif action in _FAIL_ACTIONS and parsed_payload is not None:
             try:
                 result = await jira.post_qa_fail_comment(
                     issue_key,
@@ -238,7 +243,7 @@ async def run_workflow_action(
                 comment_posted = result is not None
             except Exception as exc:
                 logger.warning(
-                    "fail-to-todo comment failed on %s: %s", issue_key, exc
+                    "%s comment failed on %s: %s", action, issue_key, exc
                 )
 
         parent_transitioned = False
