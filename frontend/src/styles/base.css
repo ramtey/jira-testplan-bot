@@ -165,6 +165,11 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
 
 .hbtn {
   width: 28px; height: 28px;
+  /* Neutralize the legacy global `button {}` rule in App.css (blue fill,
+     min-width:120px, padding, box-shadow) so this stays a plain icon button. */
+  min-width: 0;
+  padding: 0;
+  box-shadow: none;
   display: grid; place-items: center;
   background: transparent;
   border: 1px solid transparent;
@@ -173,7 +178,7 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
   cursor: pointer;
   transition: background var(--d-fast), color var(--d-fast), border-color var(--d-fast);
 }
-.hbtn:hover { background: var(--bg-surface); color: var(--fg); border-color: var(--line); }
+.hbtn:hover { background: var(--bg-surface); color: var(--fg); border-color: var(--line); box-shadow: none; }
 
 /* Left rail */
 .rail {

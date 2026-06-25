@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL, isWorkflowEnabledForTicket } from '../config'
 import Icon from './Icon'
-import { Btn, Cbx, Alert } from './ui'
+import { Btn, Cbx, Alert, Modal } from './ui'
 
 // Match the CSS exit duration so the feedback element stays in the DOM long enough.
 const MESSAGE_EXIT_MS = 220
@@ -266,6 +266,34 @@ function WorkflowActions({
   const [imageFiles, setImageFiles] = useState([])
   const [mentionAccountIds, setMentionAccountIds] = useState([])
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
+  // UAT-walkthrough nudge: the ticket's latest complexity + any walkthrough a
+  // planner already attached, plus the two-step gate state for pass-to-uat.
+  const [uatComplexity, setUatComplexity] = useState(null)
+  const [savedWalkthrough, setSavedWalkthrough] = useState(null)
+  const [uatGateStep, setUatGateStep] = useState(null) // null | 'offer' | 'confirm'
+  const loomInputRef = useRef(null)
+
+  useEffect(() => {
+    if (!ticketKey) {
+      setUatComplexity(null)
+      setSavedWalkthrough(null)
+      return
+    }
+    let cancelled = false
+    fetch(`${API_BASE_URL}/tickets/${ticketKey}/walkthrough`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return
+        setUatComplexity(data.uat_complexity || null)
+        setSavedWalkthrough(data)
+      })
+      .catch(() => {
+        /* nudge metadata is optional — ignore */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [ticketKey])
 
   useEffect(() => {
     if (!feedback || feedback.kind !== 'success') return
@@ -414,6 +442,37 @@ function WorkflowActions({
     runAction(action)
   }
 
+  // Build the pass-to-uat body from the current form state and run the
+  // transition. Shared by the normal submit and the "post without it" path of
+  // the walkthrough gate.
+  const submitPassToUat = () => {
+    setUatGateStep(null)
+    const looms = loomUrlsText
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const trimmedSummary = summary.trim()
+    const hasAnyField =
+      looms.length > 0 || trimmedSummary || environments.length > 0 || imageFiles.length > 0
+    const body = hasAnyField
+      ? {
+          loom_urls: looms.length > 0 ? looms : null,
+          summary: trimmedSummary || null,
+          environments: environments.length > 0 ? environments : null,
+          mention_account_ids:
+            mentionAccountIds.length > 0 ? mentionAccountIds : null,
+        }
+      : undefined
+    runAction(noteForAction, body, imageFiles)
+  }
+
+  // "Add a walkthrough" in the gate: dismiss it and drop the cursor in the Loom
+  // field of the (already-open) pass-to-uat form.
+  const focusLoomInput = () => {
+    setUatGateStep(null)
+    requestAnimationFrame(() => loomInputRef.current?.focus())
+  }
+
   const onNoteSubmit = (e) => {
     e.preventDefault()
     if (!noteForAction) return
@@ -423,22 +482,18 @@ function WorkflowActions({
       .filter(Boolean)
 
     if (noteForAction.id === 'pass-to-uat') {
-      const trimmedSummary = summary.trim()
-      const hasAnyField =
-        looms.length > 0 ||
-        trimmedSummary ||
-        environments.length > 0 ||
-        imageFiles.length > 0
-      const body = hasAnyField
-        ? {
-            loom_urls: looms.length > 0 ? looms : null,
-            summary: trimmedSummary || null,
-            environments: environments.length > 0 ? environments : null,
-            mention_account_ids:
-              mentionAccountIds.length > 0 ? mentionAccountIds : null,
-          }
-        : undefined
-      runAction(noteForAction, body, imageFiles)
+      // Nudge for a walkthrough when a hard-to-UAT ticket is being passed on
+      // with no Loom, no screenshot, and none already attached to the plan.
+      const savedVisual = !!(
+        savedWalkthrough &&
+        (savedWalkthrough.loom_url || savedWalkthrough.screenshot_url)
+      )
+      const hasVisual = looms.length > 0 || imageFiles.length > 0 || savedVisual
+      if (uatComplexity === 'high' && !hasVisual) {
+        setUatGateStep('offer')
+        return
+      }
+      submitPassToUat()
       return
     }
 
@@ -557,6 +612,7 @@ function WorkflowActions({
 
             <span className="lbl">Loom URL{loomUrlsText.includes('\n') ? 's' : ''}</span>
             <textarea
+              ref={loomInputRef}
               className="inp mono"
               rows={2}
               placeholder="https://www.loom.com/share/…"
@@ -650,6 +706,55 @@ function WorkflowActions({
           </div>
         )
       })()}
+
+      {/* Two-step "add a walkthrough?" gate when passing a hard-to-UAT ticket
+          on with no Loom/screenshot. Always escapable — it nudges, never blocks. */}
+      {uatGateStep === 'offer' && (
+        <Modal
+          title="This ticket looks hard to UAT"
+          sub="The UAT tester often won't read the test plan — a short walkthrough helps."
+          onClose={() => setUatGateStep(null)}
+          width={460}
+          foot={
+            <>
+              <Btn variant="ghost" onClick={() => setUatGateStep('confirm')}>
+                Skip anyway
+              </Btn>
+              <Btn variant="primary" icon="plus" onClick={focusLoomInput}>
+                Add a walkthrough
+              </Btn>
+            </>
+          }
+        >
+          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
+            Add a Loom or screenshot so whoever UATs <strong>{ticketKey}</strong> can see
+            what changed and how to trigger it. It'll be posted with the UAT hand-off comment.
+          </div>
+        </Modal>
+      )}
+
+      {uatGateStep === 'confirm' && (
+        <Modal
+          title="Pass to UAT without a walkthrough?"
+          sub="Testers may struggle to UAT this one without a video or screenshot."
+          onClose={() => setUatGateStep(null)}
+          width={460}
+          foot={
+            <>
+              <Btn variant="ghost" onClick={() => setUatGateStep('offer')}>
+                Go back
+              </Btn>
+              <Btn variant="primary" icon="check" onClick={submitPassToUat}>
+                Pass without it
+              </Btn>
+            </>
+          }
+        >
+          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
+            You can still add one to the ticket later.
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

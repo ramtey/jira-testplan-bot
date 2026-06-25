@@ -7,7 +7,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 import Icon from './Icon'
-import { Btn, Chip, ACTag, Pri, Cbx, Alert, Modal } from './ui'
+import { Btn, Chip, ACTag, Pri, Cbx, Alert } from './ui'
 
 const API_BASE = API_BASE_URL
 
@@ -563,10 +563,6 @@ function UatComplexityBadge({ complexity }) {
   )
 }
 
-function hasVisualWalkthrough(walkthrough) {
-  return !!(walkthrough && (walkthrough.loom_url || walkthrough.screenshot_url))
-}
-
 function hasAnyWalkthrough(walkthrough) {
   return !!(
     walkthrough &&
@@ -789,9 +785,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const [walkthrough, setWalkthrough] = useState(null)
   const [editingWalkthrough, setEditingWalkthrough] = useState(false)
   const [savingWalkthrough, setSavingWalkthrough] = useState(false)
-  // Two-step "add a walkthrough?" gate before posting a high-complexity ticket:
-  // null → not showing, 'offer' → first prompt, 'confirm' → skip confirmation.
-  const [postGateStep, setPostGateStep] = useState(null)
 
   useEffect(() => {
     setEditingWalkthrough(false)
@@ -944,29 +937,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     }
   }
 
-  const openWalkthroughEditor = () => {
-    setPostGateStep(null)
-    setEditingWalkthrough(true)
-    // Bring the card into view so the editor the planner just asked for is visible.
-    if (typeof document !== 'undefined') {
-      requestAnimationFrame(() => {
-        document.getElementById('uat-guide-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      })
-    }
-  }
-
-  // Gate-aware entry point. A high-complexity ticket with no Loom/screenshot
-  // gets the two-step nudge; everything else posts straight through.
-  const handlePostToJira = () => {
-    if (testPlan.uat_complexity === 'high' && !hasVisualWalkthrough(walkthrough)) {
-      setPostGateStep('offer')
-      return
-    }
-    doPostToJira()
-  }
-
-  const doPostToJira = async () => {
-    setPostGateStep(null)
+  const handlePostToJira = async () => {
     setIsPosting(true)
     try {
       const jiraText = formatTestPlanAsJira(testPlan, walkthrough)
@@ -1409,55 +1380,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           </div>
         )}
       </div>
-
-      {/* Two-step "add a walkthrough?" gate for hard-to-UAT tickets. Always
-          escapable — it nudges, never blocks. */}
-      {postGateStep === 'offer' && (
-        <Modal
-          title="This ticket looks hard to UAT"
-          sub="Testers often skip the test plan — a short walkthrough helps them know what to do."
-          onClose={() => setPostGateStep(null)}
-          width={460}
-          foot={
-            <>
-              <Btn variant="ghost" onClick={() => setPostGateStep('confirm')}>
-                Skip anyway
-              </Btn>
-              <Btn variant="primary" icon="plus" onClick={openWalkthroughEditor}>
-                Add a walkthrough
-              </Btn>
-            </>
-          }
-        >
-          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
-            Add a Loom or screenshot so whoever UATs <strong>{ticketData?.key}</strong> can see
-            what changed and how to trigger it — they'll get it at the top of the Jira comment.
-          </div>
-        </Modal>
-      )}
-
-      {postGateStep === 'confirm' && (
-        <Modal
-          title="Post without a walkthrough?"
-          sub="Testers may struggle to UAT this one without a video or screenshot."
-          onClose={() => setPostGateStep(null)}
-          width={460}
-          foot={
-            <>
-              <Btn variant="ghost" onClick={() => setPostGateStep('offer')}>
-                Go back
-              </Btn>
-              <Btn variant="primary" icon="send" onClick={doPostToJira}>
-                Post without it
-              </Btn>
-            </>
-          }
-        >
-          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
-            You can always add one later — it'll update the same Jira comment.
-          </div>
-        </Modal>
-      )}
     </div>
   )
 }

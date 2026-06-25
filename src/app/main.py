@@ -1092,11 +1092,27 @@ def _serialize_walkthrough(row) -> dict:
 @app.get("/tickets/{ticket_key}/walkthrough")
 async def get_ticket_walkthrough(ticket_key: str):
     """Return the human-authored walkthrough (Loom link, screenshot, notes) for a
-    ticket. Kept apart from the generated plan so it survives regeneration."""
+    ticket. Kept apart from the generated plan so it survives regeneration.
+
+    Also echoes the ticket's latest known ``uat_complexity`` (from the most
+    recent generated plan) so the workflow UI can decide whether to nudge for a
+    walkthrough when the ticket is passed to UAT.
+    """
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         row = await walkthrough_repository.get_walkthrough(session, ticket_key=ticket_key)
-        return _serialize_walkthrough(row)
+        data = _serialize_walkthrough(row)
+        complexity = None
+        latest = await plan_repository.find_latest_plan_for_ticket(
+            session, ticket_key=ticket_key.upper()
+        )
+        if latest and latest.body:
+            try:
+                complexity = (json.loads(latest.body) or {}).get("uat_complexity")
+            except (ValueError, TypeError):
+                complexity = None
+        data["uat_complexity"] = complexity
+        return data
 
 
 @app.put("/tickets/{ticket_key}/walkthrough")
