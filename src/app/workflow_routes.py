@@ -10,6 +10,7 @@ import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from .db.session import get_sessionmaker
 from .jira_client import (
     JiraAuthError,
     JiraClient,
@@ -18,6 +19,7 @@ from .jira_client import (
     is_blocked_bot_display_name,
 )
 from .models import WorkflowActionRequest
+from .repositories import walkthrough_repository
 
 logger = logging.getLogger(__name__)
 
@@ -211,14 +213,43 @@ async def run_workflow_action(
         await jira.assign_issue(issue_key, target_account_id)
 
         comment_posted = False
-        if action == "pass-to-uat" and parsed_payload is not None:
+        if action == "pass-to-uat":
+            # Fold the ticket's saved walkthrough (Loom / screenshot / notes)
+            # into the UAT hand-off comment so the "how to test this" guidance
+            # travels with the transition even when the form was left empty.
+            looms = (
+                list(parsed_payload.loom_urls)
+                if parsed_payload and parsed_payload.loom_urls
+                else []
+            )
+            summary = (parsed_payload.summary if parsed_payload else None) or ""
+            environments = parsed_payload.environments if parsed_payload else None
+            mentions = parsed_payload.mention_account_ids if parsed_payload else None
+            try:
+                async with get_sessionmaker()() as session:
+                    walkthrough = await walkthrough_repository.get_walkthrough(
+                        session, ticket_key=issue_key
+                    )
+            except Exception:
+                walkthrough = None
+            if walkthrough:
+                if walkthrough.loom_url and walkthrough.loom_url not in looms:
+                    looms.insert(0, walkthrough.loom_url)
+                extra = []
+                if walkthrough.notes:
+                    extra.append(walkthrough.notes)
+                if walkthrough.screenshot_url:
+                    extra.append(f"Screenshot: {walkthrough.screenshot_url}")
+                if extra:
+                    joined = "\n\n".join(extra)
+                    summary = f"{summary}\n\n{joined}".strip() if summary else joined
             try:
                 result = await jira.post_qa_pass_comment(
                     issue_key,
-                    parsed_payload.loom_urls,
-                    parsed_payload.summary,
-                    parsed_payload.environments,
-                    parsed_payload.mention_account_ids,
+                    looms or None,
+                    summary or None,
+                    environments,
+                    mentions,
                     image_attachments or None,
                 )
                 comment_posted = result is not None
