@@ -26,10 +26,16 @@ from .models import (
     GenerateTestPlanRequest,
     MultiTicketGenerateRequest,
     PostCommentRequest,
+    TestPlanProgressUpdateRequest,
     TicketInput,
     WalkthroughUpdateRequest,
 )
-from .repositories import bug_analysis_repository, plan_repository, walkthrough_repository
+from .repositories import (
+    bug_analysis_repository,
+    plan_repository,
+    test_plan_progress_repository,
+    walkthrough_repository,
+)
 from .runs_routes import router as runs_router
 from .seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from .services import run_tracker
@@ -1129,3 +1135,49 @@ async def put_ticket_walkthrough(ticket_key: str, request: WalkthroughUpdateRequ
             notes=request.notes,
         )
         return _serialize_walkthrough(row)
+
+
+def _serialize_progress(row) -> dict:
+    """Shape a TestPlanProgress row (or None) into the JSON the frontend expects."""
+    if row is None:
+        return {"checked_ids": [], "updated_at": None}
+    try:
+        checked = json.loads(row.checked_ids) if row.checked_ids else []
+    except (ValueError, TypeError):
+        checked = []
+    return {
+        "checked_ids": checked if isinstance(checked, list) else [],
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@app.get("/test-plan-progress/{progress_key}")
+async def get_test_plan_progress(progress_key: str):
+    """Return the shared, per-ticket set of checked test cases for a plan.
+
+    ``progress_key`` is the composite the frontend builds from the ticket key(s)
+    plus a fingerprint of the plan's section sizes; progress is shared across
+    everyone testing the ticket and resets when a regenerated plan changes shape.
+    """
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = await test_plan_progress_repository.get_progress(
+            session, progress_key=progress_key
+        )
+        return _serialize_progress(row)
+
+
+@app.put("/test-plan-progress/{progress_key}")
+async def put_test_plan_progress(
+    progress_key: str, request: TestPlanProgressUpdateRequest
+):
+    """Create or replace the shared checked-case set for a plan. The client sends
+    the full set each save, so an empty list clears all checks."""
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = await test_plan_progress_repository.upsert_progress(
+            session,
+            progress_key=progress_key,
+            checked_ids=request.checked_ids,
+        )
+        return _serialize_progress(row)

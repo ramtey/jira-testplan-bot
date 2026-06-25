@@ -418,6 +418,14 @@ class WalkthroughUpdateRequest(BaseModel):
     notes: str | None = None
 
 
+class TestPlanProgressUpdateRequest(BaseModel):
+    """Request body for saving a ticket's shared test-plan progress: the full set
+    of checked test-case ids (e.g. ["happy_path:0", "edge_cases:2"]). The client
+    sends the complete set each save, so the stored value is replaced wholesale."""
+
+    checked_ids: list[str] = []
+
+
 class WorkflowActionRequest(BaseModel):
     """Optional payload for /issue/{key}/workflow/{action}.
 

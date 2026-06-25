@@ -4,6 +4,7 @@ from src.app.repositories import (
     jira_ticket_repository,
     plan_repository,
     run_repository,
+    test_plan_progress_repository,
     user_repository,
     walkthrough_repository,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "jira_ticket_repository",
     "plan_repository",
     "run_repository",
+    "test_plan_progress_repository",
     "user_repository",
     "walkthrough_repository",
 ]

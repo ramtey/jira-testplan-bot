@@ -831,14 +831,41 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
       setCheckedTests(new Set())
       return
     }
+    // Optimistic: render the last-known local state instantly so toggles never
+    // flicker while the shared, server-side state is in flight.
+    let local = new Set()
     try {
       const raw = window.localStorage.getItem(storageKey)
-      setCheckedTests(raw ? new Set(JSON.parse(raw)) : new Set())
+      if (raw) {
+        const arr = JSON.parse(raw)
+        if (Array.isArray(arr)) local = new Set(arr)
+      }
     } catch {
-      setCheckedTests(new Set())
+      /* ignore corrupt cache */
+    }
+    setCheckedTests(local)
+
+    // Authoritative: the shared per-ticket progress lives on the server, so the
+    // whole QA team converges on the same checked set. Falls back to the local
+    // optimistic state if the server is unreachable.
+    const serverKey = storageKey.slice(PROGRESS_STORAGE_PREFIX.length)
+    let cancelled = false
+    fetch(`${API_BASE}/test-plan-progress/${encodeURIComponent(serverKey)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data || !Array.isArray(data.checked_ids)) return
+        setCheckedTests(new Set(data.checked_ids))
+      })
+      .catch(() => {
+        /* offline / server down — keep the local optimistic state */
+      })
+    return () => {
+      cancelled = true
     }
   }, [storageKey])
 
+  // Mirror every change to localStorage as an offline cache + optimistic source
+  // for the next load. The server remains the shared source of truth.
   useEffect(() => {
     if (!storageKey || typeof window === 'undefined') return
     try {
@@ -852,14 +879,38 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     }
   }, [storageKey, checkedTests])
 
+  // Debounced save of user edits to the shared server-side progress. Only fires
+  // on an actual toggle (not on hydration), so loading never echoes back a write.
+  const progressSaveTimer = useRef(null)
+  useEffect(
+    () => () => {
+      if (progressSaveTimer.current) clearTimeout(progressSaveTimer.current)
+    },
+    []
+  )
+  const scheduleProgressSave = (nextSet) => {
+    if (!storageKey || typeof window === 'undefined') return
+    const serverKey = storageKey.slice(PROGRESS_STORAGE_PREFIX.length)
+    const payload = [...nextSet]
+    if (progressSaveTimer.current) clearTimeout(progressSaveTimer.current)
+    progressSaveTimer.current = setTimeout(() => {
+      fetch(`${API_BASE}/test-plan-progress/${encodeURIComponent(serverKey)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checked_ids: payload }),
+      }).catch(() => {
+        /* offline — localStorage holds it; resyncs on the next successful save */
+      })
+    }, 600)
+  }
+
   const toggleTest = (section, index) => {
     const id = `${section}:${index}`
-    setCheckedTests((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+    const next = new Set(checkedTests)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setCheckedTests(next)
+    scheduleProgressSave(next)
   }
 
   const countSectionChecks = (section, total) => {

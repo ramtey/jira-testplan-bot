@@ -5,6 +5,7 @@ from src.app.db.models.plan import GeneratedPlan, PlanFormat, PlanTestCase
 from src.app.db.models.feedback import FeedbackEvent, FeedbackSignal, FeedbackTarget
 from src.app.db.models.bug_analysis import BugAnalysisRecord
 from src.app.db.models.ticket_walkthrough import TicketWalkthrough
+from src.app.db.models.test_plan_progress import TestPlanProgress
 
 __all__ = [
     "User",
@@ -20,4 +21,5 @@ __all__ = [
     "FeedbackTarget",
     "BugAnalysisRecord",
     "TicketWalkthrough",
+    "TestPlanProgress",
 ]
