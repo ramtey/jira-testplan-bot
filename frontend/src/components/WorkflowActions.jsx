@@ -555,43 +555,46 @@ function WorkflowActions({
             ))}
           {(() => {
             // The two bounce-backs share the same verb and differ only in the
-            // column they return to. Rather than two buttons, show a single
-            // "Fail back" action plus a destination toggle (To Do / In Progress);
-            // the toggle picks where, the button performs the bounce.
+            // column they return to. Render them as one unified control: a
+            // "Fail back to" trigger that commits the bounce, plus inline
+            // destination chips (To Do / In Progress) that pick where it lands.
             const failActions = visibleActions.filter((a) => isFailAction(a.id))
             if (failActions.length === 0) return null
             const selected =
               failActions.find((a) => a.id === failTargetId) || failActions[0]
             return (
-              <>
-                <Btn
-                  variant="danger-soft"
-                  icon="arrow-left"
+              <div className="fail-back" role="group" aria-label="Fail back to development">
+                <button
+                  type="button"
+                  className="fb-trigger"
                   title={selected.title}
                   disabled={pendingAction !== null}
-                  loading={pendingAction === selected.id}
                   onClick={() => onActionClick(selected)}
                 >
+                  <Icon name="arrow-left" size={14} />
                   Fail back to
-                </Btn>
+                </button>
                 {failActions.length > 1 && (
-                  <div className="seg-toggle" role="group" aria-label="Bounce-back destination">
-                    {failActions.map((action) => (
-                      <button
-                        key={action.id}
-                        type="button"
-                        data-on={action.id === selected.id ? 'true' : 'false'}
-                        aria-pressed={action.id === selected.id}
-                        title={`Send back to ${action.segmentLabel}`}
-                        disabled={pendingAction !== null}
-                        onClick={() => setFailTargetId(action.id)}
-                      >
-                        {action.segmentLabel}
-                      </button>
-                    ))}
-                  </div>
+                  <>
+                    <span className="fb-sep" />
+                    <span className="fb-dests">
+                      {failActions.map((action) => (
+                        <button
+                          key={action.id}
+                          type="button"
+                          data-on={action.id === selected.id ? 'true' : 'false'}
+                          aria-pressed={action.id === selected.id}
+                          title={`Send back to ${action.segmentLabel}`}
+                          disabled={pendingAction !== null}
+                          onClick={() => setFailTargetId(action.id)}
+                        >
+                          {action.segmentLabel}
+                        </button>
+                      ))}
+                    </span>
+                  </>
                 )}
-              </>
+              </div>
             )
           })()}
           <span style={{ flex: 1 }} />

@@ -60,35 +60,44 @@
 }
 .btn[data-variant="success-soft"]:hover:not(:disabled) { background: rgba(34,197,94,.18); border-color: rgba(34,197,94,.5); }
 
-/* Destination selector for the "Fail back" bounce-back: a small segmented
-   toggle (To Do / In Progress) that picks which column the single Fail-back
-   action returns the ticket to. The selected segment matches the action
-   button (danger-soft red); the rest is a muted neutral. The explicit
-   min-width/border-radius/box-shadow/transform resets neutralize the legacy
-   global `button {}` rule in App.css that would otherwise make each segment a
-   wide, individually-rounded, shadowed pill. */
-.seg-toggle { display: inline-flex; align-items: stretch; }
-.seg-toggle > button {
-  display: inline-flex; align-items: center; justify-content: center;
-  height: 28px; min-width: 0; padding: 0 var(--s-4);
-  font-size: var(--t-sm); font-weight: var(--w-med); white-space: nowrap;
-  background: transparent; color: var(--fg-subtle);
-  border: 1px solid var(--line-strong); border-radius: 0;
-  box-shadow: none; cursor: pointer;
+/* "Fail back" bounce-back — one unified control instead of a button + a
+   separate toggle. Neutral at rest so a rarely-used destructive action doesn't
+   sit as a wall of red; red emerges only on the leading icon, the chosen
+   destination chip, and when the trigger is hovered. Layout: [⟵ Fail back to │
+   ⟨To Do⟩ ⟨In Progress⟩] — the trigger commits the bounce to whichever chip is
+   selected. The explicit min-width/border-radius/box-shadow/transform resets on
+   the inner <button>s neutralize the legacy global `button {}` rule in App.css. */
+.fail-back {
+  display: inline-flex; align-items: center; height: 30px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: transparent;
+  transition: border-color var(--d-fast) var(--ease-out);
+}
+.fail-back:hover { border-color: rgba(239,68,68,.4); }
+.fail-back button {
+  min-width: 0; box-shadow: none; font-family: inherit;
+  background: transparent; cursor: pointer;
   transition: background var(--d-fast) var(--ease-out),
-              color var(--d-fast) var(--ease-out),
-              border-color var(--d-fast) var(--ease-out);
+              color var(--d-fast) var(--ease-out);
 }
-.seg-toggle > button:not(:first-child) { border-left: none; }
-.seg-toggle > button:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
-.seg-toggle > button:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
-.seg-toggle > button:hover:not(:disabled) { background: var(--bg-raised); color: var(--fg); transform: none; box-shadow: none; }
-/* Selected destination matches the "Fail back to" action button (danger-soft). */
-.seg-toggle > button[data-on="true"] {
-  background: var(--danger-soft); color: var(--danger); border-color: rgba(239,68,68,.3);
+.fail-back button:disabled { cursor: not-allowed; opacity: .5; }
+.fail-back .fb-trigger {
+  display: inline-flex; align-items: center; gap: var(--s-3);
+  height: 100%; padding: 0 11px 0 12px;
+  border: none; border-radius: var(--r-md) 0 0 var(--r-md);
+  color: var(--fg); font-size: var(--t-sm); font-weight: var(--w-med); white-space: nowrap;
 }
-.seg-toggle > button[data-on="true"]:hover:not(:disabled) { background: rgba(239,68,68,.18); color: var(--danger); }
-.seg-toggle > button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
+.fail-back .fb-trigger .ic { width: 14px; height: 14px; color: var(--danger); }
+.fail-back .fb-trigger:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+.fail-back .fb-sep { width: 1px; align-self: stretch; background: var(--line-strong); }
+.fail-back .fb-dests { display: inline-flex; align-items: center; gap: 3px; padding: 0 4px; }
+.fail-back .fb-dests button {
+  height: 22px; padding: 0 10px;
+  border: none; border-radius: var(--r-pill);
+  color: var(--fg-subtle); font-size: var(--t-sm); font-weight: var(--w-med); white-space: nowrap;
+}
+.fail-back .fb-dests button:hover:not(:disabled) { background: var(--bg-raised); color: var(--fg); }
+.fail-back .fb-dests button[data-on="true"] { background: var(--danger-soft); color: var(--danger); }
 
 /* Input */
 .inp {
