@@ -20,6 +20,9 @@ const SECTIONS = [
   { key: 'regression_checklist', label: 'Regression Checklist', icon: 'history', renderer: 'checklist' },
 ]
 const SECTION_KEYS = SECTIONS.map((s) => s.key)
+// Card sections whose cases the planner can flag as already covered by an
+// existing unit test. Those cases are pulled into a separate collapsed list.
+const COVERABLE_KEYS = ['happy_path', 'edge_cases', 'integration_tests']
 
 function sectionLength(testPlan, key) {
   return Array.isArray(testPlan?.[key]) ? testPlan[key].length : 0
@@ -760,12 +763,96 @@ function UatGuideCard({
   )
 }
 
+/**
+ * Cases the planner flagged as already covered by an existing unit test.
+ * Collapsed by default so QA's manual checklist stays lean — they're shown for
+ * completeness (and to prove the coverage was considered, not forgotten).
+ */
+function CoveredByUnitTestsSection({ cases }) {
+  const [open, setOpen] = useState(false)
+  if (!cases || cases.length === 0) return null
+  return (
+    <section id="sect-covered-by-unit-tests" style={{ marginTop: 'var(--s-8)' }}>
+      <header
+        onClick={() => setOpen((v) => !v)}
+        style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: open ? 'var(--s-4)' : 0, cursor: 'pointer' }}
+      >
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} style={{ color: 'var(--fg-muted)' }} />
+        <Icon name="beaker" size={16} style={{ color: 'var(--fg-muted)' }} />
+        <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-muted)' }}>
+          Already covered by unit tests
+        </h2>
+        <Chip size="sm">{cases.length}</Chip>
+        <span style={{ flex: 1 }} />
+        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Automated · QA can skip</span>
+      </header>
+      {open && (
+        <div className="card" style={{ padding: 'var(--s-5) var(--s-6)' }}>
+          {cases.map((test, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2,
+                padding: '8px 0',
+                borderBottom: i < cases.length - 1 ? '1px solid var(--divider)' : 'none',
+              }}
+            >
+              <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+                {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
+              </span>
+              {test.unit_test_ref && (
+                <code
+                  style={{
+                    fontSize: 10.5,
+                    color: 'var(--fg-subtle)',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                >
+                  {test.unit_test_ref}
+                </code>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const isMulti = !!(ticketsData && ticketsData.length > 1)
 
   const allKeys = isMulti ? ticketsData.map((t) => t.key) : []
   const [selectedKeys, setSelectedKeys] = useState(() => new Set(allKeys))
   const [postingStates, setPostingStates] = useState({})
+
+  // Pull cases the planner flagged as already covered by a unit test out of the
+  // manual QA sections into a separate collapsed list, so the checklist QA
+  // actually runs stays lean. `displayPlan` drives all section rendering and
+  // progress; checkbox indices are relative to this filtered view. Export/post
+  // helpers receive the full `testPlan` — the formatters filter internally.
+  const { displayPlan, coveredCases } = useMemo(() => {
+    const covered = []
+    const dp = { ...testPlan }
+    COVERABLE_KEYS.forEach((key) => {
+      const items = Array.isArray(testPlan?.[key]) ? testPlan[key] : null
+      if (!items) return
+      const keep = []
+      items.forEach((t) => {
+        if (t && t.covered_by_unit_test) covered.push(t)
+        else keep.push(t)
+      })
+      dp[key] = keep
+    })
+    return { displayPlan: dp, coveredCases: covered }
+  }, [testPlan])
+
+  // Whether the "already covered by unit tests" cases are included in the Jira
+  // comment. Off by default — QA wants a lean checklist; on writes the full
+  // record. Resets when the plan identity changes.
+  const [includeCovered, setIncludeCovered] = useState(false)
 
   const [isPosting, setIsPosting] = useState(false)
   // Local "we just posted this version" timestamp. The parent re-fetches
@@ -775,6 +862,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const [localPostedAt, setLocalPostedAt] = useState(null)
   useEffect(() => {
     setLocalPostedAt(null)
+    setIncludeCovered(false)
   }, [testPlan?.plan_id])
   const postedAt = testPlan?.posted_at || localPostedAt
 
@@ -811,8 +899,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     : ticketData?.key || ''
   const storageKey = useMemo(() => {
     if (!ticketKeysJoined) return null
-    return buildStorageKey(testPlan, ticketKeysJoined.split('+'))
-  }, [testPlan, ticketKeysJoined])
+    return buildStorageKey(displayPlan, ticketKeysJoined.split('+'))
+  }, [displayPlan, ticketKeysJoined])
 
   const [checkedTests, setCheckedTests] = useState(() => {
     if (!storageKey || typeof window === 'undefined') return new Set()
@@ -937,7 +1025,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const primaryTicketData = ticketData || (ticketsData && ticketsData[0])
 
   const planHasAcs = ['happy_path', 'edge_cases', 'integration_tests'].some((key) => {
-    const items = testPlan[key]
+    const items = displayPlan[key]
     if (!Array.isArray(items)) return false
     return items.some(
       (t) =>
@@ -991,7 +1079,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const handlePostToJira = async () => {
     setIsPosting(true)
     try {
-      const jiraText = formatTestPlanAsJira(testPlan, walkthrough)
+      const jiraText = formatTestPlanAsJira(testPlan, walkthrough, { includeCovered })
       const response = await fetch(`${API_BASE}/jira/post-comment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1022,7 +1110,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const postToKey = async (issueKey, otherKeys = []) => {
     setPostingStates((prev) => ({ ...prev, [issueKey]: 'posting' }))
     try {
-      let jiraText = formatTestPlanAsJira(testPlan, walkthrough)
+      let jiraText = formatTestPlanAsJira(testPlan, walkthrough, { includeCovered })
       if (otherKeys.length > 0) {
         jiraText += `\n\n----\n_Also posted to: ${otherKeys.join(', ')}_`
       }
@@ -1075,7 +1163,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const isAnyPosting = Object.values(postingStates).includes('posting')
 
   // Overall progress
-  const totals = SECTION_KEYS.map((k) => sectionLength(testPlan, k))
+  const totals = SECTION_KEYS.map((k) => sectionLength(displayPlan, k))
   const totalAll = totals.reduce((a, b) => a + b, 0)
   const checkedAll = SECTION_KEYS.reduce(
     (acc, k, i) => acc + countSectionChecks(k, totals[i]),
@@ -1325,7 +1413,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
       <GroundingWarningsPanel warnings={testPlan.grounding_warnings} />
 
       {SECTIONS.map((section) => {
-        const items = testPlan[section.key]
+        const items = displayPlan[section.key]
         if (!Array.isArray(items) || items.length === 0) return null
         if (section.renderer === 'checklist') {
           return (
@@ -1349,6 +1437,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           />
         )
       })}
+
+      <CoveredByUnitTestsSection cases={coveredCases} />
 
       {/* Export & post bar */}
       <div className="card" style={{ marginTop: 'var(--s-9)', padding: 'var(--s-6)' }}>
@@ -1385,6 +1475,20 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
             )}
           </div>
         </div>
+
+        {coveredCases.length > 0 && (
+          <div style={{ marginTop: 'var(--s-4)', paddingTop: 'var(--s-4)', borderTop: '1px solid var(--divider)' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--s-3)', cursor: 'pointer' }}>
+              <Cbx checked={includeCovered} onChange={() => setIncludeCovered((v) => !v)} />
+              <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>
+                Include the {coveredCases.length} unit-tested case{coveredCases.length === 1 ? '' : 's'} in the Jira comment
+              </span>
+            </label>
+            <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', marginTop: 4, marginLeft: 26 }}>
+              Off by default — these are already automated, so the posted checklist stays lean. Turn on to keep the full record.
+            </div>
+          </div>
+        )}
 
         {isMulti && (
           <div style={{ marginTop: 'var(--s-5)', paddingTop: 'var(--s-5)', borderTop: '1px solid var(--divider)' }}>

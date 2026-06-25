@@ -2,6 +2,29 @@
  * Markdown formatting utilities
  */
 
+// The three card sections whose cases can be flagged as already covered by an
+// existing unit test. `regression_checklist` is plain strings and never flagged.
+const CARD_SECTION_KEYS = ['happy_path', 'edge_cases', 'integration_tests']
+
+const isCoveredByUnitTest = (test) => !!(test && test.covered_by_unit_test)
+
+// Cases the planner flagged as already exercised by automated tests, pulled out
+// of their original sections so QA isn't asked to re-run them manually.
+const collectCoveredCases = (plan) => {
+  const out = []
+  CARD_SECTION_KEYS.forEach((key) => {
+    const items = Array.isArray(plan?.[key]) ? plan[key] : []
+    items.forEach((test) => {
+      if (isCoveredByUnitTest(test)) out.push(test)
+    })
+  })
+  return out
+}
+
+// A section's cases minus the ones already covered by unit tests.
+const uncovered = (items) =>
+  Array.isArray(items) ? items.filter((t) => !isCoveredByUnitTest(t)) : []
+
 const formatCoversAcs = (test) => {
   const acIds = Array.isArray(test.covers_acs)
     ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
@@ -154,9 +177,10 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
   markdown += formatSupersededAcs(plan)
   markdown += formatGroundingWarnings(plan)
 
-  if (plan.happy_path && plan.happy_path.length > 0) {
+  const happyPathCases = uncovered(plan.happy_path)
+  if (happyPathCases.length > 0) {
     markdown += '## ✅ Happy Path Test Cases\n\n'
-    plan.happy_path.forEach((test, index) => {
+    happyPathCases.forEach((test, index) => {
       markdown += `### ${index + 1}. ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
@@ -185,9 +209,10 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
     })
   }
 
-  if (plan.edge_cases && plan.edge_cases.length > 0) {
+  const edgeCases = uncovered(plan.edge_cases)
+  if (edgeCases.length > 0) {
     markdown += '## 🔍 Edge Cases & Error Scenarios\n\n'
-    plan.edge_cases.forEach((test, index) => {
+    edgeCases.forEach((test, index) => {
       markdown += `### ${index + 1}. ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
@@ -219,9 +244,10 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
     })
   }
 
-  if (plan.integration_tests && plan.integration_tests.length > 0) {
+  const integrationTests = uncovered(plan.integration_tests)
+  if (integrationTests.length > 0) {
     markdown += '## 🔗 Integration & Backend Tests\n\n'
-    plan.integration_tests.forEach((test, index) => {
+    integrationTests.forEach((test, index) => {
       const titlePrefix = test.cross_project ? '[Cross-project] ' : ''
       markdown += `### ${index + 1}. ${titlePrefix}${test.title}`
       if (test.priority) {
@@ -262,6 +288,18 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
     markdown += '## 🔄 Regression Checklist\n\n'
     plan.regression_checklist.forEach(item => {
       markdown += `- ${item}\n`
+    })
+    markdown += '\n'
+  }
+
+  const coveredCases = collectCoveredCases(plan)
+  if (coveredCases.length > 0) {
+    markdown += `## 🧪 Already Covered by Unit Tests (${coveredCases.length})\n\n`
+    markdown += '_Exercised by existing automated tests — listed for completeness; QA can skip the manual run._\n\n'
+    coveredCases.forEach((test, index) => {
+      markdown += `${index + 1}. **${typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}**`
+      if (test.unit_test_ref) markdown += ` — \`${test.unit_test_ref}\``
+      markdown += '\n'
     })
     markdown += '\n'
   }
@@ -386,14 +424,16 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
   return md
 }
 
-export const formatTestPlanAsJira = (plan, walkthrough = null) => {
+export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => {
+  const { includeCovered = false } = options
   let jira = ''
 
   jira += formatUatGuideJira(plan, walkthrough)
 
-  if (plan.happy_path && plan.happy_path.length > 0) {
+  const happyPathCases = uncovered(plan.happy_path)
+  if (happyPathCases.length > 0) {
     jira += '✅ HAPPY PATH TEST CASES\n\n'
-    plan.happy_path.forEach((test, index) => {
+    happyPathCases.forEach((test, index) => {
       let title = `**${index + 1}. ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
@@ -424,9 +464,10 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
     })
   }
 
-  if (plan.edge_cases && plan.edge_cases.length > 0) {
+  const edgeCases = uncovered(plan.edge_cases)
+  if (edgeCases.length > 0) {
     jira += '🔍 EDGE CASES & ERROR SCENARIOS\n\n'
-    plan.edge_cases.forEach((test, index) => {
+    edgeCases.forEach((test, index) => {
       let title = `**${index + 1}. ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
@@ -460,9 +501,10 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
     })
   }
 
-  if (plan.integration_tests && plan.integration_tests.length > 0) {
+  const integrationTests = uncovered(plan.integration_tests)
+  if (integrationTests.length > 0) {
     jira += '🔗 INTEGRATION & BACKEND TESTS\n\n'
-    plan.integration_tests.forEach((test, index) => {
+    integrationTests.forEach((test, index) => {
       let title = `**${index + 1}. ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
@@ -499,6 +541,19 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
       jira += `  • ${item}\n`
     })
     jira += '\n'
+  }
+
+  if (includeCovered) {
+    const coveredCases = collectCoveredCases(plan)
+    if (coveredCases.length > 0) {
+      jira += `🧪 ALREADY COVERED BY UNIT TESTS (${coveredCases.length})\n\n`
+      jira += 'Exercised by existing automated tests — QA can skip the manual run.\n\n'
+      coveredCases.forEach((test, index) => {
+        jira += `${index + 1}. ${typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}\n`
+        if (test.unit_test_ref) jira += `   Covered by: ${test.unit_test_ref}\n`
+      })
+      jira += '\n'
+    }
   }
 
   return jira

@@ -81,6 +81,10 @@ class RepositoryContext:
 
     readme_content: str | None = None
     test_examples: list[str] | None = None  # Paths to example test files
+    # Contents of a few existing unit/spec files so the planner can flag test
+    # cases that are already covered by automated tests. Each entry:
+    # {"path": "src/foo.test.ts", "content": "<source, truncated>"}.
+    unit_test_sources: list[dict] | None = None
     testid_reference: str | None = None     # Auto-generated testID map (from .agents/skills/simulator-testing/references/testid-reference.md)
     screen_guide: str | None = None         # Screen navigation guide (from .agents/skills/simulator-testing/references/screen-guide.md)
 
@@ -617,6 +621,14 @@ class GitHubClient:
                 # Find test file examples
                 test_examples = await self._find_test_files(client, owner, repo)
 
+                # Fetch the contents of a few of those test files so the
+                # planner can detect which generated cases are already covered
+                # by existing unit/spec tests (and route them out of the manual
+                # QA checklist). Cheap best-effort — skipped on any failure.
+                unit_test_sources = await self._fetch_unit_test_sources(
+                    client, owner, repo, test_examples
+                )
+
                 # Fetch simulator/UI testing context if present in this repo.
                 # These files are created by the simulator-testing skill pattern.
                 # Returns None silently for repos that don't use this convention.
@@ -637,6 +649,7 @@ class GitHubClient:
                 return RepositoryContext(
                     readme_content=readme_content,
                     test_examples=test_examples,
+                    unit_test_sources=unit_test_sources,
                     testid_reference=testid_reference,
                     screen_guide=screen_guide,
                 )
@@ -722,3 +735,42 @@ class GitHubClient:
             logger.warning(f"Failed to find test files: {e}")
 
         return test_files
+
+    # How much of each test file to feed the planner, and how many files. Test
+    # files can be large; the planner only needs enough to recognise which
+    # behaviours are already asserted, not the whole suite.
+    _UNIT_TEST_MAX_FILES = 3
+    _UNIT_TEST_MAX_CHARS = 4000
+
+    async def _fetch_unit_test_sources(
+        self,
+        client: httpx.AsyncClient,
+        owner: str,
+        repo: str,
+        test_paths: list[str],
+    ) -> list[dict]:
+        """
+        Fetch the contents of a few existing test files so the planner can flag
+        generated cases that are already covered by automated tests.
+
+        Args:
+            client: HTTP client to use
+            owner: Repository owner
+            repo: Repository name
+            test_paths: Candidate test file paths (from _find_test_files)
+
+        Returns:
+            List of {"path": str, "content": str} (content truncated), or [].
+        """
+        sources: list[dict] = []
+        for path in [p for p in test_paths if p][: self._UNIT_TEST_MAX_FILES]:
+            content = await self._fetch_file_content(client, owner, repo, path)
+            if not content:
+                continue
+            if len(content) > self._UNIT_TEST_MAX_CHARS:
+                content = content[: self._UNIT_TEST_MAX_CHARS] + "\n...(truncated)"
+            sources.append({"path": path, "content": content})
+
+        if sources:
+            logger.info(f"Fetched {len(sources)} unit test sources from {owner}/{repo}")
+        return sources

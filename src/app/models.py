@@ -81,6 +81,10 @@ class RepositoryContext:
 
     readme_content: str | None = None
     test_examples: list[str] | None = None  # Paths to example test files
+    # Contents of a few existing unit/spec files so the planner can flag test
+    # cases that are already covered by automated tests. Each entry:
+    # {"path": "src/foo.test.ts", "content": "<source, truncated>"}.
+    unit_test_sources: list[dict] | None = None
     testid_reference: str | None = None     # Auto-generated testID map (from .agents/skills/simulator-testing/references/testid-reference.md)
     screen_guide: str | None = None         # Screen navigation guide (from .agents/skills/simulator-testing/references/screen-guide.md)
 

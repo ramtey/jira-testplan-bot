@@ -1141,7 +1141,9 @@ Return ONLY valid JSON (no markdown, no code blocks):
         "Fifth step - verify data integrity and context"
       ],
       "expected": "Complete expected outcome covering UI behavior, API correctness, and data validation",
-      "test_data": "All specific data needed for this comprehensive test"
+      "test_data": "All specific data needed for this comprehensive test",
+      "covered_by_unit_test": false,
+      "unit_test_ref": "OPTIONAL: only when covered_by_unit_test is true — the test file path (+ test name if known) that already covers this, e.g. 'src/netSheet.test.ts › computes buyer total'"
     }
   ],
   "edge_cases": [
@@ -1177,6 +1179,15 @@ Return ONLY valid JSON (no markdown, no code blocks):
     "🟢 Additional validation item"
   ]
 }
+
+**`covered_by_unit_test` / `unit_test_ref` (optional, applies to happy_path,
+edge_cases, and integration_tests):** Only set these when an "Existing Unit
+Tests" section was provided above AND an existing test already asserts this
+exact behaviour at the same level. Setting `covered_by_unit_test: true` moves
+the case into a separate "already covered" list QA can skip — so be
+conservative: a unit test on a function in isolation does NOT cover an
+end-to-end / integration / manual-UI case for the same feature. When in doubt,
+omit the field. Never drop a case to "save" it from the manual checklist.
 
 **REGRESSION CHECKLIST RULES:**
 The regression checklist must contain ONLY runtime behaviors that can be manually tested.
@@ -1995,6 +2006,31 @@ TICKET INFORMATION
                 for test_file in test_examples[:5]:
                     prompt += f"- {test_file}\n"
                 prompt += "\nUse these test patterns and project documentation to generate specific test cases that match this project's structure and conventions.\n"
+
+            # Existing unit/spec sources — let the planner flag cases that
+            # automated tests already cover so QA can skip them.
+            unit_test_sources = repo_context.get("unit_test_sources")
+            if unit_test_sources:
+                prompt += "\n**Existing Unit Tests (already automated):**\n"
+                prompt += (
+                    "The following test files already exist in the repo. For each test "
+                    "case you generate, decide whether an existing unit test ALREADY "
+                    "covers that exact behaviour AT THE SAME LEVEL:\n"
+                    "- If yes, KEEP the case in its normal section but set "
+                    "`\"covered_by_unit_test\": true` and `\"unit_test_ref\"` to the test "
+                    "file path (and the specific test name if you can identify it). This "
+                    "routes the case into a separate \"already covered\" list so QA can "
+                    "skip the manual run.\n"
+                    "- A unit test that exercises a function IN ISOLATION does NOT cover "
+                    "an end-to-end, integration, or manual-UI case for the same feature — "
+                    "do NOT flag those; QA still needs to run them.\n"
+                    "- When unsure, leave the case unflagged (omit the field). Never drop "
+                    "a case; only annotate it.\n\n"
+                )
+                for src in unit_test_sources[:3]:
+                    path = src.get("path", "")
+                    content = src.get("content", "")
+                    prompt += f"--- {path} ---\n{content}\n\n"
 
         # Add UI/simulator testing context if available.
         # These files are present on repos that use the simulator-testing skill pattern
@@ -2876,6 +2912,14 @@ TEST_CASE_SCHEMA = {
         "needs_manual_verification": {
             "type": "boolean",
             "description": "Set true when this test was written from AC text but the named UI element / API surface could NOT be verified in the PR diff or testID reference (see 'UI GROUNDING' instructions). When true, a matching entry MUST also appear in the top-level `grounding_warnings` array whose `ac_id` matches one of this case's `covers_acs`. Default false / omitted means the test is fully grounded.",
+        },
+        "covered_by_unit_test": {
+            "type": "boolean",
+            "description": "Set true ONLY when an existing test from the 'Existing Unit Tests' context already asserts this exact behaviour AT THE SAME LEVEL. Moves the case into a separate 'already covered by unit tests' list QA can skip. A unit test on a function in isolation does NOT cover an end-to-end / integration / manual-UI case for the same feature — leave those unflagged. When true, populate `unit_test_ref`. Default false / omitted.",
+        },
+        "unit_test_ref": {
+            "type": "string",
+            "description": "Required when `covered_by_unit_test` is true. The existing test file path that covers this case, plus the specific test name if identifiable, e.g. 'src/netSheet.test.ts › computes buyer total'.",
         },
         "cross_project": {
             "type": "boolean",
