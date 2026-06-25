@@ -57,7 +57,8 @@ const ACTIONS = [
   {
     id: 'fail-to-todo',
     label: 'Fail back to To Do',
-    title: 'Move back to To Do and reassign to the previous person',
+    segmentLabel: 'To Do',
+    title: 'Fail back to To Do and reassign to the previous person',
     variant: 'danger-soft',
     icon: 'arrow-left',
     showWhen: (status) => normalize(status) === TESTING_STATUS,
@@ -65,8 +66,9 @@ const ACTIONS = [
   {
     id: 'fail-to-in-progress',
     label: 'Fail back to In Progress',
-    title: 'Move back to In Progress and reassign to the previous person',
-    variant: 'warning-soft',
+    segmentLabel: 'In Progress',
+    title: 'Fail back to In Progress and reassign to the previous person',
+    variant: 'danger-soft',
     icon: 'arrow-left',
     showWhen: (status) => normalize(status) === TESTING_STATUS,
   },
@@ -278,6 +280,8 @@ function WorkflowActions({
   const [imageFiles, setImageFiles] = useState([])
   const [mentionAccountIds, setMentionAccountIds] = useState([])
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
+  // Which column the single "Fail back" action returns the ticket to.
+  const [failTargetId, setFailTargetId] = useState('fail-to-todo')
   // UAT-walkthrough nudge: the ticket's latest complexity + any walkthrough a
   // planner already attached, plus the two-step gate state for pass-to-uat.
   const [uatComplexity, setUatComplexity] = useState(null)
@@ -534,19 +538,62 @@ function WorkflowActions({
           <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 600, marginRight: 'var(--s-2)' }}>
             Workflow
           </span>
-          {visibleActions.map((action) => (
-            <Btn
-              key={action.id}
-              variant={action.variant}
-              icon={action.icon}
-              title={action.title}
-              disabled={pendingAction !== null}
-              loading={pendingAction === action.id}
-              onClick={() => onActionClick(action)}
-            >
-              {action.label}
-            </Btn>
-          ))}
+          {visibleActions
+            .filter((action) => !isFailAction(action.id))
+            .map((action) => (
+              <Btn
+                key={action.id}
+                variant={action.variant}
+                icon={action.icon}
+                title={action.title}
+                disabled={pendingAction !== null}
+                loading={pendingAction === action.id}
+                onClick={() => onActionClick(action)}
+              >
+                {action.label}
+              </Btn>
+            ))}
+          {(() => {
+            // The two bounce-backs share the same verb and differ only in the
+            // column they return to. Rather than two buttons, show a single
+            // "Fail back" action plus a destination toggle (To Do / In Progress);
+            // the toggle picks where, the button performs the bounce.
+            const failActions = visibleActions.filter((a) => isFailAction(a.id))
+            if (failActions.length === 0) return null
+            const selected =
+              failActions.find((a) => a.id === failTargetId) || failActions[0]
+            return (
+              <>
+                <Btn
+                  variant="danger-soft"
+                  icon="arrow-left"
+                  title={selected.title}
+                  disabled={pendingAction !== null}
+                  loading={pendingAction === selected.id}
+                  onClick={() => onActionClick(selected)}
+                >
+                  Fail back to
+                </Btn>
+                {failActions.length > 1 && (
+                  <div className="seg-toggle" role="group" aria-label="Bounce-back destination">
+                    {failActions.map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        data-on={action.id === selected.id ? 'true' : 'false'}
+                        aria-pressed={action.id === selected.id}
+                        title={`Send back to ${action.segmentLabel}`}
+                        disabled={pendingAction !== null}
+                        onClick={() => setFailTargetId(action.id)}
+                      >
+                        {action.segmentLabel}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )
+          })()}
           <span style={{ flex: 1 }} />
           {hasSubtasks && (
             <Cbx

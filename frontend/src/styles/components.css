@@ -54,17 +54,41 @@
 }
 .btn[data-variant="danger-soft"]:hover:not(:disabled) { background: rgba(239,68,68,.18); border-color: rgba(239,68,68,.5); }
 
-.btn[data-variant="warning-soft"] {
-  background: var(--warning-soft); color: var(--warning);
-  border-color: rgba(245,158,11,.3);
-}
-.btn[data-variant="warning-soft"]:hover:not(:disabled) { background: rgba(245,158,11,.18); border-color: rgba(245,158,11,.5); }
-
 .btn[data-variant="success-soft"] {
   background: var(--success-soft); color: var(--success);
   border-color: rgba(34,197,94,.3);
 }
 .btn[data-variant="success-soft"]:hover:not(:disabled) { background: rgba(34,197,94,.18); border-color: rgba(34,197,94,.5); }
+
+/* Destination selector for the "Fail back" bounce-back: a small segmented
+   toggle (To Do / In Progress) that picks which column the single Fail-back
+   action returns the ticket to. The selected segment matches the action
+   button (danger-soft red); the rest is a muted neutral. The explicit
+   min-width/border-radius/box-shadow/transform resets neutralize the legacy
+   global `button {}` rule in App.css that would otherwise make each segment a
+   wide, individually-rounded, shadowed pill. */
+.seg-toggle { display: inline-flex; align-items: stretch; }
+.seg-toggle > button {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 28px; min-width: 0; padding: 0 var(--s-4);
+  font-size: var(--t-sm); font-weight: var(--w-med); white-space: nowrap;
+  background: transparent; color: var(--fg-subtle);
+  border: 1px solid var(--line-strong); border-radius: 0;
+  box-shadow: none; cursor: pointer;
+  transition: background var(--d-fast) var(--ease-out),
+              color var(--d-fast) var(--ease-out),
+              border-color var(--d-fast) var(--ease-out);
+}
+.seg-toggle > button:not(:first-child) { border-left: none; }
+.seg-toggle > button:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.seg-toggle > button:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.seg-toggle > button:hover:not(:disabled) { background: var(--bg-raised); color: var(--fg); transform: none; box-shadow: none; }
+/* Selected destination matches the "Fail back to" action button (danger-soft). */
+.seg-toggle > button[data-on="true"] {
+  background: var(--danger-soft); color: var(--danger); border-color: rgba(239,68,68,.3);
+}
+.seg-toggle > button[data-on="true"]:hover:not(:disabled) { background: rgba(239,68,68,.18); color: var(--danger); }
+.seg-toggle > button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
 
 /* Input */
 .inp {
