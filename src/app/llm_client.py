@@ -647,6 +647,87 @@ When the expected result describes a filtered, sorted, or sliced collection, ass
 - ✅ GOOD: "Verify the returned candidates are exactly {place_id A, place_id B, place_id C} and that {place_id D, place_id E} are NOT present."
 - ✅ GOOD (when identity is dynamic): "In step N, note the full candidate list from the unfiltered Places response. Verify the filtered list is exactly the subset of step-N items whose distance from origin is ≤ 50km."
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CRITICAL: SOURCE-OF-VALUE COVERAGE FOR DERIVED / CONVERTED / AUTOPOPULATED FIELDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Conversion, derived-field, and calculation bugs are frequently NOT math errors —
+they are "right formula, wrong input source" errors. A standard test misses these
+because the tester computes the expected result using the SAME value the app used,
+so the check passes even when the underlying source is wrong (e.g. the % is right
+relative to the number on screen, but that number was the wrong one to divide by).
+
+This applies to ANY field that is computed, converted (e.g. $↔%), or derived from
+other values — NOT just the one named in the bug report. Before writing happy-path
+cases for such a field, do ALL of the following:
+
+1. **ENUMERATE EVERY SOURCE the value could be drawn from**, by name, not as one
+   generic term. Example: a "home value" denominator could be the user-entered sale
+   price, an autopopulated/FNF assessed value, or an autopopulated/FNF estimated
+   value — these are DIFFERENT numbers and must be listed as separate candidates.
+
+2. **DERIVE THE EXPECTED SOURCE FROM THE SPEC — NEVER FROM OBSERVED BEHAVIOR.**
+   The expected result must come from what the ticket / AC / design / reporter says
+   the source SHOULD be — NOT from whichever source happens to reproduce the number
+   the app currently shows. On a bug ticket the CURRENT BEHAVIOR IS THE PRIME
+   SUSPECT, not the answer key: if you pick the denominator that makes the app's
+   present output "correct," you have formalized the reported bug as the pass
+   criterion, and QA will re-confirm the bug as passing. Resolving an ambiguous
+   source by matching current behavior is the single worst failure mode of this
+   whole rule — do not do it.
+
+3. **IF THE CORRECT SOURCE IS CONFIRMED, pin it as a hard requirement.** State it in
+   `preconditions` / `expected`: "The % MUST be computed as tax ÷ <that exact
+   value>", and give the fixed expected number computed from that source.
+
+4. **IF THE CORRECT SOURCE IS NOT CONFIRMED, you MUST NOT pick one — emit a DECISION
+   TABLE, not a pass number.** Do not collapse `expected` to a single figure. For
+   the divergent-source scenario, list what each candidate source would produce and
+   what observing it would mean, state the reporter's/your best read as an
+   ASSUMPTION TO VERIFY (not a verdict), flag the open question for PM/QA (per the
+   AC-ambiguity rule), and instruct the tester NOT to mark Pass until the source is
+   confirmed. Ambiguity about the source is frequently the actual defect — surface
+   it, do not paper over it.
+
+5. **WRITE AT LEAST ONE CASE WHERE THE CANDIDATE SOURCES DIVERGE** — all distinct
+   numbers — so the observed output reveals which source was used. NEVER let the
+   scenario be one where the sources happen to be equal; equal sources hide the bug.
+   (Per the reproducible-data rule, give concrete worked numbers — pin the INPUTS
+   even when the correct source is unconfirmed, so the decision table maps to fixed
+   figures rather than "match what's on screen".)
+
+6. **ADD A SOURCE-MUTATION CASE:** change ONE candidate source while holding the
+   others fixed. If the legitimate source is confirmed, assert the directional
+   expectation (e.g. if the denominator is the assessed value, changing Sale Price
+   must NOT move the %; if it does, that's the bug). If the source is unconfirmed,
+   frame the mutation as DIAGNOSTIC: "change Sale Price, hold assessed value fixed —
+   if the % moves, the denominator is Sale Price; if it holds, it's the assessed
+   value" — and route the finding to PM rather than declaring a pass.
+
+❌ BAD (self-referential, sources equal): "Enter a home value and a tax amount.
+   Verify the tax % = tax ÷ home value." (Tester reuses the on-screen number;
+   passes even if the app divided by the wrong field.)
+❌ BAD (anchored on current behavior): "REQUIRED source = Sale Price → expect 0.98%
+   (4,906 ÷ 500,000)" when the ticket has NOT confirmed Sale Price is correct and
+   0.98% is merely what the app shows today. This pins the suspected bug as the
+   pass criterion — exactly the failure this rule exists to prevent.
+✅ GOOD (source CONFIRMED by ticket): "Ticket confirms denominator = FNF assessed
+   value. Sale Price $500,000, FNF assessed value $437,822, annual tax $4,906 (all
+   distinct) → Verify Tax Rate = 1.12% (4,906 ÷ 437,822), NOT 0.98% (which would
+   mean it wrongly divided by the $500,000 Sale Price)."
+✅ GOOD (source UNCONFIRMED → decision table): "Sale Price $500,000, FNF assessed
+   value $437,822, annual tax $4,906 (all distinct). The correct denominator is
+   UNCONFIRMED — FLAG FOR PM (sale price vs. FNF assessed vs. FNF estimated value).
+   Record the displayed Tax Rate and map it: 0.98% ⇒ app used Sale Price; 1.12% ⇒
+   app used FNF assessed value; any other ⇒ a third source. Reporter's read is the
+   assessed value (~1.12%); a displayed 0.98% would indicate the Sale-Price
+   denominator bug. Do NOT mark Pass until the denominator is confirmed."
+✅ GOOD (source-mutation, diagnostic): "Change Sale Price to $600,000; hold FNF
+   assessed value $437,822 and tax $4,906 fixed. If the % stays 1.12% the
+   denominator is the assessed value; if it drops to ~0.82% (4,906 ÷ 600,000) the
+   app is using Sale Price. Record which, and flag for PM — do not Pass until the
+   intended source is confirmed."
+
 **SKIP OPTIONAL FIELDS WITH ACCEPTABLE DEFAULT VALUES:**
 - When writing form-filling steps, ONLY include a field if entering a value is necessary to execute the test
 - If a field has a default value that is acceptable for the scenario being tested, omit the step for that field entirely — do not instruct the tester to re-enter the default
