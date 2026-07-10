@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 _CROSS_PROJECT_AC_ID_RE = re.compile(r"^CROSS-\d+$")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .bug_lens_routes import router as bug_lens_router
@@ -1086,13 +1086,29 @@ async def post_comment(request: PostCommentRequest):
 def _serialize_walkthrough(row) -> dict:
     """Shape a TicketWalkthrough row (or None) into the JSON the frontend expects."""
     if row is None:
-        return {"loom_url": None, "screenshot_url": None, "notes": None, "updated_at": None}
+        return {
+            "loom_url": None,
+            "screenshots": [],
+            "notes": None,
+            "updated_at": None,
+        }
     return {
         "loom_url": row.loom_url,
-        "screenshot_url": row.screenshot_url,
+        "screenshots": walkthrough_repository.decode_screenshots(row),
         "notes": row.notes,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+_WALKTHROUGH_ALLOWED_IMAGE_MIME = {
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+}
+_WALKTHROUGH_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 @app.get("/tickets/{ticket_key}/walkthrough")
@@ -1122,17 +1138,94 @@ async def get_ticket_walkthrough(ticket_key: str):
 
 
 @app.put("/tickets/{ticket_key}/walkthrough")
-async def put_ticket_walkthrough(ticket_key: str, request: WalkthroughUpdateRequest):
-    """Create or replace a ticket's walkthrough. The editor sends the full state,
-    so empty fields clear the corresponding value."""
+async def put_ticket_walkthrough(
+    ticket_key: str,
+    payload: str | None = Form(default=None),
+    screenshots: list[UploadFile] | None = File(default=None),
+):
+    """Create or update a ticket's walkthrough.
+
+    Sent as multipart/form-data: ``payload`` holds a JSON
+    :class:`WalkthroughUpdateRequest` with the text fields plus
+    ``existing_screenshots`` — the subset of previously-uploaded screenshots
+    the client wants to keep. ``screenshots[]`` carries any new files, which
+    are uploaded to Jira as attachments on the ticket. The final stored list
+    is ``existing_screenshots ++ newly_uploaded`` — anything the client
+    omitted from ``existing_screenshots`` drops out of the walkthrough (the
+    Jira attachment itself stays on the ticket).
+
+    Each screenshot in the final list is rendered as a labelled 📷 link in
+    the pass-to-UAT comment (same treatment as files attached from the UAT
+    modal), so the "how to test this" guidance ships with the transition.
+    """
+    if payload:
+        try:
+            request = WalkthroughUpdateRequest.model_validate_json(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid payload JSON: {exc}")
+    else:
+        request = WalkthroughUpdateRequest()
+
+    incoming: list[tuple[str, bytes, str]] = []
+    for upload in screenshots or []:
+        if upload is None or not upload.filename:
+            continue
+        mime = (upload.content_type or "").lower()
+        if mime not in _WALKTHROUGH_ALLOWED_IMAGE_MIME:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported attachment type: {mime or 'unknown'}. "
+                    "Allowed: PNG, JPEG, GIF, WEBP, PDF."
+                ),
+            )
+        content = await upload.read()
+        if len(content) > _WALKTHROUGH_MAX_IMAGE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{upload.filename} is larger than 10 MB.",
+            )
+        incoming.append((upload.filename, content, mime))
+
+    uploaded_refs: list[dict] = []
+    if incoming:
+        jira = JiraClient()
+        try:
+            uploaded = await jira.upload_attachments(ticket_key, incoming)
+        except JiraNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except JiraAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        except JiraConnectionError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        for i, entry in enumerate(uploaded):
+            url = (entry.get("content") or "").strip()
+            if not url:
+                # Rare — Jira accepted the upload but didn't echo a
+                # content URL. Skip it rather than persist an unresolvable
+                # reference; the ticket still has the raw attachment.
+                continue
+            filename = (
+                (entry.get("filename") or "").strip()
+                or (incoming[i][0] if i < len(incoming) else "screenshot")
+            )
+            uploaded_refs.append({"filename": filename, "url": url})
+
+    final_list: list[dict] = [
+        {"filename": (ref.filename or "screenshot").strip() or "screenshot", "url": ref.url.strip()}
+        for ref in request.existing_screenshots
+        if ref.url and ref.url.strip()
+    ]
+    final_list.extend(uploaded_refs)
+
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         row = await walkthrough_repository.upsert_walkthrough(
             session,
             ticket_key=ticket_key,
             loom_url=request.loom_url,
-            screenshot_url=request.screenshot_url,
             notes=request.notes,
+            screenshots=final_list,
         )
         return _serialize_walkthrough(row)
 

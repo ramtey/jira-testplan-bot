@@ -502,7 +502,8 @@ function WorkflowActions({
       // with no Loom, no screenshot, and none already attached to the plan.
       const savedVisual = !!(
         savedWalkthrough &&
-        (savedWalkthrough.loom_url || savedWalkthrough.screenshot_url)
+        (savedWalkthrough.loom_url ||
+          (Array.isArray(savedWalkthrough.screenshots) && savedWalkthrough.screenshots.length > 0))
       )
       const hasVisual = looms.length > 0 || imageFiles.length > 0 || savedVisual
       if (uatComplexity === 'high' && !hasVisual) {

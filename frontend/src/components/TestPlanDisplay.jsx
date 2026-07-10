@@ -567,31 +567,185 @@ function UatComplexityBadge({ complexity }) {
 }
 
 function hasAnyWalkthrough(walkthrough) {
-  return !!(
-    walkthrough &&
-    (walkthrough.loom_url || walkthrough.screenshot_url || (walkthrough.notes && walkthrough.notes.trim()))
+  if (!walkthrough) return false
+  const shots = Array.isArray(walkthrough.screenshots) ? walkthrough.screenshots : []
+  return !!(walkthrough.loom_url || shots.length > 0 || (walkthrough.notes && walkthrough.notes.trim()))
+}
+
+/**
+ * Multi-file screenshot picker for the walkthrough form. Mirrors the
+ * click / drag / paste UX of the Pass-to-UAT dropzone. Chips distinguish
+ * "existing" (already uploaded to the Jira ticket — click X to drop from
+ * the walkthrough on the next save; the attachment itself stays on Jira)
+ * from "new" (a File staged locally that uploads on save).
+ */
+function ScreenshotPicker({ files, existing, onAddFiles, onRemoveFile, onRemoveExisting, disabled }) {
+  const [isDragging, setIsDragging] = useState(false)
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    if (disabled) return
+    const handler = (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      const imageItems = Array.from(items).filter(
+        (it) => it.type.startsWith('image/') || it.type === 'application/pdf'
+      )
+      if (imageItems.length === 0) return
+      e.preventDefault()
+      const fileList = imageItems.map((it) => it.getAsFile()).filter(Boolean)
+      if (fileList.length > 0) onAddFiles(fileList)
+    }
+    window.addEventListener('paste', handler)
+    return () => window.removeEventListener('paste', handler)
+  }, [disabled, onAddFiles])
+
+  const pickFiles = (fileList) => {
+    const arr = Array.from(fileList || []).filter(
+      (f) => f && (f.type.startsWith('image/') || f.type === 'application/pdf')
+    )
+    if (arr.length > 0) onAddFiles(arr)
+  }
+
+  const chipBase = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    background: 'var(--bg-subtle)',
+    border: '1px solid var(--border)',
+    borderRadius: 999,
+    padding: '4px 10px',
+    fontSize: 'var(--t-xs)',
+  }
+  const clip = (name, limit = 34) => (name.length > limit ? name.slice(0, limit - 3) + '…' : name)
+  const removeBtnStyle = {
+    background: 'transparent',
+    border: 'none',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    color: 'var(--fg-subtle)',
+    padding: 0,
+    display: 'inline-flex',
+  }
+
+  const hasAny = (existing?.length || 0) + (files?.length || 0) > 0
+
+  return (
+    <div>
+      <div
+        onClick={() => !disabled && inputRef.current?.click()}
+        onDragOver={(e) => {
+          e.preventDefault()
+          if (!disabled) setIsDragging(true)
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setIsDragging(false)
+          if (disabled) return
+          pickFiles(e.dataTransfer.files)
+        }}
+        style={{
+          border: '1px dashed ' + (isDragging ? 'var(--accent)' : 'var(--border)'),
+          background: isDragging ? 'rgba(59,130,246,.06)' : 'transparent',
+          borderRadius: 'var(--r-md)',
+          padding: 'var(--s-3) var(--s-4)',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          fontSize: 'var(--t-sm)',
+          color: 'var(--fg-subtle)',
+          transition: 'background 120ms, border-color 120ms',
+        }}
+      >
+        <Icon name="image" size={13} style={{ marginRight: 6, verticalAlign: '-2px' }} />
+        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF, up to 10 MB each.
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp,application/pdf"
+          multiple
+          hidden
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => {
+            pickFiles(e.target.files)
+            e.target.value = ''
+          }}
+        />
+      </div>
+      {hasAny && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+          {(existing || []).map((shot, i) => (
+            <span
+              key={`existing-${shot.url}`}
+              style={chipBase}
+              title={shot.filename || 'Attached screenshot'}
+            >
+              <Icon name="image" size={11} />
+              {clip(shot.filename || 'Screenshot')}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onRemoveExisting(i)
+                }}
+                disabled={disabled}
+                style={removeBtnStyle}
+                aria-label={`Remove ${shot.filename || 'screenshot'}`}
+              >
+                <Icon name="x" size={11} />
+              </button>
+            </span>
+          ))}
+          {(files || []).map((f, i) => (
+            <span
+              key={`new-${i}-${f.name}`}
+              style={chipBase}
+              title={`${f.name} · ${(f.size / 1024).toFixed(0)} KB · uploads on save`}
+            >
+              <Icon name="image" size={11} />
+              {clip(f.name)}
+              <span style={{ color: 'var(--fg-subtle)', fontStyle: 'italic' }}>· new</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onRemoveFile(i)
+                }}
+                disabled={disabled}
+                style={removeBtnStyle}
+                aria-label={`Remove ${f.name}`}
+              >
+                <Icon name="x" size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
 /**
- * Human-authored walkthrough: a Loom link, a screenshot link, and free-text
- * setup/repro notes. The thing the LLM can't produce — the planner records it
- * once and it persists across regenerations. Read mode shows links/notes; edit
- * mode (controlled by the parent so the post-gate can open it) shows the form.
+ * Human-authored walkthrough: a Loom link, a screenshot uploaded to the Jira
+ * ticket, and free-text setup/repro notes. The thing the LLM can't produce —
+ * the planner records it once and it persists across regenerations. Read mode
+ * shows links/notes; edit mode (controlled by the parent so the post-gate can
+ * open it) shows the form.
  */
 function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, saving, accent }) {
   const wt = walkthrough || {}
+  const savedScreenshots = Array.isArray(wt.screenshots) ? wt.screenshots : []
   const [loom, setLoom] = useState(wt.loom_url || '')
-  const [shot, setShot] = useState(wt.screenshot_url || '')
   const [notes, setNotes] = useState(wt.notes || '')
+  const [existingScreenshots, setExistingScreenshots] = useState(savedScreenshots)
+  const [newFiles, setNewFiles] = useState([])
 
   // Re-seed the form whenever the saved values change or we (re)enter edit mode,
   // so opening the editor always starts from the persisted state.
   useEffect(() => {
     setLoom(wt.loom_url || '')
-    setShot(wt.screenshot_url || '')
     setNotes(wt.notes || '')
-  }, [wt.loom_url, wt.screenshot_url, wt.notes, editing])
+    setExistingScreenshots(Array.isArray(wt.screenshots) ? wt.screenshots : [])
+    setNewFiles([])
+  }, [wt.loom_url, wt.screenshots, wt.notes, editing])
 
   const divider = { marginTop: 'var(--s-4)', paddingTop: 'var(--s-4)', borderTop: '1px solid var(--divider)' }
 
@@ -611,13 +765,17 @@ function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, sav
             />
           </div>
           <div>
-            <span className="lbl">Screenshot / image link</span>
-            <input
-              className="inp"
-              type="url"
-              placeholder="https://… (link to an image)"
-              value={shot}
-              onChange={(e) => setShot(e.target.value)}
+            <span className="lbl">Screenshots</span>
+            <ScreenshotPicker
+              files={newFiles}
+              existing={existingScreenshots}
+              onAddFiles={(added) => setNewFiles((prev) => [...prev, ...added])}
+              onRemoveFile={(idx) =>
+                setNewFiles((prev) => prev.filter((_, i) => i !== idx))
+              }
+              onRemoveExisting={(idx) =>
+                setExistingScreenshots((prev) => prev.filter((_, i) => i !== idx))
+              }
               disabled={saving}
             />
           </div>
@@ -640,7 +798,12 @@ function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, sav
             loading={saving}
             disabled={saving}
             onClick={() =>
-              onSave({ loom_url: loom.trim(), screenshot_url: shot.trim(), notes: notes.trim() })
+              onSave({
+                loom_url: loom.trim(),
+                notes: notes.trim(),
+                existing_screenshots: existingScreenshots,
+                new_files: newFiles,
+              })
             }
           >
             Save walkthrough
@@ -663,11 +826,17 @@ function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, sav
               <Icon name="play" size={13} /> Watch walkthrough
             </a>
           )}
-          {wt.screenshot_url && (
-            <a href={wt.screenshot_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}>
-              <Icon name="image" size={13} /> View screenshot
+          {savedScreenshots.map((shot) => (
+            <a
+              key={shot.url}
+              href={shot.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}
+            >
+              <Icon name="image" size={13} /> {shot.filename ? `View ${shot.filename}` : 'View screenshot'}
             </a>
-          )}
+          ))}
           {wt.notes && wt.notes.trim() && (
             <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', whiteSpace: 'pre-wrap', lineHeight: '20px' }}>
               {renderInline(wt.notes)}
@@ -687,7 +856,7 @@ function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, sav
           onClick={() => onEditingChange(true)}
           style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}
         >
-          <Icon name="plus" size={13} /> Add a walkthrough (Loom, screenshot, or notes)
+          <Icon name="plus" size={13} /> Add a walkthrough (Loom, screenshots, or notes)
         </button>
       )}
     </div>
@@ -1061,16 +1230,39 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     if (!walkthroughKey) return
     setSavingWalkthrough(true)
     try {
+      // Multipart: JSON payload with the text fields + the surviving
+      // already-uploaded screenshots, plus screenshots[] files for any newly
+      // picked images (the server uploads those to Jira as attachments).
+      const form = new FormData()
+      const jsonPayload = {
+        loom_url: payload.loom_url || null,
+        notes: payload.notes || null,
+        existing_screenshots: (payload.existing_screenshots || []).map((s) => ({
+          url: s.url,
+          filename: s.filename || null,
+        })),
+      }
+      form.append('payload', JSON.stringify(jsonPayload))
+      for (const file of payload.new_files || []) {
+        form.append('screenshots', file, file.name)
+      }
       const res = await fetch(`${API_BASE}/tickets/${walkthroughKey}/walkthrough`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: form,
       })
-      if (!res.ok) throw new Error('Failed to save walkthrough')
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'Failed to save walkthrough')
+      }
       setWalkthrough(await res.json())
       setEditingWalkthrough(false)
-    } catch {
-      showNotification(setPostNotification, postTimerRef, 'error', 'Failed to save walkthrough')
+    } catch (err) {
+      showNotification(
+        setPostNotification,
+        postTimerRef,
+        'error',
+        err?.message || 'Failed to save walkthrough'
+      )
     } finally {
       setSavingWalkthrough(false)
     }

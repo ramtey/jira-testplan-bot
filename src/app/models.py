@@ -6,7 +6,7 @@ This module contains all Pydantic and dataclass models used throughout the appli
 
 from dataclasses import dataclass
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ============================================================================
@@ -412,14 +412,31 @@ class PostCommentRequest(BaseModel):
     plan_id: int | None = None
 
 
+class WalkthroughScreenshotRef(BaseModel):
+    """A single already-uploaded walkthrough screenshot the client wants to
+    keep. Carried in :class:`WalkthroughUpdateRequest.existing_screenshots`.
+    ``url`` is the Jira content URL returned by the attachment endpoint;
+    ``filename`` is the original file name (used to render the 📷 link)."""
+
+    url: str
+    filename: str | None = None
+
+
 class WalkthroughUpdateRequest(BaseModel):
-    """Request body for saving a ticket's human-authored walkthrough (Loom link,
-    screenshot link, plain-text setup/repro notes). All fields optional; an empty
-    or omitted field clears that part of the walkthrough."""
+    """JSON payload part of the multipart walkthrough save.
+
+    New screenshots are attached as multipart ``screenshots[]`` files (each
+    uploaded to Jira on save). The JSON carries the text fields plus
+    ``existing_screenshots`` — the subset of previously-uploaded screenshots
+    the client wants to keep. The server writes the walkthrough's stored
+    list as ``existing_screenshots ++ newly_uploaded``, so anything the
+    client omitted is dropped from the walkthrough (the Jira attachment
+    itself stays on the ticket).
+    """
 
     loom_url: str | None = None
-    screenshot_url: str | None = None
     notes: str | None = None
+    existing_screenshots: list[WalkthroughScreenshotRef] = Field(default_factory=list)
 
 
 class TestPlanProgressUpdateRequest(BaseModel):

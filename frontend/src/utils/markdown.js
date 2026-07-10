@@ -125,10 +125,15 @@ const collectUatGuide = (plan, walkthrough) => {
   const summary = typeof plan?.how_to_see_it?.summary === 'string' ? plan.how_to_see_it.summary.trim() : ''
   const reason = typeof plan?.how_to_see_it?.reason === 'string' ? plan.how_to_see_it.reason.trim() : ''
   const loom = walkthrough?.loom_url?.trim() || ''
-  const screenshot = walkthrough?.screenshot_url?.trim() || ''
+  const screenshots = (Array.isArray(walkthrough?.screenshots) ? walkthrough.screenshots : [])
+    .map((s) => ({
+      url: (s?.url || '').trim(),
+      filename: (s?.filename || '').trim(),
+    }))
+    .filter((s) => s.url)
   const notes = walkthrough?.notes?.trim() || ''
-  if (!summary && !reason && !loom && !screenshot && !notes) return null
-  return { complexity, summary, reason, loom, screenshot, notes }
+  if (!summary && !reason && !loom && screenshots.length === 0 && !notes) return null
+  return { complexity, summary, reason, loom, screenshots, notes }
 }
 
 // Markdown variant — prepended to the exported/downloaded plan.
@@ -141,7 +146,16 @@ const formatUatGuideMarkdown = (plan, walkthrough) => {
   if (g.summary) md += `${g.summary}\n\n`
   if (g.reason) md += `*Why it's tricky: ${g.reason}*\n\n`
   if (g.loom) md += `🎥 **Walkthrough:** ${g.loom}\n\n`
-  if (g.screenshot) md += `📷 **Screenshot:** ${g.screenshot}\n\n`
+  if (g.screenshots.length > 0) {
+    const label = g.screenshots.length === 1 ? 'Screenshot' : 'Screenshots'
+    md += `📷 **${label}:**\n`
+    for (const shot of g.screenshots) {
+      md += shot.filename
+        ? `- [${shot.filename}](${shot.url})\n`
+        : `- ${shot.url}\n`
+    }
+    md += '\n'
+  }
   if (g.notes) md += `**Setup / repro notes:**\n${g.notes}\n\n`
   md += '---\n\n'
   return md
@@ -160,7 +174,16 @@ const formatUatGuideJira = (plan, walkthrough) => {
   if (g.summary) jira += `${g.summary}\n\n`
   if (g.reason) jira += `Why it's tricky: ${g.reason}\n\n`
   if (g.loom) jira += `🎥 Walkthrough: ${g.loom}\n\n`
-  if (g.screenshot) jira += `📷 Screenshot: ${g.screenshot}\n\n`
+  if (g.screenshots.length > 0) {
+    const label = g.screenshots.length === 1 ? 'Screenshot' : 'Screenshots'
+    jira += `📷 ${label}:\n`
+    for (const shot of g.screenshots) {
+      jira += shot.filename
+        ? `- ${shot.filename} — ${shot.url}\n`
+        : `- ${shot.url}\n`
+    }
+    jira += '\n'
+  }
   if (g.notes) jira += `Setup / repro notes:\n${g.notes}\n\n`
   jira += '════════════════════════════════════════════\n\n'
   return jira

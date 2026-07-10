@@ -235,14 +235,28 @@ async def run_workflow_action(
             if walkthrough:
                 if walkthrough.loom_url and walkthrough.loom_url not in looms:
                     looms.insert(0, walkthrough.loom_url)
-                extra = []
                 if walkthrough.notes:
-                    extra.append(walkthrough.notes)
-                if walkthrough.screenshot_url:
-                    extra.append(f"Screenshot: {walkthrough.screenshot_url}")
-                if extra:
-                    joined = "\n\n".join(extra)
-                    summary = f"{summary}\n\n{joined}".strip() if summary else joined
+                    summary = (
+                        f"{summary}\n\n{walkthrough.notes}".strip()
+                        if summary
+                        else walkthrough.notes
+                    )
+                # The walkthrough's screenshots are already Jira attachments
+                # (uploaded when the planner saved them); fold each into
+                # image_attachments so post_qa_pass_comment renders them as
+                # 📷 <filename> links the same way screenshots uploaded from
+                # the UAT modal do, instead of pasting raw content URLs.
+                walkthrough_shots = walkthrough_repository.decode_screenshots(
+                    walkthrough
+                )
+                seen_urls = {url for _, url in image_attachments}
+                to_prepend: list[tuple[str, str]] = []
+                for shot in walkthrough_shots:
+                    if shot["url"] in seen_urls:
+                        continue
+                    seen_urls.add(shot["url"])
+                    to_prepend.append((shot["filename"], shot["url"]))
+                image_attachments = to_prepend + image_attachments
             try:
                 result = await jira.post_qa_pass_comment(
                     issue_key,
