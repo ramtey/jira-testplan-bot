@@ -140,13 +140,25 @@ def test_find_bounce_reason_skips_empty_body():
     assert _find_bounce_reason(comments, "2026-05-07T12:00:00.000Z", None) is None
 
 
-def test_find_bounce_reason_truncates_long_body():
-    long_text = "x" * 1500
-    comments = [_comment("2026-05-07T12:01:00.000Z", long_text)]
+def test_find_bounce_reason_returns_short_body_untrimmed():
+    body = "x" * 1500  # under the 2000-char cap
+    comments = [_comment("2026-05-07T12:01:00.000Z", body)]
+    reason = _find_bounce_reason(comments, "2026-05-07T12:00:00.000Z", None)
+    assert reason == body
+
+
+def test_find_bounce_reason_trims_long_body_at_sentence_boundary():
+    # Long body with sentence boundaries in the back half — trim should land
+    # on one of them, not slice mid-word like the old 1000-char hard cut did.
+    prefix = "First sentence padding. " * 60  # ~1440 chars
+    body = prefix + "This is a nice sentence boundary. Trailing filler filler filler." * 20
+    comments = [_comment("2026-05-07T12:01:00.000Z", body)]
     reason = _find_bounce_reason(comments, "2026-05-07T12:00:00.000Z", None)
     assert reason is not None
-    assert reason.endswith("...")
-    assert len(reason) == 1003  # 1000 chars + "..."
+    assert reason.endswith("…")
+    # Must end on a sentence terminator — never a mid-word cut.
+    stripped = reason[:-1].rstrip()
+    assert stripped.endswith(".") or stripped.endswith("!") or stripped.endswith("?")
 
 
 # ---------- _extract_bounce_history ----------

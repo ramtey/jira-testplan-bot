@@ -717,6 +717,35 @@ async def summarize_issue(issue_key: str, request: dict):
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@app.post("/bounce/summarize")
+async def summarize_bounce(request: dict):
+    """Extract a one-sentence headline explaining why a ticket bounced back.
+
+    Expects `{"from_status", "to_status", "reason"}` and returns
+    `{"headline": str | null}`. Returns `null` when the picked comment did not
+    actually explain the bounce (the LLM returned NO_REASON); the UI falls
+    back to showing the raw comment in that case.
+    """
+    from_status = (request.get("from_status") or "").strip()
+    to_status = (request.get("to_status") or "").strip()
+    reason = (request.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="reason is required")
+    if not from_status or not to_status:
+        raise HTTPException(status_code=400, detail="from_status and to_status are required")
+    try:
+        llm = get_llm_client()
+        text = await llm.summarize_bounce_reason(
+            from_status=from_status, to_status=to_status, reason_text=reason
+        )
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    cleaned = text.strip().strip('"').strip("'")
+    if not cleaned or cleaned.upper().startswith("NO_REASON"):
+        return {"headline": None}
+    return {"headline": cleaned}
+
+
 @app.post("/issues/summarize-batch")
 async def summarize_issues_batch(request: dict):
     """Summarize a bundle of related tickets in one LLM call.

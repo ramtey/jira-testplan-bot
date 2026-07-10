@@ -1451,6 +1451,42 @@ class LLMClient(ABC):
         """
         pass
 
+    @abstractmethod
+    async def summarize_bounce_reason(
+        self,
+        from_status: str,
+        to_status: str,
+        reason_text: str,
+    ) -> str:
+        """Produce a one-sentence headline explaining why a ticket bounced back.
+
+        The nearest-in-time Jira comment (`reason_text`) is often a long triage
+        post that mixes the actual failure with unrelated status updates. This
+        collapses it to a single plain-English sentence a reader can scan.
+        """
+        pass
+
+    def _build_bounce_reason_prompt(
+        self,
+        from_status: str,
+        to_status: str,
+        reason_text: str,
+    ) -> str:
+        """Shared prompt for the bounce-reason headline across providers."""
+        return (
+            "A Jira ticket was moved backward in the workflow "
+            f"(from \"{from_status}\" back to \"{to_status}\") — a \"bounce back.\" "
+            "The comment below was posted around the time of that transition and is our best "
+            "guess at the reason. It may also contain unrelated status updates or triage notes.\n\n"
+            "Write ONE plain-English sentence (max ~20 words) that captures the actual reason "
+            "the ticket was sent back: what didn't work, what was missing, or what needed to "
+            "change. Speak in past tense, no jargon, no ticket keys, no @mentions, no bullet "
+            "points. If the comment does not actually explain a bounce (e.g. it's just an "
+            "acknowledgement or an unrelated update), reply with exactly: NO_REASON\n\n"
+            "Reply with only the sentence — no preamble, no quotes.\n\n"
+            f"Comment:\n{reason_text}"
+        )
+
     def _build_batch_summary_prompt(self, tickets: list[dict]) -> str:
         """Shared prompt builder for batch summary across providers."""
         keys = ", ".join(t.get("key", "?") for t in tickets)
@@ -2878,6 +2914,32 @@ class OllamaClient(LLMClient):
         except httpx.HTTPStatusError as e:
             raise LLMError(f"Ollama returned error status {e.response.status_code}", error_type="service_unavailable") from e
 
+    async def summarize_bounce_reason(
+        self,
+        from_status: str,
+        to_status: str,
+        reason_text: str,
+    ) -> str:
+        """One-sentence bounce-reason headline via Ollama."""
+        prompt = self._build_bounce_reason_prompt(from_status, to_status, reason_text)
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.2},
+                    },
+                )
+                response.raise_for_status()
+                return (response.json().get("response") or "").strip()
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise LLMError(f"Cannot connect to Ollama at {self.base_url}", error_type="connection_failed") from e
+        except httpx.HTTPStatusError as e:
+            raise LLMError(f"Ollama returned error status {e.response.status_code}", error_type="service_unavailable") from e
+
     async def _ollama_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)
         schema = {
@@ -3540,6 +3602,67 @@ class ClaudeClient(LLMClient):
                             "max_tokens": 256,
                             "messages": [{"role": "user", "content": prompt}],
                             **self._temperature_kwargs(0.3),
+                        },
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    return result["content"][0]["text"].strip()
+            except httpx.HTTPStatusError as e:
+                last_status = e.response.status_code
+                if last_status in retryable_statuses and attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
+                    continue
+                if last_status == 529:
+                    raise LLMError(
+                        "Claude is temporarily overloaded. Please try again in a moment.",
+                        error_type="service_unavailable",
+                    ) from e
+                raise LLMError(
+                    f"Claude API returned error status {last_status}",
+                    error_type="service_unavailable",
+                ) from e
+            except httpx.TimeoutException as e:
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
+                    continue
+                raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
+
+        raise LLMError(
+            f"Claude API returned error status {last_status} after {max_attempts} attempts",
+            error_type="service_unavailable",
+        )
+
+    async def summarize_bounce_reason(
+        self,
+        from_status: str,
+        to_status: str,
+        reason_text: str,
+    ) -> str:
+        """One-sentence bounce-reason headline via Claude API."""
+        import asyncio
+
+        prompt = self._build_bounce_reason_prompt(from_status, to_status, reason_text)
+
+        retryable_statuses = {502, 503, 504, 529}
+        max_attempts = 4
+        backoff_seconds = 1.0
+
+        last_status: int | None = None
+        for attempt in range(max_attempts):
+            try:
+                async with httpx.AsyncClient(timeout=45.0) as client:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "anthropic-version": "2023-06-01",
+                            "x-api-key": self.api_key,
+                            "content-type": "application/json",
+                        },
+                        json={
+                            "model": self.model,
+                            "max_tokens": 128,
+                            "messages": [{"role": "user", "content": prompt}],
+                            **self._temperature_kwargs(0.2),
                         },
                     )
                     response.raise_for_status()

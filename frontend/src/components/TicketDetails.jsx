@@ -2,7 +2,7 @@
  * Display Jira ticket details and quality analysis.
  */
 
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { API_BASE_URL, getJiraTicketUrl } from '../config'
 import DevelopmentInfo from './DevelopmentInfo'
 import WorkflowActions from './WorkflowActions'
@@ -25,6 +25,219 @@ function formatBounceTimestamp(iso) {
   return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function formatRelativeTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const diffMs = Date.now() - d.getTime()
+  const abs = Math.abs(diffMs)
+  const mins = Math.round(abs / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.round(hours / 24)
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`
+  const months = Math.round(days / 30)
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`
+  const years = Math.round(months / 12)
+  return `${years} year${years === 1 ? '' : 's'} ago`
+}
+
+// State shape shared between BounceSection (owner) and BounceCard (presenter):
+//   { state: 'loading' | 'ready' | 'no-reason' | 'no-comment' | 'error', headline: string | null }
+// Ownership sits at the section level so the collapsed preview can reflect the
+// latest bounce's headline before the user expands the panel — the whole reason
+// this refactor exists.
+
+function BounceCard({ bounce, headlineState }) {
+  const [showFull, setShowFull] = useState(false)
+  const state = headlineState?.state || (bounce.reason ? 'loading' : 'no-comment')
+  const headline = headlineState?.headline || null
+
+  const author = bounce.author || 'Someone'
+  const relative = formatRelativeTime(bounce.timestamp)
+  const absolute = formatBounceTimestamp(bounce.timestamp)
+  // "Sent back to <to_status> from <from_status>" reads left-to-right in plain English —
+  // the arrow form (X → Y) forced readers to translate "backward transition" every time.
+  const transitionSentence = `${author} moved this back to ${bounce.to_status} from ${bounce.from_status}.`
+
+  const headlineNode = (() => {
+    if (state === 'loading') {
+      return <span style={{ color: 'var(--fg-muted)', fontStyle: 'italic' }}>Reading the reviewer's comment…</span>
+    }
+    if (state === 'ready' && headline) {
+      return <span style={{ color: 'var(--fg-strong)' }}>{headline}</span>
+    }
+    if (state === 'no-reason') {
+      return <span style={{ color: 'var(--fg-muted)', fontStyle: 'italic' }}>The nearby comment didn't explain a clear reason — see the full comment for context.</span>
+    }
+    if (state === 'no-comment') {
+      return <span style={{ color: 'var(--fg-muted)', fontStyle: 'italic' }}>No comment was posted near this transition.</span>
+    }
+    return <span style={{ color: 'var(--fg-muted)', fontStyle: 'italic' }}>Couldn't summarize the reviewer's comment — see below.</span>
+  })()
+
+  return (
+    <Alert
+      tone="warning"
+      title={
+        <span style={{ fontWeight: 600, fontSize: 'var(--t-md)', lineHeight: 1.4 }}>
+          {headlineNode}
+        </span>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-2)' }}>
+        <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+          {transitionSentence}
+          {relative && (
+            <>
+              {' '}
+              <span title={absolute}>{relative}</span>
+              <span style={{ color: 'var(--fg-subtle)' }}> · {absolute}</span>
+            </>
+          )}
+        </div>
+        {bounce.reason && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowFull((v) => !v)}
+              className="btn"
+              data-variant="ghost"
+              data-size="sm"
+              style={{ padding: '2px 8px', fontSize: 'var(--t-xs)' }}
+            >
+              {showFull ? 'Hide full comment' : 'Show full comment'}
+            </button>
+            {showFull && (
+              <pre style={{
+                margin: 'var(--s-3) 0 0',
+                padding: 'var(--s-4)',
+                background: 'var(--bg-input)',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--r-sm)',
+                color: 'var(--fg)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '12px',
+                lineHeight: '18px',
+                whiteSpace: 'pre-wrap',
+                wordWrap: 'break-word',
+              }}>
+                {bounce.reason}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </Alert>
+  )
+}
+
+function BounceSection({ events }) {
+  const [open, setOpen] = useState(false)
+  const [headlines, setHeadlines] = useState({})  // { [timestamp]: { state, headline } }
+
+  // Reset the cache when the bounce set changes (e.g. new ticket loaded into this view).
+  // Timestamps are ms-precision ISO strings, so their joined signature uniquely identifies
+  // a set of bounces without needing to thread ticketKey down here.
+  const signature = events.map((e) => e.timestamp).join('|')
+  const prevSigRef = useRef(signature)
+  if (prevSigRef.current !== signature) {
+    prevSigRef.current = signature
+    setHeadlines({})
+  }
+
+  const latest = events[events.length - 1]
+
+  const fetchHeadline = useCallback(async (b) => {
+    if (!b?.reason) {
+      setHeadlines((prev) => (prev[b.timestamp] ? prev : { ...prev, [b.timestamp]: { state: 'no-comment', headline: null } }))
+      return
+    }
+    let started = false
+    setHeadlines((prev) => {
+      if (prev[b.timestamp]) return prev
+      started = true
+      return { ...prev, [b.timestamp]: { state: 'loading', headline: null } }
+    })
+    if (!started) return
+    try {
+      const r = await fetch(`${API_BASE_URL}/bounce/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_status: b.from_status,
+          to_status: b.to_status,
+          reason: b.reason,
+        }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = await r.json()
+      setHeadlines((prev) => ({
+        ...prev,
+        [b.timestamp]: data.headline
+          ? { state: 'ready', headline: data.headline }
+          : { state: 'no-reason', headline: null },
+      }))
+    } catch {
+      setHeadlines((prev) => ({ ...prev, [b.timestamp]: { state: 'error', headline: null } }))
+    }
+  }, [])
+
+  // Eagerly fetch the latest bounce's headline so the collapsed preview can carry
+  // the actual reason. Older bounces stay lazy — only fetched when the panel opens.
+  useEffect(() => {
+    if (latest) fetchHeadline(latest)
+    // signature covers the "events changed" case; latest.timestamp is derived from it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, fetchHeadline])
+
+  useEffect(() => {
+    if (!open) return
+    for (const b of events) {
+      if (b === latest) continue
+      fetchHeadline(b)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, signature, fetchHeadline])
+
+  const count = events.length
+  const title = count === 1
+    ? 'Sent back for more work · 1 time'
+    : `Sent back for more work · ${count} times`
+
+  const latestState = latest ? headlines[latest.timestamp] : null
+  const latestRelative = latest ? formatRelativeTime(latest.timestamp) : ''
+  const preview = latestState?.state === 'ready' && latestState.headline
+    ? (latestRelative ? `${latestState.headline} · ${latestRelative}` : latestState.headline)
+    : latestRelative
+
+  return (
+    <Coll
+      icon="history"
+      title={title}
+      open={open}
+      onToggle={setOpen}
+      preview={preview}
+      meta={<Chip>{count}</Chip>}
+    >
+      <p style={{ margin: '0 0 var(--s-4)', color: 'var(--fg-muted)', fontSize: 'var(--t-sm)' }}>
+        This ticket reached a downstream review or testing stage and was moved back to development — usually because something didn't work. Each card below shows one such moment and the reason we could piece together.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+        {[...events].reverse().map((b, i) => (
+          <BounceCard
+            key={`${b.timestamp}-${i}`}
+            bounce={b}
+            headlineState={headlines[b.timestamp]}
+          />
+        ))}
+      </div>
+    </Coll>
+  )
+}
+
 function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription, onActionComplete, onRowAction, compact = false }) {
   const [isAttachmentsExpanded, setIsAttachmentsExpanded] = useState(false)
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false)
@@ -32,7 +245,6 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState(null)
   const [isDescriptionOpen, setIsDescriptionOpen] = useState(true)
-  const [isBouncesOpen, setIsBouncesOpen] = useState(false)
 
   const handleToggleSummary = async () => {
     if (isSummaryExpanded) {
@@ -170,47 +382,9 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
         />
       </div>
 
-      {ticketData.bounce_history && ticketData.bounce_history.length > 0 && (() => {
-        const events = ticketData.bounce_history
-        const latest = events[events.length - 1]
-        const count = events.length
-        return (
-          <Coll
-            icon="history"
-            title={`Bounced back from testing · ${count}× `}
-            open={isBouncesOpen}
-            onToggle={setIsBouncesOpen}
-            preview={`Most recent: ${latest.from_status} → ${latest.to_status}`}
-            meta={<Chip>{count}</Chip>}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
-              {[...events].reverse().map((b, i) => (
-                <Alert
-                  key={i}
-                  tone="warning"
-                  title={
-                    <span>
-                      <span style={{ fontFamily: 'var(--font-mono)' }}>{b.from_status} → {b.to_status}</span>
-                      <span style={{ color: 'var(--fg-subtle)', fontWeight: 400 }}>
-                        {' · '}{formatBounceTimestamp(b.timestamp)}
-                        {b.author ? ` · ${b.author}` : ''}
-                      </span>
-                    </span>
-                  }
-                >
-                  {b.reason ? (
-                    <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{b.reason}</p>
-                  ) : (
-                    <p style={{ margin: 0, color: 'var(--fg-subtle)', fontStyle: 'italic' }}>
-                      No comment found near this transition.
-                    </p>
-                  )}
-                </Alert>
-              ))}
-            </div>
-          </Coll>
-        )
-      })()}
+      {ticketData.bounce_history && ticketData.bounce_history.length > 0 && (
+        <BounceSection events={ticketData.bounce_history} />
+      )}
 
       {/* Summary */}
       <Coll

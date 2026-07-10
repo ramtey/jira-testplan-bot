@@ -634,6 +634,24 @@ def _parse_jira_timestamp(ts: str | None):
         return None
 
 
+def _trim_to_boundary(text: str, max_len: int) -> str:
+    """Trim `text` to at most `max_len` chars, ending on a natural boundary.
+
+    Prefers a paragraph break, then sentence end, then word break — avoids
+    cuts like "just not visible o..." that make the UI look broken. Appends
+    an ellipsis marker only when trimming actually occurred.
+    """
+    if len(text) <= max_len:
+        return text
+    window = text[:max_len]
+    for boundary in ("\n\n", ". ", "! ", "? ", "\n", " "):
+        idx = window.rfind(boundary)
+        if idx >= max_len // 2:  # don't collapse to an unhelpfully short stub
+            cut = idx + (len(boundary) if boundary in ("\n\n", "\n") else 1)
+            return window[:cut].rstrip() + "…"
+    return window.rstrip() + "…"
+
+
 def _find_bounce_reason(
     comments_data: list[dict],
     transition_ts: str,
@@ -643,7 +661,7 @@ def _find_bounce_reason(
 
     Heuristic: prefer comments by the same author within ±6 hours of the
     transition; otherwise the closest comment within that window. Returns
-    plain text (truncated to 1000 chars) or None.
+    plain text trimmed to a natural boundary, or None.
     """
     from datetime import timedelta
 
@@ -676,10 +694,7 @@ def _find_bounce_reason(
     body_text = extract_text_from_adf(best[1].get("body", {}))
     if not body_text or not body_text.strip():
         return None
-    body_text = body_text.strip()
-    if len(body_text) > 1000:
-        body_text = body_text[:1000] + "..."
-    return body_text
+    return _trim_to_boundary(body_text.strip(), 2000)
 
 
 def _extract_bounce_history(
