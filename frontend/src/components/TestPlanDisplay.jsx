@@ -5,6 +5,7 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
+import { extractPrMedia } from '../utils/prMedia'
 import { API_BASE_URL } from '../config'
 import Icon from './Icon'
 import { Btn, Chip, ACTag, Pri, Cbx, Alert } from './ui'
@@ -572,6 +573,9 @@ function hasAnyWalkthrough(walkthrough) {
   return !!(walkthrough.loom_url || shots.length > 0 || (walkthrough.notes && walkthrough.notes.trim()))
 }
 
+const PR_MEDIA_ICON = { video: 'play', image: 'image', attachment: 'paperclip' }
+const PR_MEDIA_VERB = { video: 'Watch', image: 'View', attachment: 'Open' }
+
 /**
  * Multi-file screenshot picker for the walkthrough form. Mirrors the
  * click / drag / paste UX of the Pass-to-UAT dropzone. Chips distinguish
@@ -730,9 +734,10 @@ function ScreenshotPicker({ files, existing, onAddFiles, onRemoveFile, onRemoveE
  * shows links/notes; edit mode (controlled by the parent so the post-gate can
  * open it) shows the form.
  */
-function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, saving, accent }) {
+function WalkthroughSection({ walkthrough, prMedia, editing, onEditingChange, onSave, saving, accent }) {
   const wt = walkthrough || {}
   const savedScreenshots = Array.isArray(wt.screenshots) ? wt.screenshots : []
+  const prMediaList = Array.isArray(prMedia) ? prMedia : []
   const [loom, setLoom] = useState(wt.loom_url || '')
   const [notes, setNotes] = useState(wt.notes || '')
   const [existingScreenshots, setExistingScreenshots] = useState(savedScreenshots)
@@ -817,40 +822,10 @@ function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, sav
   }
 
   const present = hasAnyWalkthrough(wt)
-  return (
-    <div style={divider}>
-      {present ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {wt.loom_url && (
-            <a href={wt.loom_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}>
-              <Icon name="play" size={13} /> Watch walkthrough
-            </a>
-          )}
-          {savedScreenshots.map((shot) => (
-            <a
-              key={shot.url}
-              href={shot.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}
-            >
-              <Icon name="image" size={13} /> {shot.filename ? `View ${shot.filename}` : 'View screenshot'}
-            </a>
-          ))}
-          {wt.notes && wt.notes.trim() && (
-            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', whiteSpace: 'pre-wrap', lineHeight: '20px' }}>
-              {renderInline(wt.notes)}
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={() => onEditingChange(true)}
-            style={{ alignSelf: 'flex-start', marginTop: 2, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textDecoration: 'underline' }}
-          >
-            Edit walkthrough
-          </button>
-        </div>
-      ) : (
+  const anyPrMedia = prMediaList.length > 0
+  if (!present && !anyPrMedia) {
+    return (
+      <div style={divider}>
         <button
           type="button"
           onClick={() => onEditingChange(true)}
@@ -858,7 +833,63 @@ function WalkthroughSection({ walkthrough, editing, onEditingChange, onSave, sav
         >
           <Icon name="plus" size={13} /> Add a walkthrough (Loom, screenshots, or notes)
         </button>
-      )}
+      </div>
+    )
+  }
+
+  return (
+    <div style={divider}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {prMediaList.map((m) => {
+          const iconName = PR_MEDIA_ICON[m.kind] || 'paperclip'
+          const verb = PR_MEDIA_VERB[m.kind] || 'Open'
+          const label = m.filename || `${m.kind === 'video' ? 'video' : m.kind === 'image' ? 'screenshot' : 'attachment'}`
+          const prLabel = m.source?.pr_label || 'PR'
+          return (
+            <a
+              key={m.url}
+              href={m.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={m.source?.pr_title || undefined}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}
+            >
+              <Icon name={iconName} size={13} /> {verb} {label}
+              <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', fontWeight: 500 }}>
+                from {prLabel}
+              </span>
+            </a>
+          )
+        })}
+        {wt.loom_url && (
+          <a href={wt.loom_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}>
+            <Icon name="play" size={13} /> Watch walkthrough
+          </a>
+        )}
+        {savedScreenshots.map((shot) => (
+          <a
+            key={shot.url}
+            href={shot.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--t-sm)', color: accent, fontWeight: 600 }}
+          >
+            <Icon name="image" size={13} /> {shot.filename ? `View ${shot.filename}` : 'View screenshot'}
+          </a>
+        ))}
+        {wt.notes && wt.notes.trim() && (
+          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', whiteSpace: 'pre-wrap', lineHeight: '20px' }}>
+            {renderInline(wt.notes)}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => onEditingChange(true)}
+          style={{ alignSelf: 'flex-start', marginTop: 2, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textDecoration: 'underline' }}
+        >
+          {present ? 'Edit walkthrough' : 'Add a walkthrough'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -874,6 +905,7 @@ function UatGuideCard({
   howToSeeIt,
   enableWalkthrough,
   walkthrough,
+  prMedia,
   editingWalkthrough,
   onEditingChange,
   onSaveWalkthrough,
@@ -919,6 +951,7 @@ function UatGuideCard({
           {enableWalkthrough && (
             <WalkthroughSection
               walkthrough={walkthrough}
+              prMedia={prMedia}
               editing={editingWalkthrough}
               onEditingChange={onEditingChange}
               onSave={onSaveWalkthrough}
@@ -1042,6 +1075,14 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const [walkthrough, setWalkthrough] = useState(null)
   const [editingWalkthrough, setEditingWalkthrough] = useState(false)
   const [savingWalkthrough, setSavingWalkthrough] = useState(false)
+
+  // Images/videos the developer already uploaded to the PR. These count as
+  // walkthrough material on their own — surfacing them here saves the tester a
+  // click into GitHub. Read-only: they live on GitHub, not our DB.
+  const prMedia = useMemo(
+    () => extractPrMedia(ticketData?.development_info?.pull_requests),
+    [ticketData?.development_info?.pull_requests]
+  )
 
   useEffect(() => {
     setEditingWalkthrough(false)
@@ -1592,6 +1633,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         howToSeeIt={testPlan.how_to_see_it}
         enableWalkthrough={!isMulti && !!walkthroughKey}
         walkthrough={walkthrough}
+        prMedia={prMedia}
         editingWalkthrough={editingWalkthrough}
         onEditingChange={setEditingWalkthrough}
         onSaveWalkthrough={handleSaveWalkthrough}
