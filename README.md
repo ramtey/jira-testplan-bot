@@ -46,6 +46,9 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Linked Confluence specs**: Confluence URLs in the Jira description or comments are fetched and injected into the LLM prompt as a LINKED SPECS section so quoted requirements come from the actual spec page, not just the ticket body. Best-effort — per-page failures don't block plan generation
 - **Live in Jira badge**: Jira posting is update-in-place, so at most one generated version is the one teammates see on the ticket. The plan banner and run-history rows tag that version "Live in Jira" so users don't double-post or wonder which regeneration is current
 - **Shareable URLs**: the active ticket key is mirrored into the URL bar via `?key=…`, so every browser tab is a bookmarkable / refresh-safe handle on a ticket (works alongside the existing per-tab sessionStorage)
+- **UAT walkthrough**: every plan is tagged with `uat_complexity` and a plain-language "How to test this" summary. Planners can attach a Loom link, drag-and-drop screenshots (uploaded to Jira as attachments), and setup/repro notes that persist across regenerations; images and videos already uploaded to the linked PR are surfaced in the same card. Pass-to-UAT folds the saved walkthrough into the hand-off comment automatically, and nudges once (escapable) when a high-complexity ticket has no walkthrough
+- **Covered-by-unit-tests flag**: cases whose behavior an existing unit test already exercises are flagged and moved into a collapsed section, and excluded from the Jira comment by default
+- **Shared per-ticket test progress**: per-test checkmarks are persisted server-side so the whole QA team sees the same checked set; `localStorage` remains an offline fallback
 
 ## Key Features
 
@@ -158,29 +161,39 @@ opt in.
   corresponding env name, with selected chips rendered as solid ✓-prefixed
   pills and unselected chips as dashed-border outlines for dark-mode clarity),
   an optional Loom URL textarea (one per line — each is rendered as its own
-  paragraph above the fold), an optional screenshot dropzone (click / drag /
-  paste — files upload directly to the Jira issue as attachments before the
-  transition runs, and the comment links each by filename), and an optional
-  markdown summary. Submitting transitions to *Ready for UAT*, reassigns to
-  the dev who handed it over, and posts a Jira comment whose marker line
-  (e.g. `✅ QA Passed (Integ + Staging) — ready for UAT`) stays visible with
-  the summary tucked into a collapsible expand block. Submitting the form
-  empty preserves the original one-click pass with no comment. If this is
-  the last sibling sub-task to reach Ready for UAT (others already passed or
-  Done), the parent ticket is auto-promoted to Ready for UAT in the same
-  call (Epics excluded; best-effort, won't fail the primary transition)
-- **Fail back to To Do**: shown when the ticket is in *In Testing*.
-  Transitions to *To Do* (so failed QA drops back into the dev queue rather
-  than staying in flight) and reassigns for rework. Opens the same inline
-  form pattern as Pass to UAT — a *required* Reason field (markdown,
-  autofocused, rendered above the fold so devs see *why* without expanding),
-  plus an optional multi-Loom textarea and the same screenshot dropzone
-  (files attached to the issue, linked by filename in the comment). Empty
-  submit is rejected because a fail-back without a reason has no value.
-  The transition still runs even if the comment post fails, matching Pass
-  to UAT. The post-action banner is rendered in a warning tone ("Returned
-  to dev / Bounced back to …") instead of the celebratory green check used
-  for UAT pass, so the bounce-back is visually unmistakable
+  paragraph above the fold), an optional screenshot/PDF dropzone (click /
+  drag / paste — files upload directly to the Jira issue as attachments
+  before the transition runs, and the comment links each by filename), and
+  an optional markdown summary. Submitting transitions to *Ready for UAT*,
+  reassigns to the dev who handed it over, and posts a Jira comment whose
+  marker line (e.g. `✅ QA Passed (Integ + Staging) — ready for UAT`) stays
+  visible with the summary tucked into a collapsible expand block. The
+  ticket's saved walkthrough (Loom link, screenshots-as-attachments, notes)
+  is always folded into the comment too, so "how to test this" travels
+  with the transition even when the form was left empty; if the ticket is
+  flagged high-complexity and has no walkthrough or attached media, a
+  two-step nudge ("add a walkthrough?") appears before submitting — always
+  escapable. Submitting the form empty with no saved walkthrough preserves
+  the original one-click pass with no comment. If this is the last sibling
+  sub-task to reach Ready for UAT (others already passed or Done), the
+  parent ticket is auto-promoted to Ready for UAT in the same call (Epics
+  excluded; best-effort, won't fail the primary transition)
+- **Fail back**: shown when the ticket is in *In Testing*. Renders as a
+  single "Fail back to" trigger plus inline **To Do** / **In Progress**
+  destination chips in one bordered unit — the trigger commits the bounce
+  to whichever chip is selected, so the two same-verb bounce-backs don't
+  clutter the toolbar as a wall of red buttons. To Do drops the ticket back
+  into the dev backlog; In Progress keeps it in-flight for immediate
+  rework. Opens the same inline form pattern as Pass to UAT — a *required*
+  Reason field (markdown, autofocused, rendered above the fold so devs see
+  *why* without expanding), plus an optional multi-Loom textarea and the
+  same screenshot/PDF dropzone (files attached to the issue, linked by
+  filename in the comment). Empty submit is rejected because a fail-back
+  without a reason has no value. The transition still runs even if the
+  comment post fails, matching Pass to UAT. The post-action banner is
+  rendered in a warning tone ("Bounced back to …") instead of the
+  celebratory green check used for UAT pass, so the bounce-back is
+  visually unmistakable
 - **Notify chip picker**: Both forms expose an optional Notify row that
   @mentions selected users in the posted comment via a real ADF mention node
   in a trailing `cc:` paragraph (so Jira actually delivers notifications, not
@@ -207,7 +220,7 @@ opt in.
   transitions before acting. If the target status isn't reachable from the
   current state the API returns 400 with the list of valid transitions, so
   bad clicks fail loudly instead of silently no-op'ing
-- **Endpoint**: `POST /issue/{issue_key}/workflow/{pull-to-testing|pass-to-uat|fail-to-todo}`
+- **Endpoint**: `POST /issue/{issue_key}/workflow/{pull-to-testing|pass-to-uat|fail-to-todo|fail-to-in-progress}`
 
 ### Jira Bug Lens
 Analyze bug tickets to go beyond the ticket description and into the code:
@@ -476,7 +489,9 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
-- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`); backend still rejects non-`SK-` keys with 400 (frontend visibility is the config-driven layer). Accepts `multipart/form-data` with optional comment fields (envs, `loom_urls` list, summary, reason, screenshot file uploads), `mention_account_ids` for ADF @mentions, and `cascade_to_subtasks` to re-apply the transition to each direct subtask whose status matched the parent's *pre-transition* status
+- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`, `fail-to-in-progress`); backend still rejects non-`SK-` keys with 400 (frontend visibility is the config-driven layer). Accepts `multipart/form-data` with optional comment fields (envs, `loom_urls` list, summary, reason, screenshot file uploads), `mention_account_ids` for ADF @mentions, and `cascade_to_subtasks` to re-apply the transition to each direct subtask whose status matched the parent's *pre-transition* status
+- **Ticket walkthrough**: `GET/PUT /tickets/{ticket_key}/walkthrough` - Human-authored Loom link, screenshots (uploaded to Jira as attachments), and setup/repro notes for the ticket; folded into the Pass-to-UAT comment automatically. GET also returns the latest known `uat_complexity` so the workflow UI knows whether to nudge
+- **Test-plan progress**: `GET/PUT /test-plan-progress/{progress_key}` - Shared per-ticket checkmark state (which test cases QA has ticked off), keyed by ticket + plan fingerprint so the whole team converges on the same set
 
 See `/docs` for detailed API documentation and schemas.
 
