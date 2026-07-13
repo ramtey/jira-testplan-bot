@@ -65,7 +65,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
   - Root cause issues (for bugs - ensures actual cause is fixed)
   - Downstream issues this ticket may cause (validate no regressions)
 - **Smart comment analysis**: Extracts testing-related Jira comments (test scenarios, edge cases, QA discussions)
-- **QA/UAT bounce-back history**: Walks the issue changelog for transitions where the ticket reached an advanced state (QA / UAT / Testing / Ready-for-*) and was sent back to To Do, Backlog, Open, Reopened, or In Progress; pairs each bounce with the nearest Jira comment within ±6 hours (slight bonus when authors match) so the PM's reported reason is captured. Surfaced to the LLM as a "PRIOR QA / UAT BOUNCE-BACK HISTORY" section that asks for explicit regression coverage of each prior failure mode
+- **QA/UAT bounce-back history**: Walks the issue changelog for transitions where the ticket reached an advanced state (QA / UAT / Testing / Ready-for-*) and was sent back to To Do, Backlog, Open, Reopened, or In Progress. Reason pairing is two-tier — first the nearest Jira comment within ±6 hours of the transition (slight bonus when authors match), then a fallback that walks the comments posted between when the ticket entered its reviewed state and the bounce, preferring non-dev voices, so older QA/UAT feedback that never got resolved is picked up instead of the dev's "will check" reply. Surfaced to the LLM as a "PRIOR QA / UAT BOUNCE-BACK HISTORY" section that asks for explicit regression coverage of each prior failure mode. In the UI, each bounce card leads with a one-sentence LLM headline (via `POST /bounce/summarize`) and a plain-English transition line ("Kyle moved this back to In Progress from Ready for UAT") with the raw comment tucked behind a "Show full comment" toggle; long comments are trimmed at paragraph / sentence / word boundaries with an ellipsis instead of a hard mid-word cut
 - **Figma integration**: Extracts actual UI component names from design files for specific test cases
 - **Smart filtering**: Focuses on runtime behavior, ignoring build-time configs (ESLint, TypeScript, etc.)
 - **Priority ordering**: Critical tests first, edge cases last
@@ -73,7 +73,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 ### Development Integration
 - **GitHub enrichment**: PR code diffs (actual source changes injected into LLM context), review comments, and repository documentation
 - **Simulator test context**: Automatically pulls testID references and screen guides from `.agents/skills/simulator-testing/references/` in the target repo (when present), so Claude references real UI test IDs in generated test steps
-- **Jira development data**: Commits, branches, and PR statuses with clickable links
+- **Jira development data**: Commits, branches, and PR statuses with clickable links; merged PRs additionally show the merge date next to repo/author in the Development Activity card
 - **Open-PR handling**: Open (un-merged) PRs are included in the LLM prompt and flagged as open in the UI header so QA can plan coverage for code that hasn't merged yet
 - **Token health monitoring**: Real-time validation with expiration warnings
 
@@ -91,6 +91,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Observability ticket mode**: Logging / alerting / monitoring tickets switch to a QA-runnable test style — Grafana UI inspection, paste-ready LogQL queries against natural traffic, walking every tab of the affected rule, and `[fill in from UI]` placeholders for values the ticket references but doesn't supply. Bans white-box steps QA can't execute (e.g. "deploy the code", "simulate a DB failure")
 - **PII protection**: System prompt forbids naming real customers/employees from ticket context as test subjects; a regex pass scrubs any remaining email-shaped strings from the rendered plan as defense-in-depth
 - **Boundary & test-layer prompt rules**: Numeric-boundary changes must produce concrete inside/outside example values and matching step text; filtered-collection assertions must check identity, not just cardinality; backend logic coverage is pushed into a dedicated `[Backend]` section instead of inflating UI/voice steps; mobile tickets ban browser-DevTools instructions
+- **Derived-field expected values come from spec, not app behavior**: When a test targets a derived value (a computed field, a filtered denominator, an aggregate), the source-of-truth branch decides how strict the assertion is — expected values are derived from the specification, hard-pinned only when the source is confirmed, and flagged for PM with Pass withheld when the source is unconfirmed. On bug tickets this prevents the plan from baking the reported defect in as the pass criterion by matching whatever the app currently renders
 - **Sticky header quick actions**: Copy / Download / Post-to-Jira are reachable from the sticky test-plan header without scrolling to the end of the test list
 
 ### Jira Browser Side Rail
@@ -163,8 +164,9 @@ opt in.
   an optional Loom URL textarea (one per line — each is rendered as its own
   paragraph above the fold), an optional screenshot/PDF dropzone (click /
   drag / paste — files upload directly to the Jira issue as attachments
-  before the transition runs, and the comment links each by filename), and
-  an optional markdown summary. Submitting transitions to *Ready for UAT*,
+  before the transition runs, and the comment enumerates each as a
+  `📷 <filename>` callout so Jira's Attachments panel renders the actual
+  images right under the comment), and an optional markdown summary. Submitting transitions to *Ready for UAT*,
   reassigns to the dev who handed it over, and posts a Jira comment whose
   marker line (e.g. `✅ QA Passed (Integ + Staging) — ready for UAT`) stays
   visible with the summary tucked into a collapsible expand block. The
@@ -187,8 +189,9 @@ opt in.
   rework. Opens the same inline form pattern as Pass to UAT — a *required*
   Reason field (markdown, autofocused, rendered above the fold so devs see
   *why* without expanding), plus an optional multi-Loom textarea and the
-  same screenshot/PDF dropzone (files attached to the issue, linked by
-  filename in the comment). Empty submit is rejected because a fail-back
+  same screenshot/PDF dropzone (files attached to the issue, enumerated as
+  `📷 <filename>` callouts in the comment so Jira's Attachments panel
+  handles the actual rendering). Empty submit is rejected because a fail-back
   without a reason has no value. The transition still runs even if the
   comment post fails, matching Pass to UAT. The post-action banner is
   rendered in a warning tone ("Bounced back to …") instead of the
@@ -486,6 +489,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON
 - **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets. Switches between *single_repo* mode (shared repo / overlapping files) and *cross_project* mode (tickets span repos — seams extracted from the PR diffs drive integration-test generation)
 - **Analyze bug**: `POST /bug-lens/analyze` - Root cause, fix explanation, and regression tests for a bug ticket
+- **Summarize bounce reason**: `POST /bounce/summarize` - Takes `{from_status, to_status, reason}` and returns a one-sentence plain-English headline for the bounce card, or `{headline: null}` when the picked comment doesn't actually explain the bounce (UI then falls back to the raw comment)
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
@@ -538,7 +542,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Per-test `grounded_in` attribution with Untraced flagging, linked Confluence specs feeding the prompt, "Live in Jira" badge on the version that's currently posted, URL deep linking via `?key=…`, rail backlog muting, sticky-header quick actions, and tighter boundary / test-layer prompt rules shipped on top of the cross-project multi-ticket / Opus 4.7 / observability-prompt baseline; prompt quality hardening ongoing
+**Current:** Bounce-back cards now lead with an LLM-generated one-sentence headline plus plain-English transition line, with the full comment collapsed and older reviewer feedback used as the reason when nothing lands in the ±6h close window. Merged PRs show their merge date in the Development Activity card, walkthrough screenshots render as `📷 <filename>` callouts in workflow comments (Jira's Attachments panel handles the actual image render), the Pass-to-UAT gate refetches walkthrough state before nagging, and the prompt now derives expected values for derived fields from the spec rather than observed app behavior. All shipped on top of the per-test `grounded_in` / Confluence-specs / Live-in-Jira baseline; prompt quality hardening ongoing
 
 ## Roadmap
 
@@ -610,6 +614,12 @@ uv run pytest tests/ -v
 - ✅ **Fail-back distinct from pass banner**: Fail back to To Do now renders a warning-tone "Bounced back to …" banner instead of the green check used for UAT pass, so the bounce-back reads as a return-to-dev rather than progress
 - ✅ **Transient 529 retry on summarization**: The plain-summary Claude call retries Anthropic `529` overload errors with exponential backoff so a brief capacity blip doesn't drop the ticket summary
 - ✅ **Workflow routes module**: QA workflow endpoint, its constants, and the parent/subtask cascade helpers moved out of `main.py` into a dedicated `workflow_routes.py`, matching `bug_lens_routes` / `runs_routes` (same URLs, same behavior)
+- ✅ **Scannable bounce-back card**: `/bounce/summarize` returns a one-sentence LLM headline for each bounce; the card leads with that headline plus a plain-English transition line ("Kyle moved this back to In Progress from Ready for UAT") and tucks the raw comment behind "Show full comment." Long reasons are trimmed at paragraph / sentence / word boundaries with an ellipsis instead of a hard mid-word cut
+- ✅ **Older reviewer feedback as bounce reason**: When no comment lands within ±6h of a bounce transition, fall back to comments posted between when the ticket entered its reviewed state and the bounce, preferring non-dev voices — captures QA/UAT feedback raised days or weeks earlier that never got resolved. Changelog is now sorted chronologically so state-entry tracking works against Jira's newest-first API order
+- ✅ **PR merged date in Development Activity**: GitHub's `merged_at` threads through `PRDetails → PullRequest → API payload` so merged PRs display "merged <date>" next to repo/author in the dev-activity row
+- ✅ **Walkthrough screenshots as plain-text callouts**: Workflow comments enumerate each screenshot as a `📷 <filename>` paragraph instead of linking Jira's binary-download `content` URL (which dead-ended at auth or forced a download). Jira's Attachments panel already renders the actual images right under the comment
+- ✅ **Walkthrough refetch before UAT gate check**: The Pass-to-UAT gate re-reads walkthrough state right before the "hard to UAT" nudge, so a walkthrough saved from the plan section after `WorkflowActions` mounted no longer nags for material already attached
+- ✅ **Derived-field expected values from spec, not app behavior**: The source-of-value coverage rule now branches on whether the source is confirmed — expected values are derived from the spec, hard-pinned only when confirmed, and flagged for PM with Pass withheld when unconfirmed, so bug-ticket plans stop baking the reported defect in as the pass criterion
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
