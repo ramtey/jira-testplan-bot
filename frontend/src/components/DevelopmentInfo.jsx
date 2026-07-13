@@ -10,6 +10,13 @@ function isOpenPR(status) {
   return (status || '').toLowerCase() === 'open'
 }
 
+function formatMergedDate(iso) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
 function prStatusCat(status) {
   const s = (status || '').toLowerCase()
   if (s === 'merged') return 'done'
@@ -111,7 +118,12 @@ function DevelopmentInfo({ developmentInfo }) {
             const isOpen = isOpenPR(pr.status)
             const isMerged = (pr.status || '').toLowerCase() === 'merged'
             const iconColor = isOpen ? 'var(--warning)' : isMerged ? '#a855f7' : 'var(--fg-muted)'
-            const repoAndAuthor = [pr.repository, pr.author && `@${pr.author}`].filter(Boolean).join(' · ')
+            const mergedOn = isMerged ? formatMergedDate(pr.merged_at) : null
+            const metaParts = [
+              pr.repository,
+              pr.author && `@${pr.author}`,
+              mergedOn && `merged ${mergedOn}`,
+            ].filter(Boolean)
             return (
               <DevRow
                 key={`pr-${i}`}
@@ -119,7 +131,7 @@ function DevelopmentInfo({ developmentInfo }) {
                 status={pr.status}
                 label={pr.number ? `#${pr.number}` : 'PR'}
                 title={pr.title}
-                meta={repoAndAuthor || null}
+                meta={metaParts.length ? metaParts.join(' · ') : null}
                 url={pr.url}
                 iconColor={iconColor}
               />

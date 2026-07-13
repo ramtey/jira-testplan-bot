@@ -1015,6 +1015,7 @@ class JiraClient:
                                 )
                                 for comment in gh_details.comments
                             ]
+                            pr_obj.merged_at = gh_details.merged_at
                             logger.info(
                                 f"Enriched PR {pr_obj.title} with GitHub data: "
                                 f"{len(gh_details.files_changed)} files changed, {len(gh_details.comments)} comments"
@@ -1122,6 +1123,7 @@ class JiraClient:
                             )
                             for comment in gh_details.comments
                         ]
+                        pr_obj.merged_at = gh_details.merged_at
                         logger.info(
                             f"Enriched text-linked PR '{pr_obj.title}': "
                             f"{len(gh_details.files_changed)} files changed"

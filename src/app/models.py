@@ -73,6 +73,7 @@ class PullRequest:
     total_additions: int | None = None
     total_deletions: int | None = None
     comments: list[PRComment] | None = None
+    merged_at: str | None = None  # ISO 8601 timestamp from GitHub, populated only for merged PRs
 
 
 @dataclass

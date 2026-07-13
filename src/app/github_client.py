@@ -73,6 +73,7 @@ class PRDetails:
     total_changes: int
     comments: list[PRComment]
     author: str | None = None  # GitHub login of the PR author
+    merged_at: str | None = None  # ISO 8601 timestamp; only set when merged=True
 
 
 @dataclass
@@ -535,6 +536,7 @@ class GitHubClient:
                     total_changes=total_additions + total_deletions,
                     comments=comments,
                     author=pr_data.get("user", {}).get("login"),
+                    merged_at=pr_data.get("merged_at"),
                 )
 
         except httpx.HTTPStatusError as e:
