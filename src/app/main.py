@@ -1183,9 +1183,11 @@ async def put_ticket_walkthrough(
     omitted from ``existing_screenshots`` drops out of the walkthrough (the
     Jira attachment itself stays on the ticket).
 
-    Each screenshot in the final list is rendered as a labelled 📷 link in
-    the pass-to-UAT comment (same treatment as files attached from the UAT
-    modal), so the "how to test this" guidance ships with the transition.
+    Each screenshot in the final list is enumerated as a ``📷 <filename>``
+    plain-text callout in the pass-to-UAT comment (same treatment as files
+    attached from the UAT modal); Jira's Attachments panel renders the
+    actual images right under the comment, so the "how to test this"
+    guidance ships with the transition.
     """
     if payload:
         try:

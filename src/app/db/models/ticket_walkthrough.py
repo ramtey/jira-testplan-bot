@@ -17,9 +17,10 @@ class TicketWalkthrough(TimestampedBase, table=True):
 
     ``screenshots`` is a JSON-encoded list of ``{"filename", "url"}`` entries
     pointing at Jira attachments on this ticket. Storing them here (rather
-    than re-uploading each time) lets the pass-to-UAT comment render each
-    screenshot as a labelled 📷 link identical to files attached from the
-    UAT modal.
+    than re-uploading each time) lets the pass-to-UAT comment enumerate each
+    screenshot as a ``📷 <filename>`` callout identical to files attached
+    from the UAT modal; the actual images render in Jira's Attachments
+    panel below the comment stream.
     """
 
     __tablename__ = "ticket_walkthroughs"

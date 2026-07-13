@@ -138,9 +138,13 @@ def _image_paragraphs(doc):
     ]
 
 
-def test_build_qa_pass_adf_renders_image_links_above_fold():
-    # Reviewers should see screenshot links without expanding anything,
-    # so image link paragraphs sit above the summary expand block.
+def test_build_qa_pass_adf_renders_image_callouts_above_fold():
+    # Reviewers should see which screenshots landed without expanding
+    # anything, so `📷 <filename>` callout paragraphs sit above the
+    # summary expand block. They're plain text — Jira's Attachments
+    # panel renders the actual images just below the comment — because
+    # the attachment `content` URL is a binary-download endpoint that
+    # dead-ends when clicked from a comment.
     doc = _build_qa_pass_adf(
         None,
         "Some test summary",
@@ -151,11 +155,13 @@ def test_build_qa_pass_adf_renders_image_links_above_fold():
     assert doc is not None
     paragraphs = _image_paragraphs(doc)
     assert len(paragraphs) == 2
-    hrefs = [p["content"][1]["marks"][0]["attrs"]["href"] for p in paragraphs]
-    assert hrefs == ["https://jira.example/a", "https://jira.example/b"]
-    filenames = [p["content"][1]["text"] for p in paragraphs]
-    assert filenames == ["a.png", "b.png"]
-    # Links appear before the expand block.
+    texts = [p["content"][0]["text"] for p in paragraphs]
+    assert texts == ["📷 a.png", "📷 b.png"]
+    # Each callout is a single plain-text node with no link marks.
+    for p in paragraphs:
+        assert len(p["content"]) == 1
+        assert "marks" not in p["content"][0]
+    # Callouts appear before the expand block.
     indices = [doc["content"].index(p) for p in paragraphs]
     expand_index = next(
         i for i, node in enumerate(doc["content"]) if node["type"] == "expand"
@@ -187,6 +193,7 @@ def test_build_qa_pass_adf_dedups_images_and_drops_blanks():
     assert doc is not None
     paragraphs = _image_paragraphs(doc)
     assert len(paragraphs) == 1
+    assert paragraphs[0]["content"][0]["text"] == "📷 a.png"
 
 
 def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
@@ -261,7 +268,7 @@ def test_build_qa_fail_adf_renders_markdown_in_reason():
     assert len(bullet["content"]) == 2
 
 
-def test_build_qa_fail_adf_appends_loom_then_image_links_in_order():
+def test_build_qa_fail_adf_appends_loom_then_image_callouts_in_order():
     doc = _build_qa_fail_adf(
         "Reason here",
         ["https://loom.com/x"],
@@ -269,14 +276,14 @@ def test_build_qa_fail_adf_appends_loom_then_image_links_in_order():
     )
     assert doc is not None
     # Expected order after marker + reason paragraph: Loom paragraph,
-    # then two image link paragraphs.
+    # then two plain-text `📷 <filename>` callout paragraphs (no link
+    # marks — see _build_attachment_label_paragraph for rationale).
     after_reason = doc["content"][2:]
     assert after_reason[0]["content"][0]["text"].startswith("📹 Loom")
-    assert after_reason[1]["content"][0]["text"].startswith("📷")
-    assert after_reason[1]["content"][1]["text"] == "a.png"
-    assert after_reason[1]["content"][1]["marks"][0]["attrs"]["href"] == "https://jira.example/a"
-    assert after_reason[2]["content"][0]["text"].startswith("📷")
-    assert after_reason[2]["content"][1]["text"] == "b.png"
+    assert after_reason[1]["content"][0]["text"] == "📷 a.png"
+    assert "marks" not in after_reason[1]["content"][0]
+    assert after_reason[2]["content"][0]["text"] == "📷 b.png"
+    assert "marks" not in after_reason[2]["content"][0]
 
 
 def test_build_qa_fail_adf_dedups_images_and_drops_blanks():
@@ -297,7 +304,7 @@ def test_build_qa_fail_adf_dedups_images_and_drops_blanks():
         and p.get("content") and p["content"][0].get("text", "").startswith("📷")
     ]
     assert len(paragraphs) == 1
-    assert paragraphs[0]["content"][1]["text"] == "a.png"
+    assert paragraphs[0]["content"][0]["text"] == "📷 a.png"
 
 
 # ---------- _build_mentions_paragraph ----------

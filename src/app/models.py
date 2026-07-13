@@ -416,7 +416,8 @@ class WalkthroughScreenshotRef(BaseModel):
     """A single already-uploaded walkthrough screenshot the client wants to
     keep. Carried in :class:`WalkthroughUpdateRequest.existing_screenshots`.
     ``url`` is the Jira content URL returned by the attachment endpoint;
-    ``filename`` is the original file name (used to render the 📷 link)."""
+    ``filename`` is the original file name (used to render the
+    ``📷 <filename>`` callout in the pass-to-UAT comment)."""
 
     url: str
     filename: str | None = None

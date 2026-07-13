@@ -243,8 +243,8 @@ async def run_workflow_action(
                     )
                 # The walkthrough's screenshots are already Jira attachments
                 # (uploaded when the planner saved them); fold each into
-                # image_attachments so post_qa_pass_comment renders them as
-                # 📷 <filename> links the same way screenshots uploaded from
+                # image_attachments so post_qa_pass_comment enumerates them as
+                # 📷 <filename> callouts the same way screenshots uploaded from
                 # the UAT modal do, instead of pasting raw content URLs.
                 walkthrough_shots = walkthrough_repository.decode_screenshots(
                     walkthrough

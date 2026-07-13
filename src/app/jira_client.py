@@ -204,25 +204,22 @@ def _normalize_environments(environments: list[str] | None) -> list[str]:
     return out
 
 
-def _build_attachment_link_paragraph(filename: str, url: str) -> dict:
-    """Render a single attachment as a clickable link paragraph.
+def _build_attachment_label_paragraph(filename: str) -> dict:
+    """Render a single attachment as a plain `📷 <filename>` paragraph.
 
     Jira already displays attached images in the issue's Attachments
-    panel below the comments, so a link here is enough to point readers
-    at a specific screenshot. We tried `mediaSingle` for inline
-    rendering, but Jira's ADF renderer requires a media-services ID and
-    collection that aren't returned by the attachments endpoint.
+    panel right below the comments, so the label alone is enough to
+    point readers at a specific screenshot. Earlier versions linked the
+    filename to the attachment's `content` URL, but that URL is a
+    binary-download endpoint — clicking it in a rendered comment
+    dead-ends at an auth flow or forces a download rather than opening
+    the ticket's attachment viewer. A `mediaSingle` inline render would
+    be nicer still, but Jira's ADF renderer requires a media-services
+    ID + collection that aren't returned by the attachments endpoint.
     """
     return {
         "type": "paragraph",
-        "content": [
-            {"type": "text", "text": "📷 "},
-            {
-                "type": "text",
-                "text": filename,
-                "marks": [{"type": "link", "attrs": {"href": url}}],
-            },
-        ],
+        "content": [{"type": "text", "text": f"📷 {filename}"}],
     }
 
 
@@ -262,11 +259,11 @@ def _build_qa_pass_adf(
     comment the same way test-plan comments are detected. The environments
     tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
     stays visible without expanding. Loom links sit above the fold (one
-    paragraph per URL), images render inline as `mediaSingle` nodes just
-    below them (also above-fold so reviewers see proof without
-    expanding), and the freeform summary is wrapped in an `expand` node.
-    When mentions are supplied, a final "cc:" paragraph triggers Jira
-    notifications.
+    paragraph per URL), screenshot filenames are enumerated as plain
+    `📷 <filename>` paragraphs just below them (Jira's Attachments panel
+    shows the actual images right under the comment stream), and the
+    freeform summary is wrapped in an `expand` node. When mentions are
+    supplied, a final "cc:" paragraph triggers Jira notifications.
 
     Mentions alone don't justify posting a comment — the function still
     returns None unless at least one substantive field
@@ -304,8 +301,8 @@ def _build_qa_pass_adf(
             ],
         })
 
-    for filename, url in images:
-        content.append(_build_attachment_link_paragraph(filename, url))
+    for filename, _url in images:
+        content.append(_build_attachment_label_paragraph(filename))
 
     if summary:
         summary_doc = markdown_to_adf(summary)
@@ -366,9 +363,11 @@ def _build_qa_fail_adf(
 
     The reason is the load-bearing field — devs need to see *why* the
     ticket bounced without expanding anything, so it's rendered above the
-    fold (not inside an expand node). Loom links and inline screenshots
-    sit below as references; mentioned accountIds get a final "cc:"
-    paragraph that triggers Jira notifications. Returns None if no
+    fold (not inside an expand node). Loom links and `📷 <filename>`
+    plain-text callouts sit below as references (Jira's Attachments
+    panel renders the actual images under the comment stream);
+    mentioned accountIds get a final "cc:" paragraph that triggers Jira
+    notifications. Returns None if no
     reason is supplied: callers use that signal to skip posting (the
     transition still runs). Mentions without a reason still return
     None — there's no value in pinging people on an empty comment.
@@ -400,8 +399,8 @@ def _build_qa_fail_adf(
             ],
         })
 
-    for filename, url in images:
-        content.append(_build_attachment_link_paragraph(filename, url))
+    for filename, _url in images:
+        content.append(_build_attachment_label_paragraph(filename))
 
     mentions_para = _build_mentions_paragraph(mention_account_ids)
     if mentions_para:
