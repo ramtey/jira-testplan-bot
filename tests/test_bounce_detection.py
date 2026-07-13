@@ -147,6 +147,98 @@ def test_find_bounce_reason_returns_short_body_untrimmed():
     assert reason == body
 
 
+def test_find_bounce_reason_ignores_far_comment_without_state_entry_ts():
+    # Without state_entry_ts, a comment weeks before the bounce stays invisible
+    # — the fallback branch requires an anchor from the changelog.
+    comments = [_comment("2026-06-24T13:22:00.000Z", "Spacing seems off", author_name="Megan")]
+    assert (
+        _find_bounce_reason(comments, "2026-07-09T09:19:00.000Z", "Tiffany") is None
+    )
+
+
+def test_find_bounce_reason_falls_back_to_reviewer_comment_in_state_window():
+    # Bounce happens weeks after the ticket entered Ready for UAT. The
+    # reviewer's earlier complaint should surface as the reason instead of
+    # the dev's follow-up reply.
+    comments = [
+        _comment("2026-06-24T13:22:00.000Z", "Spacing seems off", author_name="Megan"),
+        _comment("2026-06-24T13:34:00.000Z", "I just checked, will look", author_name="Ramtin"),
+    ]
+    reason = _find_bounce_reason(
+        comments,
+        "2026-07-09T09:19:00.000Z",
+        "Tiffany",
+        state_entry_ts="2026-06-16T11:29:00.000Z",
+        dev_names=frozenset({"Ramtin"}),
+    )
+    assert reason == "Spacing seems off"
+
+
+def test_find_bounce_reason_fallback_prefers_most_recent_when_all_non_dev():
+    # No dev in play — plain recency decides.
+    comments = [
+        _comment("2026-06-20T09:00:00.000Z", "earlier reviewer note", author_name="Megan"),
+        _comment("2026-06-24T13:22:00.000Z", "later reviewer note", author_name="Kyle"),
+    ]
+    reason = _find_bounce_reason(
+        comments,
+        "2026-07-09T09:19:00.000Z",
+        "Tiffany",
+        state_entry_ts="2026-06-16T11:29:00.000Z",
+        dev_names=frozenset({"Ramtin"}),
+    )
+    assert reason == "later reviewer note"
+
+
+def test_find_bounce_reason_fallback_falls_back_to_dev_when_only_dev_available():
+    # A ticket where only the dev commented during the reviewed window still
+    # gets a reason — the dev penalty demotes but doesn't erase.
+    comments = [
+        _comment("2026-06-20T09:00:00.000Z", "dev progress note", author_name="Ramtin"),
+    ]
+    reason = _find_bounce_reason(
+        comments,
+        "2026-07-09T09:19:00.000Z",
+        "Tiffany",
+        state_entry_ts="2026-06-16T11:29:00.000Z",
+        dev_names=frozenset({"Ramtin"}),
+    )
+    assert reason == "dev progress note"
+
+
+def test_find_bounce_reason_fallback_skips_comments_before_state_entry():
+    # A comment posted before the ticket even entered the reviewed state
+    # can't be the bounce reason for THIS run through that state.
+    comments = [
+        _comment("2026-05-01T12:00:00.000Z", "stale pre-review chatter", author_name="Megan"),
+    ]
+    reason = _find_bounce_reason(
+        comments,
+        "2026-07-09T09:19:00.000Z",
+        "Tiffany",
+        state_entry_ts="2026-06-16T11:29:00.000Z",
+        dev_names=frozenset({"Ramtin"}),
+    )
+    assert reason is None
+
+
+def test_find_bounce_reason_close_window_still_wins_over_fallback():
+    # A close-window comment must beat a fallback candidate even when the
+    # fallback would otherwise be picked.
+    comments = [
+        _comment("2026-06-24T13:22:00.000Z", "old reviewer note", author_name="Megan"),
+        _comment("2026-07-09T09:20:00.000Z", "fresh transition note", author_name="Tiffany"),
+    ]
+    reason = _find_bounce_reason(
+        comments,
+        "2026-07-09T09:19:00.000Z",
+        "Tiffany",
+        state_entry_ts="2026-06-16T11:29:00.000Z",
+        dev_names=frozenset({"Ramtin"}),
+    )
+    assert reason == "fresh transition note"
+
+
 def test_find_bounce_reason_trims_long_body_at_sentence_boundary():
     # Long body with sentence boundaries in the back half — trim should land
     # on one of them, not slice mid-word like the old 1000-char hard cut did.
@@ -227,6 +319,41 @@ def test_extract_bounce_history_records_multiple_bounces():
     assert len(events) == 2
     assert (events[0].from_status, events[0].to_status) == ("In Testing", "To Do")
     assert (events[1].from_status, events[1].to_status) == ("Ready for UAT", "In Progress")
+
+
+def test_extract_bounce_history_handles_reverse_chronological_input():
+    # Jira's API returns histories newest-first. The reviewed-state fallback
+    # needs the state's entry timestamp, which is EARLIER in wall-clock time
+    # than the bounce — so walking histories in the order Jira returned them
+    # would miss it. Same shape as SK-2279 that surfaced the bug.
+    histories = [
+        _history("2026-07-09T09:19:00.000Z", [_status_item("Ready for UAT", "In Progress")], author="Tiffany"),
+        _history("2026-06-16T11:29:00.000Z", [_status_item("In Testing", "Ready for UAT")], author="Ramtin"),
+        _history("2026-06-15T11:25:00.000Z", [_status_item("Ready To Test", "In Testing")], author="Ramtin"),
+    ]
+    comments = [
+        _comment("2026-06-24T13:22:00.000Z", "Spacing seems off", author_name="Megan"),
+    ]
+    events = _extract_bounce_history(histories, comments, dev_names=frozenset({"Ramtin"}))
+    assert len(events) == 1
+    assert events[0].reason == "Spacing seems off"
+
+
+def test_extract_bounce_history_uses_reviewed_state_fallback_for_old_feedback():
+    # SK-2279 shape: reviewer flagged an issue weeks before the eventual
+    # bounce. Without the fallback, this rendered "No comment was posted
+    # near this transition" even though the reviewer's comment is right there.
+    histories = [
+        _history("2026-06-16T11:30:00.000Z", [_status_item("In Progress", "Ready for UAT")], author="Alice"),
+        _history("2026-07-09T09:19:00.000Z", [_status_item("Ready for UAT", "In Progress")], author="Tiffany"),
+    ]
+    comments = [
+        _comment("2026-06-24T13:22:00.000Z", "Spacing seems off", author_name="Megan"),
+        _comment("2026-06-24T13:34:00.000Z", "will look", author_name="Ramtin"),
+    ]
+    events = _extract_bounce_history(histories, comments, dev_names=frozenset({"Ramtin"}))
+    assert len(events) == 1
+    assert events[0].reason == "Spacing seems off"
 
 
 def test_extract_bounce_history_leaves_reason_none_when_no_comment_matches():

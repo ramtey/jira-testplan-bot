@@ -655,12 +655,23 @@ def _find_bounce_reason(
     comments_data: list[dict],
     transition_ts: str,
     transition_author: str | None,
+    *,
+    state_entry_ts: str | None = None,
+    dev_names: frozenset[str] | None = None,
 ) -> str | None:
     """Find the comment most likely to explain a bounce-back transition.
 
-    Heuristic: prefer comments by the same author within ±6 hours of the
-    transition; otherwise the closest comment within that window. Returns
-    plain text trimmed to a natural boundary, or None.
+    Two-tier heuristic:
+
+    1. Close window (±6h): the transitioner or a reviewer often comments in
+       the same session as the bounce. Same-author gets a 30-minute bonus.
+
+    2. Reviewed-state fallback: when nothing lands in the close window, the
+       reason is often the QA/UAT feedback that was raised days or weeks
+       earlier and never got resolved. Look at comments posted between when
+       the ticket entered its reviewed state (``state_entry_ts``) and the
+       bounce, preferring non-dev voices (``dev_names``) since the dev's own
+       replies usually just acknowledge the reviewer, not explain the bounce.
     """
     from datetime import timedelta
 
@@ -669,24 +680,41 @@ def _find_bounce_reason(
         return None
 
     window = timedelta(hours=6)
-    best: tuple[float, dict] | None = None  # (delta_seconds, comment_data)
+    state_entry = _parse_jira_timestamp(state_entry_ts) if state_entry_ts else None
+
+    close_best: tuple[float, dict] | None = None  # (score, comment)
+    fallback_best: tuple[float, dict] | None = None
 
     for c in comments_data:
         c_ts = _parse_jira_timestamp(c.get("created"))
         if not c_ts:
             continue
-        delta = c_ts - target
-        if abs(delta) > window:
-            continue
         author = ((c.get("author") or {}).get("displayName")
                   or (c.get("author") or {}).get("emailAddress"))
-        # Same author + posted within the window: prefer those (slight bonus)
-        score = abs(delta.total_seconds())
-        if transition_author and author == transition_author:
-            score -= 60 * 30  # 30-minute bonus for matching author
-        if best is None or score < best[0]:
-            best = (score, c)
+        delta = c_ts - target
 
+        if abs(delta) <= window:
+            # Same author + posted within the window: prefer those (slight bonus)
+            score = abs(delta.total_seconds())
+            if transition_author and author == transition_author:
+                score -= 60 * 30  # 30-minute bonus for matching author
+            if close_best is None or score < close_best[0]:
+                close_best = (score, c)
+        elif state_entry and state_entry <= c_ts < target:
+            # Fallback: comment posted while the ticket sat in its reviewed
+            # state. Prefer non-dev voices (a reviewer's actual complaint
+            # beats the dev's "will check" reply); recency breaks ties.
+            is_dev = bool(dev_names and author and author in dev_names)
+            # Lower wins. Recency component is negative-timestamp so newer
+            # comments score lower. Dev penalty must dominate any recency
+            # gap, so use a year of seconds — bigger than any realistic window.
+            recency = -c_ts.timestamp()
+            dev_penalty = 60 * 60 * 24 * 365 if is_dev else 0
+            score = recency + dev_penalty
+            if fallback_best is None or score < fallback_best[0]:
+                fallback_best = (score, c)
+
+    best = close_best or fallback_best
     if not best:
         return None
 
@@ -699,12 +727,32 @@ def _find_bounce_reason(
 def _extract_bounce_history(
     changelog_histories: list[dict],
     comments_data: list[dict],
+    *,
+    dev_names: frozenset[str] | None = None,
 ) -> list[BounceEvent]:
-    """Scan the changelog for QA/UAT → ToDo style regressions and pair each with a reason."""
+    """Scan the changelog for QA/UAT → ToDo style regressions and pair each with a reason.
+
+    ``dev_names`` — display names treated as "the developer" when picking a
+    bounce reason from older comments; lets the reviewed-state fallback
+    prefer QA/UAT feedback over the dev's own replies.
+    """
     events: list[BounceEvent] = []
     saw_advanced = False
+    # Most recent time the ticket entered each named status. Used to bound
+    # the reviewed-state fallback when the bounce has no close-window comment.
+    status_entry_ts: dict[str, str] = {}
 
-    for history in changelog_histories:
+    # Jira's real API returns histories newest-first, but the "state entry"
+    # tracking above only makes sense when we walk time forward. Sort by
+    # created — unparseable / missing timestamps sink to the end so they
+    # don't corrupt the earlier ordering.
+    def _sort_key(h: dict) -> tuple[int, float]:
+        dt = _parse_jira_timestamp(h.get("created"))
+        return (0, dt.timestamp()) if dt else (1, 0.0)
+
+    sorted_histories = sorted(changelog_histories, key=_sort_key)
+
+    for history in sorted_histories:
         created = history.get("created")
         author = (history.get("author") or {}).get("displayName")
         for item in history.get("items", []):
@@ -714,6 +762,8 @@ def _extract_bounce_history(
             to_status = item.get("toString") or ""
             if _is_advanced_status(to_status):
                 saw_advanced = True
+            if to_status and created:
+                status_entry_ts[to_status] = created
             if (
                 saw_advanced
                 and _is_backward_target(to_status)
@@ -725,7 +775,13 @@ def _extract_bounce_history(
                         to_status=to_status,
                         timestamp=created or "",
                         author=author,
-                        reason=_find_bounce_reason(comments_data, created, author),
+                        reason=_find_bounce_reason(
+                            comments_data,
+                            created,
+                            author,
+                            state_entry_ts=status_entry_ts.get(from_status),
+                            dev_names=dev_names,
+                        ),
                     )
                 )
     return events
@@ -1971,10 +2027,16 @@ class JiraClient:
 
         # Detect QA/UAT → ToDo bounce-backs from the changelog. Reason text is
         # pulled from the unfiltered comment list since bounce reasons may not
-        # match the testing-comment keyword filter.
+        # match the testing-comment keyword filter. Pass known dev names
+        # (current + prior assignees) so the reviewed-state fallback can
+        # prefer a reviewer's actual complaint over the dev's own reply.
+        dev_names = frozenset(
+            n for n in ([assignee] + list(assignee_history)) if n
+        )
         bounce_history = _extract_bounce_history(
             data.get("changelog", {}).get("histories", []),
             comments_data,
+            dev_names=dev_names or None,
         )
         if bounce_history:
             logger.info(
