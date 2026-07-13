@@ -289,6 +289,23 @@ function WorkflowActions({
   const [uatGateStep, setUatGateStep] = useState(null) // null | 'offer' | 'confirm'
   const loomInputRef = useRef(null)
 
+  // Fetch the ticket's latest walkthrough + complexity. Callable so we can
+  // refresh right before the pass-to-uat gate check — the walkthrough may have
+  // been saved from TestPlanDisplay after this component mounted.
+  const refreshWalkthroughState = async () => {
+    if (!ticketKey) return null
+    try {
+      const r = await fetch(`${API_BASE_URL}/tickets/${ticketKey}/walkthrough`)
+      if (!r.ok) return null
+      const data = await r.json()
+      setUatComplexity(data.uat_complexity || null)
+      setSavedWalkthrough(data)
+      return data
+    } catch {
+      return null
+    }
+  }
+
   useEffect(() => {
     if (!ticketKey) {
       setUatComplexity(null)
@@ -489,7 +506,7 @@ function WorkflowActions({
     requestAnimationFrame(() => loomInputRef.current?.focus())
   }
 
-  const onNoteSubmit = (e) => {
+  const onNoteSubmit = async (e) => {
     e.preventDefault()
     if (!noteForAction) return
     const looms = loomUrlsText
@@ -500,15 +517,22 @@ function WorkflowActions({
     if (noteForAction.id === 'pass-to-uat') {
       // Nudge for a walkthrough when a hard-to-UAT ticket is being passed on
       // with no Loom, no screenshot, and none already attached to the plan.
-      const savedVisual = !!(
-        savedWalkthrough &&
-        (savedWalkthrough.loom_url ||
-          (Array.isArray(savedWalkthrough.screenshots) && savedWalkthrough.screenshots.length > 0))
-      )
-      const hasVisual = looms.length > 0 || imageFiles.length > 0 || savedVisual
-      if (uatComplexity === 'high' && !hasVisual) {
-        setUatGateStep('offer')
-        return
+      // Refetch first — TestPlanDisplay may have saved a walkthrough after this
+      // component mounted, and stale state would nag the user for material they
+      // already attached.
+      const localHasVisual = looms.length > 0 || imageFiles.length > 0
+      if (!localHasVisual) {
+        const fresh = (await refreshWalkthroughState()) || savedWalkthrough
+        const savedVisual = !!(
+          fresh &&
+          (fresh.loom_url ||
+            (Array.isArray(fresh.screenshots) && fresh.screenshots.length > 0))
+        )
+        const complexity = fresh?.uat_complexity ?? uatComplexity
+        if (complexity === 'high' && !savedVisual) {
+          setUatGateStep('offer')
+          return
+        }
       }
       submitPassToUat()
       return
