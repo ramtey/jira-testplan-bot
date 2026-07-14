@@ -74,7 +74,7 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
           v{latest.version}
         </span>
         <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--t-sm)' }}>· {summary}</span>
-        {liveRun && (
+        {liveRun && !expanded && (
           <span
             title={liveRun.posted_at ? `Posted ${new Date(liveRun.posted_at).toLocaleString()}` : 'Posted to Jira'}
             style={{ display: 'inline-flex' }}
