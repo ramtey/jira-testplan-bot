@@ -470,6 +470,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
           assigneeHistoryAccountIds={ticketData.assignee_history_account_ids}
           currentUserAccountId={ticketData.current_user_account_id}
           childIssues={ticketData.children}
+          pullRequests={ticketData.development_info?.pull_requests}
           onActionComplete={onActionComplete}
         />
       </div>

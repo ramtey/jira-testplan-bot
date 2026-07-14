@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE_URL, isWorkflowEnabledForTicket } from '../config'
+import { extractPrMedia } from '../utils/prMedia'
 import Icon from './Icon'
 import { Btn, Cbx, Alert, Modal } from './ui'
 
@@ -267,6 +268,7 @@ function WorkflowActions({
   assigneeHistoryAccountIds,
   currentUserAccountId,
   childIssues,
+  pullRequests,
   onActionComplete,
 }) {
   const [pendingAction, setPendingAction] = useState(null)
@@ -288,6 +290,15 @@ function WorkflowActions({
   const [savedWalkthrough, setSavedWalkthrough] = useState(null)
   const [uatGateStep, setUatGateStep] = useState(null) // null | 'offer' | 'confirm'
   const loomInputRef = useRef(null)
+
+  // Screenshots / videos already attached to the linked PRs count as walkthrough
+  // material — the walkthrough card surfaces them alongside the saved Loom /
+  // screenshots, so the gate must too or it'll nag on tickets whose PR already
+  // ships a demo clip.
+  const hasPrMedia = useMemo(
+    () => extractPrMedia(pullRequests).length > 0,
+    [pullRequests]
+  )
 
   // Fetch the ticket's latest walkthrough + complexity. Callable so we can
   // refresh right before the pass-to-uat gate check — the walkthrough may have
@@ -516,20 +527,23 @@ function WorkflowActions({
 
     if (noteForAction.id === 'pass-to-uat') {
       // Nudge for a walkthrough when a hard-to-UAT ticket is being passed on
-      // with no Loom, no screenshot, and none already attached to the plan.
-      // Refetch first — TestPlanDisplay may have saved a walkthrough after this
-      // component mounted, and stale state would nag the user for material they
-      // already attached.
-      const localHasVisual = looms.length > 0 || imageFiles.length > 0
-      if (!localHasVisual) {
+      // with no walkthrough material anywhere. "Material" here mirrors what the
+      // walkthrough card treats as present — a Loom, a screenshot, notes, or a
+      // PR-attached image/video — so saving *any* of those stands the gate down.
+      // Refetch first: TestPlanDisplay may have saved a walkthrough after this
+      // component mounted, and stale state would nag for material already attached.
+      const localHasWalkthrough =
+        looms.length > 0 || imageFiles.length > 0 || hasPrMedia
+      if (!localHasWalkthrough) {
         const fresh = (await refreshWalkthroughState()) || savedWalkthrough
-        const savedVisual = !!(
+        const savedWalkthroughPresent = !!(
           fresh &&
           (fresh.loom_url ||
-            (Array.isArray(fresh.screenshots) && fresh.screenshots.length > 0))
+            (Array.isArray(fresh.screenshots) && fresh.screenshots.length > 0) ||
+            (typeof fresh.notes === 'string' && fresh.notes.trim()))
         )
         const complexity = fresh?.uat_complexity ?? uatComplexity
-        if (complexity === 'high' && !savedVisual) {
+        if (complexity === 'high' && !savedWalkthroughPresent) {
           setUatGateStep('offer')
           return
         }
