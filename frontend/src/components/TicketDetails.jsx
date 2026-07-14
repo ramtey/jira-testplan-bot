@@ -50,7 +50,28 @@ function formatRelativeTime(iso) {
 // latest bounce's headline before the user expands the panel — the whole reason
 // this refactor exists.
 
-function BounceCard({ bounce, headlineState }) {
+// The fix that answers a send-back is the earliest PR merged AFTER the bounce.
+// Older bounces on the same ticket can then be paired with earlier fix PRs — a
+// naive "latest merged PR" scoop would credit every bounce with the same fix.
+function findResultingPr(bounce, pullRequests) {
+  if (!bounce?.timestamp || !Array.isArray(pullRequests) || pullRequests.length === 0) return null
+  const bounceMs = new Date(bounce.timestamp).getTime()
+  if (Number.isNaN(bounceMs)) return null
+  let best = null
+  let bestMs = Infinity
+  for (const pr of pullRequests) {
+    if (!pr?.merged_at) continue
+    const mergedMs = new Date(pr.merged_at).getTime()
+    if (Number.isNaN(mergedMs) || mergedMs <= bounceMs) continue
+    if (mergedMs < bestMs) {
+      bestMs = mergedMs
+      best = pr
+    }
+  }
+  return best
+}
+
+function BounceCard({ bounce, headlineState, resultingPr }) {
   const [showFull, setShowFull] = useState(false)
   const state = headlineState?.state || (bounce.reason ? 'loading' : 'no-comment')
   const headline = headlineState?.headline || null
@@ -129,12 +150,85 @@ function BounceCard({ bounce, headlineState }) {
             )}
           </div>
         )}
+        {resultingPr && <ResultingPrChanges pr={resultingPr} />}
       </div>
     </Alert>
   )
 }
 
-function BounceSection({ events }) {
+function ResultingPrChanges({ pr }) {
+  const [showAll, setShowAll] = useState(false)
+  const files = Array.isArray(pr.files_changed) ? pr.files_changed : []
+  const mergedRelative = formatRelativeTime(pr.merged_at)
+  const mergedAbsolute = formatBounceTimestamp(pr.merged_at)
+  const label = pr.title || 'the follow-up PR'
+  const shown = showAll ? files : files.slice(0, 6)
+
+  return (
+    <div style={{
+      marginTop: 'var(--s-2)',
+      padding: 'var(--s-3)',
+      background: 'var(--bg-input)',
+      border: '1px solid var(--line)',
+      borderRadius: 'var(--r-sm)',
+    }}>
+      <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', marginBottom: 'var(--s-2)' }}>
+        <strong>Changes merged after this send-back</strong>
+        {mergedRelative && (
+          <span style={{ color: 'var(--fg-muted)' }}>
+            {' · '}
+            <span title={mergedAbsolute}>{mergedRelative}</span>
+          </span>
+        )}
+      </div>
+      <div style={{ fontSize: 'var(--t-sm)', marginBottom: files.length ? 'var(--s-2)' : 0 }}>
+        {pr.url
+          ? <a href={pr.url} target="_blank" rel="noreferrer">{label}</a>
+          : <span>{label}</span>}
+      </div>
+      {files.length > 0 && (
+        <>
+          <ul style={{
+            margin: 0,
+            paddingLeft: 'var(--s-5)',
+            fontSize: 'var(--t-xs)',
+            fontFamily: 'var(--font-mono)',
+            color: 'var(--fg)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '2px',
+          }}>
+            {shown.map((f) => (
+              <li key={f.filename}>
+                <span style={{ color: 'var(--fg-muted)' }}>[{f.status}] </span>
+                {f.filename}
+                {(f.additions || f.deletions) ? (
+                  <span style={{ color: 'var(--fg-muted)' }}>
+                    {' '}(+{f.additions ?? 0} / −{f.deletions ?? 0})
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {files.length > shown.length && (
+            <button
+              type="button"
+              onClick={() => setShowAll(true)}
+              className="btn"
+              data-variant="ghost"
+              data-size="sm"
+              style={{ padding: '2px 8px', fontSize: 'var(--t-xs)', marginTop: 'var(--s-2)' }}
+            >
+              Show {files.length - shown.length} more file{files.length - shown.length === 1 ? '' : 's'}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function BounceSection({ events, pullRequests }) {
   const [open, setOpen] = useState(false)
   const [headlines, setHeadlines] = useState({})  // { [timestamp]: { state, headline } }
 
@@ -222,15 +316,13 @@ function BounceSection({ events }) {
       preview={preview}
       meta={<Chip>{count}</Chip>}
     >
-      <p style={{ margin: '0 0 var(--s-4)', color: 'var(--fg-muted)', fontSize: 'var(--t-sm)' }}>
-        This ticket reached a downstream review or testing stage and was moved back to development — usually because something didn't work. Each card below shows one such moment and the reason we could piece together.
-      </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
         {[...events].reverse().map((b, i) => (
           <BounceCard
             key={`${b.timestamp}-${i}`}
             bounce={b}
             headlineState={headlines[b.timestamp]}
+            resultingPr={findResultingPr(b, pullRequests)}
           />
         ))}
       </div>
@@ -383,7 +475,10 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
       </div>
 
       {ticketData.bounce_history && ticketData.bounce_history.length > 0 && (
-        <BounceSection events={ticketData.bounce_history} />
+        <BounceSection
+          events={ticketData.bounce_history}
+          pullRequests={ticketData.development_info?.pull_requests || []}
+        />
       )}
 
       {/* Summary */}
