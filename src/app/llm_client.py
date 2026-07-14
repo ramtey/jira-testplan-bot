@@ -1466,6 +1466,24 @@ class LLMClient(ABC):
         """
         pass
 
+    async def verify_case_grounding(
+        self,
+        cases: list[dict],
+    ) -> dict[str, dict]:
+        """Post-generation critic pass — check each case against its cited AC text.
+
+        ``cases`` is the payload produced by
+        ``grounding_critic.build_case_verification_inputs``. Each entry pairs
+        a test case with the verbatim text of every AC ID it declared in
+        ``covers_acs``.
+
+        Returns a dict ``{case_id: {"verdict": "grounded"|"ungrounded",
+        "reason": str}}``. Default implementation returns an empty dict —
+        providers that don't (or can't reliably) run the critic behave the
+        same as before this pass existed.
+        """
+        return {}
+
     def _build_bounce_reason_prompt(
         self,
         from_status: str,
@@ -3752,6 +3770,73 @@ class ClaudeClient(LLMClient):
             f"Claude API returned error status {last_status} after {max_attempts} attempts",
             error_type="service_unavailable",
         )
+
+    async def verify_case_grounding(
+        self,
+        cases: list[dict],
+    ) -> dict[str, dict]:
+        """Ask Claude to grade each case's grounding against its cited ACs.
+
+        A soft best-effort pass: any transport error, malformed response,
+        or per-call rate limit degrades to an empty verdict dict rather
+        than failing the whole /generate-test-plan request. QA sees the
+        original plan; the ungrounded-badge is just missing.
+        """
+        from .grounding_critic import (
+            CRITIC_SYSTEM_PROMPT,
+            REPORT_GROUNDING_TOOL,
+            build_critic_user_message,
+            parse_verdicts,
+        )
+
+        if not cases:
+            return {}
+
+        user_message = build_critic_user_message(cases)
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "anthropic-version": "2023-06-01",
+                        "x-api-key": self.api_key,
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 4096,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": CRITIC_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                        "messages": [{"role": "user", "content": user_message}],
+                        **self._temperature_kwargs(0.0),
+                        "tools": [REPORT_GROUNDING_TOOL],
+                        "tool_choice": {"type": "tool", "name": "report_grounding"},
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
+            # Best-effort: don't fail the whole plan if the critic errors.
+            import logging
+            logging.getLogger(__name__).warning(
+                "verify_case_grounding: transport error; skipping critic pass",
+                exc_info=True,
+            )
+            return {}
+
+        tool_block = next(
+            (b for b in (data.get("content") or []) if b.get("type") == "tool_use"),
+            None,
+        )
+        if not tool_block:
+            return {}
+        return parse_verdicts(tool_block.get("input"))
 
     async def _claude_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)

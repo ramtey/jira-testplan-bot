@@ -13,6 +13,11 @@ from .db.models.plan import PlanFormat
 from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
 from .db.models.run import RunType
 from .db.session import get_sessionmaker
+from .grounding_critic import (
+    apply_verdicts,
+    build_ac_index,
+    build_case_verification_inputs,
+)
 from .jira_client import (
     JiraAuthError,
     JiraClient,
@@ -361,6 +366,42 @@ def _compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
         "invalid_ids": sorted(invalid_ids),
         "superseded_acs": superseded_pairs,
     }
+
+
+async def _run_grounding_critic(llm, test_plan, tickets_data: list[dict]) -> None:
+    """Post-generation critic — check that each case's cited AC actually
+    describes the behaviour the case tests.
+
+    Any case flagged ungrounded is badged in place with
+    ``needs_manual_verification=True`` and gets an entry in the plan's
+    ``grounding_warnings`` list. The UI then renders the existing
+    "Ungrounded UI ref" badge on the case so QA can visibly skip it.
+
+    Failures inside the critic (transport errors, malformed output,
+    provider not implementing it) are non-fatal — the plan ships without
+    the extra badges rather than with a broken request.
+    """
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+
+    ac_index = build_ac_index(tickets_data)
+    if not ac_index:
+        return
+    cases = build_case_verification_inputs(test_plan, ac_index)
+    if not cases:
+        return
+    try:
+        verdicts = await llm.verify_case_grounding(cases)
+    except Exception:
+        log.exception("verify_case_grounding raised; skipping grounding critic")
+        return
+    added = apply_verdicts(test_plan, verdicts)
+    if added:
+        log.info(
+            "grounding_critic: flagged %d ungrounded case(s): %s",
+            len(added),
+            [w["ac_id"] + ": " + w["missing_element"] for w in added],
+        )
 
 
 def _flatten_cases_for_persistence(test_plan) -> list[tuple[str, str, str | None]]:
@@ -880,6 +921,12 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
                 "acceptance_criteria": extract_acceptance_criteria(request.description),
             }
         ]
+        # Grounding critic — catch cases that cite an AC by number but test a
+        # behaviour that AC's text doesn't actually contain (e.g. a "filter by
+        # date range" case tagged against an AC that only says "viewable").
+        # Runs before _compute_ac_coverage so any badges added here survive
+        # the covers_acs cleanup pass.
+        await _run_grounding_critic(llm, test_plan, single_ticket_data)
         ac_coverage = _compute_ac_coverage(test_plan, single_ticket_data)
 
         response = {
@@ -1005,6 +1052,8 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             cross_project=cross_project_payload,
         )
 
+        # Grounding critic — see the single-ticket endpoint for context.
+        await _run_grounding_critic(llm, test_plan, tickets_data)
         ac_coverage = _compute_ac_coverage(test_plan, tickets_data)
         valid_ac_ids = {
             f"{t['ticket_key']}-AC{i}"

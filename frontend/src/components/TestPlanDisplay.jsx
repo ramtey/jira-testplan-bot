@@ -145,7 +145,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
             )}
             {test.needs_manual_verification && (
               <span
-                title="The AC element referenced in this test could not be verified in the PR diff or testID reference."
+                title="This test isn't fully grounded in the AC text or PR diff — either the referenced UI element wasn't in the diff/testID reference, or the cited AC doesn't describe the behaviour being tested. Verify the AC actually requires this before running."
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
