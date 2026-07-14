@@ -13,6 +13,11 @@ from .db.models.plan import PlanFormat
 from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
 from .db.models.run import RunType
 from .db.session import get_sessionmaker
+from .fix_scope_critic import (
+    apply_scope_verdicts,
+    build_case_scope_inputs,
+    build_fix_scope_summary,
+)
 from .grounding_critic import (
     apply_verdicts,
     build_ac_index,
@@ -400,6 +405,50 @@ async def _run_grounding_critic(llm, test_plan, tickets_data: list[dict]) -> Non
     if added:
         log.info(
             "grounding_critic: flagged %d ungrounded case(s): %s",
+            len(added),
+            [w["ac_id"] + ": " + w["missing_element"] for w in added],
+        )
+
+
+async def _run_fix_scope_critic(
+    llm,
+    test_plan,
+    dev_infos: list[dict],
+) -> None:
+    """Post-generation critic — check that each case exercises behaviour the
+    merged PR actually changed.
+
+    Catches reporter-drift: cases that cite a real AC but test a concern
+    from the ticket description that the fix explicitly did NOT address
+    (e.g. SK-2373 EC-0 asserting the FRED default rate is not auto-applied
+    when the merged PR body says "Tooltip copy only, no change to FRED
+    behavior"). Unsupported cases are badged in place with
+    ``needs_manual_verification=True`` and gain a matching
+    ``grounding_warnings`` entry.
+
+    Runs only when at least one ticket has PR/commit signal — with no fix
+    context, the critic has nothing to reason against. Failures inside the
+    critic (transport errors, malformed output, provider not implementing
+    it) are non-fatal.
+    """
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+
+    fix_scope = build_fix_scope_summary(dev_infos)
+    if not fix_scope:
+        return
+    cases = build_case_scope_inputs(test_plan)
+    if not cases:
+        return
+    try:
+        verdicts = await llm.verify_fix_scope(cases, fix_scope)
+    except Exception:
+        log.exception("verify_fix_scope raised; skipping fix-scope critic")
+        return
+    added = apply_scope_verdicts(test_plan, verdicts)
+    if added:
+        log.info(
+            "fix_scope_critic: flagged %d unsupported case(s): %s",
             len(added),
             [w["ac_id"] + ": " + w["missing_element"] for w in added],
         )
@@ -928,6 +977,18 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         # Runs before _compute_ac_coverage so any badges added here survive
         # the covers_acs cleanup pass.
         await _run_grounding_critic(llm, test_plan, single_ticket_data)
+        # Fix-scope critic — catch reporter-drift cases that cite a real AC
+        # but test behaviour the merged PR explicitly did NOT change.
+        # Ordered after the grounding critic so already-badged cases skip
+        # the second LLM call.
+        await _run_fix_scope_critic(
+            llm,
+            test_plan,
+            [{
+                "ticket_key": request.ticket_key,
+                "development_info": request.development_info,
+            }],
+        )
         ac_coverage = _compute_ac_coverage(test_plan, single_ticket_data)
 
         response = {
@@ -1055,6 +1116,18 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
 
         # Grounding critic — see the single-ticket endpoint for context.
         await _run_grounding_critic(llm, test_plan, tickets_data)
+        # Fix-scope critic — see the single-ticket endpoint for context.
+        await _run_fix_scope_critic(
+            llm,
+            test_plan,
+            [
+                {
+                    "ticket_key": t.get("ticket_key"),
+                    "development_info": t.get("development_info"),
+                }
+                for t in tickets_data
+            ],
+        )
         ac_coverage = _compute_ac_coverage(test_plan, tickets_data)
         valid_ac_ids = {
             f"{t['ticket_key']}-AC{i}"
@@ -1276,7 +1349,7 @@ async def put_ticket_walkthrough(
 
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
-        await walkthrough_repository.upsert_walkthrough(
+        row = await walkthrough_repository.upsert_walkthrough(
             session,
             ticket_key=ticket_key,
             loom_url=request.loom_url,

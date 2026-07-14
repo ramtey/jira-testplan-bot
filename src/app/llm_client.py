@@ -647,6 +647,38 @@ When the expected result describes a filtered, sorted, or sliced collection, ass
 - ✅ GOOD: "Verify the returned candidates are exactly {place_id A, place_id B, place_id C} and that {place_id D, place_id E} are NOT present."
 - ✅ GOOD (when identity is dynamic): "In step N, note the full candidate list from the unfiltered Places response. Verify the filtered list is exactly the subset of step-N items whose distance from origin is ≤ 50km."
 
+**DO NOT MISTAKE THE REPORTER'S DIAGNOSIS FOR THE FIX'S SCOPE:**
+A bug ticket's description usually contains TWO different things: (a) what
+the reporter observed and (b) the reporter's guess at what's wrong — which
+frequently reads like a spec ("interest rate 3.11% is added, but I'm not
+sure it makes sense to do this"). The merged PR often addresses only part
+of (a) and explicitly punts on (b). If you turn the reporter's aside into a
+test case, you'll assert behaviour the fix never touched — QA will hit a
+failure that isn't a defect.
+
+Before writing a case, check the DEVELOPMENT ACTIVITY section — PR body /
+description, commit messages, and diffs — for scope-limiting phrasing:
+- "copy only", "tooltip only", "no change to X", "X unchanged"
+- "deferred to a follow-up", "not addressing Y in this PR", "will be
+  handled separately", "out of scope"
+- Commit subjects that name a narrow surface (e.g. "Update tooltip copy")
+  while the diff leaves adjacent behaviour untouched
+
+When you find that kind of scope statement AND the case you're about to
+write would exercise behaviour the PR explicitly excluded:
+1. Prefer to DROP the case — a QA failure that surfaces "the fix didn't do
+   what the reporter suggested" is not actionable and confuses the tester.
+2. If you keep it because the AC genuinely covers it, set
+   ``needs_manual_verification: true`` and add a matching
+   ``grounding_warnings`` entry with an explanation naming the PR-side
+   evidence (e.g. "PR body says 'tooltip copy only, no change to FRED
+   behavior' — this test asserts FRED default is not applied").
+
+Reporter-diagnostic asides are a common trigger for edge-case /
+error-handling cases especially. When an edge-case test comes from the
+reporter's speculation rather than a scope-limiting-change in the PR,
+that's the pattern this rule catches.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ CRITICAL: SOURCE-OF-VALUE COVERAGE FOR DERIVED / CONVERTED / AUTOPOPULATED FIELDS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1481,6 +1513,23 @@ class LLMClient(ABC):
         "reason": str}}``. Default implementation returns an empty dict —
         providers that don't (or can't reliably) run the critic behave the
         same as before this pass existed.
+        """
+        return {}
+
+    async def verify_fix_scope(
+        self,
+        cases: list[dict],
+        fix_scope: str,
+    ) -> dict[str, dict]:
+        """Post-generation critic pass — check each case against the merged PR scope.
+
+        ``cases`` is the payload produced by
+        ``fix_scope_critic.build_case_scope_inputs``; ``fix_scope`` is the
+        rendered PR context from ``fix_scope_critic.build_fix_scope_summary``.
+
+        Returns a dict ``{case_id: {"verdict": "supported"|"unsupported",
+        "reason": str}}``. Default implementation returns an empty dict —
+        providers that don't run the critic behave the same as before.
         """
         return {}
 
@@ -3837,6 +3886,73 @@ class ClaudeClient(LLMClient):
         if not tool_block:
             return {}
         return parse_verdicts(tool_block.get("input"))
+
+    async def verify_fix_scope(
+        self,
+        cases: list[dict],
+        fix_scope: str,
+    ) -> dict[str, dict]:
+        """Ask Claude to grade each case's grounding against the merged PR scope.
+
+        A soft best-effort pass: any transport error, malformed response,
+        or per-call rate limit degrades to an empty verdict dict rather
+        than failing the whole /generate-test-plan request. QA sees the
+        original plan; the fix-scope badge is just missing.
+        """
+        from .fix_scope_critic import (
+            SCOPE_CRITIC_SYSTEM_PROMPT,
+            REPORT_SCOPE_TOOL,
+            build_scope_critic_user_message,
+            parse_scope_verdicts,
+        )
+
+        if not cases or not (fix_scope or "").strip():
+            return {}
+
+        user_message = build_scope_critic_user_message(cases, fix_scope)
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "anthropic-version": "2023-06-01",
+                        "x-api-key": self.api_key,
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 4096,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": SCOPE_CRITIC_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                        "messages": [{"role": "user", "content": user_message}],
+                        **self._temperature_kwargs(0.0),
+                        "tools": [REPORT_SCOPE_TOOL],
+                        "tool_choice": {"type": "tool", "name": "report_scope"},
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
+            import logging
+            logging.getLogger(__name__).warning(
+                "verify_fix_scope: transport error; skipping critic pass",
+                exc_info=True,
+            )
+            return {}
+
+        tool_block = next(
+            (b for b in (data.get("content") or []) if b.get("type") == "tool_use"),
+            None,
+        )
+        if not tool_block:
+            return {}
+        return parse_scope_verdicts(tool_block.get("input"))
 
     async def _claude_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)
