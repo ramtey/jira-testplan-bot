@@ -45,6 +45,7 @@ from .seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from .services import run_tracker
 from .slack_client import resolve_slack_messages_in_text
 from .token_service import token_health_service
+from . import uat_readiness
 from .workflow_routes import router as workflow_router
 
 
@@ -1160,21 +1161,9 @@ async def post_comment(request: PostCommentRequest):
         )
 
 
-def _serialize_walkthrough(row) -> dict:
-    """Shape a TicketWalkthrough row (or None) into the JSON the frontend expects."""
-    if row is None:
-        return {
-            "loom_url": None,
-            "screenshots": [],
-            "notes": None,
-            "updated_at": None,
-        }
-    return {
-        "loom_url": row.loom_url,
-        "screenshots": walkthrough_repository.decode_screenshots(row),
-        "notes": row.notes,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
+# Walkthrough serialization + readiness composition lives in
+# ``src.app.uat_readiness`` so the workflow route (which enforces the
+# ``needs_walkthrough`` rule server-side) computes it identically.
 
 
 _WALKTHROUGH_ALLOWED_IMAGE_MIME = {
@@ -1199,19 +1188,7 @@ async def get_ticket_walkthrough(ticket_key: str):
     """
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
-        row = await walkthrough_repository.get_walkthrough(session, ticket_key=ticket_key)
-        data = _serialize_walkthrough(row)
-        complexity = None
-        latest = await plan_repository.find_latest_plan_for_ticket(
-            session, ticket_key=ticket_key.upper()
-        )
-        if latest and latest.body:
-            try:
-                complexity = (json.loads(latest.body) or {}).get("uat_complexity")
-            except (ValueError, TypeError):
-                complexity = None
-        data["uat_complexity"] = complexity
-        return data
+        return await uat_readiness.fetch_readiness(session, ticket_key=ticket_key)
 
 
 @app.put("/tickets/{ticket_key}/walkthrough")
@@ -1299,14 +1276,14 @@ async def put_ticket_walkthrough(
 
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
-        row = await walkthrough_repository.upsert_walkthrough(
+        await walkthrough_repository.upsert_walkthrough(
             session,
             ticket_key=ticket_key,
             loom_url=request.loom_url,
             notes=request.notes,
             screenshots=final_list,
         )
-        return _serialize_walkthrough(row)
+        return await uat_readiness.fetch_readiness(session, ticket_key=ticket_key)
 
 
 def _serialize_progress(row) -> dict:

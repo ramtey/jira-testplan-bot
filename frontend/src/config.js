@@ -42,3 +42,22 @@ export const isWorkflowEnabledForTicket = (ticketKey) => {
   if (!prefix) return false
   return workflowProjectPrefixes.some((p) => p.toUpperCase() === prefix)
 }
+
+// Feature flag: surface the "Pass to UAT" CTA inside the walkthrough card
+// (alongside the existing button in the workflow header) so we can watch which
+// entry point QA actually uses before deleting the other. Toggle at runtime via
+//   localStorage.setItem('jtb.walkthroughCardCta', '1')
+// or globally at build time via VITE_WALKTHROUGH_CARD_CTA=1.
+export const isWalkthroughCardCtaEnabled = () => {
+  if (import.meta.env.VITE_WALKTHROUGH_CARD_CTA === '1') return true
+  try {
+    return window.localStorage.getItem('jtb.walkthroughCardCta') === '1'
+  } catch {
+    return false
+  }
+}
+
+// CustomEvent name the walkthrough-card CTA dispatches to ask the workflow
+// header to open its "Pass to UAT" form. Kept as a constant so both ends of
+// the bridge import the same string.
+export const OPEN_PASS_TO_UAT_EVENT = 'jtb:open-pass-to-uat'

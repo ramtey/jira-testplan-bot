@@ -471,6 +471,11 @@ class WorkflowActionRequest(BaseModel):
     # transition (matched by target status name) to every direct subtask.
     # Subtasks whose workflow has no matching transition are skipped silently.
     cascade_to_subtasks: bool = False
+    # Pass-to-UAT only: acknowledge that this ticket is high-complexity for
+    # UAT and has no saved walkthrough, and hand off anyway. The server
+    # rejects the request without this flag unless the form supplies a Loom
+    # / image or the saved walkthrough already stands the gate down.
+    override_missing_walkthrough: bool = False
 
 
 class BugAnalysisRequest(BaseModel):

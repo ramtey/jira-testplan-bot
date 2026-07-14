@@ -49,6 +49,37 @@ def decode_screenshots(row: TicketWalkthrough | None) -> list[dict]:
     return cleaned
 
 
+def derive_readiness(
+    walkthrough: dict,
+    uat_complexity: str | None,
+) -> dict:
+    """Compute the UAT-readiness signal from a serialized walkthrough.
+
+    Single source of truth for "does this ticket have walkthrough material?" —
+    both the walkthrough card and the Pass-to-UAT gate historically re-derived
+    this rule in JS and drifted. Returning it from the API keeps them aligned
+    and lets the Pass-to-UAT route (future) enforce the same rule server-side.
+
+    ``sources`` names which fields carry material — useful for UI hints like
+    "Notes and screenshots attached" without the caller re-inspecting the row.
+    """
+    sources: list[str] = []
+    if walkthrough.get("loom_url"):
+        sources.append("loom")
+    shots = walkthrough.get("screenshots") or []
+    if isinstance(shots, list) and len(shots) > 0:
+        sources.append("screenshots")
+    notes = walkthrough.get("notes")
+    if isinstance(notes, str) and notes.strip():
+        sources.append("notes")
+    present = len(sources) > 0
+    return {
+        "walkthrough_present": present,
+        "walkthrough_sources": sources,
+        "needs_walkthrough": uat_complexity == "high" and not present,
+    }
+
+
 async def upsert_walkthrough(
     session: AsyncSession,
     *,

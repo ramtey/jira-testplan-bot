@@ -20,6 +20,7 @@ from .jira_client import (
 )
 from .models import WorkflowActionRequest
 from .repositories import walkthrough_repository
+from . import uat_readiness
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,47 @@ async def run_workflow_action(
             parsed_payload = WorkflowActionRequest.model_validate_json(payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid payload JSON: {exc}")
+
+    # Pass-to-UAT readiness gate — enforce the "high-complexity ticket needs a
+    # walkthrough" rule server-side so bypassing the frontend can't sneak an
+    # unwalked-through ticket into UAT. Fires *before* any Jira calls: a 409
+    # here leaves the ticket exactly where it was. The client sets the override
+    # flag once the user has consciously acknowledged the missing walkthrough
+    # (or when it sees material the server can't — e.g. PR-attached demo video).
+    if action == "pass-to-uat":
+        override = bool(
+            parsed_payload and parsed_payload.override_missing_walkthrough
+        )
+        form_looms = bool(
+            parsed_payload
+            and parsed_payload.loom_urls
+            and any(u and u.strip() for u in parsed_payload.loom_urls)
+        )
+        # Form-uploaded images are counted below via `images`; the raw
+        # UploadFile list is still open at this point, so we test filenames
+        # rather than reading bytes just to gate the request.
+        form_images = bool(
+            images and any(u and u.filename for u in images)
+        )
+        if not override and not form_looms and not form_images:
+            async with get_sessionmaker()() as session:
+                readiness = await uat_readiness.fetch_readiness(
+                    session, ticket_key=issue_key
+                )
+            if readiness.get("needs_walkthrough"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "walkthrough_required",
+                        "uat_complexity": readiness.get("uat_complexity"),
+                        "message": (
+                            "This ticket is high-complexity for UAT and has "
+                            "no walkthrough attached. Add a Loom, screenshot, "
+                            "or notes on the walkthrough card, or resubmit "
+                            "with override_missing_walkthrough=true."
+                        ),
+                    },
+                )
 
     image_files: list[tuple[str, bytes, str]] = []
     if images:

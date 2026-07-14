@@ -99,6 +99,31 @@
 .fail-back .fb-dests button:hover:not(:disabled) { background: var(--bg-raised); color: var(--fg); }
 .fail-back .fb-dests button[data-on="true"] { background: var(--danger-soft); color: var(--danger); }
 
+/* Ready-to-hand-off chip: replaces the header Pass-to-UAT button when the
+   walkthrough-card CTA owns the action. Muted, points down to the card. */
+.handoff-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px;
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-pill);
+  color: var(--fg-subtle);
+  font-size: var(--t-sm); font-weight: var(--w-med);
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease-out), color var(--d-fast) var(--ease-out);
+}
+.handoff-chip:hover { background: var(--bg-raised); color: var(--fg); }
+.handoff-chip .ic { width: 13px; height: 13px; }
+
+/* Applied for ~1.4s after the chip scrolls to the walkthrough card so the
+   user's eye lands on the right target. */
+@keyframes handoff-flash {
+  0%   { box-shadow: 0 0 0 0 var(--accent-soft); }
+  35%  { box-shadow: 0 0 0 6px var(--accent-soft); }
+  100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+}
+.handoff-flash { animation: handoff-flash 1.4s ease-out; }
+
 /* Input */
 .inp {
   display: block; width: 100%;

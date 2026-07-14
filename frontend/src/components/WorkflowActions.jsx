@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { API_BASE_URL, isWorkflowEnabledForTicket } from '../config'
-import { extractPrMedia } from '../utils/prMedia'
+import { useEffect, useRef, useState } from 'react'
+import {
+  API_BASE_URL,
+  isWalkthroughCardCtaEnabled,
+  isWorkflowEnabledForTicket,
+  OPEN_PASS_TO_UAT_EVENT,
+} from '../config'
 import Icon from './Icon'
 import { Btn, Cbx, Alert, Modal } from './ui'
 
@@ -268,7 +272,6 @@ function WorkflowActions({
   assigneeHistoryAccountIds,
   currentUserAccountId,
   childIssues,
-  pullRequests,
   onActionComplete,
 }) {
   const [pendingAction, setPendingAction] = useState(null)
@@ -284,60 +287,14 @@ function WorkflowActions({
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
   // Which column the single "Fail back" action returns the ticket to.
   const [failTargetId, setFailTargetId] = useState('fail-to-todo')
-  // UAT-walkthrough nudge: the ticket's latest complexity + any walkthrough a
-  // planner already attached, plus the two-step gate state for pass-to-uat.
-  const [uatComplexity, setUatComplexity] = useState(null)
-  const [savedWalkthrough, setSavedWalkthrough] = useState(null)
-  const [uatGateStep, setUatGateStep] = useState(null) // null | 'offer' | 'confirm'
+  // Prompt shown when the server rejects Pass-to-UAT because the ticket is
+  // high-complexity and no walkthrough is attached. Client-side pre-checks
+  // moved to the server in step 5 — the frontend just handles the 409.
+  //   null                            → no prompt
+  //   { message: string, retry: fn }  → prompt open, retry() resends with the
+  //                                     override flag on confirm
+  const [walkthroughOverridePrompt, setWalkthroughOverridePrompt] = useState(null)
   const loomInputRef = useRef(null)
-
-  // Screenshots / videos already attached to the linked PRs count as walkthrough
-  // material — the walkthrough card surfaces them alongside the saved Loom /
-  // screenshots, so the gate must too or it'll nag on tickets whose PR already
-  // ships a demo clip.
-  const hasPrMedia = useMemo(
-    () => extractPrMedia(pullRequests).length > 0,
-    [pullRequests]
-  )
-
-  // Fetch the ticket's latest walkthrough + complexity. Callable so we can
-  // refresh right before the pass-to-uat gate check — the walkthrough may have
-  // been saved from TestPlanDisplay after this component mounted.
-  const refreshWalkthroughState = async () => {
-    if (!ticketKey) return null
-    try {
-      const r = await fetch(`${API_BASE_URL}/tickets/${ticketKey}/walkthrough`)
-      if (!r.ok) return null
-      const data = await r.json()
-      setUatComplexity(data.uat_complexity || null)
-      setSavedWalkthrough(data)
-      return data
-    } catch {
-      return null
-    }
-  }
-
-  useEffect(() => {
-    if (!ticketKey) {
-      setUatComplexity(null)
-      setSavedWalkthrough(null)
-      return
-    }
-    let cancelled = false
-    fetch(`${API_BASE_URL}/tickets/${ticketKey}/walkthrough`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (cancelled || !data) return
-        setUatComplexity(data.uat_complexity || null)
-        setSavedWalkthrough(data)
-      })
-      .catch(() => {
-        /* nudge metadata is optional — ignore */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [ticketKey])
 
   useEffect(() => {
     if (!feedback || feedback.kind !== 'success') return
@@ -354,10 +311,43 @@ function WorkflowActions({
     return () => clearTimeout(t)
   }, [isLeaving])
 
+  // Bridge from the walkthrough-card CTA (rendered in a sibling tree): when
+  // it dispatches OPEN_PASS_TO_UAT_EVENT, open the same inline form the header
+  // button opens. The CTA is only visible when this ticket is "In Testing",
+  // but we re-check status here so a stale listener can't force the form open.
+  // Also scrolls the form into view — the CTA lives below the plan, so opening
+  // in the header without a scroll would look like the button did nothing.
+  useEffect(() => {
+    if (normalize(currentStatus) !== TESTING_STATUS) return
+    const handler = () => {
+      const passAction = ACTIONS.find((a) => a.id === 'pass-to-uat')
+      if (!passAction) return
+      setEnvironments(detectEnvironments(description, comments))
+      setNoteForAction(passAction)
+      setFeedback(null)
+      setTimeout(() => {
+        document
+          .getElementById('workflow-actions-root')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 50)
+    }
+    window.addEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
+    return () => window.removeEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
+  }, [currentStatus, description, comments])
+
   if (!isWorkflowEnabledForTicket(ticketKey)) return null
 
   const visibleActions = ACTIONS.filter((a) => a.showWhen(currentStatus))
   if (visibleActions.length === 0) return null
+
+  // When the walkthrough-card CTA is the primary Pass-to-UAT entry point,
+  // suppress the header button and the pre-submit nudge modal — the user has
+  // literally just seen the walkthrough state on the card they clicked from,
+  // so both are redundant friction. In the header we replace it with a small
+  // "Ready to hand off" chip that scrolls to the card.
+  const handOffFromCard =
+    normalize(currentStatus) === TESTING_STATUS &&
+    isWalkthroughCardCtaEnabled()
 
   const hasSubtasks =
     Array.isArray(childIssues) &&
@@ -409,7 +399,7 @@ function WorkflowActions({
     currentUserAccountId,
   })
 
-  const runAction = async (action, body, files = []) => {
+  const runAction = async (action, body, files = [], overrideWalkthrough = false) => {
     setPendingAction(action.id)
     setFeedback(null)
     setIsLeaving(false)
@@ -419,9 +409,12 @@ function WorkflowActions({
       // We send an empty FormData (no payload, no files) for actions like
       // pull-to-testing that just transition.
       const form = new FormData()
-      const effectiveBody = cascadeToSubtasks
-        ? { ...(body || {}), cascade_to_subtasks: true }
+      const withOverride = overrideWalkthrough
+        ? { ...(body || {}), override_missing_walkthrough: true }
         : body
+      const effectiveBody = cascadeToSubtasks
+        ? { ...(withOverride || {}), cascade_to_subtasks: true }
+        : withOverride
       if (effectiveBody && Object.keys(effectiveBody).length > 0) {
         form.append('payload', JSON.stringify(effectiveBody))
       }
@@ -434,7 +427,33 @@ function WorkflowActions({
       )
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
-        throw new Error(data.detail || `Action failed (${response.status})`)
+        // Server-side walkthrough gate: 409 with a structured detail body.
+        // Open a single confirm prompt — retry runs the same request with the
+        // override flag set so the server allows it through.
+        if (
+          response.status === 409 &&
+          data.detail &&
+          typeof data.detail === 'object' &&
+          data.detail.error_code === 'walkthrough_required' &&
+          !overrideWalkthrough
+        ) {
+          setPendingAction(null)
+          setWalkthroughOverridePrompt({
+            message:
+              data.detail.message ||
+              'This ticket has no walkthrough. Pass to UAT anyway?',
+            retry: () => {
+              setWalkthroughOverridePrompt(null)
+              runAction(action, body, files, true)
+            },
+          })
+          return
+        }
+        const detailText =
+          typeof data.detail === 'string'
+            ? data.detail
+            : `Action failed (${response.status})`
+        throw new Error(detailText)
       }
       const assigneeText =
         data.assigned_to === 'unassigned'
@@ -486,38 +505,7 @@ function WorkflowActions({
     runAction(action)
   }
 
-  // Build the pass-to-uat body from the current form state and run the
-  // transition. Shared by the normal submit and the "post without it" path of
-  // the walkthrough gate.
-  const submitPassToUat = () => {
-    setUatGateStep(null)
-    const looms = loomUrlsText
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-    const trimmedSummary = summary.trim()
-    const hasAnyField =
-      looms.length > 0 || trimmedSummary || environments.length > 0 || imageFiles.length > 0
-    const body = hasAnyField
-      ? {
-          loom_urls: looms.length > 0 ? looms : null,
-          summary: trimmedSummary || null,
-          environments: environments.length > 0 ? environments : null,
-          mention_account_ids:
-            mentionAccountIds.length > 0 ? mentionAccountIds : null,
-        }
-      : undefined
-    runAction(noteForAction, body, imageFiles)
-  }
-
-  // "Add a walkthrough" in the gate: dismiss it and drop the cursor in the Loom
-  // field of the (already-open) pass-to-uat form.
-  const focusLoomInput = () => {
-    setUatGateStep(null)
-    requestAnimationFrame(() => loomInputRef.current?.focus())
-  }
-
-  const onNoteSubmit = async (e) => {
+  const onNoteSubmit = (e) => {
     e.preventDefault()
     if (!noteForAction) return
     const looms = loomUrlsText
@@ -526,29 +514,24 @@ function WorkflowActions({
       .filter(Boolean)
 
     if (noteForAction.id === 'pass-to-uat') {
-      // Nudge for a walkthrough when a hard-to-UAT ticket is being passed on
-      // with no walkthrough material anywhere. "Material" here mirrors what the
-      // walkthrough card treats as present — a Loom, a screenshot, notes, or a
-      // PR-attached image/video — so saving *any* of those stands the gate down.
-      // Refetch first: TestPlanDisplay may have saved a walkthrough after this
-      // component mounted, and stale state would nag for material already attached.
-      const localHasWalkthrough =
-        looms.length > 0 || imageFiles.length > 0 || hasPrMedia
-      if (!localHasWalkthrough) {
-        const fresh = (await refreshWalkthroughState()) || savedWalkthrough
-        const savedWalkthroughPresent = !!(
-          fresh &&
-          (fresh.loom_url ||
-            (Array.isArray(fresh.screenshots) && fresh.screenshots.length > 0) ||
-            (typeof fresh.notes === 'string' && fresh.notes.trim()))
-        )
-        const complexity = fresh?.uat_complexity ?? uatComplexity
-        if (complexity === 'high' && !savedWalkthroughPresent) {
-          setUatGateStep('offer')
-          return
-        }
-      }
-      submitPassToUat()
+      // No client-side gate — the server enforces the walkthrough rule and
+      // returns a 409 that opens the override prompt in runAction.
+      const trimmedSummary = summary.trim()
+      const hasAnyField =
+        looms.length > 0 ||
+        trimmedSummary ||
+        environments.length > 0 ||
+        imageFiles.length > 0
+      const body = hasAnyField
+        ? {
+            loom_urls: looms.length > 0 ? looms : null,
+            summary: trimmedSummary || null,
+            environments: environments.length > 0 ? environments : null,
+            mention_account_ids:
+              mentionAccountIds.length > 0 ? mentionAccountIds : null,
+          }
+        : undefined
+      runAction(noteForAction, body, imageFiles)
       return
     }
 
@@ -571,7 +554,7 @@ function WorkflowActions({
   const isFail = isFailAction(noteForAction?.id)
 
   return (
-    <div>
+    <div id="workflow-actions-root">
       {!noteForAction && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 600, marginRight: 'var(--s-2)' }}>
@@ -579,6 +562,7 @@ function WorkflowActions({
           </span>
           {visibleActions
             .filter((action) => !isFailAction(action.id))
+            .filter((action) => !(handOffFromCard && action.id === 'pass-to-uat'))
             .map((action) => (
               <Btn
                 key={action.id}
@@ -592,6 +576,24 @@ function WorkflowActions({
                 {action.label}
               </Btn>
             ))}
+          {handOffFromCard && (
+            <button
+              type="button"
+              className="handoff-chip"
+              title="Pass-to-UAT lives on the walkthrough card below"
+              onClick={() => {
+                const target = document.getElementById('uat-guide-card')
+                if (target) {
+                  target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  target.classList.add('handoff-flash')
+                  setTimeout(() => target.classList.remove('handoff-flash'), 1400)
+                }
+              }}
+            >
+              <Icon name="arrow-down-right" size={13} />
+              Ready to hand off
+            </button>
+          )}
           {(() => {
             // The two bounce-backs share the same verb and differ only in the
             // column they return to. Render them as one unified control: a
@@ -808,51 +810,36 @@ function WorkflowActions({
         )
       })()}
 
-      {/* Two-step "add a walkthrough?" gate when passing a hard-to-UAT ticket
-          on with no Loom/screenshot. Always escapable — it nudges, never blocks. */}
-      {uatGateStep === 'offer' && (
-        <Modal
-          title="This ticket looks hard to UAT"
-          sub="The UAT tester often won't read the test plan — a short walkthrough helps."
-          onClose={() => setUatGateStep(null)}
-          width={460}
-          foot={
-            <>
-              <Btn variant="ghost" onClick={() => setUatGateStep('confirm')}>
-                Skip anyway
-              </Btn>
-              <Btn variant="primary" icon="plus" onClick={focusLoomInput}>
-                Add a walkthrough
-              </Btn>
-            </>
-          }
-        >
-          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
-            Add a Loom or screenshot so whoever UATs <strong>{ticketKey}</strong> can see
-            what changed and how to trigger it. It'll be posted with the UAT hand-off comment.
-          </div>
-        </Modal>
-      )}
-
-      {uatGateStep === 'confirm' && (
+      {/* Server-side walkthrough gate: the backend rejected Pass-to-UAT
+          because this ticket is high-complexity with no walkthrough. Confirm
+          resubmits with the override flag; cancel leaves the form open so
+          the user can add a Loom / screenshot / notes and try again. */}
+      {walkthroughOverridePrompt && (
         <Modal
           title="Pass to UAT without a walkthrough?"
-          sub="Testers may struggle to UAT this one without a video or screenshot."
-          onClose={() => setUatGateStep(null)}
+          sub="This ticket is flagged high-complexity — testers usually need a video, screenshot, or notes to run it."
+          onClose={() => setWalkthroughOverridePrompt(null)}
           width={460}
           foot={
             <>
-              <Btn variant="ghost" onClick={() => setUatGateStep('offer')}>
-                Go back
+              <Btn
+                variant="ghost"
+                onClick={() => setWalkthroughOverridePrompt(null)}
+              >
+                Add one first
               </Btn>
-              <Btn variant="primary" icon="check" onClick={submitPassToUat}>
+              <Btn
+                variant="primary"
+                icon="check"
+                onClick={walkthroughOverridePrompt.retry}
+              >
                 Pass without it
               </Btn>
             </>
           }
         >
           <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', lineHeight: '20px' }}>
-            You can still add one to the ticket later.
+            {walkthroughOverridePrompt.message}
           </div>
         </Modal>
       )}

@@ -6,7 +6,12 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
 import { extractPrMedia } from '../utils/prMedia'
-import { API_BASE_URL } from '../config'
+import {
+  API_BASE_URL,
+  isWalkthroughCardCtaEnabled,
+  OPEN_PASS_TO_UAT_EVENT,
+} from '../config'
+import { useTicketWalkthrough } from '../hooks/useTicketWalkthrough'
 import Icon from './Icon'
 import { Btn, Chip, ACTag, Pri, Cbx, Alert } from './ui'
 
@@ -567,12 +572,6 @@ function UatComplexityBadge({ complexity }) {
   )
 }
 
-function hasAnyWalkthrough(walkthrough) {
-  if (!walkthrough) return false
-  const shots = Array.isArray(walkthrough.screenshots) ? walkthrough.screenshots : []
-  return !!(walkthrough.loom_url || shots.length > 0 || (walkthrough.notes && walkthrough.notes.trim()))
-}
-
 const PR_MEDIA_ICON = { video: 'play', image: 'image', attachment: 'paperclip' }
 const PR_MEDIA_VERB = { video: 'Watch', image: 'View', attachment: 'Open' }
 
@@ -734,7 +733,7 @@ function ScreenshotPicker({ files, existing, onAddFiles, onRemoveFile, onRemoveE
  * shows links/notes; edit mode (controlled by the parent so the post-gate can
  * open it) shows the form.
  */
-function WalkthroughSection({ walkthrough, prMedia, editing, onEditingChange, onSave, saving, accent }) {
+function WalkthroughSection({ walkthrough, prMedia, editing, onEditingChange, onSave, saving, accent, ticketStatus }) {
   const wt = walkthrough || {}
   const savedScreenshots = Array.isArray(wt.screenshots) ? wt.screenshots : []
   const prMediaList = Array.isArray(prMedia) ? prMedia : []
@@ -742,6 +741,29 @@ function WalkthroughSection({ walkthrough, prMedia, editing, onEditingChange, on
   const [notes, setNotes] = useState(wt.notes || '')
   const [existingScreenshots, setExistingScreenshots] = useState(savedScreenshots)
   const [newFiles, setNewFiles] = useState([])
+
+  // Feature-flagged second entry point for the Pass-to-UAT flow: when the
+  // ticket is "In Testing", surface the action here on the walkthrough card
+  // itself (in addition to the button in the workflow header). Click dispatches
+  // a CustomEvent that WorkflowActions listens for and opens its existing form.
+  const isTesting =
+    typeof ticketStatus === 'string' &&
+    ticketStatus.trim().toLowerCase() === 'in testing'
+  const showCardCta = isTesting && isWalkthroughCardCtaEnabled()
+  const cardCta = showCardCta ? (
+    <div style={{ marginTop: 'var(--s-3)' }}>
+      <Btn
+        variant="success-soft"
+        icon="check"
+        title="Pass this ticket to UAT"
+        onClick={() =>
+          window.dispatchEvent(new CustomEvent(OPEN_PASS_TO_UAT_EVENT))
+        }
+      >
+        Pass to UAT
+      </Btn>
+    </div>
+  ) : null
 
   // Re-seed the form whenever the saved values change or we (re)enter edit mode,
   // so opening the editor always starts from the persisted state.
@@ -821,7 +843,7 @@ function WalkthroughSection({ walkthrough, prMedia, editing, onEditingChange, on
     )
   }
 
-  const present = hasAnyWalkthrough(wt)
+  const present = wt.walkthrough_present === true
   const anyPrMedia = prMediaList.length > 0
   if (!present && !anyPrMedia) {
     return (
@@ -833,6 +855,7 @@ function WalkthroughSection({ walkthrough, prMedia, editing, onEditingChange, on
         >
           <Icon name="plus" size={13} /> Add a walkthrough (Loom, screenshots, or notes)
         </button>
+        {cardCta}
       </div>
     )
   }
@@ -889,6 +912,7 @@ function WalkthroughSection({ walkthrough, prMedia, editing, onEditingChange, on
         >
           {present ? 'Edit walkthrough' : 'Add a walkthrough'}
         </button>
+        {cardCta}
       </div>
     </div>
   )
@@ -910,6 +934,7 @@ function UatGuideCard({
   onEditingChange,
   onSaveWalkthrough,
   savingWalkthrough,
+  ticketStatus,
 }) {
   const summary = typeof howToSeeIt?.summary === 'string' ? howToSeeIt.summary.trim() : ''
   const reason = typeof howToSeeIt?.reason === 'string' ? howToSeeIt.reason.trim() : ''
@@ -957,6 +982,7 @@ function UatGuideCard({
               onSave={onSaveWalkthrough}
               saving={savingWalkthrough}
               accent={meta.accent}
+              ticketStatus={ticketStatus}
             />
           )}
         </div>
@@ -1072,9 +1098,12 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   // primary ticket so it persists across regenerations. Editing is enabled for
   // single-ticket plans (the walkthrough belongs to one ticket).
   const walkthroughKey = ticketData?.key || (ticketsData && ticketsData[0]?.key) || ''
-  const [walkthrough, setWalkthrough] = useState(null)
+  const {
+    walkthrough,
+    saving: savingWalkthrough,
+    save: saveWalkthrough,
+  } = useTicketWalkthrough(walkthroughKey)
   const [editingWalkthrough, setEditingWalkthrough] = useState(false)
-  const [savingWalkthrough, setSavingWalkthrough] = useState(false)
 
   // Images/videos the developer already uploaded to the PR. These count as
   // walkthrough material on their own — surfacing them here saves the tester a
@@ -1084,24 +1113,10 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     [ticketData?.development_info?.pull_requests]
   )
 
+  // Close the walkthrough editor when the ticket changes — the fetched
+  // walkthrough belongs to a different key and stale edit state would leak.
   useEffect(() => {
     setEditingWalkthrough(false)
-    if (!walkthroughKey) {
-      setWalkthrough(null)
-      return
-    }
-    let cancelled = false
-    fetch(`${API_BASE}/tickets/${walkthroughKey}/walkthrough`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!cancelled) setWalkthrough(data)
-      })
-      .catch(() => {
-        /* walkthrough is optional — ignore fetch errors */
-      })
-    return () => {
-      cancelled = true
-    }
   }, [walkthroughKey])
 
   const ticketKeysJoined = isMulti
@@ -1269,33 +1284,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
 
   const handleSaveWalkthrough = async (payload) => {
     if (!walkthroughKey) return
-    setSavingWalkthrough(true)
     try {
-      // Multipart: JSON payload with the text fields + the surviving
-      // already-uploaded screenshots, plus screenshots[] files for any newly
-      // picked images (the server uploads those to Jira as attachments).
-      const form = new FormData()
-      const jsonPayload = {
-        loom_url: payload.loom_url || null,
-        notes: payload.notes || null,
-        existing_screenshots: (payload.existing_screenshots || []).map((s) => ({
-          url: s.url,
-          filename: s.filename || null,
-        })),
-      }
-      form.append('payload', JSON.stringify(jsonPayload))
-      for (const file of payload.new_files || []) {
-        form.append('screenshots', file, file.name)
-      }
-      const res = await fetch(`${API_BASE}/tickets/${walkthroughKey}/walkthrough`, {
-        method: 'PUT',
-        body: form,
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || 'Failed to save walkthrough')
-      }
-      setWalkthrough(await res.json())
+      await saveWalkthrough(payload)
       setEditingWalkthrough(false)
     } catch (err) {
       showNotification(
@@ -1304,8 +1294,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         'error',
         err?.message || 'Failed to save walkthrough'
       )
-    } finally {
-      setSavingWalkthrough(false)
     }
   }
 
@@ -1638,6 +1626,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         onEditingChange={setEditingWalkthrough}
         onSaveWalkthrough={handleSaveWalkthrough}
         savingWalkthrough={savingWalkthrough}
+        ticketStatus={primaryTicketData?.status}
       />
 
       {testPlan.ac_coverage && (
