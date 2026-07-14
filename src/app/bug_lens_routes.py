@@ -5,7 +5,6 @@ Mounted at /bug-lens in main.py via APIRouter.
 """
 
 import logging
-import os
 import re
 from dataclasses import asdict
 
@@ -308,8 +307,8 @@ async def analyze_bug(request: BugAnalysisRequest):
     run_ctx = await run_tracker.start_run(
         run_type=RunType.bug_lens,
         ticket_keys=[request.ticket_key],
-        model=os.environ.get("LLM_MODEL", "unknown"),
-        llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
+        model=settings.llm_model,
+        llm_provider=settings.llm_provider,
         ticket_title=request.summary,
         ticket_issue_type=request.issue_type,
         ticket_parent_key=parent_key if isinstance(parent_key, str) and parent_key.strip() else None,
@@ -374,8 +373,8 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
     run_ctx = await run_tracker.start_run(
         run_type=RunType.bug_lens_multi,
         ticket_keys=[t.ticket_key for t in request.tickets],
-        model=os.environ.get("LLM_MODEL", "unknown"),
-        llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
+        model=settings.llm_model,
+        llm_provider=settings.llm_provider,
         **aggregated_flags,
     )
 

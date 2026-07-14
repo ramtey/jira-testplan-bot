@@ -1,5 +1,4 @@
 import json
-import os
 import re
 from dataclasses import asdict
 
@@ -9,7 +8,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .bug_lens_routes import router as bug_lens_router
-from .config import NON_TESTABLE_ISSUE_TYPES
+from .config import NON_TESTABLE_ISSUE_TYPES, settings
 from .db.models.plan import PlanFormat
 from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
 from .db.models.run import RunType
@@ -804,8 +803,8 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
     run_ctx = await run_tracker.start_run(
         run_type=RunType.test_plan,
         ticket_keys=[request.ticket_key],
-        model=os.environ.get("LLM_MODEL", "unknown"),
-        llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
+        model=settings.llm_model,
+        llm_provider=settings.llm_provider,
         ticket_title=request.summary,
         ticket_issue_type=request.issue_type,
         ticket_parent_key=parent_key_clean,
@@ -955,8 +954,8 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
     run_ctx = await run_tracker.start_run(
         run_type=RunType.test_plan,
         ticket_keys=[t.ticket_key for t in request.tickets],
-        model=os.environ.get("LLM_MODEL", "unknown"),
-        llm_provider=os.environ.get("LLM_PROVIDER", "unknown"),
+        model=settings.llm_model,
+        llm_provider=settings.llm_provider,
         **aggregated_flags,
     )
 

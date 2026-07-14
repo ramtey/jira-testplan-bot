@@ -62,8 +62,13 @@ const writeKeyToUrl = (key) => {
 }
 
 function App() {
+  // Capture the URL ?key= at first render, before any effect can strip it.
+  // Without this, the URL-writer effect below fires first with an empty
+  // ticketsData and clears the query string before the auto-fetch effect
+  // gets to read it, so deep links never auto-fetch.
+  const [initialUrlKey] = useState(() => readKeyFromUrl())
   const [issueKey, setIssueKey] = useState(
-    () => readKeyFromUrl() || loadStored(STORAGE_KEYS.issueKey, '')
+    () => initialUrlKey || loadStored(STORAGE_KEYS.issueKey, '')
   )
   const [loading, setLoading] = useState(false)
   const [fetchingKeys, setFetchingKeys] = useState([])
@@ -118,14 +123,12 @@ function App() {
   // comma-separated parsing as the input form so multi-ticket URLs work too.
   // Runs only once — the dep list is intentionally empty.
   useEffect(() => {
-    const urlKey = readKeyFromUrl()
-    if (!urlKey || ticketsData.length > 0) return
-    const keys = urlKey
+    if (!initialUrlKey || ticketsData.length > 0) return
+    const keys = initialUrlKey
       .split(',')
       .map((k) => k.trim().toUpperCase())
       .filter(Boolean)
     if (keys.length === 0) return
-    setIssueKey(urlKey)
     fetchTicketsByKeys(keys)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
