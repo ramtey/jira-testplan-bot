@@ -384,6 +384,8 @@ def apply_scope_verdicts(
             "ac_id": first_ac,
             "missing_element": title,
             "explanation": f"Fix-scope critic: {reason}",
+            "source": "critic_scope",
+            "severity": "warn",
         }
         existing_warnings.append(warning)
         added.append(warning)

@@ -23,6 +23,13 @@ from .grounding_critic import (
     build_ac_index,
     build_case_verification_inputs,
 )
+from .code_grounding_critic import (
+    apply_code_verdicts,
+    build_code_verification_inputs,
+    build_search_query,
+    extract_repos,
+    select_recheckable_warnings,
+)
 from .jira_client import (
     JiraAuthError,
     JiraClient,
@@ -114,11 +121,24 @@ def _normalize_grounding_warnings(test_plan, valid_ac_ids: set[str] | None = Non
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
-        out.append({
+        normalized: dict = {
             "ac_id": ac_id,
             "missing_element": missing,
             "explanation": explanation,
-        })
+        }
+        # Preserve provenance + severity + code-evidence when the critic
+        # pipeline attached them. Older LLM-native warnings still land
+        # here without these fields; the frontend defaults them.
+        source = entry.get("source")
+        if isinstance(source, str) and source.strip():
+            normalized["source"] = source.strip()
+        severity = entry.get("severity")
+        if severity in ("warn", "info"):
+            normalized["severity"] = severity
+        code_evidence = entry.get("code_evidence")
+        if isinstance(code_evidence, dict) and code_evidence:
+            normalized["code_evidence"] = code_evidence
+        out.append(normalized)
     return out
 
 
@@ -407,6 +427,81 @@ async def _run_grounding_critic(llm, test_plan, tickets_data: list[dict]) -> Non
             "grounding_critic: flagged %d ungrounded case(s): %s",
             len(added),
             [w["ac_id"] + ": " + w["missing_element"] for w in added],
+        )
+
+
+async def _run_code_grounding_critic(
+    llm,
+    test_plan,
+    dev_infos: list[dict],
+) -> None:
+    """Third-pass critic — for each AC-grounding warning the previous
+    critic added, look at the linked repo's actual source and downgrade
+    the warning to informational when the behaviour under test is
+    demonstrably implemented in code.
+
+    Runs only when a GitHub token is configured, the feature toggle is
+    on, at least one linked PR carries a resolved ``repository``, and
+    ``grounding_critic`` produced at least one ``critic_ac`` warning.
+    Any failure — no repo, code-search miss, LLM error — degrades to
+    leaving the warning at WARN severity, so QA sees the same output
+    they saw before this pass existed.
+    """
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+
+    if not settings.code_grounding_recheck_enabled:
+        return
+    if not settings.github_token:
+        return
+
+    warnings = list(getattr(test_plan, "grounding_warnings", None) or [])
+    recheckable = select_recheckable_warnings(warnings)
+    if not recheckable:
+        return
+
+    repos = extract_repos(dev_infos)
+    if not repos:
+        return
+
+    from .github_client import GitHubClient
+    client = GitHubClient()
+
+    hits_by_warning: dict[int, list[dict]] = {}
+    for i, warning in enumerate(recheckable):
+        query = build_search_query(warning)
+        if not query:
+            continue
+        # Search each linked repo in order; stop as soon as we get
+        # anything. Most tickets link one repo — the second-repo path
+        # exists only for cross-project batches.
+        for repo in repos:
+            try:
+                hits = await client.search_relevant_files(repo, query, max_files=3)
+            except Exception:
+                log.exception("code_grounding_critic: search failed repo=%s q=%r", repo, query)
+                hits = []
+            if hits:
+                hits_by_warning[i] = hits
+                break
+
+    cases = build_code_verification_inputs(test_plan, recheckable, hits_by_warning)
+    if not cases:
+        return
+
+    try:
+        verdicts = await llm.verify_code_grounding(cases)
+    except Exception:
+        log.exception("verify_code_grounding raised; skipping code-grounding critic")
+        return
+
+    evidence_by_key = {c["warning_key"]: c["code_snippets"] for c in cases}
+    downgraded = apply_code_verdicts(test_plan, verdicts, evidence_by_key)
+    if downgraded:
+        log.info(
+            "code_grounding_critic: downgraded %d warning(s) after code recheck: %s",
+            len(downgraded),
+            [w["ac_id"] + ": " + w["missing_element"] for w in downgraded],
         )
 
 
@@ -977,6 +1072,16 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         # Runs before _compute_ac_coverage so any badges added here survive
         # the covers_acs cleanup pass.
         await _run_grounding_critic(llm, test_plan, single_ticket_data)
+        # Code-grounding recheck — for each just-added AC-critic warning,
+        # look at the linked repo's source and downgrade the warning to
+        # INFO when the behaviour under test is demonstrably implemented.
+        # Runs immediately after the AC critic so fresh warnings can be
+        # softened before the fix-scope critic keys off them.
+        single_ticket_dev_info = [{
+            "ticket_key": request.ticket_key,
+            "development_info": request.development_info,
+        }]
+        await _run_code_grounding_critic(llm, test_plan, single_ticket_dev_info)
         # Fix-scope critic — catch reporter-drift cases that cite a real AC
         # but test behaviour the merged PR explicitly did NOT change.
         # Ordered after the grounding critic so already-badged cases skip
@@ -984,10 +1089,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         await _run_fix_scope_critic(
             llm,
             test_plan,
-            [{
-                "ticket_key": request.ticket_key,
-                "development_info": request.development_info,
-            }],
+            single_ticket_dev_info,
         )
         ac_coverage = _compute_ac_coverage(test_plan, single_ticket_data)
 
@@ -1116,17 +1218,20 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
 
         # Grounding critic — see the single-ticket endpoint for context.
         await _run_grounding_critic(llm, test_plan, tickets_data)
+        multi_ticket_dev_info = [
+            {
+                "ticket_key": t.get("ticket_key"),
+                "development_info": t.get("development_info"),
+            }
+            for t in tickets_data
+        ]
+        # Code-grounding recheck — see the single-ticket endpoint.
+        await _run_code_grounding_critic(llm, test_plan, multi_ticket_dev_info)
         # Fix-scope critic — see the single-ticket endpoint for context.
         await _run_fix_scope_critic(
             llm,
             test_plan,
-            [
-                {
-                    "ticket_key": t.get("ticket_key"),
-                    "development_info": t.get("development_info"),
-                }
-                for t in tickets_data
-            ],
+            multi_ticket_dev_info,
         )
         ac_coverage = _compute_ac_coverage(test_plan, tickets_data)
         valid_ac_ids = {

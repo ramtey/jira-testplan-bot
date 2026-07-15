@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     # GitHub (for PR diff fetching - Phase 3a)
     github_token: str | None = None  # GitHub personal access token (optional - enables PR diff fetching)
 
+    # Third-pass critic that re-checks AC-grounding warnings against the linked
+    # repo's actual source. When True and a github_token is available, an
+    # AC-critic warning whose behaviour is present in code gets downgraded from
+    # WARN to INFO so QA doesn't chase a false positive. Set to False to skip
+    # the extra GitHub search + LLM round-trip (~2s + ~1s per flagged case).
+    code_grounding_recheck_enabled: bool = True
+
     # Bug Lens repo hints: maps a regex pattern (matched against summary + description + comments)
     # to one or more "owner/repo" strings to search when the ticket has no explicit GitHub links.
     # Set via env as JSON, e.g. BUG_LENS_REPO_HINTS='{"title.?rep|folders": ["skyslope/mobile-app"]}'

@@ -494,22 +494,62 @@ function AcCoveragePanel({ coverage }) {
   )
 }
 
+// The backend emits two flavours of warning in this list:
+//   - severity "warn" (default): the test asserts behaviour we can't
+//     confirm — either the AC text doesn't cover it OR the code doesn't
+//     appear to implement it. QA should verify before testing.
+//   - severity "info": the AC critic flagged it as "not in the AC" but
+//     a follow-up code-grounding pass found the behaviour implemented in
+//     the linked repo. Kept here as an informational trail rather than
+//     silently dropped, so QA can spot-check the code_evidence link.
 function GroundingWarningsPanel({ warnings }) {
   if (!Array.isArray(warnings) || warnings.length === 0) return null
+  const warnItems = warnings.filter((w) => (w?.severity ?? 'warn') === 'warn')
+  const infoItems = warnings.filter((w) => w?.severity === 'info')
+  if (warnItems.length === 0 && infoItems.length === 0) return null
   return (
-    <div style={{ marginBottom: 'var(--s-5)' }}>
-      <Alert tone="warning" title={`${warnings.length} UI element${warnings.length === 1 ? '' : 's'} not found in code — verify before testing`}>
-        <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {warnings.map((w, idx) => (
-            <li key={`${w.ac_id}-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
-              <ACTag>{w.ac_id}</ACTag>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)', color: 'var(--fg)' }}>{w.missing_element}</span>
-              <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }}>{w.explanation}</span>
-            </li>
-          ))}
-        </ul>
-      </Alert>
+    <div style={{ marginBottom: 'var(--s-5)', display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+      {warnItems.length > 0 && (
+        <Alert
+          tone="warning"
+          title={`${warnItems.length} behaviour${warnItems.length === 1 ? '' : 's'} not confirmed in AC or code — verify before testing`}
+        >
+          <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {warnItems.map((w, idx) => (
+              <GroundingWarningRow key={`warn-${w.ac_id}-${idx}`} warning={w} />
+            ))}
+          </ul>
+        </Alert>
+      )}
+      {infoItems.length > 0 && (
+        <Alert
+          tone="info"
+          title={`${infoItems.length} behaviour${infoItems.length === 1 ? '' : 's'} beyond the cited AC but present in code`}
+        >
+          <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {infoItems.map((w, idx) => (
+              <GroundingWarningRow key={`info-${w.ac_id}-${idx}`} warning={w} />
+            ))}
+          </ul>
+        </Alert>
+      )}
     </div>
+  )
+}
+
+function GroundingWarningRow({ warning }) {
+  const files = warning?.code_evidence?.files || []
+  return (
+    <li style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
+      <ACTag>{warning.ac_id}</ACTag>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)', color: 'var(--fg)' }}>{warning.missing_element}</span>
+      <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }}>{warning.explanation}</span>
+      {files.length > 0 && (
+        <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)', fontFamily: 'var(--font-mono)' }}>
+          ({files.map((f) => f.path).filter(Boolean).join(', ')})
+        </span>
+      )}
+    </li>
   )
 }
 

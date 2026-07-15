@@ -1533,6 +1533,26 @@ class LLMClient(ABC):
         """
         return {}
 
+    async def verify_code_grounding(
+        self,
+        cases: list[dict],
+    ) -> dict[str, dict]:
+        """Third-pass critic — check whether the linked repo's code
+        implements the behaviour an AC-grounding-critic-flagged case tests.
+
+        ``cases`` is the payload produced by
+        ``code_grounding_critic.build_code_verification_inputs``; each
+        entry pairs a warning (title, steps, expected, prior critic
+        reason) with GitHub code-search snippets from the linked repo.
+
+        Returns a dict ``{warning_key: {"verdict":
+        "implemented"|"not_implemented"|"unclear", "reason": str}}``.
+        Default implementation returns an empty dict — providers that
+        don't (or can't reliably) run the critic behave the same as before
+        this pass existed, and every warning stays at WARN severity.
+        """
+        return {}
+
     def _build_bounce_reason_prompt(
         self,
         from_status: str,
@@ -3953,6 +3973,71 @@ class ClaudeClient(LLMClient):
         if not tool_block:
             return {}
         return parse_scope_verdicts(tool_block.get("input"))
+
+    async def verify_code_grounding(
+        self,
+        cases: list[dict],
+    ) -> dict[str, dict]:
+        """Ask Claude whether the linked repo implements each case's behaviour.
+
+        A soft best-effort pass — any transport or parse failure returns
+        an empty verdict dict so QA sees the pre-recheck warnings intact
+        rather than a 500.
+        """
+        from .code_grounding_critic import (
+            CODE_CRITIC_SYSTEM_PROMPT,
+            REPORT_CODE_GROUNDING_TOOL,
+            build_code_critic_user_message,
+            parse_code_verdicts,
+        )
+
+        if not cases:
+            return {}
+
+        user_message = build_code_critic_user_message(cases)
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "anthropic-version": "2023-06-01",
+                        "x-api-key": self.api_key,
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 4096,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": CODE_CRITIC_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                        "messages": [{"role": "user", "content": user_message}],
+                        **self._temperature_kwargs(0.0),
+                        "tools": [REPORT_CODE_GROUNDING_TOOL],
+                        "tool_choice": {"type": "tool", "name": "report_code_grounding"},
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
+            import logging
+            logging.getLogger(__name__).warning(
+                "verify_code_grounding: transport error; skipping critic pass",
+                exc_info=True,
+            )
+            return {}
+
+        tool_block = next(
+            (b for b in (data.get("content") or []) if b.get("type") == "tool_use"),
+            None,
+        )
+        if not tool_block:
+            return {}
+        return parse_code_verdicts(tool_block.get("input"))
 
     async def _claude_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)

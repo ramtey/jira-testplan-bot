@@ -268,6 +268,10 @@ def apply_verdicts(
             "explanation": (
                 f"Critic pass: {reason}"
             ),
+            # Source tag is read by ``code_grounding_critic`` to decide
+            # which warnings are candidates for the code-recheck pass.
+            "source": "critic_ac",
+            "severity": "warn",
         }
         existing_warnings.append(warning)
         added.append(warning)
