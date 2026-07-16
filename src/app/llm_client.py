@@ -1321,6 +1321,17 @@ The regression checklist must contain ONLY runtime behaviors that can be manuall
 
 **Why?** Build-time checks fail automatically if broken. Regression checklists are for manually verifying existing features still work.
 
+**PLATFORM SCOPE — DO NOT INVENT PLATFORMS:**
+Only add platform-launch or platform-smoke items for platforms that are
+explicitly named in the ticket description, ACs, comments, linked PR, or
+diff. A framework name alone is NOT a license to enumerate every platform
+it supports.
+- ❌ Ticket says "Expo app" → DO NOT add "App launches on Android emulator" unless Android is named. Expo can target iOS, Android, and web, but the ticket's actual scope is whatever it says.
+- ❌ Ticket says "React Native" → DO NOT auto-add both iOS and Android smoke items. Use only the platform(s) the team is actually shipping.
+- ❌ Ticket says "web app" → DO NOT add mobile-browser smoke unless mobile web is called out.
+- ✅ If the ticket, PR, or a linked doc explicitly names a platform (e.g. "test on iOS 17", "Android release blocker", "Chrome + Safari"), add a smoke item for that platform.
+- ✅ If unsure which platform(s) apply, write the item platform-neutrally (e.g. "App launches with default SkySlope theme") instead of guessing.
+
 **FEATURE-FLAG-OFF LEGACY REGRESSION — REQUIRED WHEN APPLICABLE:**
 If the change is gated by one or more feature flags (LaunchDarkly toggles,
 config booleans, environment switches), you MUST include at least one
