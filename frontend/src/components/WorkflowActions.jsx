@@ -335,6 +335,17 @@ function WorkflowActions({
     return () => window.removeEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
   }, [currentStatus, description, comments])
 
+  const hasSubtasks =
+    Array.isArray(childIssues) &&
+    childIssues.some((c) => /sub-?task/i.test(c?.issue_type || ''))
+
+  // Pre-check "Also move all subtasks" whenever the ticket has subtasks — the
+  // near-universal intent is to keep the parent and its children in the same
+  // column. Users can still uncheck it before firing the action.
+  useEffect(() => {
+    if (hasSubtasks) setCascadeToSubtasks(true)
+  }, [hasSubtasks])
+
   if (!isWorkflowEnabledForTicket(ticketKey)) return null
 
   const visibleActions = ACTIONS.filter((a) => a.showWhen(currentStatus))
@@ -349,10 +360,6 @@ function WorkflowActions({
     normalize(currentStatus) === TESTING_STATUS &&
     isWalkthroughCardCtaEnabled()
 
-  const hasSubtasks =
-    Array.isArray(childIssues) &&
-    childIssues.some((c) => /sub-?task/i.test(c?.issue_type || ''))
-
   const closeNoteForm = () => {
     setNoteForAction(null)
     setLoomUrlsText('')
@@ -361,7 +368,7 @@ function WorkflowActions({
     setReason('')
     setImageFiles([])
     setMentionAccountIds([])
-    setCascadeToSubtasks(false)
+    setCascadeToSubtasks(hasSubtasks)
   }
 
   const addImageFiles = (files) => {

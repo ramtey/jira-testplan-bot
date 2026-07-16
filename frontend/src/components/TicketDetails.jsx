@@ -400,6 +400,10 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
         <RowQuickAction
           ticketKey={ticketData.key}
           currentStatus={ticketData.status}
+          hasSubtasks={
+            Array.isArray(ticketData.children) &&
+            ticketData.children.some((c) => /sub-?task/i.test(c?.issue_type || ''))
+          }
           onActionComplete={onRowAction}
         />
         {ticketData.assignee && <Asn name={ticketData.assignee} />}

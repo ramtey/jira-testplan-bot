@@ -16,7 +16,7 @@ import Icon from './Icon'
 
 const TESTING_STATUS = 'in testing'
 
-function RowQuickAction({ ticketKey, currentStatus, onActionComplete }) {
+function RowQuickAction({ ticketKey, currentStatus, hasSubtasks, onActionComplete }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState(null)
 
@@ -30,9 +30,17 @@ function RowQuickAction({ ticketKey, currentStatus, onActionComplete }) {
     setPending(true)
     setError(null)
     try {
+      const form = new FormData()
+      // Row-level Pull is fire-and-forget (no checkbox UI), so match the
+      // single-ticket view's default: when the parent has subtasks, cascade.
+      // The backend only moves siblings that share the parent's pre-transition
+      // status, so this is safe when subtasks are in unrelated columns.
+      if (hasSubtasks) {
+        form.append('payload', JSON.stringify({ cascade_to_subtasks: true }))
+      }
       const response = await fetch(
         `${API_BASE_URL}/issue/${ticketKey}/workflow/pull-to-testing`,
-        { method: 'POST', body: new FormData() },
+        { method: 'POST', body: form },
       )
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
@@ -79,7 +87,11 @@ function RowQuickAction({ ticketKey, currentStatus, onActionComplete }) {
       type="button"
       onClick={onClick}
       disabled={pending}
-      title="Move to In Testing and assign to you"
+      title={
+        hasSubtasks
+          ? 'Move to In Testing, pull matching subtasks along, and assign to you'
+          : 'Move to In Testing and assign to you'
+      }
       style={{
         display: 'inline-flex',
         alignItems: 'center',
