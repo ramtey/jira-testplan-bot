@@ -171,7 +171,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
     setProjectsError(null)
     setProjectsLoading(true)
     try {
-      const res = await fetch(`${API_BASE_URL}/jira/projects`)
+      const res = await fetch(`${API_BASE_URL}/jira/projects`, { cache: 'no-store' })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.detail || 'Failed to load projects')
@@ -190,7 +190,10 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
     setStatusesError(null)
     setStatusesLoading(true)
     try {
-      const res = await fetch(`${API_BASE_URL}/jira/projects/${projectKey}/statuses`)
+      const res = await fetch(
+        `${API_BASE_URL}/jira/projects/${projectKey}/statuses`,
+        { cache: 'no-store' },
+      )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.detail || 'Failed to load statuses')
@@ -211,6 +214,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
     try {
       const res = await fetch(
         `${API_BASE_URL}/jira/projects/${projectKey}/issues?status=${encodeURIComponent(statusName)}`,
+        { cache: 'no-store' },
       )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
@@ -282,6 +286,19 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [])
+
+  // Silent background poll so board changes made in Jira (e.g. a status removed
+  // from the workflow) propagate even when the user leaves the tab foregrounded
+  // and doesn't click refresh. Pauses when the tab is hidden — visibilitychange
+  // above already covers the resume case.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refreshActiveRef.current()
+      }
+    }, 60000)
+    return () => clearInterval(id)
   }, [])
 
   // Collapsed mode — show only project marks as a vertical strip
