@@ -247,11 +247,19 @@ function ImageDropzone({ files, onAdd, onRemove, disabled }) {
                   cursor: disabled ? 'not-allowed' : 'pointer',
                   color: 'var(--fg-subtle)',
                   padding: 0,
+                  minWidth: 0,
+                  width: 16,
+                  height: 16,
+                  boxShadow: 'none',
                   display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 999,
+                  marginLeft: 2,
                 }}
                 aria-label={`Remove ${f.name}`}
               >
-                <Icon name="x" size={11} />
+                <Icon name="x" size={12} />
               </button>
             </span>
           ))}
@@ -287,6 +295,8 @@ function WorkflowActions({
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
   // Which column the single "Fail back" action returns the ticket to.
   const [failTargetId, setFailTargetId] = useState('fail-to-todo')
+  const [failMenuOpen, setFailMenuOpen] = useState(false)
+  const failBackRef = useRef(null)
   // Prompt shown when the server rejects Pass-to-UAT because the ticket is
   // high-complexity and no walkthrough is attached. Client-side pre-checks
   // moved to the server in step 5 — the frontend just handles the 409.
@@ -345,6 +355,23 @@ function WorkflowActions({
   useEffect(() => {
     if (hasSubtasks) setCascadeToSubtasks(true)
   }, [hasSubtasks])
+
+  useEffect(() => {
+    if (!failMenuOpen) return
+    const onDocDown = (e) => {
+      if (!failBackRef.current) return
+      if (!failBackRef.current.contains(e.target)) setFailMenuOpen(false)
+    }
+    const onKey = (e) => {
+      if (e.key === 'Escape') setFailMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDocDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [failMenuOpen])
 
   if (!isWorkflowEnabledForTicket(ticketKey)) return null
 
@@ -603,15 +630,20 @@ function WorkflowActions({
           )}
           {(() => {
             // The two bounce-backs share the same verb and differ only in the
-            // column they return to. Render them as one unified control: a
-            // "Fail back to" trigger that commits the bounce, plus inline
-            // destination chips (To Do / In Progress) that pick where it lands.
+            // column they return to. One split-button commits the bounce to the
+            // selected destination; a chevron opens a small menu to change it.
             const failActions = visibleActions.filter((a) => isFailAction(a.id))
             if (failActions.length === 0) return null
             const selected =
               failActions.find((a) => a.id === failTargetId) || failActions[0]
+            const hasChoice = failActions.length > 1
             return (
-              <div className="fail-back" role="group" aria-label="Fail back to development">
+              <div
+                ref={failBackRef}
+                className="fail-back"
+                role="group"
+                aria-label="Fail back to development"
+              >
                 <button
                   type="button"
                   className="fb-trigger"
@@ -620,26 +652,41 @@ function WorkflowActions({
                   onClick={() => onActionClick(selected)}
                 >
                   <Icon name="arrow-left" size={14} />
-                  Fail back to
+                  Fail back to {selected.segmentLabel}
                 </button>
-                {failActions.length > 1 && (
+                {hasChoice && (
                   <>
                     <span className="fb-sep" />
-                    <span className="fb-dests">
-                      {failActions.map((action) => (
-                        <button
-                          key={action.id}
-                          type="button"
-                          data-on={action.id === selected.id ? 'true' : 'false'}
-                          aria-pressed={action.id === selected.id}
-                          title={`Send back to ${action.segmentLabel}`}
-                          disabled={pendingAction !== null}
-                          onClick={() => setFailTargetId(action.id)}
-                        >
-                          {action.segmentLabel}
-                        </button>
-                      ))}
-                    </span>
+                    <button
+                      type="button"
+                      className="fb-more"
+                      title="Choose a different destination"
+                      aria-haspopup="menu"
+                      aria-expanded={failMenuOpen}
+                      disabled={pendingAction !== null}
+                      onClick={() => setFailMenuOpen((v) => !v)}
+                    >
+                      <Icon name="chevron-down" size={14} stroke={2} />
+                    </button>
+                    {failMenuOpen && (
+                      <div className="fb-menu" role="menu">
+                        {failActions.map((action) => (
+                          <button
+                            key={action.id}
+                            type="button"
+                            role="menuitem"
+                            data-on={action.id === selected.id ? 'true' : 'false'}
+                            disabled={pendingAction !== null}
+                            onClick={() => {
+                              setFailTargetId(action.id)
+                              setFailMenuOpen(false)
+                            }}
+                          >
+                            {action.segmentLabel}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </>
                 )}
               </div>
