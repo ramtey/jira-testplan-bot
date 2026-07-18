@@ -10,6 +10,34 @@ import RowQuickAction from './RowQuickAction'
 import Icon from './Icon'
 import { ItChip, StatPill, Asn, Tag, Coll, Alert, ACTag, Chip } from './ui'
 
+// Turn bare URLs into clickable <a> elements while preserving surrounding
+// whitespace/linebreaks — the description is rendered inside <pre>, so we
+// return a mixed array of strings and elements instead of an HTML string.
+const URL_RE = /(https?:\/\/[^\s<>"')\]}]+)/g
+const TRAILING_PUNCT_RE = /[.,;:!?]+$/
+function linkifyText(text) {
+  if (!text) return text
+  const parts = text.split(URL_RE)
+  return parts.map((part, i) => {
+    if (i % 2 === 0) return part
+    const trailing = (part.match(TRAILING_PUNCT_RE) || [''])[0]
+    const href = trailing ? part.slice(0, -trailing.length) : part
+    return (
+      <span key={i}>
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: 'var(--accent)', textDecoration: 'underline', wordBreak: 'break-all' }}
+        >
+          {href}
+        </a>
+        {trailing}
+      </span>
+    )
+  })
+}
+
 function statusCategory(status) {
   const s = (status || '').toLowerCase()
   if (/done|closed|complete|resolved/.test(s)) return 'done'
@@ -521,7 +549,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
               whiteSpace: 'pre-wrap',
               wordWrap: 'break-word',
             }}>
-              {getDisplayDescription(ticketData.description)}
+              {linkifyText(getDisplayDescription(ticketData.description))}
             </pre>
             {shouldTruncateDescription(ticketData.description) && (
               <button
