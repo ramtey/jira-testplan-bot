@@ -1432,24 +1432,32 @@ async def put_ticket_walkthrough(
             raise HTTPException(status_code=exc.status_code, detail=str(exc))
         except JiraConnectionError as exc:
             raise HTTPException(status_code=502, detail=str(exc))
-        for i, entry in enumerate(uploaded):
-            url = (entry.get("content") or "").strip()
-            if not url:
-                # Rare — Jira accepted the upload but didn't echo a
-                # content URL. Skip it rather than persist an unresolvable
-                # reference; the ticket still has the raw attachment.
-                continue
-            filename = (
-                (entry.get("filename") or "").strip()
-                or (incoming[i][0] if i < len(incoming) else "screenshot")
-            )
-            uploaded_refs.append({"filename": filename, "url": url})
+        # Resolve each fresh upload's media-services UUID so future
+        # Pass-to-UAT comments can render the screenshot inline. UUID
+        # lookup failures don't block the save — the walkthrough still
+        # persists with media_id=None and comment rendering falls back
+        # to the `📷 <filename>` text callout.
+        enriched = await jira.enrich_attachments_with_media_ids(uploaded)
+        # Rebuild the persisted records — enrich_attachments_with_media_ids
+        # already applies the same filename fallback and drops entries
+        # without a content URL.
+        for image in enriched:
+            record: dict = {"filename": image.filename, "url": image.url}
+            if image.media_id:
+                record["media_id"] = image.media_id
+            uploaded_refs.append(record)
 
-    final_list: list[dict] = [
-        {"filename": (ref.filename or "screenshot").strip() or "screenshot", "url": ref.url.strip()}
-        for ref in request.existing_screenshots
-        if ref.url and ref.url.strip()
-    ]
+    final_list: list[dict] = []
+    for ref in request.existing_screenshots:
+        if not ref.url or not ref.url.strip():
+            continue
+        record: dict = {
+            "filename": (ref.filename or "screenshot").strip() or "screenshot",
+            "url": ref.url.strip(),
+        }
+        if ref.media_id and ref.media_id.strip():
+            record["media_id"] = ref.media_id.strip()
+        final_list.append(record)
     final_list.extend(uploaded_refs)
 
     sessionmaker = get_sessionmaker()

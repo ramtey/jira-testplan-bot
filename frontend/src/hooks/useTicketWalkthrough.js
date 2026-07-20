@@ -59,6 +59,7 @@ export function useTicketWalkthrough(ticketKey) {
           existing_screenshots: (payload.existing_screenshots || []).map((s) => ({
             url: s.url,
             filename: s.filename || null,
+            media_id: s.media_id || null,
           })),
         }
         form.append('payload', JSON.stringify(jsonPayload))

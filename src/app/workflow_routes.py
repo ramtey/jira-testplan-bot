@@ -6,12 +6,15 @@ runs_routes pattern. Hardcoded to the SK project for now; generalize via a
 per-project config once a second project needs it.
 """
 
+import asyncio
 import logging
+import re
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from .db.session import get_sessionmaker
 from .jira_client import (
+    ImageAttachment,
     JiraAuthError,
     JiraClient,
     JiraConnectionError,
@@ -37,6 +40,39 @@ SK_WORKFLOW_ACTIONS: dict[str, str] = {
 # Bounce-back actions that return a ticket to development with a required
 # reason + fail comment. Both behave identically aside from the target column.
 _FAIL_ACTIONS = {"fail-to-todo", "fail-to-in-progress"}
+
+
+_ATTACHMENT_CONTENT_URL_RE = re.compile(r"/attachment/content/(\d+)")
+
+
+def _attachment_id_from_content_url(url: str) -> str | None:
+    """Pull the numeric attachment id out of a Jira `content` URL.
+
+    Walkthrough screenshots persist their download URL (shape:
+    `.../rest/api/3/attachment/content/<id>`). To render legacy
+    entries inline we need to re-resolve their media-services UUID,
+    which requires that numeric id. Returns None if the URL doesn't
+    match the expected shape (foreign host, empty, malformed).
+    """
+    if not url:
+        return None
+    match = _ATTACHMENT_CONTENT_URL_RE.search(url)
+    return match.group(1) if match else None
+
+
+async def _resolve_media_ids_for_urls(
+    jira: "JiraClient", attachment_ids: list[str | None]
+) -> dict[str, str | None]:
+    """Resolve media UUIDs for a set of numeric attachment ids in parallel.
+
+    Returns a dict keyed by attachment id. Unknown / failed lookups
+    map to None so the caller can fall back to a plain-text callout.
+    """
+    unique_ids = [aid for aid in {aid for aid in attachment_ids if aid}]
+    if not unique_ids:
+        return {}
+    resolved = await asyncio.gather(*[jira.resolve_media_id(aid) for aid in unique_ids])
+    return dict(zip(unique_ids, resolved))
 
 
 _ALLOWED_IMAGE_MIME = {
@@ -146,19 +182,17 @@ async def run_workflow_action(
 
     # Upload attachments first so that a Jira-side failure aborts before
     # the ticket moves. Skipped for pull-to-testing — that action has no
-    # comment flow, so any images would be orphaned attachments. We pass
-    # the filename + content URL through to the ADF builder so the
-    # comment can link to each screenshot; the image itself also auto-
-    # displays in the issue's Attachments panel.
-    image_attachments: list[tuple[str, str]] = []
+    # comment flow, so any images would be orphaned attachments. We
+    # resolve each upload's media-services UUID (the 303-redirect trick
+    # on the content URL — see JiraClient.resolve_media_id) so the ADF
+    # builder can embed the image inline via `mediaSingle` rather than
+    # just linking a filename. UUID lookup failures fall back to plain
+    # `📷 <filename>` callouts so the comment still posts.
+    image_attachments: list[ImageAttachment] = []
     if image_files and (action == "pass-to-uat" or action in _FAIL_ACTIONS):
         try:
             uploaded = await jira.upload_attachments(issue_key, image_files)
-            image_attachments = [
-                (a.get("filename") or "screenshot", a.get("content") or "")
-                for a in uploaded
-                if a.get("content")
-            ]
+            image_attachments = await jira.enrich_attachments_with_media_ids(uploaded)
         except JiraNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except JiraAuthError as e:
@@ -285,19 +319,43 @@ async def run_workflow_action(
                     )
                 # The walkthrough's screenshots are already Jira attachments
                 # (uploaded when the planner saved them); fold each into
-                # image_attachments so post_qa_pass_comment enumerates them as
-                # 📷 <filename> callouts the same way screenshots uploaded from
-                # the UAT modal do, instead of pasting raw content URLs.
+                # image_attachments so post_qa_pass_comment renders them
+                # inline the same way screenshots uploaded from the UAT
+                # modal do. Legacy walkthrough entries were persisted
+                # before media_id was captured — re-resolve their UUIDs
+                # from the content URL so old walkthroughs still render
+                # inline instead of falling back to text.
                 walkthrough_shots = walkthrough_repository.decode_screenshots(
                     walkthrough
                 )
-                seen_urls = {url for _, url in image_attachments}
-                to_prepend: list[tuple[str, str]] = []
+                seen_urls = {img.url for img in image_attachments}
+                pending: list[tuple[str, str, str | None]] = []
                 for shot in walkthrough_shots:
                     if shot["url"] in seen_urls:
                         continue
                     seen_urls.add(shot["url"])
-                    to_prepend.append((shot["filename"], shot["url"]))
+                    pending.append(
+                        (shot["filename"], shot["url"], shot.get("media_id"))
+                    )
+                to_resolve = [
+                    _attachment_id_from_content_url(url)
+                    for _, url, media_id in pending
+                    if not media_id
+                ]
+                if to_resolve:
+                    resolved = await _resolve_media_ids_for_urls(jira, to_resolve)
+                else:
+                    resolved = {}
+                to_prepend: list[ImageAttachment] = []
+                for filename, url, media_id in pending:
+                    if not media_id:
+                        att_id = _attachment_id_from_content_url(url)
+                        media_id = resolved.get(att_id) if att_id else None
+                    to_prepend.append(
+                        ImageAttachment(
+                            filename=filename, url=url, media_id=media_id
+                        )
+                    )
                 image_attachments = to_prepend + image_attachments
             try:
                 result = await jira.post_qa_pass_comment(

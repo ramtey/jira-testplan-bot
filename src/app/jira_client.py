@@ -2,6 +2,7 @@ import asyncio
 import base64
 import logging
 import re
+from typing import NamedTuple
 
 import httpx
 
@@ -187,6 +188,20 @@ QA_PASS_EXPAND_TITLE = "Test summary"
 QA_FAIL_MARKER = "❌ QA Failed — back to To Do"
 
 
+class ImageAttachment(NamedTuple):
+    """A Jira attachment reference threaded through the comment builders.
+
+    `media_id` is the Atlassian media-services UUID resolved from the
+    303 redirect on `/rest/api/3/attachment/content/{id}`. Present when
+    inline rendering should be used; `None` falls back to a plain-text
+    `📷 <filename>` callout so the comment posts even when the redirect
+    probe fails.
+    """
+    filename: str
+    url: str
+    media_id: str | None = None
+
+
 def _normalize_environments(environments: list[str] | None) -> list[str]:
     """Trim, drop empties, and dedupe while preserving order."""
     if not environments:
@@ -207,15 +222,11 @@ def _normalize_environments(environments: list[str] | None) -> list[str]:
 def _build_attachment_label_paragraph(filename: str) -> dict:
     """Render a single attachment as a plain `📷 <filename>` paragraph.
 
-    Jira already displays attached images in the issue's Attachments
-    panel right below the comments, so the label alone is enough to
-    point readers at a specific screenshot. Earlier versions linked the
-    filename to the attachment's `content` URL, but that URL is a
-    binary-download endpoint — clicking it in a rendered comment
-    dead-ends at an auth flow or forces a download rather than opening
-    the ticket's attachment viewer. A `mediaSingle` inline render would
-    be nicer still, but Jira's ADF renderer requires a media-services
-    ID + collection that aren't returned by the attachments endpoint.
+    Fallback for when the Atlassian media-services UUID couldn't be
+    resolved (network glitch, 4xx on the redirect probe, legacy
+    walkthrough screenshot without a stored media_id). The comment
+    still posts; the reader sees the filename plus the image in the
+    Attachments panel below.
     """
     return {
         "type": "paragraph",
@@ -223,26 +234,71 @@ def _build_attachment_label_paragraph(filename: str) -> dict:
     }
 
 
+def _build_attachment_media_node(media_id: str) -> dict:
+    """Render an attachment inline in an ADF comment via `mediaSingle`.
+
+    Requires the Atlassian media-services UUID (see
+    `JiraClient.resolve_media_id`). Passing `collection: ""` is
+    intentional — Jira Cloud stores it as an empty string regardless
+    of what we send, and the community-verified recipe (Sam Watkins
+    2022, upex-galaxy/agentic-qa-boilerplate) confirms this is the
+    working shape. Width/height are omitted so Jira infers them from
+    the media metadata; `layout: center` matches the "attach it and
+    show it" idiom users see in the Jira editor.
+    """
+    return {
+        "type": "mediaSingle",
+        "attrs": {"layout": "center"},
+        "content": [
+            {
+                "type": "media",
+                "attrs": {
+                    "type": "file",
+                    "id": media_id,
+                    "collection": "",
+                },
+            }
+        ],
+    }
+
+
 def _normalize_attachments(
-    attachments: list[tuple[str, str]] | None,
-) -> list[tuple[str, str]]:
-    """Strip blanks and dedupe attachment (filename, url) tuples by URL."""
+    attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None",
+) -> "list[ImageAttachment]":
+    """Strip blanks and dedupe attachment refs by URL.
+
+    Accepts 2-tuples (legacy `(filename, url)`), 3-tuples
+    (`(filename, url, media_id)`), or `ImageAttachment` NamedTuples,
+    and returns a homogeneous list of `ImageAttachment`. Missing
+    media_id is preserved as `None`; the ADF builder falls back to a
+    plain-text callout when it's absent.
+    """
     if not attachments:
         return []
     seen: set[str] = set()
-    out: list[tuple[str, str]] = []
+    out: list[ImageAttachment] = []
     for item in attachments:
-        if not isinstance(item, tuple) or len(item) != 2:
+        if isinstance(item, ImageAttachment):
+            filename, url, media_id = item.filename, item.url, item.media_id
+        elif isinstance(item, tuple) and len(item) == 3:
+            filename, url, media_id = item
+        elif isinstance(item, tuple) and len(item) == 2:
+            filename, url = item
+            media_id = None
+        else:
             continue
-        filename, url = item
         if not isinstance(filename, str) or not isinstance(url, str):
             continue
         filename = filename.strip()
         url = url.strip()
         if not filename or not url or url in seen:
             continue
+        if media_id is not None and (not isinstance(media_id, str) or not media_id.strip()):
+            media_id = None
+        elif isinstance(media_id, str):
+            media_id = media_id.strip()
         seen.add(url)
-        out.append((filename, url))
+        out.append(ImageAttachment(filename=filename, url=url, media_id=media_id))
     return out
 
 
@@ -251,7 +307,7 @@ def _build_qa_pass_adf(
     summary: str | None,
     environments: list[str] | None = None,
     mention_account_ids: list[str] | None = None,
-    image_attachments: list[tuple[str, str]] | None = None,
+    image_attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None" = None,
 ) -> dict | None:
     """Build the ADF body for a QA→UAT pass comment.
 
@@ -259,11 +315,12 @@ def _build_qa_pass_adf(
     comment the same way test-plan comments are detected. The environments
     tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
     stays visible without expanding. Loom links sit above the fold (one
-    paragraph per URL), screenshot filenames are enumerated as plain
-    `📷 <filename>` paragraphs just below them (Jira's Attachments panel
-    shows the actual images right under the comment stream), and the
-    freeform summary is wrapped in an `expand` node. When mentions are
-    supplied, a final "cc:" paragraph triggers Jira notifications.
+    paragraph per URL), then screenshots render inline via `mediaSingle`
+    nodes when their Atlassian media-services UUID is known (falling back
+    to a plain `📷 <filename>` paragraph when it isn't — see
+    `_build_attachment_media_node`). The freeform summary is wrapped in
+    an `expand` node. When mentions are supplied, a final "cc:" paragraph
+    triggers Jira notifications.
 
     Mentions alone don't justify posting a comment — the function still
     returns None unless at least one substantive field
@@ -301,8 +358,11 @@ def _build_qa_pass_adf(
             ],
         })
 
-    for filename, _url in images:
-        content.append(_build_attachment_label_paragraph(filename))
+    for image in images:
+        if image.media_id:
+            content.append(_build_attachment_media_node(image.media_id))
+        else:
+            content.append(_build_attachment_label_paragraph(image.filename))
 
     if summary:
         summary_doc = markdown_to_adf(summary)
@@ -356,21 +416,22 @@ def _build_mentions_paragraph(account_ids: list[str] | None) -> dict | None:
 def _build_qa_fail_adf(
     reason: str | None,
     loom_urls: list[str] | None,
-    image_attachments: list[tuple[str, str]] | None = None,
+    image_attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None" = None,
     mention_account_ids: list[str] | None = None,
 ) -> dict | None:
     """Build the ADF body for a QA→To Do fail-back comment.
 
     The reason is the load-bearing field — devs need to see *why* the
-    ticket bounced without expanding anything, so it's rendered above the
-    fold (not inside an expand node). Loom links and `📷 <filename>`
-    plain-text callouts sit below as references (Jira's Attachments
-    panel renders the actual images under the comment stream);
-    mentioned accountIds get a final "cc:" paragraph that triggers Jira
-    notifications. Returns None if no
-    reason is supplied: callers use that signal to skip posting (the
-    transition still runs). Mentions without a reason still return
-    None — there's no value in pinging people on an empty comment.
+    ticket bounced without expanding anything, so it's rendered above
+    the fold (not inside an expand node). Loom links and screenshots
+    sit below as references — images render inline via `mediaSingle`
+    when the Atlassian media-services UUID is known, falling back to
+    `📷 <filename>` plain text when it isn't. Mentioned accountIds
+    get a final "cc:" paragraph that triggers Jira notifications.
+    Returns None if no reason is supplied: callers use that signal
+    to skip posting (the transition still runs). Mentions without a
+    reason still return None — there's no value in pinging people
+    on an empty comment.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -399,8 +460,11 @@ def _build_qa_fail_adf(
             ],
         })
 
-    for filename, _url in images:
-        content.append(_build_attachment_label_paragraph(filename))
+    for image in images:
+        if image.media_id:
+            content.append(_build_attachment_media_node(image.media_id))
+        else:
+            content.append(_build_attachment_label_paragraph(image.filename))
 
     mentions_para = _build_mentions_paragraph(mention_account_ids)
     if mentions_para:
@@ -2274,6 +2338,94 @@ class JiraClient:
         r.raise_for_status()
         return r.json()
 
+    async def resolve_media_id(self, attachment_id: str) -> str | None:
+        """Return the Atlassian media-services UUID for a Jira attachment.
+
+        `POST /rest/api/3/issue/{key}/attachments` only echoes the
+        numeric attachment id, but ADF `mediaSingle` requires the
+        media-services UUID to render an attachment inline in a
+        comment. The public workaround is to GET
+        `/rest/api/3/attachment/content/{id}` with redirects
+        disabled — Jira responds 303 with a `Location` header pointing
+        at `https://api.media.atlassian.com/file/<UUID>/binary?...` —
+        and parse the UUID out of the path. Confirmed by two production
+        implementations (upex-galaxy/agentic-qa-boilerplate,
+        MarcinSufa/claude-watch-video) and Sam Watkins' 2022 Atlassian
+        community answer.
+
+        Returns None on any failure (auth, timeout, missing header,
+        unrecognized path shape). Callers fall back to a plain-text
+        `📷 <filename>` callout in that case so the comment still posts.
+        """
+        if not attachment_id:
+            return None
+        url = f"{self.base_url}/rest/api/3/attachment/content/{attachment_id}"
+        headers = self._headers()
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+                r = await client.get(url, headers=headers)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            logger.warning(
+                "resolve_media_id: network error for attachment %s: %s",
+                attachment_id,
+                exc,
+            )
+            return None
+        # 303 See Other is the documented behavior; some tenants return 302.
+        if r.status_code not in (301, 302, 303, 307, 308):
+            logger.warning(
+                "resolve_media_id: unexpected status %s for attachment %s",
+                r.status_code,
+                attachment_id,
+            )
+            return None
+        location = r.headers.get("Location") or r.headers.get("location") or ""
+        match = re.search(r"/file/([0-9a-fA-F-]{8,})/", location)
+        if not match:
+            logger.warning(
+                "resolve_media_id: no UUID in redirect for attachment %s (Location=%r)",
+                attachment_id,
+                location[:200],
+            )
+            return None
+        return match.group(1)
+
+    async def enrich_attachments_with_media_ids(
+        self, uploaded: list[dict]
+    ) -> list[ImageAttachment]:
+        """Fold media-services UUIDs into a list of freshly-uploaded attachments.
+
+        Takes the raw dicts returned by `upload_attachments`, resolves
+        each attachment's UUID in parallel, and returns
+        `ImageAttachment` refs ready to hand to `post_qa_pass_comment`
+        / `post_qa_fail_comment`. Attachments whose UUID can't be
+        resolved come through with `media_id=None`; the comment builder
+        renders those as plain-text `📷 <filename>` callouts.
+        """
+        refs: list[tuple[str, str, str | None]] = []
+        ids: list[str | None] = []
+        for entry in uploaded or []:
+            if not isinstance(entry, dict):
+                continue
+            url = (entry.get("content") or "").strip()
+            filename = (entry.get("filename") or "").strip() or "screenshot"
+            att_id = str(entry.get("id") or "").strip() or None
+            if not url:
+                continue
+            refs.append((filename, url, None))
+            ids.append(att_id)
+        if not refs:
+            return []
+
+        async def _resolve(att_id: str | None) -> str | None:
+            return await self.resolve_media_id(att_id) if att_id else None
+
+        media_ids = await asyncio.gather(*[_resolve(att_id) for att_id in ids])
+        return [
+            ImageAttachment(filename=f, url=u, media_id=mid)
+            for (f, u, _), mid in zip(refs, media_ids)
+        ]
+
     async def post_qa_pass_comment(
         self,
         issue_key: str,
@@ -2281,7 +2433,7 @@ class JiraClient:
         summary: str | None,
         environments: list[str] | None = None,
         mention_account_ids: list[str] | None = None,
-        image_attachments: list[tuple[str, str]] | None = None,
+        image_attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None" = None,
     ) -> dict | None:
         """Post a QA→UAT pass comment with optional environments / Looms / summary / images.
 
@@ -2323,7 +2475,7 @@ class JiraClient:
         issue_key: str,
         reason: str | None,
         loom_urls: list[str] | None,
-        image_attachments: list[tuple[str, str]] | None = None,
+        image_attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None" = None,
         mention_account_ids: list[str] | None = None,
     ) -> dict | None:
         """Post a QA→To Do fail-back comment.

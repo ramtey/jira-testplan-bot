@@ -417,11 +417,16 @@ class WalkthroughScreenshotRef(BaseModel):
     """A single already-uploaded walkthrough screenshot the client wants to
     keep. Carried in :class:`WalkthroughUpdateRequest.existing_screenshots`.
     ``url`` is the Jira content URL returned by the attachment endpoint;
-    ``filename`` is the original file name (used to render the
-    ``📷 <filename>`` callout in the pass-to-UAT comment)."""
+    ``filename`` is the original file name (rendered as a fallback
+    ``📷 <filename>`` callout when inline rendering is unavailable);
+    ``media_id`` is the Atlassian media-services UUID used to render the
+    screenshot inline in the Pass-to-UAT comment. Legacy rows saved
+    before inline rendering shipped have ``media_id=None``; the workflow
+    route re-resolves the UUID from the content URL at comment time."""
 
     url: str
     filename: str | None = None
+    media_id: str | None = None
 
 
 class WalkthroughUpdateRequest(BaseModel):

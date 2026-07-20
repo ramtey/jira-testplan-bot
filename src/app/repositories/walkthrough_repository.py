@@ -25,9 +25,11 @@ def decode_screenshots(row: TicketWalkthrough | None) -> list[dict]:
     """Decode a walkthrough row's ``screenshots`` JSON blob into a list.
 
     Returns [] when the row is missing, the column is empty, or the stored
-    value fails to parse into a list of ``{filename, url}`` objects — the
-    walkthrough is optional metadata, so a bad blob should never break the
-    ticket page.
+    value fails to parse into a list of ``{filename, url, media_id?}``
+    objects — the walkthrough is optional metadata, so a bad blob should
+    never break the ticket page. ``media_id`` is optional (legacy rows
+    saved before inline rendering shipped won't have one; the workflow
+    route re-resolves those from the URL at comment time).
     """
     if row is None or not row.screenshots:
         return []
@@ -45,7 +47,12 @@ def decode_screenshots(row: TicketWalkthrough | None) -> list[dict]:
         if not url:
             continue
         filename = (entry.get("filename") or "screenshot").strip() or "screenshot"
-        cleaned.append({"filename": filename, "url": url})
+        media_id_raw = entry.get("media_id")
+        media_id = (
+            media_id_raw.strip() if isinstance(media_id_raw, str) and media_id_raw.strip()
+            else None
+        )
+        cleaned.append({"filename": filename, "url": url, "media_id": media_id})
     return cleaned
 
 
@@ -92,7 +99,11 @@ async def upsert_walkthrough(
 
     ``screenshots`` is the desired final list — pass ``[]`` to clear all
     attached screenshots. Each entry must have ``url`` (required) and
-    ``filename`` (defaulted to ``"screenshot"`` when blank).
+    ``filename`` (defaulted to ``"screenshot"`` when blank). Entries may
+    also carry ``media_id`` — the Atlassian media-services UUID used to
+    render the screenshot inline in the Pass-to-UAT comment. Absent
+    ``media_id`` falls back to a `📷 <filename>` text callout when the
+    comment is built.
     """
     key = ticket_key.upper()
     row = await get_walkthrough(session, ticket_key=key)
@@ -109,7 +120,15 @@ async def upsert_walkthrough(
         if not url:
             continue
         filename = (entry.get("filename") or "").strip() or "screenshot"
-        normalized.append({"filename": filename, "url": url})
+        media_id_raw = entry.get("media_id")
+        media_id = (
+            media_id_raw.strip() if isinstance(media_id_raw, str) and media_id_raw.strip()
+            else None
+        )
+        record: dict = {"filename": filename, "url": url}
+        if media_id:
+            record["media_id"] = media_id
+        normalized.append(record)
     row.screenshots = json.dumps(normalized) if normalized else None
     row.updated_at = datetime.now(timezone.utc)
     await session.commit()

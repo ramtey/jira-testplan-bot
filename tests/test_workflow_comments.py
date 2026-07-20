@@ -4,7 +4,13 @@ actions: `_build_qa_pass_adf`, `_build_qa_fail_adf`, and the URL/env
 normalizers they depend on.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from src.app.jira_client import (
+    ImageAttachment,
+    JiraClient,
     QA_FAIL_MARKER,
     QA_PASS_EXPAND_TITLE,
     QA_PASS_MARKER,
@@ -138,13 +144,16 @@ def _image_paragraphs(doc):
     ]
 
 
+def _media_single_nodes(doc):
+    return [n for n in doc["content"] if n.get("type") == "mediaSingle"]
+
+
 def test_build_qa_pass_adf_renders_image_callouts_above_fold():
-    # Reviewers should see which screenshots landed without expanding
-    # anything, so `📷 <filename>` callout paragraphs sit above the
-    # summary expand block. They're plain text — Jira's Attachments
-    # panel renders the actual images just below the comment — because
-    # the attachment `content` URL is a binary-download endpoint that
-    # dead-ends when clicked from a comment.
+    # Screenshots supplied without a resolved media UUID fall back to
+    # plain `📷 <filename>` callout paragraphs above the summary expand
+    # block — reviewers still see which screenshots landed without
+    # expanding anything, and the Attachments panel renders the actual
+    # image below the comment.
     doc = _build_qa_pass_adf(
         None,
         "Some test summary",
@@ -167,6 +176,58 @@ def test_build_qa_pass_adf_renders_image_callouts_above_fold():
         i for i, node in enumerate(doc["content"]) if node["type"] == "expand"
     )
     assert max(indices) < expand_index
+
+
+def test_build_qa_pass_adf_renders_media_single_when_media_id_present():
+    # With a resolved media-services UUID, screenshots render inline
+    # via a `mediaSingle` node — this is the primary happy path.
+    doc = _build_qa_pass_adf(
+        None,
+        None,
+        None,
+        None,
+        [
+            ImageAttachment("a.png", "https://jira.example/a", "uuid-a"),
+            ImageAttachment("b.png", "https://jira.example/b", "uuid-b"),
+        ],
+    )
+    assert doc is not None
+    media = _media_single_nodes(doc)
+    assert len(media) == 2
+    for node, expected_uuid in zip(media, ["uuid-a", "uuid-b"]):
+        assert node["attrs"] == {"layout": "center"}
+        assert len(node["content"]) == 1
+        inner = node["content"][0]
+        assert inner["type"] == "media"
+        assert inner["attrs"] == {
+            "type": "file",
+            "id": expected_uuid,
+            "collection": "",
+        }
+    # No plain-text callouts when every image resolved to a UUID.
+    assert _image_paragraphs(doc) == []
+
+
+def test_build_qa_pass_adf_mixes_media_and_text_when_partially_resolved():
+    # If UUID resolution fails for one screenshot, only that one falls
+    # back to the text callout — the others still render inline.
+    doc = _build_qa_pass_adf(
+        None,
+        None,
+        None,
+        None,
+        [
+            ImageAttachment("a.png", "https://jira.example/a", "uuid-a"),
+            ImageAttachment("b.png", "https://jira.example/b", None),
+        ],
+    )
+    assert doc is not None
+    media = _media_single_nodes(doc)
+    text_callouts = _image_paragraphs(doc)
+    assert len(media) == 1
+    assert media[0]["content"][0]["attrs"]["id"] == "uuid-a"
+    assert len(text_callouts) == 1
+    assert text_callouts[0]["content"][0]["text"] == "📷 b.png"
 
 
 def test_build_qa_pass_adf_images_alone_create_a_comment():
@@ -197,12 +258,15 @@ def test_build_qa_pass_adf_dedups_images_and_drops_blanks():
 
 
 def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
+    # Screenshot arrives with a resolved media UUID — the mediaSingle
+    # node sits between the Loom link and the summary expand, and
+    # mentions bring up the rear.
     doc = _build_qa_pass_adf(
         ["https://loom.com/x"],
         "Summary text",
         ["Integ"],
         ["acct-1"],
-        [("a.png", "https://jira.example/a")],
+        [ImageAttachment("a.png", "https://jira.example/a", "uuid-a")],
     )
     assert doc is not None
     types = [node["type"] for node in doc["content"]]
@@ -214,17 +278,15 @@ def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
         if p["type"] == "paragraph"
         and p.get("content") and p["content"][0].get("text", "").startswith("📹")
     )
-    image_idx = next(
-        i for i, p in enumerate(doc["content"])
-        if p["type"] == "paragraph"
-        and p.get("content") and p["content"][0].get("text", "").startswith("📷")
+    media_idx = next(
+        i for i, n in enumerate(doc["content"]) if n["type"] == "mediaSingle"
     )
     mention_idx = next(
         i for i, p in enumerate(doc["content"])
         if p["type"] == "paragraph"
         and any(n.get("type") == "mention" for n in p.get("content", []))
     )
-    assert loom_idx < image_idx < expand_idx < mention_idx
+    assert loom_idx < media_idx < expand_idx < mention_idx
 
 
 # ---------- _build_qa_fail_adf ----------
@@ -284,6 +346,48 @@ def test_build_qa_fail_adf_appends_loom_then_image_callouts_in_order():
     assert "marks" not in after_reason[1]["content"][0]
     assert after_reason[2]["content"][0]["text"] == "📷 b.png"
     assert "marks" not in after_reason[2]["content"][0]
+
+
+def test_build_qa_fail_adf_renders_media_single_when_media_id_present():
+    # Fail-back comments render screenshots inline via mediaSingle just
+    # like pass comments do — same recipe, same fallback rules.
+    doc = _build_qa_fail_adf(
+        "Login broken",
+        None,
+        [ImageAttachment("a.png", "https://jira.example/a", "uuid-a")],
+    )
+    assert doc is not None
+    media = _media_single_nodes(doc)
+    assert len(media) == 1
+    inner = media[0]["content"][0]
+    assert inner["type"] == "media"
+    assert inner["attrs"]["id"] == "uuid-a"
+    # No plain-text callout when the UUID resolved.
+    assert _image_paragraphs(doc) == []
+
+
+def test_build_qa_pass_adf_dedups_mixed_tuple_and_namedtuple_by_url():
+    # Callers may pass a mix of legacy 2-tuples, 3-tuples, and
+    # ImageAttachment NamedTuples — dedup runs on URL regardless of
+    # shape so a caller merging fresh uploads with walkthrough entries
+    # never emits the same screenshot twice.
+    doc = _build_qa_pass_adf(
+        ["https://loom.com/x"],
+        None,
+        None,
+        None,
+        [
+            ("a.png", "https://jira.example/a"),
+            ("a.png", "https://jira.example/a", "uuid-a"),
+            ImageAttachment("a.png", "https://jira.example/a", "uuid-a"),
+        ],
+    )
+    assert doc is not None
+    # First occurrence wins — it's the 2-tuple (media_id=None), so we
+    # get a text callout, not a mediaSingle node.
+    media = _media_single_nodes(doc)
+    text_callouts = _image_paragraphs(doc)
+    assert len(media) + len(text_callouts) == 1
 
 
 def test_build_qa_fail_adf_dedups_images_and_drops_blanks():
@@ -380,3 +484,166 @@ def test_build_qa_pass_adf_no_mentions_paragraph_when_list_empty():
         not any(node.get("type") == "mention" for node in para.get("content", []))
         for para in doc["content"]
     )
+
+
+# ---------- JiraClient.resolve_media_id ----------
+
+def _redirect_response(location: str, status_code: int = 303):
+    """Build a MagicMock httpx.Response mimicking a redirect."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.headers = {"Location": location}
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_resolve_media_id_extracts_uuid_from_303_location():
+    jira = JiraClient()
+    location = (
+        "https://api.media.atlassian.com/file/"
+        "abcdef12-3456-7890-abcd-ef1234567890/binary?token=jwt&client=uuid"
+    )
+    with patch("httpx.AsyncClient") as mock_client:
+        mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+            return_value=_redirect_response(location)
+        )
+        result = await jira.resolve_media_id("10001")
+    assert result == "abcdef12-3456-7890-abcd-ef1234567890"
+
+
+@pytest.mark.asyncio
+async def test_resolve_media_id_handles_302_redirect():
+    # Some Jira tenants return 302 instead of 303 — accept both.
+    jira = JiraClient()
+    location = "https://api.media.atlassian.com/file/deadbeef-0000-1111-2222-333333333333/binary"
+    with patch("httpx.AsyncClient") as mock_client:
+        mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+            return_value=_redirect_response(location, status_code=302)
+        )
+        result = await jira.resolve_media_id("10002")
+    assert result == "deadbeef-0000-1111-2222-333333333333"
+
+
+@pytest.mark.asyncio
+async def test_resolve_media_id_returns_none_on_unexpected_status():
+    jira = JiraClient()
+    resp = MagicMock()
+    resp.status_code = 200  # Not a redirect — treat as failure.
+    resp.headers = {}
+    with patch("httpx.AsyncClient") as mock_client:
+        mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+            return_value=resp
+        )
+        result = await jira.resolve_media_id("10003")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_media_id_returns_none_when_location_has_no_uuid():
+    jira = JiraClient()
+    with patch("httpx.AsyncClient") as mock_client:
+        mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+            return_value=_redirect_response("https://example.com/no/uuid/here")
+        )
+        result = await jira.resolve_media_id("10004")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_media_id_returns_none_on_empty_id():
+    jira = JiraClient()
+    # No HTTP call should happen — the guard rejects empty ids up front.
+    with patch("httpx.AsyncClient") as mock_client:
+        result = await jira.resolve_media_id("")
+        mock_client.assert_not_called()
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_enrich_attachments_with_media_ids_zips_uuids_into_refs():
+    jira = JiraClient()
+    uploaded = [
+        {"id": "1", "filename": "a.png", "content": "https://jira.example/a"},
+        {"id": "2", "filename": "b.png", "content": "https://jira.example/b"},
+        # Missing content URL — should be dropped from the output.
+        {"id": "3", "filename": "c.png", "content": ""},
+    ]
+    with patch.object(
+        jira, "resolve_media_id", new=AsyncMock(side_effect=["uuid-a", "uuid-b"])
+    ):
+        result = await jira.enrich_attachments_with_media_ids(uploaded)
+    assert result == [
+        ImageAttachment("a.png", "https://jira.example/a", "uuid-a"),
+        ImageAttachment("b.png", "https://jira.example/b", "uuid-b"),
+    ]
+
+
+# ---------- workflow_routes helpers ----------
+
+def test_attachment_id_from_content_url_extracts_numeric_id():
+    from src.app.workflow_routes import _attachment_id_from_content_url
+    url = "https://acme.atlassian.net/rest/api/3/attachment/content/54321"
+    assert _attachment_id_from_content_url(url) == "54321"
+
+
+def test_attachment_id_from_content_url_handles_trailing_query():
+    from src.app.workflow_routes import _attachment_id_from_content_url
+    url = "https://acme.atlassian.net/rest/api/3/attachment/content/9876?token=x"
+    assert _attachment_id_from_content_url(url) == "9876"
+
+
+def test_attachment_id_from_content_url_returns_none_for_foreign_or_blank():
+    from src.app.workflow_routes import _attachment_id_from_content_url
+    assert _attachment_id_from_content_url("") is None
+    assert _attachment_id_from_content_url("https://example.com/some/other/path") is None
+
+
+# ---------- walkthrough_repository media_id round-trip ----------
+
+def test_decode_screenshots_preserves_media_id():
+    from src.app.repositories import walkthrough_repository
+
+    row = MagicMock()
+    row.screenshots = (
+        '[{"filename": "a.png", "url": "https://jira.example/a",'
+        ' "media_id": "uuid-a"},'
+        '{"filename": "b.png", "url": "https://jira.example/b"}]'
+    )
+    result = walkthrough_repository.decode_screenshots(row)
+    assert result == [
+        {"filename": "a.png", "url": "https://jira.example/a", "media_id": "uuid-a"},
+        {"filename": "b.png", "url": "https://jira.example/b", "media_id": None},
+    ]
+
+
+def test_decode_screenshots_ignores_blank_media_id():
+    from src.app.repositories import walkthrough_repository
+
+    row = MagicMock()
+    row.screenshots = (
+        '[{"filename": "a.png", "url": "https://jira.example/a", "media_id": "  "}]'
+    )
+    result = walkthrough_repository.decode_screenshots(row)
+    assert result == [
+        {"filename": "a.png", "url": "https://jira.example/a", "media_id": None}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_enrich_attachments_with_media_ids_tolerates_failed_lookup():
+    # Attachment 2's UUID lookup returned None — its ImageAttachment
+    # comes through with media_id=None so the comment builder can fall
+    # back to a text callout.
+    jira = JiraClient()
+    uploaded = [
+        {"id": "1", "filename": "a.png", "content": "https://jira.example/a"},
+        {"id": "2", "filename": "b.png", "content": "https://jira.example/b"},
+    ]
+    with patch.object(
+        jira, "resolve_media_id", new=AsyncMock(side_effect=["uuid-a", None])
+    ):
+        result = await jira.enrich_attachments_with_media_ids(uploaded)
+    assert [(r.filename, r.media_id) for r in result] == [
+        ("a.png", "uuid-a"),
+        ("b.png", None),
+    ]
