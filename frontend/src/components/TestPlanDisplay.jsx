@@ -116,6 +116,54 @@ function SectionChip({ checked, total }) {
   )
 }
 
+function formatSingleTestForClipboard(test) {
+  const lines = []
+  if (test.title) lines.push(typeof test.title === 'string' ? test.title : JSON.stringify(test.title))
+  if (test.preconditions) lines.push('', 'Preconditions:', String(test.preconditions))
+  if (Array.isArray(test.steps) && test.steps.length > 0) {
+    lines.push('', 'Steps:')
+    test.steps.forEach((s, i) => lines.push(`${i + 1}. ${s}`))
+  }
+  if (test.expected) lines.push('', 'Expected:', String(test.expected))
+  if (test.test_data) lines.push('', 'Test data:', String(test.test_data))
+  return lines.join('\n')
+}
+
+function TestCardCopyButton({ test }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef(null)
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+
+  const handleCopy = (e) => {
+    e.stopPropagation()
+    const text = formatSingleTestForClipboard(test)
+    navigator.clipboard.writeText(text).then(
+      () => {
+        setCopied(true)
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => setCopied(false), 1500)
+      },
+      () => {
+        /* clipboard blocked — swallow silently */
+      }
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      className="tc-copy-btn"
+      data-copied={copied ? 'true' : 'false'}
+      onClick={handleCopy}
+      title={copied ? 'Copied' : 'Copy test to clipboard'}
+      aria-label={copied ? 'Copied' : 'Copy test to clipboard'}
+      style={{ position: 'absolute', top: 8, right: 8, width: 14, height: 14 }}
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={14} />
+    </button>
+  )
+}
+
 function TestCard({ test, section, index, checked, onToggle, showCategory, planHasAcs }) {
   const acIds = Array.isArray(test.covers_acs)
     ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
@@ -131,10 +179,12 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
       className="card"
       id={checkboxId}
       style={{
+        position: 'relative',
         borderColor: checked ? 'rgba(34,197,94,.3)' : undefined,
         transition: 'border-color var(--d-fast)',
       }}
     >
+      {!checked && <TestCardCopyButton test={test} />}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-5)', padding: checked ? 'var(--s-5) var(--s-6)' : 'var(--s-6) var(--s-6) var(--s-5)' }}>
         <span onClick={() => onToggle && onToggle()} style={{ flexShrink: 0, marginTop: 1 }}>
           <span className="cbx" data-checked={checked ? 'true' : 'false'} role="checkbox" aria-checked={checked} />

@@ -312,6 +312,26 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
   transition: border-color var(--d-fast) var(--ease-out);
 }
 .card[data-interactive="true"]:hover { border-color: var(--line-strong); background: var(--bg-raised); }
+.tc-copy-btn {
+  /* Neutralize the legacy global `button {}` rule in App.css. */
+  min-width: 0;
+  padding: 0;
+  box-shadow: none;
+  background: transparent;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease-out), color var(--d-fast);
+}
+.tc-copy-btn:hover { background: transparent; box-shadow: none; transform: none; color: var(--fg); }
+.tc-copy-btn[data-copied="true"] { color: var(--success); }
+.card:hover .tc-copy-btn,
+.tc-copy-btn:focus-visible,
+.tc-copy-btn[data-copied="true"] { opacity: 1; }
 .card-pad { padding: var(--s-6); }
 .card-head { padding: var(--s-5) var(--s-6); border-bottom: 1px solid var(--divider); display: flex; align-items: center; gap: var(--s-4); }
 .card-body { padding: var(--s-6); }
