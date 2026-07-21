@@ -88,52 +88,93 @@ _LOOM_URL_RE = re.compile(
 
 async def _harvest_loom_urls_from_merged_prs(
     jira: "JiraClient", issue_key: str
-) -> list[str]:
+) -> tuple[list[str], str]:
     """Pull Loom share URLs out of the *description* of merged PRs linked to
     an issue. Description-only on purpose: PR review comments are dev-facing
     chatter and inflate noise; the author-written body is the closest thing
-    to a curated demo pointer. Returns [] on any failure — this is opt-in
-    context enrichment, never a blocker for the UAT hand-off.
+    to a curated demo pointer.
+
+    Merge state comes from Jira's dev-status API (not GitHub's `merged`
+    field) so a transient GitHub 403/404 doesn't collapse into a
+    misleading "nothing is merged yet." The GitHub call is still needed
+    to read the PR body for Loom URLs, but its failure surfaces as
+    `github_unreachable`, distinct from "no merged PRs exist."
+
+    Returns (urls, status) where status is one of:
+      - "found"              — at least one Loom URL harvested
+      - "no_token"           — GITHUB_TOKEN not configured (server-side)
+      - "no_prs"             — no PRs linked to this issue at all
+      - "no_merged_prs"      — PRs exist but none marked MERGED in Jira
+      - "no_looms"           — merged PRs exist but no Loom in any body
+      - "github_unreachable" — merged PRs exist but every GitHub fetch failed
+      - "error"              — a Jira call raised; opt-in enrichment,
+                               never blocks the UAT hand-off
+
+    urls is always [] when status != "found".
     """
     if not settings.github_token:
-        return []
+        return [], "no_token"
     try:
         issue_id = await jira._get_issue_internal_id(issue_key)
     except Exception:
-        return []
+        return [], "error"
     if not issue_id:
-        return []
+        return [], "no_prs"
     try:
-        pr_urls = await jira._list_dev_status_pr_urls(issue_id)
+        pr_rows = await jira._list_dev_status_pr_summaries(issue_id)
     except Exception:
-        return []
-    github_prs = [u for u in pr_urls if u and "github.com" in u]
-    if not github_prs:
-        return []
+        return [], "error"
+    github_rows = [
+        row for row in pr_rows if row.get("url") and "github.com" in row["url"]
+    ]
+    if not github_rows:
+        return [], "no_prs"
+    merged_urls = [
+        row["url"]
+        for row in github_rows
+        if (row.get("status") or "").strip().upper() == "MERGED"
+    ]
+    if not merged_urls:
+        logger.info(
+            "PR-Loom harvest for %s: %d linked PR(s), none marked MERGED (states=%s)",
+            issue_key,
+            len(github_rows),
+            [row.get("status") for row in github_rows],
+        )
+        return [], "no_merged_prs"
     github_client = GitHubClient()
     details_list = await asyncio.gather(
         *[
             github_client.fetch_pr_details(
                 url, include_patch=False, include_comments=False
             )
-            for url in github_prs
+            for url in merged_urls
         ],
         return_exceptions=True,
     )
+    fetched_any = False
     harvested: list[str] = []
     seen: set[str] = set()
     for details in details_list:
         if isinstance(details, Exception) or details is None:
             continue
-        if not getattr(details, "merged", False):
-            continue
+        fetched_any = True
         body = details.description or ""
         for match in _LOOM_URL_RE.finditer(body):
             url = match.group(0).rstrip(".,);:]")
             if url not in seen:
                 seen.add(url)
                 harvested.append(url)
-    return harvested
+    if harvested:
+        return harvested, "found"
+    if not fetched_any:
+        logger.warning(
+            "PR-Loom harvest for %s: %d merged PR(s) but every GitHub fetch failed",
+            issue_key,
+            len(merged_urls),
+        )
+        return [], "github_unreachable"
+    return [], "no_looms"
 
 
 _ALLOWED_IMAGE_MIME = {
@@ -418,17 +459,6 @@ async def run_workflow_action(
                         )
                     )
                 image_attachments = to_prepend + image_attachments
-            if parsed_payload and parsed_payload.include_pr_media:
-                # Opt-in: scan merged PRs on the ticket for Loom links in the
-                # author-written body. Appends only novel URLs so any Loom the
-                # tester already typed or that came from the walkthrough
-                # keeps its position at the top of the list.
-                pr_looms = await _harvest_loom_urls_from_merged_prs(
-                    jira, issue_key
-                )
-                for url in pr_looms:
-                    if url not in looms:
-                        looms.append(url)
             try:
                 result = await jira.post_qa_pass_comment(
                     issue_key,
@@ -626,3 +656,23 @@ async def _cascade_transition_to_subtasks(
             )
 
     return moved
+
+
+@router.get("/{issue_key}/pr-looms")
+async def get_pr_looms(issue_key: str) -> dict:
+    """Preview endpoint for the Pass-to-UAT modal.
+
+    Returns Loom share URLs found in the description of merged PRs linked
+    to this issue plus a `status` telling the frontend *why* the list is
+    empty when it is. Always 200 — this is opt-in enrichment, not a gate.
+
+    Status values: see `_harvest_loom_urls_from_merged_prs`. The endpoint
+    adds `"skipped"` for tickets outside the SK-project gate so the modal
+    can stay silent instead of showing a misleading "no looms" line for
+    a project the feature doesn't cover.
+    """
+    if not issue_key.upper().startswith("SK-"):
+        return {"loom_urls": [], "status": "skipped"}
+    jira = JiraClient()
+    loom_urls, status = await _harvest_loom_urls_from_merged_prs(jira, issue_key)
+    return {"loom_urls": loom_urls, "status": status}

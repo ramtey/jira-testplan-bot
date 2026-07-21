@@ -2864,6 +2864,64 @@ class JiraClient:
             return None
         return r.json().get("id")
 
+    async def _list_dev_status_pr_summaries(self, issue_id: str) -> list[dict]:
+        """Return {"url", "status"} for each PR the dev-status API surfaces.
+
+        Jira's dev-status API knows each PR's lifecycle state ("OPEN",
+        "MERGED", "DECLINED", …) without a round-trip to GitHub. Callers
+        that only need to filter by state can use this instead of
+        fetching full PR details.
+
+        Returns [] on any transport failure — callers treat it as
+        "no PRs linked" and move on.
+        """
+        summary_url = (
+            f"{self.base_url}/rest/dev-status/latest/issue/summary?issueId={issue_id}"
+        )
+        rows: list[dict] = []
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                summary_response = await client.get(summary_url, headers=self._headers())
+                if summary_response.status_code != 200:
+                    return []
+                summary_info = summary_response.json().get("summary", {})
+                pr_summary = summary_info.get("pullrequest", {}).get("byInstanceType", {})
+                application_types = list(pr_summary.keys())
+
+                for app_type in application_types:
+                    pr_response = await client.get(
+                        f"{self.base_url}/rest/dev-status/latest/issue/detail",
+                        headers=self._headers(),
+                        params={
+                            "issueId": issue_id,
+                            "applicationType": app_type,
+                            "dataType": "pullrequest",
+                        },
+                    )
+                    if pr_response.status_code != 200:
+                        continue
+                    for detail in pr_response.json().get("detail", []):
+                        for pr in detail.get("pullRequests", []):
+                            url = pr.get("url")
+                            if url:
+                                rows.append({
+                                    "url": url,
+                                    "status": pr.get("status") or "",
+                                })
+        except Exception as e:
+            logger.warning(f"Dev-status PR summary lookup failed for issue {issue_id}: {e}")
+            return []
+
+        # De-dupe by URL, keeping the first-seen status.
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for row in rows:
+            if row["url"] in seen:
+                continue
+            seen.add(row["url"])
+            unique.append(row)
+        return unique
+
     async def _list_dev_status_pr_urls(self, issue_id: str) -> list[str]:
         """Return GitHub PR URLs linked to an issue via the dev-status API.
 

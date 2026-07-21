@@ -481,10 +481,6 @@ class WorkflowActionRequest(BaseModel):
     # rejects the request without this flag unless the form supplies a Loom
     # / image or the saved walkthrough already stands the gate down.
     override_missing_walkthrough: bool = False
-    # Pass-to-UAT only: opt in to harvesting Loom links from the merged PR's
-    # description and folding them into the UAT hand-off comment. Off by
-    # default so devs' local-repro looms don't drown the QA-curated walkthrough.
-    include_pr_media: bool = False
 
 
 class BugAnalysisRequest(BaseModel):
