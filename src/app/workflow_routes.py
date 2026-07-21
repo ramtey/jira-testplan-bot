@@ -12,7 +12,9 @@ import re
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from .config import settings
 from .db.session import get_sessionmaker
+from .github_client import GitHubClient
 from .jira_client import (
     ImageAttachment,
     JiraAuthError,
@@ -73,6 +75,65 @@ async def _resolve_media_ids_for_urls(
         return {}
     resolved = await asyncio.gather(*[jira.resolve_media_id(aid) for aid in unique_ids])
     return dict(zip(unique_ids, resolved))
+
+
+# Matches loom.com share URLs anywhere in a PR body (including markdown link
+# targets and embedded video markup). Trailing punctuation is stripped so
+# "…video: https://loom.com/share/abc." doesn't grab the period.
+_LOOM_URL_RE = re.compile(
+    r"https?://(?:www\.)?loom\.com/share/[A-Za-z0-9_-]+",
+    re.IGNORECASE,
+)
+
+
+async def _harvest_loom_urls_from_merged_prs(
+    jira: "JiraClient", issue_key: str
+) -> list[str]:
+    """Pull Loom share URLs out of the *description* of merged PRs linked to
+    an issue. Description-only on purpose: PR review comments are dev-facing
+    chatter and inflate noise; the author-written body is the closest thing
+    to a curated demo pointer. Returns [] on any failure — this is opt-in
+    context enrichment, never a blocker for the UAT hand-off.
+    """
+    if not settings.github_token:
+        return []
+    try:
+        issue_id = await jira._get_issue_internal_id(issue_key)
+    except Exception:
+        return []
+    if not issue_id:
+        return []
+    try:
+        pr_urls = await jira._list_dev_status_pr_urls(issue_id)
+    except Exception:
+        return []
+    github_prs = [u for u in pr_urls if u and "github.com" in u]
+    if not github_prs:
+        return []
+    github_client = GitHubClient()
+    details_list = await asyncio.gather(
+        *[
+            github_client.fetch_pr_details(
+                url, include_patch=False, include_comments=False
+            )
+            for url in github_prs
+        ],
+        return_exceptions=True,
+    )
+    harvested: list[str] = []
+    seen: set[str] = set()
+    for details in details_list:
+        if isinstance(details, Exception) or details is None:
+            continue
+        if not getattr(details, "merged", False):
+            continue
+        body = details.description or ""
+        for match in _LOOM_URL_RE.finditer(body):
+            url = match.group(0).rstrip(".,);:]")
+            if url not in seen:
+                seen.add(url)
+                harvested.append(url)
+    return harvested
 
 
 _ALLOWED_IMAGE_MIME = {
@@ -357,6 +418,17 @@ async def run_workflow_action(
                         )
                     )
                 image_attachments = to_prepend + image_attachments
+            if parsed_payload and parsed_payload.include_pr_media:
+                # Opt-in: scan merged PRs on the ticket for Loom links in the
+                # author-written body. Appends only novel URLs so any Loom the
+                # tester already typed or that came from the walkthrough
+                # keeps its position at the top of the list.
+                pr_looms = await _harvest_loom_urls_from_merged_prs(
+                    jira, issue_key
+                )
+                for url in pr_looms:
+                    if url not in looms:
+                        looms.append(url)
             try:
                 result = await jira.post_qa_pass_comment(
                     issue_key,

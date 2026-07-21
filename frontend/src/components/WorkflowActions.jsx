@@ -293,6 +293,10 @@ function WorkflowActions({
   const [imageFiles, setImageFiles] = useState([])
   const [mentionAccountIds, setMentionAccountIds] = useState([])
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
+  // Opt-in: scan the ticket's merged PRs for Loom URLs and fold them into
+  // the UAT hand-off comment. Off by default — devs' local-repro looms
+  // shouldn't crowd out the QA-curated walkthrough unless the tester asks.
+  const [includePrMedia, setIncludePrMedia] = useState(false)
   // Which column the single "Fail back" action returns the ticket to.
   const [failTargetId, setFailTargetId] = useState('fail-to-todo')
   const [failMenuOpen, setFailMenuOpen] = useState(false)
@@ -396,6 +400,7 @@ function WorkflowActions({
     setImageFiles([])
     setMentionAccountIds([])
     setCascadeToSubtasks(hasSubtasks)
+    setIncludePrMedia(false)
   }
 
   const addImageFiles = (files) => {
@@ -556,13 +561,14 @@ function WorkflowActions({
         trimmedSummary ||
         environments.length > 0 ||
         imageFiles.length > 0
-      const body = hasAnyField
+      const body = hasAnyField || includePrMedia
         ? {
             loom_urls: looms.length > 0 ? looms : null,
             summary: trimmedSummary || null,
             environments: environments.length > 0 ? environments : null,
             mention_account_ids:
               mentionAccountIds.length > 0 ? mentionAccountIds : null,
+            include_pr_media: includePrMedia || undefined,
           }
         : undefined
       runAction(noteForAction, body, imageFiles)
@@ -822,13 +828,24 @@ function WorkflowActions({
             )}
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginTop: 'var(--s-6)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-4)', marginTop: 'var(--s-6)', flexWrap: 'wrap' }}>
             {hasSubtasks && (
               <Cbx
                 checked={cascadeToSubtasks}
                 onChange={setCascadeToSubtasks}
                 label="Also move all subtasks"
               />
+            )}
+            {noteForAction.id === 'pass-to-uat' && (
+              <span
+                title="Scans the merged PR description for loom.com links and appends any new ones to this hand-off."
+              >
+                <Cbx
+                  checked={includePrMedia}
+                  onChange={setIncludePrMedia}
+                  label="Also pull Looms from merged PR"
+                />
+              </span>
             )}
             <span style={{ flex: 1 }} />
             <Btn variant="ghost" onClick={closeNoteForm} disabled={pendingAction !== null}>Cancel</Btn>
