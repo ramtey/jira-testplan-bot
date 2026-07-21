@@ -5,7 +5,6 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
-import { extractPrMedia } from '../utils/prMedia'
 import {
   API_BASE_URL,
   isWalkthroughCardCtaEnabled,
@@ -32,20 +31,6 @@ const COVERABLE_KEYS = ['happy_path', 'edge_cases', 'integration_tests']
 
 function sectionLength(testPlan, key) {
   return Array.isArray(testPlan?.[key]) ? testPlan[key].length : 0
-}
-
-function formatRelativeTime(iso) {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const mins = Math.round((Date.now() - d.getTime()) / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.round(hours / 24)
-  if (days < 30) return `${days}d ago`
-  return d.toLocaleDateString()
 }
 
 function buildStorageKey(testPlan, ticketKeys) {
@@ -1173,41 +1158,15 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const [includeCovered, setIncludeCovered] = useState(false)
 
   const [isPosting, setIsPosting] = useState(false)
-  // Local "we just posted this version" timestamp. The parent re-fetches
-  // history asynchronously via onPosted; this lets the badge appear
-  // immediately without waiting for that round-trip. Cleared when the plan
-  // identity changes (regeneration produces a new plan_id).
-  const [localPostedAt, setLocalPostedAt] = useState(null)
   useEffect(() => {
-    setLocalPostedAt(null)
     setIncludeCovered(false)
   }, [testPlan?.plan_id])
-  const postedAt = testPlan?.posted_at || localPostedAt
 
-  // Human-authored walkthrough (Loom / screenshot / notes), keyed to the
-  // primary ticket so it persists across regenerations. Editing is enabled for
-  // single-ticket plans (the walkthrough belongs to one ticket).
+  // Walkthrough (Loom / screenshot / notes) is authored inline in the
+  // Pass-to-UAT form (WorkflowActions). Here it's read-only — fetched purely
+  // so the export/Jira formatters can embed it into the posted plan.
   const walkthroughKey = ticketData?.key || (ticketsData && ticketsData[0]?.key) || ''
-  const {
-    walkthrough,
-    saving: savingWalkthrough,
-    save: saveWalkthrough,
-  } = useTicketWalkthrough(walkthroughKey)
-  const [editingWalkthrough, setEditingWalkthrough] = useState(false)
-
-  // Images/videos the developer already uploaded to the PR. These count as
-  // walkthrough material on their own — surfacing them here saves the tester a
-  // click into GitHub. Read-only: they live on GitHub, not our DB.
-  const prMedia = useMemo(
-    () => extractPrMedia(ticketData?.development_info?.pull_requests),
-    [ticketData?.development_info?.pull_requests]
-  )
-
-  // Close the walkthrough editor when the ticket changes — the fetched
-  // walkthrough belongs to a different key and stale edit state would leak.
-  useEffect(() => {
-    setEditingWalkthrough(false)
-  }, [walkthroughKey])
+  const { walkthrough } = useTicketWalkthrough(walkthroughKey)
 
   const ticketKeysJoined = isMulti
     ? allKeys.join('+')
@@ -1372,21 +1331,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     URL.revokeObjectURL(url)
   }
 
-  const handleSaveWalkthrough = async (payload) => {
-    if (!walkthroughKey) return
-    try {
-      await saveWalkthrough(payload)
-      setEditingWalkthrough(false)
-    } catch (err) {
-      showNotification(
-        setPostNotification,
-        postTimerRef,
-        'error',
-        err?.message || 'Failed to save walkthrough'
-      )
-    }
-  }
-
   const handlePostToJira = async () => {
     setIsPosting(true)
     try {
@@ -1408,7 +1352,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
 
       const result = await response.json()
       const action = result.updated ? 'updated' : 'posted'
-      setLocalPostedAt(result.posted_at || new Date().toISOString())
       if (onPosted) onPosted({ ticketKey: ticketData.key, planId: testPlan?.plan_id ?? null })
       showNotification(setPostNotification, postTimerRef, 'success', `Test plan ${action} on ${ticketData.key}`)
     } catch (error) {
@@ -1680,44 +1623,6 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           </div>
         </div>
       )}
-
-      {/* Plan banner */}
-      <div className="card" style={{ padding: 'var(--s-5) var(--s-6)', marginBottom: 'var(--s-6)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-4)' }}>
-          <div style={{ width: 32, height: 32, borderRadius: 'var(--r-md)', background: 'rgba(59,130,246,.12)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-            <Icon name="beaker" size={16} style={{ color: 'var(--accent)' }} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 'var(--t-md)', fontWeight: 600, color: 'var(--fg-strong)' }}>Generated test plan</span>
-              {isMulti && <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>· {allKeys.join(' + ')}</span>}
-              {!isMulti && postedAt && (
-                <span title={`Posted ${new Date(postedAt).toLocaleString()}`} style={{ display: 'inline-flex' }}>
-                  <Chip size="sm" dot dotColor="var(--success)">
-                    Live in Jira · {formatRelativeTime(postedAt)}
-                  </Chip>
-                </span>
-              )}
-            </div>
-            <div style={{ marginTop: 2, fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
-              {totalAll} test cases
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <UatGuideCard
-        complexity={testPlan.uat_complexity}
-        howToSeeIt={testPlan.how_to_see_it}
-        enableWalkthrough={!isMulti && !!walkthroughKey}
-        walkthrough={walkthrough}
-        prMedia={prMedia}
-        editingWalkthrough={editingWalkthrough}
-        onEditingChange={setEditingWalkthrough}
-        onSaveWalkthrough={handleSaveWalkthrough}
-        savingWalkthrough={savingWalkthrough}
-        ticketStatus={primaryTicketData?.status}
-      />
 
       {testPlan.ac_coverage && (
         <AcCoveragePanel coverage={testPlan.ac_coverage} />

@@ -269,6 +269,90 @@ function ImageDropzone({ files, onAdd, onRemove, disabled }) {
   )
 }
 
+// Human-facing message per status returned by GET /issue/{key}/pr-looms.
+// Kept as a lookup instead of an if-tree so cases stay parallel and easy to
+// read. Note: "skipped" (non-SK project) is handled by not rendering the
+// panel at all — the tester never sees a message about it.
+const PR_LOOM_STATUS_COPY = {
+  loading: 'Scanning merged PR for Looms…',
+  found: 'Found in the merged PR description — tick to include in the hand-off comment.',
+  no_prs: 'No PR is linked to this ticket yet.',
+  no_merged_prs: 'A PR is linked, but nothing is merged yet.',
+  no_looms: 'The merged PR description has no Loom link.',
+  no_token: 'GitHub token not configured — PR-Loom scan is disabled server-side.',
+  github_unreachable: "Couldn't read the merged PR from GitHub (rate limit / permissions).",
+  error: 'PR scan failed — check the server log.',
+}
+
+function PrLoomDiscoveryPanel({ status, discovered, selected, onToggle }) {
+  const tone =
+    status === 'found' ? 'info'
+    : status === 'error' || status === 'no_token' || status === 'github_unreachable' ? 'warn'
+    : 'muted'
+  const palette = {
+    info:  { bg: 'rgba(59,130,246,.05)', border: 'rgba(59,130,246,.20)' },
+    warn:  { bg: 'rgba(234,179,8,.06)',  border: 'rgba(234,179,8,.28)' },
+    muted: { bg: 'var(--bg-subtle)',     border: 'var(--border)' },
+  }[tone]
+  const copy = PR_LOOM_STATUS_COPY[status] || 'Scan finished.'
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        padding: 'var(--s-3) var(--s-4)',
+        background: palette.bg,
+        border: '1px solid ' + palette.border,
+        borderRadius: 'var(--r-md)',
+      }}
+    >
+      <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', marginBottom: status === 'found' ? 2 : 0 }}>
+        {copy}
+      </div>
+      {status === 'found' && discovered.map((url) => (
+        <label
+          key={url}
+          className="cbx-label"
+          style={{ alignItems: 'center', gap: 8 }}
+        >
+          <span
+            className="cbx"
+            data-checked={selected.has(url) ? 'true' : 'false'}
+            role="checkbox"
+            aria-checked={selected.has(url)}
+            tabIndex={0}
+            onClick={() => onToggle(url)}
+            onKeyDown={(e) => {
+              if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault()
+                onToggle(url)
+              }
+            }}
+          />
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              fontFamily: 'var(--font-mono, monospace)',
+              fontSize: 'var(--t-xs)',
+              color: 'var(--fg)',
+              textDecoration: 'none',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {url}
+          </a>
+        </label>
+      ))}
+    </div>
+  )
+}
+
 function WorkflowActions({
   ticketKey,
   currentStatus,
@@ -281,6 +365,7 @@ function WorkflowActions({
   currentUserAccountId,
   childIssues,
   onActionComplete,
+  videoChecklistSteps,
 }) {
   const [pendingAction, setPendingAction] = useState(null)
   const [feedback, setFeedback] = useState(null)
@@ -293,10 +378,17 @@ function WorkflowActions({
   const [imageFiles, setImageFiles] = useState([])
   const [mentionAccountIds, setMentionAccountIds] = useState([])
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
-  // Opt-in: scan the ticket's merged PRs for Loom URLs and fold them into
-  // the UAT hand-off comment. Off by default — devs' local-repro looms
-  // shouldn't crowd out the QA-curated walkthrough unless the tester asks.
-  const [includePrMedia, setIncludePrMedia] = useState(false)
+  // PR-Loom discovery: kicked off when the Pass-to-UAT form opens.
+  // - prLoomStatus: null (haven't fetched yet) | "loading" | server-returned
+  //   status string. Drives the inline status line so the tester can *see*
+  //   the scan ran and what it found.
+  // - discoveredPrLooms: URLs scraped from merged PR descriptions.
+  // - selectedPrLooms: which of the discovered ones the tester wants to
+  //   fold into the hand-off. Defaults to *all discovered* so the common
+  //   case is a single click; individual URLs can be toggled off.
+  const [prLoomStatus, setPrLoomStatus] = useState(null)
+  const [discoveredPrLooms, setDiscoveredPrLooms] = useState([])
+  const [selectedPrLooms, setSelectedPrLooms] = useState(() => new Set())
   // Which column the single "Fail back" action returns the ticket to.
   const [failTargetId, setFailTargetId] = useState('fail-to-todo')
   const [failMenuOpen, setFailMenuOpen] = useState(false)
@@ -308,6 +400,12 @@ function WorkflowActions({
   //   { message: string, retry: fn }  → prompt open, retry() resends with the
   //                                     override flag on confirm
   const [walkthroughOverridePrompt, setWalkthroughOverridePrompt] = useState(null)
+  // Ephemeral "steps to cover in the video" checklist that lives above the
+  // Loom URL input in the Pass-to-UAT form. Opt-in dropdown; state resets
+  // when the form closes — it's a scratch tool, not persisted server-side.
+  const [checklistOpen, setChecklistOpen] = useState(false)
+  const [checklistTicked, setChecklistTicked] = useState(() => new Set())
+  const checklistSteps = Array.isArray(videoChecklistSteps) ? videoChecklistSteps : []
   const loomInputRef = useRef(null)
 
   useEffect(() => {
@@ -348,6 +446,47 @@ function WorkflowActions({
     window.addEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
     return () => window.removeEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
   }, [currentStatus, description, comments])
+
+  // Prefetch PR-hosted Loom URLs the moment the Pass-to-UAT modal opens so
+  // the discovery panel can render as soon as it's known — the tester sees
+  // *what* would be added before deciding whether to include it. Silent on
+  // network failure: the panel just stays hidden, matching "no PRs found".
+  useEffect(() => {
+    if (noteForAction?.id !== 'pass-to-uat' || !ticketKey) return
+    const controller = new AbortController()
+    setPrLoomStatus('loading')
+    setDiscoveredPrLooms([])
+    setSelectedPrLooms(new Set())
+    ;(async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/issue/${ticketKey}/pr-looms`,
+          { signal: controller.signal }
+        )
+        if (!response.ok) {
+          setPrLoomStatus('error')
+          return
+        }
+        const data = await response.json().catch(() => ({}))
+        const urls = Array.isArray(data?.loom_urls) ? data.loom_urls : []
+        setDiscoveredPrLooms(urls)
+        setSelectedPrLooms(new Set(urls))
+        setPrLoomStatus(data?.status || (urls.length > 0 ? 'found' : 'no_looms'))
+      } catch (err) {
+        if (err?.name !== 'AbortError') setPrLoomStatus('error')
+      }
+    })()
+    return () => controller.abort()
+  }, [noteForAction, ticketKey])
+
+  const togglePrLoom = (url) => {
+    setSelectedPrLooms((prev) => {
+      const next = new Set(prev)
+      if (next.has(url)) next.delete(url)
+      else next.add(url)
+      return next
+    })
+  }
 
   const hasSubtasks =
     Array.isArray(childIssues) &&
@@ -400,7 +539,11 @@ function WorkflowActions({
     setImageFiles([])
     setMentionAccountIds([])
     setCascadeToSubtasks(hasSubtasks)
-    setIncludePrMedia(false)
+    setPrLoomStatus(null)
+    setDiscoveredPrLooms([])
+    setSelectedPrLooms(new Set())
+    setChecklistOpen(false)
+    setChecklistTicked(new Set())
   }
 
   const addImageFiles = (files) => {
@@ -555,20 +698,26 @@ function WorkflowActions({
     if (noteForAction.id === 'pass-to-uat') {
       // No client-side gate — the server enforces the walkthrough rule and
       // returns a 409 that opens the override prompt in runAction.
+      // Append PR-discovered Loom URLs the tester ticked on, deduped against
+      // whatever they typed manually. Typed URLs keep first-seen ordering.
+      const seenLooms = new Set(looms)
+      const prLoomsToAdd = discoveredPrLooms.filter(
+        (url) => selectedPrLooms.has(url) && !seenLooms.has(url)
+      )
+      const combinedLooms = [...looms, ...prLoomsToAdd]
       const trimmedSummary = summary.trim()
       const hasAnyField =
-        looms.length > 0 ||
+        combinedLooms.length > 0 ||
         trimmedSummary ||
         environments.length > 0 ||
         imageFiles.length > 0
-      const body = hasAnyField || includePrMedia
+      const body = hasAnyField
         ? {
-            loom_urls: looms.length > 0 ? looms : null,
+            loom_urls: combinedLooms.length > 0 ? combinedLooms : null,
             summary: trimmedSummary || null,
             environments: environments.length > 0 ? environments : null,
             mention_account_ids:
               mentionAccountIds.length > 0 ? mentionAccountIds : null,
-            include_pr_media: includePrMedia || undefined,
           }
         : undefined
       runAction(noteForAction, body, imageFiles)
@@ -773,6 +922,56 @@ function WorkflowActions({
               </>
             )}
 
+            {noteForAction.id === 'pass-to-uat' && checklistSteps.length > 0 && (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <button
+                  type="button"
+                  onClick={() => setChecklistOpen((v) => !v)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontSize: 'var(--t-sm)',
+                    color: 'var(--fg-muted)',
+                    fontWeight: 600,
+                  }}
+                  aria-expanded={checklistOpen}
+                >
+                  <Icon name={checklistOpen ? 'chevron-down' : 'chevron-right'} size={13} />
+                  Steps to cover in the video
+                  <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', fontWeight: 500 }}>
+                    {checklistTicked.size > 0
+                      ? `${checklistTicked.size} / ${checklistSteps.length} covered`
+                      : `${checklistSteps.length} main change${checklistSteps.length === 1 ? '' : 's'}`}
+                  </span>
+                </button>
+                {checklistOpen && (
+                  <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {checklistSteps.map((step, i) => (
+                      <Cbx
+                        key={i}
+                        id={`video-checklist-${i}`}
+                        checked={checklistTicked.has(i)}
+                        onChange={(next) =>
+                          setChecklistTicked((prev) => {
+                            const copy = new Set(prev)
+                            if (next) copy.add(i)
+                            else copy.delete(i)
+                            return copy
+                          })
+                        }
+                        label={step}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             <span className="lbl">Loom URL{loomUrlsText.includes('\n') ? 's' : ''}</span>
             <textarea
               ref={loomInputRef}
@@ -784,6 +983,18 @@ function WorkflowActions({
               disabled={pendingAction !== null}
               style={{ minHeight: 40 }}
             />
+
+            {noteForAction.id === 'pass-to-uat' && prLoomStatus && prLoomStatus !== 'skipped' && (
+              <>
+                <span className="lbl">From merged PR</span>
+                <PrLoomDiscoveryPanel
+                  status={prLoomStatus}
+                  discovered={discoveredPrLooms}
+                  selected={selectedPrLooms}
+                  onToggle={togglePrLoom}
+                />
+              </>
+            )}
 
             {noteForAction.id === 'pass-to-uat' && (
               <>
@@ -835,17 +1046,6 @@ function WorkflowActions({
                 onChange={setCascadeToSubtasks}
                 label="Also move all subtasks"
               />
-            )}
-            {noteForAction.id === 'pass-to-uat' && (
-              <span
-                title="Scans the merged PR description for loom.com links and appends any new ones to this hand-off."
-              >
-                <Cbx
-                  checked={includePrMedia}
-                  onChange={setIncludePrMedia}
-                  label="Also pull Looms from merged PR"
-                />
-              </span>
             )}
             <span style={{ flex: 1 }} />
             <Btn variant="ghost" onClick={closeNoteForm} disabled={pendingAction !== null}>Cancel</Btn>

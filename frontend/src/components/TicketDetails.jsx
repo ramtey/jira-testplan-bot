@@ -358,7 +358,7 @@ function BounceSection({ events, pullRequests }) {
   )
 }
 
-function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription, onActionComplete, onRowAction, compact = false }) {
+function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription, onActionComplete, onRowAction, compact = false, videoChecklistSteps }) {
   const [isAttachmentsExpanded, setIsAttachmentsExpanded] = useState(false)
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false)
   const [plainSummary, setPlainSummary] = useState(null)
@@ -503,6 +503,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
           currentUserAccountId={ticketData.current_user_account_id}
           childIssues={ticketData.children}
           onActionComplete={onActionComplete}
+          videoChecklistSteps={videoChecklistSteps}
         />
       </div>
 

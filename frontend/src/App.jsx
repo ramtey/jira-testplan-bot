@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 // Order matters: load old App.css first, then the new design-system layers
 // so the new tokens/base/components win cleanly without !important.
 import './App.css'
@@ -82,6 +82,18 @@ function App() {
 
   const testPlan = useTestPlan()
   const bugLens = useBugLens()
+
+  // Titles of the main-change cases surfaced as a "steps to cover in the video"
+  // dropdown inside the Pass-to-UAT form (WorkflowActions). Sourced from the
+  // plan's happy_path (the flows that make the change observable), capped so
+  // the dropdown stays a scannable checklist, not a wall of text.
+  const videoChecklistSteps = useMemo(() => {
+    const items = Array.isArray(testPlan.plan?.happy_path) ? testPlan.plan.happy_path : []
+    const titles = items
+      .map((t) => (t && typeof t.title === 'string' ? t.title.trim() : ''))
+      .filter(Boolean)
+    return titles.slice(0, 6)
+  }, [testPlan.plan])
 
   // Scroll refs for auto-scrolling to results
   const testPlanRef = useRef(null)
@@ -436,6 +448,7 @@ function App() {
                   isDescriptionExpanded={isDescriptionExpanded}
                   onToggleDescription={toggleDescription}
                   onActionComplete={refreshCurrentTicket}
+                  videoChecklistSteps={videoChecklistSteps}
                 />
               )}
 
