@@ -431,7 +431,7 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
 .coll:hover { border-color: var(--line-strong); }
 .coll-head {
   display: flex; align-items: center; gap: var(--s-4);
-  padding: var(--s-5) var(--s-6);
+  padding: var(--s-4) var(--s-6);
   cursor: pointer;
   background: transparent;
   border: 0;

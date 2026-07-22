@@ -373,10 +373,11 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
       return
     }
 
-    // First click while empty: fetch but leave the panel collapsed — the preview
-    // line carries the snippet, so the user can read it without expanding.
     if (summaryLoading) return
 
+    // First click while empty: expand immediately and fire the fetch so the
+    // spinner shows inside the open panel while the summary loads.
+    setIsSummaryExpanded(true)
     setSummaryLoading(true)
     setSummaryError(null)
     try {
