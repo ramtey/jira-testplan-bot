@@ -40,13 +40,14 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **UI grounding flags**: test steps that reference UI elements not present in the PR diff or simulator `testID` reference are tagged so QA can verify wording before running them
 - **PII scrub**: real customer/employee names and emails from Jira/PR context are replaced with generic test-account placeholders before the plan is rendered
 - **Epic children view**: fetching an Epic lists every child ticket with per-row Generate and Analyze buttons that render results inline beneath the row
-- **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does
-- **Inline UX feedback**: auto-scroll to results, per-test checkmarks, and a viewport-pinned overall + per-section progress bar
+- **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does. Clicking Summary triggers the fetch **without** expanding the panel — the preview line carries the loading state and eventual snippet, so a second click expands to the full text (or error)
+- **Description URL linkification**: `http(s)://` URLs in the Jira description render as new-tab links (trailing `.,;:!?` stays as text so `see https://foo.com.` doesn't point at a 404); long URLs word-break inside the pre so they can't overflow horizontally
+- **Inline UX feedback**: auto-scroll to results, per-test checkmarks, a viewport-pinned overall + per-section progress bar, and a hover-only Copy button on each unchecked test card that yanks the title + Preconditions/Steps/Expected/Test data as plain text (flips to a green check for 1.5s to confirm; hidden until hover/focus so it doesn't compete with card content)
 - **Per-test `grounded_in` attribution**: every generated test case carries a `grounded_in` list (e.g. `comments:123`, `PR:456`, `Figma:abc`) rendered as small chips under the test; tests with neither AC coverage nor grounded_in entries get an "Untraced" pill (hidden when the ticket has no ACs at all) so reviewers can spot ungrounded claims at a glance
 - **Linked Confluence specs**: Confluence URLs in the Jira description or comments are fetched and injected into the LLM prompt as a LINKED SPECS section so quoted requirements come from the actual spec page, not just the ticket body. Best-effort — per-page failures don't block plan generation
-- **Live in Jira badge**: Jira posting is update-in-place, so at most one generated version is the one teammates see on the ticket. The plan banner and run-history rows tag that version "Live in Jira" so users don't double-post or wonder which regeneration is current
+- **Live in Jira badge**: Jira posting is update-in-place, so at most one generated version is the one teammates see on the ticket. The run-history drawer tags that version with a pulsing "Live in Jira" chip so users don't double-post or wonder which regeneration is current. The chip is scoped to the latest run — the collapsed banner header always reads as the newest version, so surfacing the chip there when an older version is live read as a second version being live; the chip now only appears on the per-row pill inside the expanded version drawer
 - **Shareable URLs**: the active ticket key is mirrored into the URL bar via `?key=…`, so every browser tab is a bookmarkable / refresh-safe handle on a ticket (works alongside the existing per-tab sessionStorage)
-- **UAT walkthrough**: every plan is tagged with `uat_complexity` and a plain-language "How to test this" summary. Planners can attach a Loom link, drag-and-drop screenshots (uploaded to Jira as attachments), and setup/repro notes that persist across regenerations; images and videos already uploaded to the linked PR are surfaced in the same card. Pass-to-UAT folds the saved walkthrough into the hand-off comment automatically, and nudges once (escapable) when a high-complexity ticket has no walkthrough
+- **UAT walkthrough**: every plan is tagged with `uat_complexity` and a plain-language "How to test this" summary. The walkthrough is treated as the UAT hand-off *payload* — not a sibling artifact — so authoring lives inside the Pass-to-UAT form itself (a "Steps to cover in the video" collapsible above the Loom input pulls the plan's happy path, capped at 6). Planners can attach a Loom link, drag-and-drop screenshots (uploaded to Jira as attachments and rendered inline in the comment via `mediaSingle` nodes), and setup/repro notes that persist across regenerations; images and videos already uploaded to the linked PR are surfaced in the same form. A single server-side gate (`uat_readiness`) decides whether the ticket needs walkthrough material — high-complexity + no Loom/upload/notes/PR-attached media returns a 409 `walkthrough_required` before any Jira calls fire, and the UI opens a single override prompt instead of the old two-step client-side nudge
 - **Covered-by-unit-tests flag**: cases whose behavior an existing unit test already exercises are flagged and moved into a collapsed section, and excluded from the Jira comment by default
 - **Shared per-ticket test progress**: per-test checkmarks are persisted server-side so the whole QA team sees the same checked set; `localStorage` remains an offline fallback
 
@@ -65,7 +66,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
   - Root cause issues (for bugs - ensures actual cause is fixed)
   - Downstream issues this ticket may cause (validate no regressions)
 - **Smart comment analysis**: Extracts testing-related Jira comments (test scenarios, edge cases, QA discussions)
-- **QA/UAT bounce-back history**: Walks the issue changelog for transitions where the ticket reached an advanced state (QA / UAT / Testing / Ready-for-*) and was sent back to To Do, Backlog, Open, Reopened, or In Progress. Reason pairing is two-tier — first the nearest Jira comment within ±6 hours of the transition (slight bonus when authors match), then a fallback that walks the comments posted between when the ticket entered its reviewed state and the bounce, preferring non-dev voices, so older QA/UAT feedback that never got resolved is picked up instead of the dev's "will check" reply. Surfaced to the LLM as a "PRIOR QA / UAT BOUNCE-BACK HISTORY" section that asks for explicit regression coverage of each prior failure mode. In the UI, each bounce card leads with a one-sentence LLM headline (via `POST /bounce/summarize`) and a plain-English transition line ("Kyle moved this back to In Progress from Ready for UAT") with the raw comment tucked behind a "Show full comment" toggle; long comments are trimmed at paragraph / sentence / word boundaries with an ellipsis instead of a hard mid-word cut
+- **QA/UAT bounce-back history**: Walks the issue changelog for transitions where the ticket reached an advanced state (QA / UAT / Testing / Ready-for-*) and was sent back to To Do, Backlog, Open, Reopened, or In Progress. Reason pairing is two-tier — first the nearest Jira comment within ±6 hours of the transition (slight bonus when authors match), then a fallback that walks the comments posted between when the ticket entered its reviewed state and the bounce, preferring non-dev voices, so older QA/UAT feedback that never got resolved is picked up instead of the dev's "will check" reply. Surfaced to the LLM as a "PRIOR QA / UAT BOUNCE-BACK HISTORY" section that asks for explicit regression coverage of each prior failure mode. In the UI, each bounce card leads with a one-sentence LLM headline (via `POST /bounce/summarize`) and a plain-English transition line ("Kyle moved this back to In Progress from Ready for UAT") with the raw comment tucked behind a "Show full comment" toggle; long comments are trimmed at paragraph / sentence / word boundaries with an ellipsis instead of a hard mid-word cut. Each card is **paired with the PR that shipped its fix** — the earliest PR merged after that specific bounce is shown with a link, merge time, and the changed files (+/− counts, 6 shown by default) — so older bounces pair with earlier fix PRs rather than every card crediting the latest merge
 - **Figma integration**: Extracts actual UI component names from design files for specific test cases
 - **Smart filtering**: Focuses on runtime behavior, ignoring build-time configs (ESLint, TypeScript, etc.)
 - **Priority ordering**: Critical tests first, edge cases last
@@ -87,6 +88,10 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Cross-project multi-ticket plans**: When the supplied tickets span multiple repositories, a seam extractor walks each PR diff for HTTP routes, events, and in-house imports, intersects exports/calls across repos, and feeds the resulting verified + suspected seams to the LLM so it emits real integration tests at the boundary. Cross-project test cases are badged with a producer → consumer line and the same metadata flows into the markdown export
 - **No silent truncation**: Multi-ticket plans detect when Claude hits the max-tokens cap and surface the truncation explicitly instead of returning a partial plan
 - **UI element grounding**: Test steps that name a UI element not present in the PR diff or the target repo's simulator `testID` reference are flagged in the rendered plan so QA can sanity-check the wording before running them
+- **Fix-scope critic**: A post-generation pass (`src/app/fix_scope_critic.py`) snapshots each merged PR (title, body, files changed, key diffs, commit messages) and pairs every test case with its cited ACs; the LLM verifies whether the case asserts behaviour the PR actually changed, and unsupported cases are badged with `needs_manual_verification=True` plus a grounding warning. Catches reporter-diagnostic drift — the classic case is a bug ticket speculating in prose about a default rate the PR body explicitly said it wasn't touching, yet QA still gets an edge case asserting the rate is not auto-applied. The generator prompt also carries a "do not mistake the reporter's diagnosis for the fix's scope" block so the model prefers not to emit these in the first place
+- **AC-support critic**: A second post-generation pass pairs each case's (title, steps, expected) with the verbatim text of every AC it cites in `covers_acs` and asks the LLM whether the AC actually supports the behaviour being tested. Cases the critic marks ungrounded are badged with `needs_manual_verification` and gain a grounding-warnings entry, so a case citing "audit history is viewable in the admin dashboard" for an assertion about **date-range filtering** shows up under the existing "Ungrounded UI ref" chip instead of reading as a scope gap
+- **Code-grounding recheck**: Third-pass critic that searches each linked GitHub repo for the case's title, feeds the snippets + case body back to the LLM, and flips confirmed warnings from WARN to INFO with a `code_evidence` anchor. Fixes the false-positive class where the AC text is silent about an implementation detail (empty-buffer guard, streaming latency, cache invalidation) but the code actually implements it. Gated on `GITHUB_TOKEN` + `code_grounding_recheck_enabled`; failure degrades to leaving warnings at WARN. The frontend banner splits by severity — WARN for unconfirmed behaviour, INFO for cases the recheck confirmed in code with file-path anchors QA can jump straight to
+- **Platform-scope rule**: Expo/React Native tickets no longer get auto-generated "App launches on Android emulator" smoke items when the ticket only discussed the Expo layer generically. The prompt requires an explicit platform mention (ticket, ACs, comments, PR, or diff) before a case names a platform, with a platform-neutral fallback when scope is ambiguous
 - **Sibling API caller awareness**: Prompt asks the model to enumerate sibling code paths that hit the same API surface (so a fix on one ViewModel doesn't ship with an identical buggy sibling), with a grounding warning when the model can't verify them from the diff. Integration-test rule requires assertions to check that request params are both *present and non-empty*, catching empty-string regressions
 - **Observability ticket mode**: Logging / alerting / monitoring tickets switch to a QA-runnable test style — Grafana UI inspection, paste-ready LogQL queries against natural traffic, walking every tab of the affected rule, and `[fill in from UI]` placeholders for values the ticket references but doesn't supply. Bans white-box steps QA can't execute (e.g. "deploy the code", "simulate a DB failure")
 - **PII protection**: System prompt forbids naming real customers/employees from ticket context as test subjects; a regex pass scrubs any remaining email-shaped strings from the rendered plan as defense-in-depth
@@ -121,7 +126,11 @@ columns → Issues**.
   is in use
 - **Refresh model**: every panel has a manual ↻ button, and the active panel
   silently re-fetches whenever the tab regains visibility (covers the common
-  "I just changed something in the Jira tab" case). Silent refresh keeps the
+  "I just changed something in the Jira tab" case). A silent 60s interval
+  also re-runs the active pane's fetch while the tab is visible, so a Jira
+  admin editing a workflow or moving cards on the board shows up in the rail
+  without a manual refresh. The three Jira fetches are marked `no-store`
+  so a stale HTTP-cached response can't linger. Silent refresh keeps the
   current data on screen while the request is in flight — no spinner flash
 - **Selection**: clicking an issue populates the existing input field and
   triggers the normal fetch flow, so the rail is purely additive; the
@@ -157,61 +166,80 @@ opt in.
   fresh plan is generated automatically — re-pulls and bounce-backs reuse the
   existing plan rather than re-spending on the LLM
 - **Pass to UAT**: shown when the ticket is in *In Testing*. Opens an inline
-  note form with a "Tested in" chip row (Integ / Staging / Prod multi-select,
-  preselected by scanning the latest comment + description for the
-  corresponding env name, with selected chips rendered as solid ✓-prefixed
-  pills and unselected chips as dashed-border outlines for dark-mode clarity),
-  an optional Loom URL textarea (one per line — each is rendered as its own
-  paragraph above the fold), an optional screenshot/PDF dropzone (click /
-  drag / paste — files upload directly to the Jira issue as attachments
-  before the transition runs, and the comment enumerates each as a
-  `📷 <filename>` callout so Jira's Attachments panel renders the actual
-  images right under the comment), and an optional markdown summary. Submitting transitions to *Ready for UAT*,
-  reassigns to the dev who handed it over, and posts a Jira comment whose
-  marker line (e.g. `✅ QA Passed (Integ + Staging) — ready for UAT`) stays
-  visible with the summary tucked into a collapsible expand block. The
-  ticket's saved walkthrough (Loom link, screenshots-as-attachments, notes)
-  is always folded into the comment too, so "how to test this" travels
-  with the transition even when the form was left empty; if the ticket is
-  flagged high-complexity and has no walkthrough or attached media, a
-  two-step nudge ("add a walkthrough?") appears before submitting — always
-  escapable. Submitting the form empty with no saved walkthrough preserves
-  the original one-click pass with no comment. If this is the last sibling
-  sub-task to reach Ready for UAT (others already passed or Done), the
-  parent ticket is auto-promoted to Ready for UAT in the same call (Epics
-  excluded; best-effort, won't fail the primary transition)
+  note form that doubles as the walkthrough authoring surface — a "Steps to
+  cover in the video" collapsible above the Loom input pulls the happy path
+  from the latest generated plan (capped at 6) so the recording brief travels
+  with the hand-off. The form carries a "Tested in" chip row (Integ / Staging
+  / Prod multi-select, preselected by scanning the latest comment +
+  description for the corresponding env name), an optional Loom URL textarea
+  (one per line — each rendered as its own paragraph above the fold), an
+  optional screenshot/PDF dropzone (click / drag / paste — files upload
+  directly to the Jira issue as attachments before the transition runs, and
+  render **inline** in the comment via `mediaSingle` ADF nodes with a
+  `📷 <filename>` fallback if the media-services UUID can't be resolved),
+  and an optional markdown summary that's appended **inline** to the comment
+  so any URLs stay one-click clickable (no more collapsed "Test summary"
+  expand block hiding the share link). A PR-Loom discovery panel prefetches
+  `GET /issue/{key}/pr-looms` when the form opens so the tester sees exactly
+  which Loom URLs would be harvested from merged PR descriptions — or a
+  reason (`no_prs` / `no_merged_prs` / `no_looms` / `no_token` /
+  `github_unreachable` / `error`) — before they submit; merge state comes
+  from Jira's dev-status API so declined PRs and transient GitHub
+  403/rate-limit errors don't masquerade as "nothing merged yet."
+  Submitting transitions to *Ready for UAT*, reassigns to the dev who
+  handed it over, and posts a marker-line Jira comment
+  (e.g. `✅ QA Passed (Integ + Staging) — ready for UAT`). The ticket's
+  saved walkthrough (Loom link, screenshots-as-attachments, notes) is
+  always folded into the comment too, so "how to test this" travels with
+  the transition even when the form was left empty. **Walkthrough gate**:
+  a high-complexity ticket with no walkthrough material (Loom, upload,
+  notes, or PR-attached media) is rejected server-side with a 409
+  `{ error_code: "walkthrough_required" }` before any Jira calls fire; the
+  UI opens a single override prompt (no two-step client-side nudge) and
+  resubmits with `override_missing_walkthrough=true` on confirm. Submitting
+  the form empty with no saved walkthrough preserves the original
+  one-click pass with no comment. If this is the last sibling sub-task to
+  reach Ready for UAT (others already passed or Done), the parent ticket
+  is auto-promoted to Ready for UAT in the same call (Epics excluded;
+  best-effort, won't fail the primary transition)
 - **Fail back**: shown when the ticket is in *In Testing*. Renders as a
-  single "Fail back to" trigger plus inline **To Do** / **In Progress**
-  destination chips in one bordered unit — the trigger commits the bounce
-  to whichever chip is selected, so the two same-verb bounce-backs don't
-  clutter the toolbar as a wall of red buttons. To Do drops the ticket back
-  into the dev backlog; In Progress keeps it in-flight for immediate
-  rework. Opens the same inline form pattern as Pass to UAT — a *required*
-  Reason field (markdown, autofocused, rendered above the fold so devs see
-  *why* without expanding), plus an optional multi-Loom textarea and the
-  same screenshot/PDF dropzone (files attached to the issue, enumerated as
-  `📷 <filename>` callouts in the comment so Jira's Attachments panel
-  handles the actual rendering). Empty submit is rejected because a fail-back
-  without a reason has no value. The transition still runs even if the
-  comment post fails, matching Pass to UAT. The post-action banner is
-  rendered in a warning tone ("Bounced back to …") instead of the
-  celebratory green check used for UAT pass, so the bounce-back is
-  visually unmistakable
+  compact **split button** — a "Fail back to <destination>" trigger that
+  commits the bounce to the currently selected destination, plus a chevron
+  half that opens a small popover to switch between **To Do** and
+  **In Progress**. To Do drops the ticket back into the dev backlog; In
+  Progress keeps it in-flight for immediate rework. Red is reserved for
+  the leading arrow icon and the chevron half while the menu is open, so
+  hover no longer floods the toolbar with color. Opens the same inline
+  form pattern as Pass to UAT — a *required* Reason field (markdown,
+  autofocused, rendered above the fold so devs see *why* without
+  expanding), plus an optional multi-Loom textarea and the same
+  screenshot/PDF dropzone (files attached to the issue and rendered
+  **inline** in the comment via `mediaSingle` nodes, with the
+  `📷 <filename>` text callout as fallback). Empty submit is rejected
+  because a fail-back without a reason has no value. The transition still
+  runs even if the comment post fails, matching Pass to UAT. The post-
+  action banner is rendered in a warning tone ("Bounced back to …")
+  instead of the celebratory green check used for UAT pass, so the
+  bounce-back is visually unmistakable
 - **Notify chip picker**: Both forms expose an optional Notify row that
   @mentions selected users in the posted comment via a real ADF mention node
   in a trailing `cc:` paragraph (so Jira actually delivers notifications, not
   just text that looks like a tag). Candidates come from people already on
   the ticket: current assignee (starred), prior assignees from the changelog,
   and recent commenters; the configured bot user is filtered out
-- **Also move all subtasks**: Workflow forms include an opt-in "Also move all
-  subtasks" checkbox (hidden when the ticket has no subtasks). When checked,
-  the backend captures the parent's *pre-transition* status, then re-applies
-  the target status only to subtasks whose current status matches that
-  pre-transition state — so a parent moving out of *Ready to Test* only
-  pulls subtasks that were also in *Ready to Test*, leaving siblings in
-  unrelated states alone. Subtasks whose workflow has no matching transition
-  are skipped silently so a partial workflow doesn't break the primary
-  action
+- **Also move all subtasks**: Workflow forms include an "Also move all
+  subtasks" checkbox (hidden when the ticket has no subtasks) that
+  **defaults on** whenever the parent has subtasks — pulling a parent to
+  testing almost always means "and pull its subtasks too," so the default
+  matches the common case (users can still uncheck). The same default now
+  flows through the compact-row Pull button, which had no cascade path at
+  all before. When checked, the backend captures the parent's
+  *pre-transition* status, then re-applies the target status only to
+  subtasks whose current status matches that pre-transition state — so a
+  parent moving out of *Ready to Test* only pulls subtasks that were also
+  in *Ready to Test*, leaving siblings in unrelated states alone. Subtasks
+  whose workflow has no matching transition are skipped silently so a
+  partial workflow doesn't break the primary action
 - **Assignee fallback chain** (Pass to UAT / Fail back): walks the issue
   changelog for the prior assignee (skipping the bot's own account, since
   Pull to Testing parks the ticket there). If none is found, falls back to
@@ -493,8 +521,9 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
-- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`, `fail-to-in-progress`); backend still rejects non-`SK-` keys with 400 (frontend visibility is the config-driven layer). Accepts `multipart/form-data` with optional comment fields (envs, `loom_urls` list, summary, reason, screenshot file uploads), `mention_account_ids` for ADF @mentions, and `cascade_to_subtasks` to re-apply the transition to each direct subtask whose status matched the parent's *pre-transition* status
-- **Ticket walkthrough**: `GET/PUT /tickets/{ticket_key}/walkthrough` - Human-authored Loom link, screenshots (uploaded to Jira as attachments), and setup/repro notes for the ticket; folded into the Pass-to-UAT comment automatically. GET also returns the latest known `uat_complexity` so the workflow UI knows whether to nudge
+- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`, `fail-to-in-progress`); backend still rejects non-`SK-` keys with 400 (frontend visibility is the config-driven layer). Accepts `multipart/form-data` with optional comment fields (envs, `loom_urls` list, summary, reason, screenshot file uploads), `mention_account_ids` for ADF @mentions, `cascade_to_subtasks` to re-apply the transition to each direct subtask whose status matched the parent's *pre-transition* status, and `override_missing_walkthrough` to bypass the server-side walkthrough gate. When the walkthrough gate rejects the request, the response is 409 `{ error_code: "walkthrough_required", … }` so the UI can prompt the tester before retrying with the override
+- **PR-Loom discovery**: `GET /issue/{issue_key}/pr-looms` - Scans the ticket's merged PR descriptions for `loom.com` share URLs, returning either the harvested URLs or a reason (`no_prs` / `no_merged_prs` / `no_looms` / `no_token` / `github_unreachable` / `error`). Merge state comes from Jira's dev-status API (source of truth for MERGED / DECLINED / OPEN), so declined PRs and transient GitHub 403/rate-limit errors don't masquerade as "nothing merged yet." Powers the Pass-to-UAT preview panel
+- **Ticket walkthrough**: `GET/PUT /tickets/{ticket_key}/walkthrough` - Human-authored Loom link, screenshots (uploaded to Jira as attachments), and setup/repro notes for the ticket; folded into the Pass-to-UAT comment automatically. GET also returns the server-computed readiness triple (`walkthrough_present` / `walkthrough_sources` / `needs_walkthrough`) alongside the latest known `uat_complexity`, so the workflow UI and the server gate share one definition of "walkthrough covered"
 - **Test-plan progress**: `GET/PUT /test-plan-progress/{progress_key}` - Shared per-ticket checkmark state (which test cases QA has ticked off), keyed by ticket + plan fingerprint so the whole team converges on the same set
 
 See `/docs` for detailed API documentation and schemas.
@@ -542,7 +571,7 @@ uv run pytest tests/ -v
 
 ## Status
 
-**Current:** Bounce-back cards now lead with an LLM-generated one-sentence headline plus plain-English transition line, with the full comment collapsed and older reviewer feedback used as the reason when nothing lands in the ±6h close window. Merged PRs show their merge date in the Development Activity card, walkthrough screenshots render as `📷 <filename>` callouts in workflow comments (Jira's Attachments panel handles the actual image render), the Pass-to-UAT gate refetches walkthrough state before nagging, and the prompt now derives expected values for derived fields from the spec rather than observed app behavior. All shipped on top of the per-test `grounded_in` / Confluence-specs / Live-in-Jira baseline; prompt quality hardening ongoing
+**Current:** Pass-to-UAT is now the single hand-off surface — the walkthrough card was folded into the form (with a "Steps to cover in the video" outline pulled from the plan's happy path), a PR-Loom discovery panel prefetches harvestable Loom URLs from merged PR descriptions using Jira's dev-status API as the source of truth for merge state, the walkthrough gate moved server-side into `uat_readiness` (409 `walkthrough_required` + single override prompt, replacing the two-step client-side nudge), and screenshots now render **inline** in the posted comment via `mediaSingle` ADF nodes with the `📷 <filename>` line as fallback. Post-generation critics gained AC-support and fix-scope passes that badge cases whose cited AC doesn't support the claim or whose PR didn't actually change the asserted behaviour, and a code-grounding recheck downgrades AC-warnings when the linked repo already implements the behaviour. Bounce-back cards now pair with the earliest PR merged after each specific bounce, the sidebar silently polls every 60s so Jira board changes show up without a manual refresh, and small polish landed on the ticket header (linkified URLs in the description, demoted status pill, hover-only per-card copy button). All shipped on top of the per-test `grounded_in` / Confluence-specs / Live-in-Jira baseline; prompt quality hardening ongoing
 
 ## Roadmap
 
@@ -620,6 +649,24 @@ uv run pytest tests/ -v
 - ✅ **Walkthrough screenshots as plain-text callouts**: Workflow comments enumerate each screenshot as a `📷 <filename>` paragraph instead of linking Jira's binary-download `content` URL (which dead-ended at auth or forced a download). Jira's Attachments panel already renders the actual images right under the comment
 - ✅ **Walkthrough refetch before UAT gate check**: The Pass-to-UAT gate re-reads walkthrough state right before the "hard to UAT" nudge, so a walkthrough saved from the plan section after `WorkflowActions` mounted no longer nags for material already attached
 - ✅ **Derived-field expected values from spec, not app behavior**: The source-of-value coverage rule now branches on whether the source is confirmed — expected values are derived from the spec, hard-pinned only when confirmed, and flagged for PM with Pass withheld when unconfirmed, so bug-ticket plans stop baking the reported defect in as the pass criterion
+- ✅ **AC-support critic**: Post-generation LLM check pairs each case's (title, steps, expected) with the verbatim text of every AC it cites and asks whether the AC actually supports the behaviour being tested; ungrounded cases are badged with `needs_manual_verification` and a grounding-warnings entry so they surface under the existing "Ungrounded UI ref" chip
+- ✅ **Fix-scope critic**: New `src/app/fix_scope_critic.py` snapshots each merged PR (title, body, files changed, key diffs, commit messages) and verifies whether each case asserts behaviour the PR actually changed. Catches reporter-diagnostic drift where a ticket's speculation about a value becomes a test even though the PR body punts on that concern. Generator prompt also carries a matching "do not mistake the reporter's diagnosis for the fix's scope" block
+- ✅ **Code-grounding recheck**: Third-pass critic searches each linked GitHub repo for the case title, feeds snippets + case body back to the LLM, and downgrades confirmed warnings from WARN to INFO with a `code_evidence` anchor. Frontend banner splits by severity so QA can jump straight to the file path for INFO cases and only chase truly unconfirmed WARN cases. Gated on `GITHUB_TOKEN` + `code_grounding_recheck_enabled`
+- ✅ **Platform-scope rule**: Prompt now requires an explicit platform mention (ticket, ACs, comments, PR, or diff) before a case names a platform; Expo/React Native tickets no longer get invented "App launches on Android emulator" smoke items
+- ✅ **Pass-to-UAT walkthrough unification**: Walkthrough authoring folded into the Pass-to-UAT form (Steps-to-cover collapsible sourced from the plan's happy_path, cap 6); standalone walkthrough card retired. Server-side `uat_readiness` gate (409 `walkthrough_required`) replaces the two-step client-side nudge, with a single override prompt. Gate now counts notes and PR-attached media as walkthrough material too, matching the walkthrough card's own definition of "present"
+- ✅ **PR-Loom discovery**: `GET /issue/{key}/pr-looms` prefetches when Pass-to-UAT opens, showing the tester exactly which Loom URLs would be harvested from merged PR descriptions — or a reason (`no_prs` / `no_merged_prs` / `no_looms` / `no_token` / `github_unreachable` / `error`). Merge state comes from Jira's dev-status API instead of GitHub's `merged` flag so declined siblings and transient GitHub 403s no longer masquerade as "nothing merged yet"
+- ✅ **Inline screenshots in workflow comments**: Pass-to-UAT and Fail-back attachments render inline in the posted comment via `mediaSingle` ADF nodes (media-services UUID resolved by following the 303 from `/rest/api/3/attachment/content/{id}`). Legacy walkthrough screenshots re-resolve the UUID from their stored URL so old walkthroughs render inline too; any resolution failure falls back to the previous `📷 <filename>` text callout so the comment still posts
+- ✅ **Inline Pass-to-UAT summary**: The freeform summary is now appended inline to the comment body instead of wrapped in a collapsed "Test summary" expand block, so any share links inside stay one-click clickable
+- ✅ **Fail-back split button**: The two same-verb bounce destinations (To Do / In Progress) collapse into a single split button — trigger commits to the current destination, chevron opens a popover to switch. Red is reserved for the leading arrow icon and the chevron half while the menu is open
+- ✅ **Default subtask cascade on parent moves**: "Also move all subtasks" pre-checks whenever the parent has subtasks (users can still uncheck). Compact-row Pull button now honours the same default
+- ✅ **PR pairing on bounce cards**: Each send-back card is paired with the earliest PR merged after that specific bounce (link, merge time, changed files with +/− counts) so older bounces credit their actual fix PR instead of every card pointing at the latest merge
+- ✅ **Live-in-Jira chip scoped + pulsing**: The chip only surfaces on the per-row pill inside the expanded version drawer (the collapsed banner header always labels the latest run, so an older live version there read as a second version being live). Chip now pulses to draw the eye
+- ✅ **Sidebar 60s poll**: Active pane silently re-runs every 60 seconds while the tab is visible, and the three Jira fetches are marked `no-store` so a Jira admin's workflow edits or board moves show up without a manual refresh
+- ✅ **Description URL linkification**: `http(s)://` URLs in the Jira description render as new-tab links; trailing `.,;:!?` stays as text so `see https://foo.com.` doesn't point at a 404
+- ✅ **Hover-only Copy button per test card**: Yanks title + Preconditions/Steps/Expected/Test data as plain text; hidden until hover/focus, flips to a green check for 1.5s
+- ✅ **Status pill demotion**: Ticket-header status renders as a colored dot plus muted label instead of a filled uppercase rectangle, so it stops reading as a peer control to the adjacent Pull-to-Testing button
+- ✅ **Summary click doesn't expand**: Clicking Summary triggers the plain-English fetch but leaves the panel collapsed — the preview line carries the loading state and eventual snippet; a second click expands to the full text (or error)
+- ✅ **Deep-link auto-fetch + real model recording**: Fixed a race where the URL-writer effect fired first with empty `ticketsData` and cleared `?key=` before the auto-fetch could see it, so `?key=…` bookmarks now reliably load. Runs also record the LLM model that actually produced them instead of the configured default
 
 ### Future Enhancements
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
