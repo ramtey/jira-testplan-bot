@@ -364,7 +364,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
   const [plainSummary, setPlainSummary] = useState(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState(null)
-  const [isDescriptionOpen, setIsDescriptionOpen] = useState(true)
+  const [isDescriptionOpen, setIsDescriptionOpen] = useState(false)
 
   const handleToggleSummary = async () => {
     // Once a summary exists (or errored), the click is a normal expand/collapse toggle.
