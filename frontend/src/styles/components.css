@@ -199,6 +199,35 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
 .chip[data-size="sm"] { height: 18px; padding: 0 5px; font-size: 10.5px; }
 .chip[data-size="lg"] { height: 24px; padding: 0 var(--s-4); font-size: var(--t-sm); }
 .chip .dot { width: 6px; height: 6px; border-radius: 50%; }
+.chip .dot.dot-pulse {
+  box-shadow: 0 0 0 0 var(--dot-color, var(--success));
+  animation: dot-pulse 1.8s ease-out infinite;
+}
+@keyframes dot-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dot-color, var(--success)) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--dot-color, var(--success)) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dot-color, var(--success)) 0%, transparent); }
+}
+.chip-live {
+  background: color-mix(in srgb, var(--dot-color, var(--success)) 14%, transparent);
+  border-color: color-mix(in srgb, var(--dot-color, var(--success)) 45%, transparent);
+  color: color-mix(in srgb, var(--dot-color, var(--success)) 85%, var(--fg-strong));
+  font-weight: var(--w-semi);
+  animation: chip-live-breathe 1.8s ease-in-out infinite;
+}
+@keyframes chip-live-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--dot-color, var(--success)) 0%, transparent);
+    border-color: color-mix(in srgb, var(--dot-color, var(--success)) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 10px 1px color-mix(in srgb, var(--dot-color, var(--success)) 40%, transparent);
+    border-color: color-mix(in srgb, var(--dot-color, var(--success)) 75%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chip-live, .chip .dot.dot-pulse { animation: none; }
+}
 
 .chip-it {
   height: 20px; padding: 0 var(--s-3) 0 0;

@@ -34,10 +34,7 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
     if (!latest) return ''
     return `${formatRelative(latest.created_at)} · ${latest.case_count} cases`
   }, [latest])
-  const liveRun = useMemo(
-    () => runs.find((r) => r.jira_comment_id) || null,
-    [runs]
-  )
+  const latestIsLive = Boolean(latest?.jira_comment_id)
 
   if (!runs || runs.length === 0) return null
 
@@ -74,13 +71,13 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
           v{latest.version}
         </span>
         <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--t-sm)' }}>· {summary}</span>
-        {liveRun && !expanded && (
+        {latestIsLive && !expanded && (
           <span
-            title={liveRun.posted_at ? `Posted ${new Date(liveRun.posted_at).toLocaleString()}` : 'Posted to Jira'}
+            title={latest.posted_at ? `Posted ${new Date(latest.posted_at).toLocaleString()}` : 'Posted to Jira'}
             style={{ display: 'inline-flex' }}
           >
-            <Chip size="sm" dot dotColor="var(--success)">
-              {liveRun.version === latest.version ? 'Live in Jira' : `Live in Jira · v${liveRun.version}`}
+            <Chip size="sm" dot dotColor="var(--success)" pulse>
+              Live in Jira
             </Chip>
           </span>
         )}
@@ -123,7 +120,7 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
                     title={run.posted_at ? `Posted ${new Date(run.posted_at).toLocaleString()}` : 'Posted to Jira'}
                     style={{ display: 'inline-flex' }}
                   >
-                    <Chip size="sm" dot dotColor="var(--success)">Live in Jira</Chip>
+                    <Chip size="sm" dot dotColor="var(--success)" pulse>Live in Jira</Chip>
                   </span>
                 )}
                 <span style={{ flex: 1 }} />

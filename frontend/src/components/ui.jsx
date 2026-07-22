@@ -16,10 +16,15 @@ export function Btn({ variant = 'secondary', size, icon, iconRight, loading, dis
   )
 }
 
-export function Chip({ children, size, style, dot, dotColor }) {
+export function Chip({ children, size, style, dot, dotColor, pulse }) {
+  const chipStyle = pulse ? { ...style, '--dot-color': dotColor } : style
   return (
-    <span className="chip" data-size={size} style={style}>
-      {dot && <span className="dot" style={{ background: dotColor }} />}
+    <span
+      className={pulse ? 'chip chip-live' : 'chip'}
+      data-size={size}
+      style={chipStyle}
+    >
+      {dot && <span className={pulse ? 'dot dot-pulse' : 'dot'} style={{ background: dotColor }} />}
       {children}
     </span>
   )
