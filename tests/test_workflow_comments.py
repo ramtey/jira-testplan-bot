@@ -12,7 +12,6 @@ from src.app.jira_client import (
     ImageAttachment,
     JiraClient,
     QA_FAIL_MARKER,
-    QA_PASS_EXPAND_TITLE,
     QA_PASS_MARKER,
     _build_mentions_paragraph,
     _build_qa_fail_adf,
@@ -122,15 +121,13 @@ def test_build_qa_pass_adf_dedups_loom_urls_and_drops_blanks():
     assert len(loom_paragraphs) == 1
 
 
-def test_build_qa_pass_adf_summary_goes_into_expand():
+def test_build_qa_pass_adf_summary_renders_inline():
     doc = _build_qa_pass_adf(None, "Tested the **happy path**", None)
     assert doc is not None
-    # The expand may not be the last node (mentions can append after), so
-    # find it explicitly.
-    expand = next(node for node in doc["content"] if node["type"] == "expand")
-    assert expand["attrs"]["title"] == QA_PASS_EXPAND_TITLE
-    # The bold marker should have survived markdown_to_adf.
-    flattened = str(expand["content"])
+    # Summary is appended as inline content — no `expand` wrapper — so any
+    # URLs in the summary stay one-click clickable.
+    assert not any(node["type"] == "expand" for node in doc["content"])
+    flattened = str(doc["content"])
     assert "happy path" in flattened
     assert "strong" in flattened
 
@@ -148,12 +145,11 @@ def _media_single_nodes(doc):
     return [n for n in doc["content"] if n.get("type") == "mediaSingle"]
 
 
-def test_build_qa_pass_adf_renders_image_callouts_above_fold():
+def test_build_qa_pass_adf_renders_image_callouts_above_summary():
     # Screenshots supplied without a resolved media UUID fall back to
-    # plain `📷 <filename>` callout paragraphs above the summary expand
-    # block — reviewers still see which screenshots landed without
-    # expanding anything, and the Attachments panel renders the actual
-    # image below the comment.
+    # plain `📷 <filename>` callout paragraphs above the inline summary —
+    # reviewers still see which screenshots landed, and the Attachments
+    # panel renders the actual image below the comment.
     doc = _build_qa_pass_adf(
         None,
         "Some test summary",
@@ -170,12 +166,17 @@ def test_build_qa_pass_adf_renders_image_callouts_above_fold():
     for p in paragraphs:
         assert len(p["content"]) == 1
         assert "marks" not in p["content"][0]
-    # Callouts appear before the expand block.
-    indices = [doc["content"].index(p) for p in paragraphs]
-    expand_index = next(
-        i for i, node in enumerate(doc["content"]) if node["type"] == "expand"
+    # Callouts appear before the summary paragraph.
+    callout_indices = [doc["content"].index(p) for p in paragraphs]
+    summary_index = next(
+        i for i, node in enumerate(doc["content"])
+        if node.get("type") == "paragraph"
+        and any(
+            "Some test summary" in child.get("text", "")
+            for child in node.get("content", [])
+        )
     )
-    assert max(indices) < expand_index
+    assert max(callout_indices) < summary_index
 
 
 def test_build_qa_pass_adf_renders_media_single_when_media_id_present():
@@ -257,10 +258,10 @@ def test_build_qa_pass_adf_dedups_images_and_drops_blanks():
     assert paragraphs[0]["content"][0]["text"] == "📷 a.png"
 
 
-def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
+def test_build_qa_pass_adf_loom_then_images_then_summary_then_mentions():
     # Screenshot arrives with a resolved media UUID — the mediaSingle
-    # node sits between the Loom link and the summary expand, and
-    # mentions bring up the rear.
+    # node sits between the Loom link and the inline summary paragraph,
+    # and mentions bring up the rear.
     doc = _build_qa_pass_adf(
         ["https://loom.com/x"],
         "Summary text",
@@ -271,8 +272,8 @@ def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
     assert doc is not None
     types = [node["type"] for node in doc["content"]]
     assert types[0] == "paragraph"  # marker
-    assert types.count("expand") == 1
-    expand_idx = types.index("expand")
+    # Summary is inlined — no expand wrapper.
+    assert "expand" not in types
     loom_idx = next(
         i for i, p in enumerate(doc["content"])
         if p["type"] == "paragraph"
@@ -281,12 +282,20 @@ def test_build_qa_pass_adf_loom_then_images_then_expand_then_mentions():
     media_idx = next(
         i for i, n in enumerate(doc["content"]) if n["type"] == "mediaSingle"
     )
+    summary_idx = next(
+        i for i, p in enumerate(doc["content"])
+        if p.get("type") == "paragraph"
+        and any(
+            "Summary text" in child.get("text", "")
+            for child in p.get("content", [])
+        )
+    )
     mention_idx = next(
         i for i, p in enumerate(doc["content"])
         if p["type"] == "paragraph"
         and any(n.get("type") == "mention" for n in p.get("content", []))
     )
-    assert loom_idx < media_idx < expand_idx < mention_idx
+    assert loom_idx < media_idx < summary_idx < mention_idx
 
 
 # ---------- _build_qa_fail_adf ----------

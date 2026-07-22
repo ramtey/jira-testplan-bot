@@ -184,7 +184,6 @@ def _fit_to_jira_comment_limit(marked_text: str) -> str:
     return best
 
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
-QA_PASS_EXPAND_TITLE = "Test summary"
 QA_FAIL_MARKER = "❌ QA Failed — back to To Do"
 
 
@@ -318,9 +317,11 @@ def _build_qa_pass_adf(
     paragraph per URL), then screenshots render inline via `mediaSingle`
     nodes when their Atlassian media-services UUID is known (falling back
     to a plain `📷 <filename>` paragraph when it isn't — see
-    `_build_attachment_media_node`). The freeform summary is wrapped in
-    an `expand` node. When mentions are supplied, a final "cc:" paragraph
-    triggers Jira notifications.
+    `_build_attachment_media_node`). The freeform summary is appended
+    inline so any URLs it contains stay one-click clickable (no expand
+    wrapper — reviewers were missing the share link inside the collapsed
+    "Test summary" panel). When mentions are supplied, a final "cc:"
+    paragraph triggers Jira notifications.
 
     Mentions alone don't justify posting a comment — the function still
     returns None unless at least one substantive field
@@ -366,11 +367,7 @@ def _build_qa_pass_adf(
 
     if summary:
         summary_doc = markdown_to_adf(summary)
-        content.append({
-            "type": "expand",
-            "attrs": {"title": QA_PASS_EXPAND_TITLE},
-            "content": summary_doc.get("content", []),
-        })
+        content.extend(summary_doc.get("content", []))
 
     mentions_para = _build_mentions_paragraph(mention_account_ids)
     if mentions_para:
