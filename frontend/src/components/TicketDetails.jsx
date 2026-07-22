@@ -367,36 +367,37 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
   const [isDescriptionOpen, setIsDescriptionOpen] = useState(true)
 
   const handleToggleSummary = async () => {
-    if (isSummaryExpanded) {
-      setIsSummaryExpanded(false)
+    // Once a summary exists (or errored), the click is a normal expand/collapse toggle.
+    if (plainSummary !== null || summaryError) {
+      setIsSummaryExpanded(!isSummaryExpanded)
       return
     }
 
-    setIsSummaryExpanded(true)
+    // First click while empty: fetch but leave the panel collapsed — the preview
+    // line carries the snippet, so the user can read it without expanding.
+    if (summaryLoading) return
 
-    if (plainSummary === null && !summaryLoading) {
-      setSummaryLoading(true)
-      setSummaryError(null)
-      try {
-        const response = await fetch(`${API_BASE_URL}/issue/${ticketData.key}/summarize`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            summary: ticketData.summary,
-            description: ticketData.description,
-          }),
-        })
-        if (!response.ok) {
-          const err = await response.json()
-          throw new Error(err.detail || 'Failed to generate summary')
-        }
-        const data = await response.json()
-        setPlainSummary(data.summary)
-      } catch (err) {
-        setSummaryError(err.message)
-      } finally {
-        setSummaryLoading(false)
+    setSummaryLoading(true)
+    setSummaryError(null)
+    try {
+      const response = await fetch(`${API_BASE_URL}/issue/${ticketData.key}/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          summary: ticketData.summary,
+          description: ticketData.description,
+        }),
+      })
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.detail || 'Failed to generate summary')
       }
+      const data = await response.json()
+      setPlainSummary(data.summary)
+    } catch (err) {
+      setSummaryError(err.message)
+    } finally {
+      setSummaryLoading(false)
     }
   }
 
@@ -520,7 +521,15 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
         title="Summary"
         open={isSummaryExpanded}
         onToggle={handleToggleSummary}
-        preview={plainSummary ? (plainSummary.length > 100 ? plainSummary.slice(0, 100) + '…' : plainSummary) : 'Click to generate plain-English explanation'}
+        preview={
+          summaryLoading
+            ? 'Generating summary…'
+            : summaryError
+              ? 'Failed to generate summary — click to see details'
+              : plainSummary
+                ? (plainSummary.length > 100 ? plainSummary.slice(0, 100) + '…' : plainSummary)
+                : 'Click to generate plain-English explanation'
+        }
       >
         {summaryLoading && <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', color: 'var(--fg-muted)' }}><span className="spin" />Generating summary…</div>}
         {summaryError && <div style={{ color: 'var(--danger)' }}>{summaryError}</div>}
