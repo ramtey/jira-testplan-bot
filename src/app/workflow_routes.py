@@ -710,3 +710,27 @@ async def get_pr_looms(issue_key: str) -> dict:
     jira = JiraClient()
     loom_urls, status = await _harvest_loom_urls_from_merged_prs(jira, issue_key)
     return {"loom_urls": loom_urls, "status": status}
+
+
+@router.get("/{issue_key}/pr-contributor")
+async def get_pr_contributor(issue_key: str) -> dict:
+    """Resolve the top PR contributor to a Jira user for the Pass-to-UAT picker.
+
+    Runs the same lookup the server's assignee auto-pick chain uses when no
+    prior developer is found, so the tester can *see* who the ticket would
+    land on (and change it) before submitting. Always 200 — silent when no
+    match: `{account_id: null, display_name: null}`.
+
+    Excludes the token owner (bot / current user) so tickets where the tester
+    is the only person in the history still surface the PR author instead of
+    themselves.
+    """
+    jira = JiraClient()
+    try:
+        my_account_id = await jira.get_my_account_id()
+    except Exception:
+        my_account_id = None
+    account_id, display_name = await jira.get_top_pr_contributor_account_id(
+        issue_key, exclude_account_id=my_account_id
+    )
+    return {"account_id": account_id, "display_name": display_name}

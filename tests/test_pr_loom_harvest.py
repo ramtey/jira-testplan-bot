@@ -382,3 +382,62 @@ def test_pr_looms_endpoint_accepts_lowercase_project_key():
         "loom_urls": ["https://loom.com/share/x"],
         "status": "found",
     }
+
+
+# ---------- GET /issue/{key}/pr-contributor endpoint ----------
+#
+# Thin wrapper around JiraClient.get_top_pr_contributor_account_id. We mock
+# the client so these tests don't hit GitHub or Jira — the concern here is
+# that the endpoint (a) passes the current user's accountId as the exclude,
+# and (b) returns the shape the frontend picker expects (or nulls, silently,
+# when nothing resolves).
+
+
+def test_pr_contributor_endpoint_returns_resolved_person():
+    with patch("src.app.workflow_routes.JiraClient") as jira_cls:
+        jira = jira_cls.return_value
+        jira.get_my_account_id = AsyncMock(return_value="bot-account")
+        jira.get_top_pr_contributor_account_id = AsyncMock(
+            return_value=("dev-account", "Devon Developer")
+        )
+        response = _endpoint_client.get("/issue/SK-2149/pr-contributor")
+        jira.get_top_pr_contributor_account_id.assert_awaited_once_with(
+            "SK-2149", exclude_account_id="bot-account"
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "account_id": "dev-account",
+        "display_name": "Devon Developer",
+    }
+
+
+def test_pr_contributor_endpoint_returns_nulls_when_unresolved():
+    """No PRs / GitHub token missing / no Jira match — all silent."""
+    with patch("src.app.workflow_routes.JiraClient") as jira_cls:
+        jira = jira_cls.return_value
+        jira.get_my_account_id = AsyncMock(return_value="bot-account")
+        jira.get_top_pr_contributor_account_id = AsyncMock(return_value=(None, None))
+        response = _endpoint_client.get("/issue/SK-2149/pr-contributor")
+    assert response.status_code == 200
+    assert response.json() == {"account_id": None, "display_name": None}
+
+
+def test_pr_contributor_endpoint_survives_myself_lookup_failure():
+    """If /myself is unavailable we still run the lookup (with no exclude)
+    rather than surfacing an error — the picker treats absence as "no PR
+    author to pin", not as a broken feature."""
+    with patch("src.app.workflow_routes.JiraClient") as jira_cls:
+        jira = jira_cls.return_value
+        jira.get_my_account_id = AsyncMock(side_effect=RuntimeError("boom"))
+        jira.get_top_pr_contributor_account_id = AsyncMock(
+            return_value=("dev-account", "Devon Developer")
+        )
+        response = _endpoint_client.get("/issue/SK-1/pr-contributor")
+        jira.get_top_pr_contributor_account_id.assert_awaited_once_with(
+            "SK-1", exclude_account_id=None
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "account_id": "dev-account",
+        "display_name": "Devon Developer",
+    }

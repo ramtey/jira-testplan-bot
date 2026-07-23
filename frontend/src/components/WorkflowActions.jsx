@@ -94,6 +94,7 @@ function buildMentionCandidates({
   assigneeHistoryAccountIds,
   comments,
   currentUserAccountId,
+  prContributor,
 }) {
   const seen = new Map()
   const skip = (id) => !id || (currentUserAccountId && id === currentUserAccountId)
@@ -113,6 +114,18 @@ function buildMentionCandidates({
       if (skip(id) || seen.has(id)) continue
       seen.set(id, { accountId: id, name: name || id, isAssignee: false })
     }
+  }
+
+  // Slot the PR author in after prior assignees, mirroring the server's own
+  // auto-pick chain (prior-assignee → PR contributor). Lets the tester see
+  // — and override — the fallback on tickets where they're the only person
+  // in the history (nothing else would surface anyone).
+  if (prContributor && !skip(prContributor.accountId) && !seen.has(prContributor.accountId)) {
+    seen.set(prContributor.accountId, {
+      accountId: prContributor.accountId,
+      name: prContributor.name || prContributor.accountId,
+      isAssignee: false,
+    })
   }
 
   if (Array.isArray(comments)) {
@@ -395,6 +408,16 @@ function WorkflowActions({
   const [prLoomStatus, setPrLoomStatus] = useState(null)
   const [discoveredPrLooms, setDiscoveredPrLooms] = useState([])
   const [selectedPrLooms, setSelectedPrLooms] = useState(() => new Set())
+  // Top PR contributor resolved to a Jira user, fetched lazily on
+  // Pass-to-UAT open (see effect below). Shape: { accountId, name } | null.
+  // Feeds into the mention picker so tickets where the current user is the
+  // only person in the history still surface someone to hand the ticket to.
+  const [prContributor, setPrContributor] = useState(null)
+  // Tracks whether the tester has manually touched the assignee picker in
+  // this form session. When true, we stop syncing the override to the
+  // computed default so a late-arriving PR contributor can't clobber their
+  // explicit pick. Reset on form open / close.
+  const userChoseAssigneeRef = useRef(false)
   // Which column the single "Fail back" action returns the ticket to.
   const [failTargetId, setFailTargetId] = useState('fail-to-todo')
   const [failMenuOpen, setFailMenuOpen] = useState(false)
@@ -427,6 +450,7 @@ function WorkflowActions({
         assigneeHistoryAccountIds,
         comments,
         currentUserAccountId,
+        prContributor,
       }),
     [
       assignee,
@@ -435,6 +459,7 @@ function WorkflowActions({
       assigneeHistoryAccountIds,
       comments,
       currentUserAccountId,
+      prContributor,
     ]
   )
 
@@ -443,13 +468,18 @@ function WorkflowActions({
   // person (buildMentionCandidates orders current-assignee-first → prior
   // assignees → comment authors, skipping the current user), which matches
   // the server's own auto-pick. Null when there's no candidate to default
-  // to (fresh ticket, no history, no comments).
-  const defaultPassToUatAssignee = mentionCandidates[0]
-    ? {
-        accountId: mentionCandidates[0].accountId,
-        name: mentionCandidates[0].name,
-      }
-    : null
+  // to (fresh ticket, no history, no comments). Memoized so effects that
+  // depend on it don't re-fire every render.
+  const defaultPassToUatAssignee = useMemo(
+    () =>
+      mentionCandidates[0]
+        ? {
+            accountId: mentionCandidates[0].accountId,
+            name: mentionCandidates[0].name,
+          }
+        : null,
+    [mentionCandidates]
+  )
 
   useEffect(() => {
     if (!feedback || feedback.kind !== 'success') return
@@ -478,6 +508,7 @@ function WorkflowActions({
       const passAction = ACTIONS.find((a) => a.id === 'pass-to-uat')
       if (!passAction) return
       setEnvironments(detectEnvironments(description, comments))
+      userChoseAssigneeRef.current = false
       setAssigneeOverride(defaultPassToUatAssignee)
       setNoteForAction(passAction)
       setFeedback(null)
@@ -522,6 +553,47 @@ function WorkflowActions({
     })()
     return () => controller.abort()
   }, [noteForAction, ticketKey])
+
+  // Resolve the top PR author to a Jira user when Pass-to-UAT opens, so the
+  // picker can surface them alongside prior assignees. Runs the same lookup
+  // as the server's fallback chain — expensive (GitHub API calls) but only
+  // fired on demand, mirroring the pr-looms prefetch above. Silent on any
+  // failure: the picker just doesn't gain a candidate.
+  useEffect(() => {
+    if (noteForAction?.id !== 'pass-to-uat' || !ticketKey) return
+    const controller = new AbortController()
+    setPrContributor(null)
+    ;(async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/issue/${ticketKey}/pr-contributor`,
+          { signal: controller.signal }
+        )
+        if (!response.ok) return
+        const data = await response.json().catch(() => ({}))
+        if (data?.account_id && data?.display_name) {
+          setPrContributor({
+            accountId: data.account_id,
+            name: data.display_name,
+          })
+        }
+      } catch {
+        // Silent — same treatment as the pr-looms fetch.
+      }
+    })()
+    return () => controller.abort()
+  }, [noteForAction, ticketKey])
+
+  // If the PR contributor lands after the form opened and the tester hasn't
+  // touched the picker yet, sync the override to the fresh default so the
+  // "Ticket will be assigned to …" hint reflects who's actually about to
+  // get it. Bypassed once the tester clicks a pill (see setAssigneeOverride
+  // wrapper on the picker).
+  useEffect(() => {
+    if (noteForAction?.id !== 'pass-to-uat') return
+    if (userChoseAssigneeRef.current) return
+    setAssigneeOverride(defaultPassToUatAssignee)
+  }, [noteForAction, defaultPassToUatAssignee])
 
   const togglePrLoom = (url) => {
     setSelectedPrLooms((prev) => {
@@ -587,6 +659,8 @@ function WorkflowActions({
     setPrLoomStatus(null)
     setDiscoveredPrLooms([])
     setSelectedPrLooms(new Set())
+    setPrContributor(null)
+    userChoseAssigneeRef.current = false
     setChecklistOpen(false)
     setChecklistTicked(new Set())
   }
@@ -716,6 +790,7 @@ function WorkflowActions({
       // the common case. Fail-back forms deliberately don't pre-select —
       // there the tester is usually explicitly picking who to hand it
       // back to, and defaulting could paper over a wrong pick.
+      userChoseAssigneeRef.current = false
       setAssigneeOverride(defaultPassToUatAssignee)
       setNoteForAction(action)
       setFeedback(null)
@@ -1096,13 +1171,14 @@ function WorkflowActions({
                           key={person.accountId}
                           value={person.isAssignee ? `★ ${person.name}` : person.name}
                           on={selected}
-                          onToggle={() =>
+                          onToggle={() => {
+                            userChoseAssigneeRef.current = true
                             setAssigneeOverride((prev) =>
                               prev?.accountId === person.accountId
                                 ? null
                                 : { accountId: person.accountId, name: person.name }
                             )
-                          }
+                          }}
                           disabled={pendingAction !== null}
                         />
                       )
