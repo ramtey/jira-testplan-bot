@@ -1852,11 +1852,16 @@ class JiraClient:
         return projects
 
     async def list_project_statuses(self, project_key: str) -> list[dict]:
-        """List unique status columns available for issues in a project.
+        """List the status columns that appear on the project's active board.
 
-        Jira returns statuses grouped per issue-type; we flatten and dedupe by
-        status name, preserving the statusCategory key (new/indeterminate/done)
-        so the UI can group them into Backlog / In Progress / Done columns.
+        Prefers the columns configured on the project's agile board (Scrum or
+        Kanban), so statuses that exist in the workflow but aren't mapped to a
+        board column (e.g. "Ready for Release" on Skunks) are excluded. Falls
+        back to every workflow status the project uses if the board lookup
+        fails or the project has no board.
+
+        Returned rows preserve board column order when available; otherwise
+        insertion order from the workflow.
         """
         if not re.match(r"^[A-Z][A-Z0-9_]*$", project_key):
             raise ValueError(f"Invalid Jira project key: {project_key}")
@@ -1882,15 +1887,117 @@ class JiraClient:
             )
         r.raise_for_status()
 
-        seen: dict[str, dict] = {}
+        # Flatten workflow statuses across all issue types, indexed by id AND
+        # name so we can correlate against the board-column payload (which only
+        # carries status ids).
+        by_id: dict[str, dict] = {}
+        by_name: dict[str, dict] = {}
+        insertion_order: list[str] = []  # names, in first-seen order
         for issue_type_entry in r.json() or []:
             for status in issue_type_entry.get("statuses") or []:
                 name = status.get("name")
-                if not name or name in seen:
+                sid = status.get("id")
+                if not name or name in by_name:
                     continue
                 category = (status.get("statusCategory") or {}).get("key")
-                seen[name] = {"name": name, "status_category": category}
-        return list(seen.values())
+                entry = {"name": name, "status_category": category}
+                by_name[name] = entry
+                if sid:
+                    by_id[str(sid)] = entry
+                insertion_order.append(name)
+
+        board_order = await self._get_board_column_status_order(project_key)
+        if board_order is None:
+            # No board or agile API unavailable — return the full workflow set.
+            return [by_name[n] for n in insertion_order]
+
+        # Filter and order statuses by the board column configuration. Match by
+        # status id when the board payload provides one, else by name.
+        ordered: list[dict] = []
+        seen: set[str] = set()
+        for sid, sname in board_order:
+            entry = None
+            if sid and str(sid) in by_id:
+                entry = by_id[str(sid)]
+            elif sname and sname in by_name:
+                entry = by_name[sname]
+            if entry and entry["name"] not in seen:
+                seen.add(entry["name"])
+                ordered.append(entry)
+        return ordered
+
+    async def _get_board_column_status_order(
+        self, project_key: str
+    ) -> list[tuple[str | None, str | None]] | None:
+        """Return [(status_id, status_name), ...] in board column order.
+
+        Picks the first board reported for the project (Scrum preferred over
+        Kanban when both exist). Returns None if the project has no board or
+        the agile API is unavailable — the caller falls back to the full
+        workflow status list.
+        """
+        boards_url = f"{self.base_url}/rest/agile/1.0/board"
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                br = await client.get(
+                    boards_url,
+                    headers=self._headers(),
+                    params={"projectKeyOrId": project_key, "maxResults": 50},
+                )
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            logger.warning("Board lookup failed for %s: %s", project_key, exc)
+            return None
+        if br.status_code >= 400:
+            logger.info(
+                "Agile board lookup for %s returned %d; falling back to workflow statuses.",
+                project_key,
+                br.status_code,
+            )
+            return None
+
+        boards = br.json().get("values") or []
+        # Some boards returned by projectKeyOrId belong to other projects (they
+        # merely include this project). Prefer boards whose location matches.
+        def _location_matches(b: dict) -> bool:
+            loc = b.get("location") or {}
+            return (loc.get("projectKey") or "").upper() == project_key.upper()
+
+        matching = [b for b in boards if _location_matches(b)] or boards
+        if not matching:
+            return None
+        # Prefer scrum boards over kanban when both exist — scrum boards
+        # usually carry the workflow the whole team follows.
+        matching.sort(key=lambda b: 0 if b.get("type") == "scrum" else 1)
+        board_id = matching[0].get("id")
+        if not board_id:
+            return None
+
+        cfg_url = f"{self.base_url}/rest/agile/1.0/board/{board_id}/configuration"
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                cr = await client.get(cfg_url, headers=self._headers())
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            logger.warning("Board %s config fetch failed: %s", board_id, exc)
+            return None
+        if cr.status_code >= 400:
+            logger.info(
+                "Board %s configuration returned %d; falling back to workflow statuses.",
+                board_id,
+                cr.status_code,
+            )
+            return None
+
+        columns = ((cr.json().get("columnConfig") or {}).get("columns")) or []
+        ordered: list[tuple[str | None, str | None]] = []
+        for col in columns:
+            col_name = col.get("name")
+            for st in col.get("statuses") or []:
+                sid = st.get("id")
+                # The column-config payload doesn't carry status names, only
+                # ids. Fall back to the column name when id isn't in the
+                # workflow map (shouldn't happen but keeps us defensive).
+                ordered.append((str(sid) if sid else None, col_name))
+        return ordered
 
     async def search_project_issues(
         self, project_key: str, status_name: str
