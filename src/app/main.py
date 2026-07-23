@@ -766,6 +766,7 @@ async def get_issue(issue_key: str):
             "status": issue.status,
             "status_category": issue.status_category,
             "bounce_history": bounce_history_list,
+            "story_points": issue.story_points,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

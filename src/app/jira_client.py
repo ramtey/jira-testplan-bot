@@ -1998,7 +1998,10 @@ class JiraClient:
     async def get_issue(self, issue_key: str) -> JiraIssue:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         # Ask Jira for fields we need + development info if available
-        params = {"fields": "summary,description,labels,issuetype,attachment,parent,issuelinks,assignee,status", "expand": "renderedFields,changelog"}
+        story_points_field = settings.jira_story_points_field or ""
+        base_fields = "summary,description,labels,issuetype,attachment,parent,issuelinks,assignee,status"
+        fields_param = f"{base_fields},{story_points_field}" if story_points_field else base_fields
+        params = {"fields": fields_param, "expand": "renderedFields,changelog"}
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
@@ -2025,6 +2028,13 @@ class JiraClient:
         description = fields.get("description")  # Jira Cloud often returns ADF (dict)
         labels = fields.get("labels", [])
         issue_type = fields.get("issuetype", {}).get("name", "Unknown")
+        story_points_raw = (
+            fields.get(story_points_field) if story_points_field else None
+        )
+        try:
+            story_points = float(story_points_raw) if story_points_raw is not None else None
+        except (TypeError, ValueError):
+            story_points = None
         assignee_field = fields.get("assignee") or {}
         assignee = assignee_field.get("displayName") or assignee_field.get("emailAddress")
         assignee_account_id = assignee_field.get("accountId")
@@ -2214,6 +2224,7 @@ class JiraClient:
             status=status_name,
             status_category=status_category,
             bounce_history=bounce_history if bounce_history else None,
+            story_points=story_points,
         )
 
     async def post_comment(self, issue_key: str, comment_text: str) -> dict:

@@ -283,6 +283,9 @@ class JiraIssue:
     status: str | None = None  # Workflow status name (e.g. "To Do", "In Progress", "In Testing", "Done")
     status_category: str | None = None  # Stable category key: "new" | "indeterminate" | "done"
     bounce_history: list[BounceEvent] | None = None  # Detected QA/UAT → ToDo regressions
+    # Story Points value from Jira's story-points custom field. Only set for
+    # sized Stories; other issue types leave it None so the UI can suppress the chip.
+    story_points: float | None = None
 
 
 # ============================================================================

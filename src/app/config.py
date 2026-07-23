@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     jira_url: str = ""
     jira_username: str = ""
     jira_api_token: str = ""
+    # Story Points custom field id. Skyslope's Jira exposes it as
+    # customfield_10004; other instances (esp. newer Jira Cloud) may use
+    # customfield_10016. Override via env if you're on a different instance.
+    jira_story_points_field: str = "customfield_10004"
 
     # LLM configuration
     llm_provider: str = "claude"  # "claude" (recommended) or "ollama"

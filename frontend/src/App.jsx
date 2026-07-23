@@ -130,12 +130,12 @@ function App() {
     }
   }, [ticketsData])
 
-  // Fetch on first paint if the URL carried a ?key= but we have no ticket
-  // loaded yet (deep link or hard reload of a shared URL). Uses the same
-  // comma-separated parsing as the input form so multi-ticket URLs work too.
-  // Runs only once — the dep list is intentionally empty.
+  // Fetch on first paint whenever the URL carries a ?key=. Refetching even
+  // when a cached copy is already in sessionStorage means schema additions
+  // (new API fields) get picked up on the next reload instead of being
+  // masked by a stale hydrated payload. Runs only once.
   useEffect(() => {
-    if (!initialUrlKey || ticketsData.length > 0) return
+    if (!initialUrlKey) return
     const keys = initialUrlKey
       .split(',')
       .map((k) => k.trim().toUpperCase())

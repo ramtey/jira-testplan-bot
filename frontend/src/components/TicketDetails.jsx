@@ -8,7 +8,9 @@ import DevelopmentInfo from './DevelopmentInfo'
 import WorkflowActions from './WorkflowActions'
 import RowQuickAction from './RowQuickAction'
 import Icon from './Icon'
-import { ItChip, StatPill, Asn, Tag, Coll, Alert, ACTag, Chip } from './ui'
+import { ItChip, StatPill, Asn, Tag, Coll, Alert, ACTag, Chip, SPChip } from './ui'
+
+const isStoryType = (type) => (type || '').toLowerCase().replace(/[\s-]/g, '') === 'story'
 
 // Turn bare URLs into clickable <a> elements while preserving surrounding
 // whitespace/linebreaks — the description is rendered inside <pre>, so we
@@ -416,6 +418,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
     return (
       <div className="card" style={{ padding: '10px var(--s-5)', display: 'flex', alignItems: 'center', gap: 'var(--s-4)' }}>
         <ItChip type={ticketData.issue_type} label={ticketData.issue_type} />
+        {isStoryType(ticketData.issue_type) && <SPChip points={ticketData.story_points} />}
         {jiraTicketUrl ? (
           <a href={jiraTicketUrl} target="_blank" rel="noopener noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--accent)', flexShrink: 0 }}>
             {ticketData.key}
@@ -468,6 +471,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
         {/* Meta row */}
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--s-3)' }}>
           {ticketData.issue_type && <ItChip type={ticketData.issue_type} label={ticketData.issue_type} />}
+          {isStoryType(ticketData.issue_type) && <SPChip points={ticketData.story_points} />}
           {ticketData.status && <StatPill cat={cat}>{ticketData.status}</StatPill>}
           <span style={{ width: 1, height: 14, background: 'var(--line-strong)', margin: '0 var(--s-2)' }} />
           {ticketData.assignee_history && ticketData.assignee_history.length > 0 ? (

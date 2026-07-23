@@ -42,6 +42,22 @@ export function ItChip({ type, label }) {
   )
 }
 
+// Story-Points chip. Renders only when a numeric value is present so callers
+// can drop it unconditionally beside <ItChip/> and it self-hides for
+// unsized Stories / non-Story issue types.
+export function SPChip({ points }) {
+  if (points === null || points === undefined) return null
+  const n = Number(points)
+  if (!Number.isFinite(n)) return null
+  const display = Number.isInteger(n) ? String(n) : n.toFixed(1)
+  return (
+    <span className="chip-sp" title={`Story points: ${display}`}>
+      <span className="chip-sp-num">{display}</span>
+      <span className="chip-sp-unit">pts</span>
+    </span>
+  )
+}
+
 export function TypeMark({ type, size = 14 }) {
   const t = (type || '').toLowerCase().replace(/[\s-]/g, '')
   const normalized = t === 'subtask' ? 'subtask' : t

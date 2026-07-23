@@ -249,6 +249,20 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
 .chip-it[data-type="subtask"] .bar { background: var(--it-subtask); }
 .chip-it[data-type="sub-task"] .bar { background: var(--it-subtask); }
 
+.chip-sp {
+  height: 20px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0 var(--s-3);
+  font-size: var(--t-xs); font-weight: var(--w-semi);
+  border-radius: var(--r-xs);
+  background: var(--bg-surface);
+  border: 1px solid var(--line-strong);
+  color: var(--fg);
+  white-space: nowrap;
+}
+.chip-sp-num { font-weight: var(--w-bold); font-variant-numeric: tabular-nums; }
+.chip-sp-unit { color: var(--fg-subtle); font-weight: var(--w-med); font-size: 10px; letter-spacing: .02em; }
+
 .statpill {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: var(--t-xs); font-weight: var(--w-semi);
