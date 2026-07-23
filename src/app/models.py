@@ -467,6 +467,11 @@ class WorkflowActionRequest(BaseModel):
     """
 
     loom_urls: list[str] | None = None
+    # Loom URLs harvested from the description of merged PRs linked to
+    # this ticket. Kept separate from `loom_urls` so the pass comment can
+    # label them as coming from the PR rather than the tester's own
+    # walkthrough.
+    pr_loom_urls: list[str] | None = None
     summary: str | None = None
     environments: list[str] | None = None
     reason: str | None = None

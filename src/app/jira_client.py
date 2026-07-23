@@ -307,6 +307,7 @@ def _build_qa_pass_adf(
     environments: list[str] | None = None,
     mention_account_ids: list[str] | None = None,
     image_attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None" = None,
+    pr_loom_urls: list[str] | None = None,
 ) -> dict | None:
     """Build the ADF body for a QA→UAT pass comment.
 
@@ -314,9 +315,13 @@ def _build_qa_pass_adf(
     comment the same way test-plan comments are detected. The environments
     tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
     stays visible without expanding. Loom links sit above the fold (one
-    paragraph per URL), then screenshots render inline via `mediaSingle`
-    nodes when their Atlassian media-services UUID is known (falling back
-    to a plain `📷 <filename>` paragraph when it isn't — see
+    paragraph per URL). `pr_loom_urls` are looms the planner harvested
+    from a merged PR's description; they render with a distinct
+    `📹 Loom (from merged PR):` prefix so reviewers can tell at a glance
+    which video came from the tester versus which one was attached in the
+    PR. Screenshots render inline via `mediaSingle` nodes when their
+    Atlassian media-services UUID is known (falling back to a plain
+    `📷 <filename>` paragraph when it isn't — see
     `_build_attachment_media_node`). The freeform summary is appended
     inline so any URLs it contains stay one-click clickable (no expand
     wrapper — reviewers were missing the share link inside the collapsed
@@ -325,14 +330,15 @@ def _build_qa_pass_adf(
 
     Mentions alone don't justify posting a comment — the function still
     returns None unless at least one substantive field
-    (looms/summary/envs/images) is populated, so QA accidentally selecting
-    a chip with no other content stays a one-click pass.
+    (looms/PR looms/summary/envs/images) is populated, so QA accidentally
+    selecting a chip with no other content stays a one-click pass.
     """
     looms = _normalize_url_list(loom_urls)
+    pr_looms = [u for u in _normalize_url_list(pr_loom_urls) if u not in looms]
     summary = (summary or "").strip()
     envs = _normalize_environments(environments)
     images = _normalize_attachments(image_attachments)
-    if not looms and not summary and not envs and not images:
+    if not looms and not pr_looms and not summary and not envs and not images:
         return None
 
     if envs:
@@ -351,6 +357,19 @@ def _build_qa_pass_adf(
             "type": "paragraph",
             "content": [
                 {"type": "text", "text": "📹 Loom: "},
+                {
+                    "type": "text",
+                    "text": loom_url,
+                    "marks": [{"type": "link", "attrs": {"href": loom_url}}],
+                },
+            ],
+        })
+
+    for loom_url in pr_looms:
+        content.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "📹 Loom (from merged PR): "},
                 {
                     "type": "text",
                     "text": loom_url,
@@ -2431,15 +2450,24 @@ class JiraClient:
         environments: list[str] | None = None,
         mention_account_ids: list[str] | None = None,
         image_attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None" = None,
+        pr_loom_urls: list[str] | None = None,
     ) -> dict | None:
         """Post a QA→UAT pass comment with optional environments / Looms / summary / images.
 
-        Returns None when no fields are populated (nothing to post). Always
-        creates a new comment — these are point-in-time records of each
-        QA pass, not a single living document like the test plan.
+        `pr_loom_urls` are looms harvested from a merged PR's description
+        that the tester opted in to including — rendered with a distinct
+        "(from merged PR)" prefix. Returns None when no fields are
+        populated (nothing to post). Always creates a new comment — these
+        are point-in-time records of each QA pass, not a single living
+        document like the test plan.
         """
         body = _build_qa_pass_adf(
-            loom_urls, summary, environments, mention_account_ids, image_attachments
+            loom_urls,
+            summary,
+            environments,
+            mention_account_ids,
+            image_attachments,
+            pr_loom_urls,
         )
         if body is None:
             return None

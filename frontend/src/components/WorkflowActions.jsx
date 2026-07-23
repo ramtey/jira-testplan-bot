@@ -760,22 +760,25 @@ function WorkflowActions({
     if (noteForAction.id === 'pass-to-uat') {
       // No client-side gate — the server enforces the walkthrough rule and
       // returns a 409 that opens the override prompt in runAction.
-      // Append PR-discovered Loom URLs the tester ticked on, deduped against
-      // whatever they typed manually. Typed URLs keep first-seen ordering.
+      // PR-discovered Loom URLs the tester ticked on ride on their own
+      // field so the pass comment can label them "(from merged PR)".
+      // Deduped against typed URLs so a link that shows up in both places
+      // renders once, as a tester-supplied Loom.
       const seenLooms = new Set(looms)
-      const prLoomsToAdd = discoveredPrLooms.filter(
+      const prLooms = discoveredPrLooms.filter(
         (url) => selectedPrLooms.has(url) && !seenLooms.has(url)
       )
-      const combinedLooms = [...looms, ...prLoomsToAdd]
       const trimmedSummary = summary.trim()
       const hasAnyField =
-        combinedLooms.length > 0 ||
+        looms.length > 0 ||
+        prLooms.length > 0 ||
         trimmedSummary ||
         environments.length > 0 ||
         imageFiles.length > 0
       const baseBody = hasAnyField
         ? {
-            loom_urls: combinedLooms.length > 0 ? combinedLooms : null,
+            loom_urls: looms.length > 0 ? looms : null,
+            pr_loom_urls: prLooms.length > 0 ? prLooms : null,
             summary: trimmedSummary || null,
             environments: environments.length > 0 ? environments : null,
             mention_account_ids:

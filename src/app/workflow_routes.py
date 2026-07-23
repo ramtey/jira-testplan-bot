@@ -230,8 +230,16 @@ async def run_workflow_action(
         )
         form_looms = bool(
             parsed_payload
-            and parsed_payload.loom_urls
-            and any(u and u.strip() for u in parsed_payload.loom_urls)
+            and (
+                (
+                    parsed_payload.loom_urls
+                    and any(u and u.strip() for u in parsed_payload.loom_urls)
+                )
+                or (
+                    parsed_payload.pr_loom_urls
+                    and any(u and u.strip() for u in parsed_payload.pr_loom_urls)
+                )
+            )
         )
         # Form-uploaded images are counted below via `images`; the raw
         # UploadFile list is still open at this point, so we test filenames
@@ -420,6 +428,11 @@ async def run_workflow_action(
                 if parsed_payload and parsed_payload.loom_urls
                 else []
             )
+            pr_looms = (
+                list(parsed_payload.pr_loom_urls)
+                if parsed_payload and parsed_payload.pr_loom_urls
+                else []
+            )
             summary = (parsed_payload.summary if parsed_payload else None) or ""
             environments = parsed_payload.environments if parsed_payload else None
             mentions = parsed_payload.mention_account_ids if parsed_payload else None
@@ -487,6 +500,7 @@ async def run_workflow_action(
                     environments,
                     mentions,
                     image_attachments or None,
+                    pr_looms or None,
                 )
                 comment_posted = result is not None
             except Exception as exc:

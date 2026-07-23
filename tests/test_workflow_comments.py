@@ -121,6 +121,88 @@ def test_build_qa_pass_adf_dedups_loom_urls_and_drops_blanks():
     assert len(loom_paragraphs) == 1
 
 
+def _loom_paragraphs(doc):
+    """All paragraphs whose leading text starts with the loom emoji."""
+    return [
+        p for p in doc["content"]
+        if p.get("type") == "paragraph"
+        and p.get("content")
+        and p["content"][0].get("text", "").startswith("📹")
+    ]
+
+
+def test_build_qa_pass_adf_pr_loom_uses_distinct_prefix():
+    # A PR-sourced Loom renders with a "(from merged PR)" prefix so
+    # reviewers can tell which video the tester supplied and which one
+    # the planner harvested from the merged PR's description.
+    doc = _build_qa_pass_adf(
+        None, None, None, None, None, ["https://loom.com/pr"]
+    )
+    assert doc is not None
+    paragraphs = _loom_paragraphs(doc)
+    assert len(paragraphs) == 1
+    assert paragraphs[0]["content"][0]["text"] == "📹 Loom (from merged PR): "
+    link_node = paragraphs[0]["content"][1]
+    assert link_node["text"] == "https://loom.com/pr"
+    assert link_node["marks"][0] == {
+        "type": "link",
+        "attrs": {"href": "https://loom.com/pr"},
+    }
+
+
+def test_build_qa_pass_adf_pr_loom_alone_creates_a_comment():
+    # A ticked PR loom is meaningful on its own — no other field required.
+    doc = _build_qa_pass_adf(
+        None, None, None, None, None, ["https://loom.com/pr"]
+    )
+    assert doc is not None
+
+
+def test_build_qa_pass_adf_typed_looms_render_before_pr_looms():
+    # Ordering matters: the tester's own looms sit above the PR-attached
+    # ones so the walkthrough they explicitly attached is what a reviewer
+    # sees first.
+    doc = _build_qa_pass_adf(
+        ["https://loom.com/typed"],
+        None,
+        None,
+        None,
+        None,
+        ["https://loom.com/pr"],
+    )
+    assert doc is not None
+    paragraphs = _loom_paragraphs(doc)
+    assert [p["content"][1]["text"] for p in paragraphs] == [
+        "https://loom.com/typed",
+        "https://loom.com/pr",
+    ]
+    assert [p["content"][0]["text"] for p in paragraphs] == [
+        "📹 Loom: ",
+        "📹 Loom (from merged PR): ",
+    ]
+
+
+def test_build_qa_pass_adf_pr_loom_deduped_against_typed():
+    # A URL that appears in both lists renders once, as the tester's own
+    # Loom — the "(from merged PR)" version is suppressed so the same
+    # link never posts twice.
+    doc = _build_qa_pass_adf(
+        ["https://loom.com/shared"],
+        None,
+        None,
+        None,
+        None,
+        ["https://loom.com/shared", "https://loom.com/other"],
+    )
+    assert doc is not None
+    paragraphs = _loom_paragraphs(doc)
+    assert len(paragraphs) == 2
+    assert paragraphs[0]["content"][0]["text"] == "📹 Loom: "
+    assert paragraphs[0]["content"][1]["text"] == "https://loom.com/shared"
+    assert paragraphs[1]["content"][0]["text"] == "📹 Loom (from merged PR): "
+    assert paragraphs[1]["content"][1]["text"] == "https://loom.com/other"
+
+
 def test_build_qa_pass_adf_summary_renders_inline():
     doc = _build_qa_pass_adf(None, "Tested the **happy path**", None)
     assert doc is not None
