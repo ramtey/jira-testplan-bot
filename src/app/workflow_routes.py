@@ -326,10 +326,29 @@ async def run_workflow_action(
             )
 
         my_account_id = await jira.get_my_account_id()
+        override_assignee = bool(
+            parsed_payload and parsed_payload.assignee_override_set
+        )
         if action == "pull-to-testing":
+            # pull-to-testing always parks the ticket on the bot's own account;
+            # a manual override on this action makes no sense (there's no form
+            # in the UI that exposes it), so we don't honor it here.
             target_account_id = my_account_id
             assigned_label = "you"
             resolved_via = "self"
+        elif override_assignee:
+            # Tester picked a specific person (or "unassign") in the form —
+            # skip the auto-pick chain entirely and use the choice verbatim.
+            # Display name is passed through so the response label matches the
+            # pill they clicked without an extra Jira round-trip.
+            target_account_id = parsed_payload.assignee_override_account_id
+            if target_account_id:
+                assigned_label = (
+                    parsed_payload.assignee_override_display_name or "selected assignee"
+                )
+            else:
+                assigned_label = "unassigned"
+            resolved_via = "manual-override"
         else:
             # Exclude the bot's own account from both lookups: pull-to-testing
             # always parks the ticket on the bot, so the bot showing up as a
@@ -352,17 +371,18 @@ async def run_workflow_action(
                     assigned_label = "unassigned"
                     resolved_via = "unassigned"
 
-            # Final safety net: if anything upstream slipped through and
-            # resolved to a known bot (by accountId or display name), treat
-            # it as "no real developer found" and unassign instead of
-            # bouncing the ticket back to the bot.
+        if action != "pull-to-testing":
+            # Final safety net: if anything upstream (auto-pick OR manual
+            # override) resolved to a known bot, treat it as "no real
+            # developer" and unassign instead of parking the ticket back
+            # on the bot. Also covers a tester picking the bot by mistake.
             if (
                 target_account_id == my_account_id
                 or is_blocked_bot_display_name(assigned_label)
             ):
                 target_account_id = None
                 assigned_label = "unassigned"
-                resolved_via = "unassigned-safety-net"
+                resolved_via = f"{resolved_via}+unassigned-safety-net"
 
         logger.info(
             "Workflow %s on %s: resolved assignee via %s -> %s",

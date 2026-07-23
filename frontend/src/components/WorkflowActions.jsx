@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   API_BASE_URL,
   isWalkthroughCardCtaEnabled,
@@ -377,6 +377,12 @@ function WorkflowActions({
   const [reason, setReason] = useState('')
   const [imageFiles, setImageFiles] = useState([])
   const [mentionAccountIds, setMentionAccountIds] = useState([])
+  // Manual override for who gets the ticket after the transition.
+  // Shapes:
+  //   null                                    → server auto-picks (prior assignee → PR contributor)
+  //   { accountId: string, name: string }     → assign to that person
+  //   { accountId: null,   name: 'Unassigned' } → clear the assignee
+  const [assigneeOverride, setAssigneeOverride] = useState(null)
   const [cascadeToSubtasks, setCascadeToSubtasks] = useState(false)
   // PR-Loom discovery: kicked off when the Pass-to-UAT form opens.
   // - prLoomStatus: null (haven't fetched yet) | "loading" | server-returned
@@ -408,6 +414,43 @@ function WorkflowActions({
   const checklistSteps = Array.isArray(videoChecklistSteps) ? videoChecklistSteps : []
   const loomInputRef = useRef(null)
 
+  // Memoized so the OPEN_PASS_TO_UAT_EVENT effect can take
+  // `defaultPassToUatAssignee` as a dep without re-registering every render.
+  // Must live before the effects below (they close over these values) and
+  // before the early returns further down (Rules of Hooks).
+  const mentionCandidates = useMemo(
+    () =>
+      buildMentionCandidates({
+        assignee,
+        assigneeAccountId,
+        assigneeHistory,
+        assigneeHistoryAccountIds,
+        comments,
+        currentUserAccountId,
+      }),
+    [
+      assignee,
+      assigneeAccountId,
+      assigneeHistory,
+      assigneeHistoryAccountIds,
+      comments,
+      currentUserAccountId,
+    ]
+  )
+
+  // For Pass-to-UAT, the ticket almost always goes back to the developer
+  // who owned it before QA pulled it. mentionCandidates[0] is exactly that
+  // person (buildMentionCandidates orders current-assignee-first → prior
+  // assignees → comment authors, skipping the current user), which matches
+  // the server's own auto-pick. Null when there's no candidate to default
+  // to (fresh ticket, no history, no comments).
+  const defaultPassToUatAssignee = mentionCandidates[0]
+    ? {
+        accountId: mentionCandidates[0].accountId,
+        name: mentionCandidates[0].name,
+      }
+    : null
+
   useEffect(() => {
     if (!feedback || feedback.kind !== 'success') return
     const dismiss = setTimeout(() => setIsLeaving(true), 15000)
@@ -435,6 +478,7 @@ function WorkflowActions({
       const passAction = ACTIONS.find((a) => a.id === 'pass-to-uat')
       if (!passAction) return
       setEnvironments(detectEnvironments(description, comments))
+      setAssigneeOverride(defaultPassToUatAssignee)
       setNoteForAction(passAction)
       setFeedback(null)
       setTimeout(() => {
@@ -445,7 +489,7 @@ function WorkflowActions({
     }
     window.addEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
     return () => window.removeEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
-  }, [currentStatus, description, comments])
+  }, [currentStatus, description, comments, defaultPassToUatAssignee])
 
   // Prefetch PR-hosted Loom URLs the moment the Pass-to-UAT modal opens so
   // the discovery panel can render as soon as it's known — the tester sees
@@ -538,6 +582,7 @@ function WorkflowActions({
     setReason('')
     setImageFiles([])
     setMentionAccountIds([])
+    setAssigneeOverride(null)
     setCascadeToSubtasks(hasSubtasks)
     setPrLoomStatus(null)
     setDiscoveredPrLooms([])
@@ -571,15 +616,6 @@ function WorkflowActions({
         : [...prev, accountId]
     )
   }
-
-  const mentionCandidates = buildMentionCandidates({
-    assignee,
-    assigneeAccountId,
-    assigneeHistory,
-    assigneeHistoryAccountIds,
-    comments,
-    currentUserAccountId,
-  })
 
   const runAction = async (action, body, files = [], overrideWalkthrough = false) => {
     setPendingAction(action.id)
@@ -675,6 +711,12 @@ function WorkflowActions({
   const onActionClick = (action) => {
     if (action.id === 'pass-to-uat') {
       setEnvironments(detectEnvironments(description, comments))
+      // Default the assignee to the person the ticket came from (the dev),
+      // so the tester can just hit "Pass to UAT" without extra clicks in
+      // the common case. Fail-back forms deliberately don't pre-select —
+      // there the tester is usually explicitly picking who to hand it
+      // back to, and defaulting could paper over a wrong pick.
+      setAssigneeOverride(defaultPassToUatAssignee)
       setNoteForAction(action)
       setFeedback(null)
       return
@@ -685,6 +727,26 @@ function WorkflowActions({
       return
     }
     runAction(action)
+  }
+
+  // Merge the assignee override into the outgoing payload.
+  //
+  // - Picker visible (mentionCandidates non-empty):
+  //     Selected pill → assign to that person.
+  //     No pill selected → explicit unassign (server override, no auto-pick).
+  // - Picker hidden (no candidates to show, e.g. a fresh ticket with no
+  //   history and no prior comments): omit the override so the server's
+  //   auto-pick chain runs — otherwise we'd silently strip the assignee on
+  //   every one of those tickets.
+  const applyAssigneeOverride = (body) => {
+    if (mentionCandidates.length === 0) return body
+    return {
+      ...(body || {}),
+      assignee_override_set: true,
+      assignee_override_account_id: assigneeOverride?.accountId ?? null,
+      assignee_override_display_name:
+        assigneeOverride?.name ?? 'Unassigned',
+    }
   }
 
   const onNoteSubmit = (e) => {
@@ -711,7 +773,7 @@ function WorkflowActions({
         trimmedSummary ||
         environments.length > 0 ||
         imageFiles.length > 0
-      const body = hasAnyField
+      const baseBody = hasAnyField
         ? {
             loom_urls: combinedLooms.length > 0 ? combinedLooms : null,
             summary: trimmedSummary || null,
@@ -720,7 +782,7 @@ function WorkflowActions({
               mentionAccountIds.length > 0 ? mentionAccountIds : null,
           }
         : undefined
-      runAction(noteForAction, body, imageFiles)
+      runAction(noteForAction, applyAssigneeOverride(baseBody), imageFiles)
       return
     }
 
@@ -736,7 +798,7 @@ function WorkflowActions({
         mention_account_ids:
           mentionAccountIds.length > 0 ? mentionAccountIds : null,
       }
-      runAction(noteForAction, body, imageFiles)
+      runAction(noteForAction, applyAssigneeOverride(body), imageFiles)
     }
   }
 
@@ -1020,6 +1082,36 @@ function WorkflowActions({
 
             {mentionCandidates.length > 0 && (
               <>
+                <span className="lbl">Assign to</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {mentionCandidates.map((person) => {
+                      const selected =
+                        assigneeOverride?.accountId === person.accountId
+                      return (
+                        <EnvPill
+                          key={person.accountId}
+                          value={person.isAssignee ? `★ ${person.name}` : person.name}
+                          on={selected}
+                          onToggle={() =>
+                            setAssigneeOverride((prev) =>
+                              prev?.accountId === person.accountId
+                                ? null
+                                : { accountId: person.accountId, name: person.name }
+                            )
+                          }
+                          disabled={pendingAction !== null}
+                        />
+                      )
+                    })}
+                  </div>
+                  <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+                    {assigneeOverride
+                      ? `Ticket will be assigned to ${assigneeOverride.name}.`
+                      : 'Ticket will be unassigned — pick someone above to change that.'}
+                  </div>
+                </div>
+
                 <span className="lbl">Notify</span>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {mentionCandidates.map((person) => {

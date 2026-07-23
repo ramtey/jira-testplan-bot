@@ -481,6 +481,16 @@ class WorkflowActionRequest(BaseModel):
     # rejects the request without this flag unless the form supplies a Loom
     # / image or the saved walkthrough already stands the gate down.
     override_missing_walkthrough: bool = False
+    # Manual assignee override for pass-to-uat / fail-to-*. When the form
+    # sends `assignee_override_set=True`, the route skips its auto-pick
+    # (prior assignee → top PR contributor → unassigned) and uses
+    # `assignee_override_account_id` verbatim. Null accountId means
+    # "unassign". `assignee_override_display_name` is passed through purely
+    # so the response's `assigned_to` label matches the pill the tester
+    # clicked — the server never re-resolves it against Jira.
+    assignee_override_set: bool = False
+    assignee_override_account_id: str | None = None
+    assignee_override_display_name: str | None = None
 
 
 class BugAnalysisRequest(BaseModel):
