@@ -584,8 +584,8 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
 
 /* Environment chip pill (Pass-to-UAT form) */
 .env-pill {
-  display:inline-flex; align-items:center; gap: 5px;
-  height: 24px; padding: 0 10px;
+  display:inline-flex; align-items:center; gap: 4px;
+  height: 20px; padding: 0 7px;
   background: transparent;
   border: 1px dashed var(--line-strong);
   color: var(--fg-muted);
