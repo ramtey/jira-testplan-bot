@@ -81,6 +81,16 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
             </Chip>
           </span>
         )}
+        {!latestIsLive && !expanded && (
+          <span
+            title="This version has not been posted to Jira yet"
+            style={{ display: 'inline-flex' }}
+          >
+            <Chip size="sm" dot dotColor="var(--error)" pulse>
+              Not live in Jira
+            </Chip>
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         <Btn variant="ghost" size="sm" iconRight={expanded ? 'chevron-up' : 'chevron-down'} onClick={() => setExpanded((v) => !v)}>
           {runs.length} version{runs.length === 1 ? '' : 's'}
@@ -121,6 +131,14 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
                     style={{ display: 'inline-flex' }}
                   >
                     <Chip size="sm" dot dotColor="var(--success)" pulse>Live in Jira</Chip>
+                  </span>
+                )}
+                {!run.jira_comment_id && i === 0 && (
+                  <span
+                    title="This version has not been posted to Jira yet"
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <Chip size="sm" dot dotColor="var(--error)" pulse>Not live in Jira</Chip>
                   </span>
                 )}
                 <span style={{ flex: 1 }} />
