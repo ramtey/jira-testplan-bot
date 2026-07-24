@@ -1371,7 +1371,11 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
       const response = await fetch(`${API_BASE}/jira/post-comment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ issue_key: issueKey, comment_text: jiraText }),
+        body: JSON.stringify({
+          issue_key: issueKey,
+          comment_text: jiraText,
+          plan_id: testPlan?.plan_id ?? null,
+        }),
       })
 
       if (!response.ok) {

@@ -51,11 +51,14 @@ export default function RunHistoryBanner({ runs, ticketData, onViewPlan }) {
       } catch {
         throw new Error('Stored plan is not in the expected format')
       }
-      onViewPlan(parsed, {
-        planId: run.plan_id,
-        version: run.version,
-        createdAt: run.created_at,
-      })
+      onViewPlan(
+        { ...parsed, plan_id: run.plan_id, version: run.version },
+        {
+          planId: run.plan_id,
+          version: run.version,
+          createdAt: run.created_at,
+        }
+      )
     } catch (err) {
       setError(err.message)
     } finally {
