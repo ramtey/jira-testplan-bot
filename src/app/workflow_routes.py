@@ -117,12 +117,18 @@ async def _harvest_loom_urls_from_merged_prs(
     try:
         issue_id = await jira._get_issue_internal_id(issue_key)
     except Exception:
+        logger.exception("PR-Loom harvest for %s: failed to resolve Jira issue id", issue_key)
         return [], "error"
     if not issue_id:
         return [], "no_prs"
     try:
         pr_rows = await jira._list_dev_status_pr_summaries(issue_id)
     except Exception:
+        logger.exception(
+            "PR-Loom harvest for %s: dev-status PR lookup raised (issue_id=%s)",
+            issue_key,
+            issue_id,
+        )
         return [], "error"
     github_rows = [
         row for row in pr_rows if row.get("url") and "github.com" in row["url"]
