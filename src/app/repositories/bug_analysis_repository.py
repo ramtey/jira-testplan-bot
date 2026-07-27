@@ -33,6 +33,8 @@ async def save(
         open_questions=list(analysis.open_questions) if analysis.open_questions else None,
         suspect_symbols=list(analysis.suspect_symbols) if analysis.suspect_symbols else None,
         code_evidence=list(analysis.code_evidence) if analysis.code_evidence else None,
+        suspect_locations=list(analysis.suspect_locations) if analysis.suspect_locations else None,
+        blame_evidence=list(analysis.blame_evidence) if analysis.blame_evidence else None,
     )
     session.add(record)
     await session.flush()

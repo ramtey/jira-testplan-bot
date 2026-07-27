@@ -323,6 +323,114 @@ class GitHubClient:
 
         return results
 
+    async def blame_line(
+        self,
+        repo: str,
+        path: str,
+        line: int,
+        ref: str | None = None,
+    ) -> dict | None:
+        """
+        Run `git blame` on a single line via the GitHub GraphQL API and return
+        the introducing commit plus its associated PR (if any).
+
+        Args:
+            repo: "owner/repo" string.
+            path: Repo-relative file path (e.g. "src/components/Foo.tsx").
+            line: 1-indexed line number in the file.
+            ref: Branch, tag, or commit to blame against. Defaults to HEAD.
+
+        Returns:
+            Dict with keys sha, short, message, date, author_name, author_email,
+            pr_number, pr_title, pr_url — or None if blame cannot be resolved
+            (missing token, unknown file, private repo without access, etc.).
+        """
+        if not self.token:
+            return None
+        if "/" not in repo or not path:
+            return None
+        owner, name = repo.split("/", 1)
+        expression = f"{ref}:{path}" if ref else f"HEAD:{path}"
+        # We need the branch/commit-ish for the blame() call itself — pass
+        # `ref` when supplied, otherwise let GraphQL infer via `defaultBranchRef`.
+        query = """
+        query($owner: String!, $name: String!, $expr: String!, $blameExpr: String!, $path: String!) {
+          repository(owner: $owner, name: $name) {
+            object(expression: $blameExpr) {
+              ... on Commit {
+                blame(path: $path) {
+                  ranges {
+                    startingLine
+                    endingLine
+                    commit {
+                      oid
+                      abbreviatedOid
+                      messageHeadline
+                      committedDate
+                      author { name email }
+                      associatedPullRequests(first: 1) {
+                        nodes { number title url }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        blame_expr = ref or "HEAD"
+        variables = {
+            "owner": owner,
+            "name": name,
+            "expr": expression,
+            "blameExpr": blame_expr,
+            "path": path,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/graphql",
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json={"query": query, "variables": variables},
+                )
+                if response.status_code != 200:
+                    logger.info(
+                        f"GitHub blame GraphQL returned {response.status_code} for {repo}/{path}:{line}"
+                    )
+                    return None
+                data = response.json()
+        except Exception as e:
+            logger.info(f"GitHub blame GraphQL failed for {repo}/{path}:{line}: {e}")
+            return None
+
+        obj = ((data.get("data") or {}).get("repository") or {}).get("object")
+        if not obj:
+            return None
+        ranges = (obj.get("blame") or {}).get("ranges") or []
+        for r in ranges:
+            start = r.get("startingLine")
+            end = r.get("endingLine")
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            if start <= line <= end:
+                commit = r.get("commit") or {}
+                author = commit.get("author") or {}
+                prs = (commit.get("associatedPullRequests") or {}).get("nodes") or []
+                pr = prs[0] if prs else {}
+                return {
+                    "sha": commit.get("oid"),
+                    "short": commit.get("abbreviatedOid"),
+                    "message": commit.get("messageHeadline"),
+                    "date": commit.get("committedDate"),
+                    "author_name": author.get("name"),
+                    "author_email": author.get("email"),
+                    "pr_number": pr.get("number"),
+                    "pr_title": pr.get("title"),
+                    "pr_url": pr.get("url"),
+                }
+        return None
+
     def _parse_github_url(self, pr_url: str) -> tuple[str, str, int] | None:
         """
         Parse GitHub PR URL to extract owner, repo, and PR number.

@@ -197,6 +197,75 @@ function BugAnalysisDisplay({ analysis }) {
         </Section>
       )}
 
+      {analysis.blame_evidence && analysis.blame_evidence.length > 0 && (
+        <Section
+          icon="history"
+          title="Blame Trail"
+          description="git blame on the suspected defect site — this is the commit that introduced the current line, and the PR it landed in. Verify before acting."
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+            {analysis.blame_evidence.map((b, i) => {
+              const fileUrl = b.repo
+                ? encodeURI(`https://github.com/${b.repo}/blob/${b.commit_sha || 'HEAD'}/${b.path}`) + `#L${b.line}`
+                : null
+              const commitUrl = b.repo && b.commit_sha
+                ? `https://github.com/${b.repo}/commit/${b.commit_sha}`
+                : null
+              const dateShort = b.commit_date ? String(b.commit_date).slice(0, 10) : null
+              return (
+                <div key={i} className="codeblock">
+                  <div className="head">
+                    <code style={{ color: 'var(--fg-strong)' }}>
+                      {b.symbol ? `${b.symbol} — ` : ''}
+                      {fileUrl ? (
+                        <a href={fileUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+                          {b.path}:{b.line} <Icon name="external" size={10} style={{ verticalAlign: -1 }} />
+                        </a>
+                      ) : (
+                        <>{b.path}:{b.line}</>
+                      )}
+                    </code>
+                    <span className="ext">in {b.repo}</span>
+                  </div>
+                  <div style={{ padding: 'var(--s-4) var(--s-5)', fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>
+                    {b.commit_sha ? (
+                      <>
+                        <div style={{ marginBottom: 4 }}>
+                          <span style={{ color: 'var(--fg-subtle)' }}>Introduced by </span>
+                          {commitUrl ? (
+                            <a href={commitUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
+                              {b.commit_short || (b.commit_sha ? b.commit_sha.slice(0, 8) : '')}
+                            </a>
+                          ) : (
+                            <code>{b.commit_short}</code>
+                          )}
+                          {b.commit_message && <span> — {b.commit_message}</span>}
+                        </div>
+                        <div style={{ color: 'var(--fg-muted)', fontSize: 'var(--t-xs)' }}>
+                          {b.pr_url && (
+                            <>
+                              <a href={b.pr_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+                                PR #{b.pr_number}{b.pr_title ? ` — ${b.pr_title}` : ''} <Icon name="external" size={10} style={{ verticalAlign: -1 }} />
+                              </a>
+                              {(b.author_name || dateShort) && <span> · </span>}
+                            </>
+                          )}
+                          {b.author_name && <span>{b.author_name}</span>}
+                          {b.author_name && dateShort && <span> · </span>}
+                          {dateShort && <span>{dateShort}</span>}
+                        </div>
+                      </>
+                    ) : (
+                      <span style={{ color: 'var(--fg-subtle)' }}>{b.notes || 'Blame lookup returned no result.'}</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </Section>
+      )}
+
       {analysis.why_tests_miss && (
         <Section icon="bug" title="Why Tests Don't Catch This">
           <p style={{ margin: 0, color: 'var(--fg)' }}>{analysis.why_tests_miss}</p>

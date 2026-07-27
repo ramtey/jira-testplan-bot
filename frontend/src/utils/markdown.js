@@ -396,6 +396,34 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
     }
   }
 
+  if (analysis.blame_evidence && analysis.blame_evidence.length > 0) {
+    md += `## Blame Trail\n\n`
+    md += `\`git blame\` on the suspected defect site — the commit that introduced the current line and the PR it landed in. Verify before acting.\n\n`
+    analysis.blame_evidence.forEach(b => {
+      const fileUrl = b.repo
+        ? encodeURI(`https://github.com/${b.repo}/blob/${b.commit_sha || 'HEAD'}/${b.path}`) + `#L${b.line}`
+        : null
+      const anchor = b.symbol ? `\`${b.symbol}\` — ` : ''
+      const loc = fileUrl ? `[\`${b.path}:${b.line}\`](${fileUrl})` : `\`${b.path}:${b.line}\``
+      md += `- ${anchor}${loc} in \`${b.repo || 'unknown-repo'}\`\n`
+      if (b.commit_sha) {
+        const short = b.commit_short || b.commit_sha.slice(0, 8)
+        const commitUrl = `https://github.com/${b.repo}/commit/${b.commit_sha}`
+        md += `  - Introduced by [\`${short}\`](${commitUrl})`
+        if (b.commit_message) md += ` — ${b.commit_message}`
+        md += '\n'
+        if (b.pr_url) {
+          md += `  - [PR #${b.pr_number}${b.pr_title ? ` — ${b.pr_title}` : ''}](${b.pr_url})\n`
+        }
+        const meta = [b.author_name, b.commit_date ? String(b.commit_date).slice(0, 10) : null].filter(Boolean).join(' · ')
+        if (meta) md += `  - ${meta}\n`
+      } else if (b.notes) {
+        md += `  - _${b.notes}_\n`
+      }
+    })
+    md += '\n'
+  }
+
   if (analysis.why_tests_miss) {
     md += `## Why Tests Don't Catch This\n\n${analysis.why_tests_miss}\n\n`
   }

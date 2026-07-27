@@ -83,6 +83,35 @@ def _normalize_fix_status(raw: Any, legacy_is_fixed: Any = None) -> str:
     return "not_fixed"
 
 
+def _normalize_suspect_locations(raw: Any) -> list[dict] | None:
+    """Coerce LLM output to a clean list of {path, line, symbol?} anchors, capped at 3."""
+    if not isinstance(raw, list):
+        return None
+    cleaned: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        line = item.get("line")
+        if not isinstance(path, str) or not path.strip():
+            continue
+        if not isinstance(line, int) or line < 1:
+            continue
+        key = (path, line)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry: dict = {"path": path, "line": line}
+        symbol = item.get("symbol")
+        if isinstance(symbol, str) and symbol.strip():
+            entry["symbol"] = symbol
+        cleaned.append(entry)
+        if len(cleaned) == 3:
+            break
+    return cleaned or None
+
+
 def _safe_get(obj: dict | Any, key: str, default: Any = None) -> Any:
     """
     Safely get a value from either a dict or a dataclass instance.
@@ -3060,6 +3089,18 @@ class OllamaClient(LLMClient):
                 "assumptions": {"type": "array", "items": {"type": "string"}},
                 "open_questions": {"type": "array", "items": {"type": "string"}},
                 "suspect_symbols": {"type": "array", "items": {"type": "string"}},
+                "suspect_locations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "line": {"type": "integer"},
+                            "symbol": {"type": "string"},
+                        },
+                        "required": ["path", "line"],
+                    },
+                },
             },
         }
         full_prompt = BUG_LENS_SYSTEM_PROMPT + "\n\n" + prompt + "\n\nReturn ONLY valid JSON matching this schema: " + json.dumps(schema)
@@ -3101,6 +3142,7 @@ class OllamaClient(LLMClient):
                     assumptions=parsed.get("assumptions"),
                     open_questions=parsed.get("open_questions"),
                     suspect_symbols=parsed.get("suspect_symbols") or None,
+                    suspect_locations=_normalize_suspect_locations(parsed.get("suspect_locations")),
                 )
 
         except httpx.ConnectError as e:
@@ -4120,6 +4162,7 @@ class ClaudeClient(LLMClient):
                     assumptions=parsed.get("assumptions"),
                     open_questions=parsed.get("open_questions"),
                     suspect_symbols=parsed.get("suspect_symbols") or None,
+                    suspect_locations=_normalize_suspect_locations(parsed.get("suspect_locations")),
                 )
 
         except httpx.HTTPStatusError as e:
@@ -4180,6 +4223,8 @@ WHAT YOU MUST DO
 16. **open_questions** — Interpretation ambiguities a human should resolve before committing to the estimate or fix. Phrase each as a question. Example: "Is the bug scoped to making the existing yellow header's contrast work, or does it include supporting arbitrary per-rep colors?" Set to null only if the scope is fully unambiguous from the evidence.
 
 17. **suspect_symbols** — 1–3 code symbol names (component, function, class, or distinctive identifier) most likely implicated in the bug. These will be used to run a deterministic code search in the repo to produce a "Code Evidence" section, so pick names that are (a) likely to exist verbatim in the codebase and (b) specific enough to return meaningful hits. Good picks: `BrandedHeader`, `calculateAgentFee`, `useTitleRepColor`. Bad picks: generic words like `button`, `color`, `screen` (too many false matches). Prefer PascalCase component names and snake_case/camelCase function names over feature descriptions. Return an empty list (not null) if you cannot identify any specific symbols from the evidence — do NOT guess.
+
+18. **suspect_locations** — Up to 3 file+line anchors pointing at the most probable defect site. The system will run `git blame` on each anchor to identify the introducing commit/PR — so this is what powers the "Blame Trail" section. Each item is `{"path": "<repo-relative path>", "line": <int>, "symbol": "<optional symbol name>"}`. Pull anchors from: (a) `@@ -old,+new @@` hunk headers in the PR diffs, picking a line inside the changed range that names the suspect logic; or (b) the `path` and content of files in LINKED CODE CONTEXT, picking the line where the suspect symbol is defined or called. Use `path` verbatim as it appears in the diff/context — do NOT invent paths or line numbers, and do NOT use paths you have not seen in the evidence. Return an empty list (not null) if you have no grounded anchor.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GROUNDING RULES
@@ -4277,8 +4322,21 @@ SUBMIT_BUG_ANALYSIS_TOOL = {
                 "items": {"type": "string"},
                 "description": "1–3 specific code symbol names (component/function/class identifiers) likely implicated in the bug, for use in a deterministic code search. Return an empty list if no specific symbols are identifiable from the evidence — do not guess.",
             },
+            "suspect_locations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Repo-relative file path, verbatim from a diff or fetched file."},
+                        "line": {"type": "integer", "description": "1-indexed line number inside that file."},
+                        "symbol": {"type": ["string", "null"], "description": "Optional symbol name at that line, for display."},
+                    },
+                    "required": ["path", "line"],
+                },
+                "description": "Up to 3 file+line anchors at the most probable defect site. Used as `git blame` targets to identify the introducing commit/PR. Return an empty list if no anchor is grounded in the evidence.",
+            },
         },
-        "required": ["bug_summary", "root_cause", "fix_status", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by", "assumptions", "open_questions", "suspect_symbols"],
+        "required": ["bug_summary", "root_cause", "fix_status", "fix_explanation", "regression_tests", "similar_patterns", "fix_complexity", "fix_effort_estimate", "fix_complexity_reasoning", "affected_flow", "scope_of_impact", "why_tests_miss", "is_regression", "regression_introduced_by", "assumptions", "open_questions", "suspect_symbols", "suspect_locations"],
     },
 }
 

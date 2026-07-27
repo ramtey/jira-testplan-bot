@@ -208,6 +208,111 @@ async def _compute_code_evidence(
     return evidence
 
 
+def _build_path_repo_hint(
+    development_info: dict | None,
+    github_context: list[dict] | None,
+    fallback_repos: list[str],
+) -> dict[str, str]:
+    """
+    Build a map from repo-relative file path → "owner/repo" so blame anchors
+    emitted by the LLM can be routed to the right repository.
+
+    Sources, in priority order:
+    1. Files listed under each PR's diff (`development_info.pull_requests[].files_changed[].filename`)
+       — the PR URL identifies the repo.
+    2. Files fetched into `github_context` (blob URLs, code-search hits).
+    """
+    mapping: dict[str, str] = {}
+
+    for pr in ((development_info or {}).get("pull_requests") or []):
+        pr_url = pr.get("url") or ""
+        m = _REPO_FROM_URL_PATTERN.search(pr_url) if pr_url else None
+        if not m:
+            continue
+        repo = f"{m.group(1)}/{m.group(2)}"
+        for fc in (pr.get("files_changed") or []):
+            fname = (fc or {}).get("filename")
+            if isinstance(fname, str) and fname and fname not in mapping:
+                mapping[fname] = repo
+
+    for item in (github_context or []):
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        repo = item.get("repo")
+        if not repo:
+            url = item.get("url") or ""
+            m = _REPO_FROM_URL_PATTERN.search(url) if url else None
+            if m:
+                repo = f"{m.group(1)}/{m.group(2)}"
+        if repo and path not in mapping:
+            mapping[path] = repo
+
+    # Seed a "fallback repo" under an empty key — callers use this when a
+    # suspect path isn't in the map (e.g. LLM referenced a file the diff
+    # didn't include). Falling back to the first inferred repo is a best-effort
+    # guess; blame returns None if the file doesn't exist there.
+    if fallback_repos and "" not in mapping:
+        mapping[""] = fallback_repos[0]
+
+    return mapping
+
+
+async def _compute_blame_evidence(
+    suspect_locations: list[dict] | None,
+    path_repo_hint: dict[str, str],
+) -> list[dict]:
+    """
+    Blame each {path, line} anchor via GitHub GraphQL and return the introducing
+    commit + PR for each. Silent no-op when GitHub is not configured or the
+    LLM emitted no anchors.
+    """
+    if not suspect_locations or not settings.github_token:
+        return []
+
+    client = GitHubClient()
+    results: list[dict] = []
+    fallback = path_repo_hint.get("", "")
+
+    for loc in suspect_locations[:3]:
+        path = loc.get("path")
+        line = loc.get("line")
+        if not isinstance(path, str) or not isinstance(line, int):
+            continue
+        repo = path_repo_hint.get(path) or fallback
+        if not repo:
+            continue
+        try:
+            blame = await client.blame_line(repo=repo, path=path, line=line)
+        except Exception as e:
+            logger.warning(f"Blame failed for {repo}/{path}:{line}: {e}")
+            blame = None
+
+        entry: dict = {
+            "path": path,
+            "line": line,
+            "symbol": loc.get("symbol"),
+            "repo": repo,
+        }
+        if blame:
+            entry.update({
+                "commit_sha": blame.get("sha"),
+                "commit_short": blame.get("short"),
+                "commit_message": blame.get("message"),
+                "commit_date": blame.get("date"),
+                "author_name": blame.get("author_name"),
+                "author_email": blame.get("author_email"),
+                "pr_number": blame.get("pr_number"),
+                "pr_title": blame.get("pr_title"),
+                "pr_url": blame.get("pr_url"),
+            })
+        else:
+            entry["notes"] = "Blame lookup returned no result — file may not exist on the default branch, or the anchor was off."
+        results.append(entry)
+
+    return results
+
+
 async def _fetch_github_context(
     summary: str,
     description: str | None,
@@ -333,6 +438,10 @@ async def analyze_bug(request: BugAnalysisRequest):
         evidence = await _compute_code_evidence(analysis.suspect_symbols, repos)
         if evidence:
             analysis.code_evidence = evidence
+        path_repo_hint = _build_path_repo_hint(request.development_info, github_context, repos)
+        blame = await _compute_blame_evidence(analysis.suspect_locations, path_repo_hint)
+        if blame:
+            analysis.blame_evidence = blame
         await run_tracker.complete_with_bug_analysis(run_ctx, analysis=analysis)
         return {
             "ticket_key": request.ticket_key,
@@ -404,6 +513,14 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
         evidence = await _compute_code_evidence(analysis.suspect_symbols, combined_repos)
         if evidence:
             analysis.code_evidence = evidence
+        combined_hint: dict[str, str] = {}
+        for t, td in zip(request.tickets, tickets_data):
+            per_hint = _build_path_repo_hint(t.development_info, td.get("github_context"), combined_repos)
+            for path, repo in per_hint.items():
+                combined_hint.setdefault(path, repo)
+        blame = await _compute_blame_evidence(analysis.suspect_locations, combined_hint)
+        if blame:
+            analysis.blame_evidence = blame
         await run_tracker.complete_with_bug_analysis(run_ctx, analysis=analysis)
         return {
             "ticket_keys": [t.ticket_key for t in request.tickets],

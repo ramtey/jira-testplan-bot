@@ -64,3 +64,9 @@ class BugAnalysisRecord(TimestampedBase, table=True):
     code_evidence: list[dict[str, Any]] | None = Field(
         default=None, sa_column=Column(JSONB, nullable=True)
     )
+    suspect_locations: list[dict[str, Any]] | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )
+    blame_evidence: list[dict[str, Any]] | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )

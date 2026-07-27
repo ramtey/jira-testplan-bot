@@ -356,6 +356,8 @@ class BugAnalysis:
     open_questions: list[str] | None = None  # Ambiguities a human should resolve before estimating/fixing
     suspect_symbols: list[str] | None = None  # Symbols (component/function/class names) the LLM flagged for code search
     code_evidence: list[dict] | None = None  # Deterministic grep results for suspect_symbols — each entry: {suspect, repo, usages: [{path, ref, snippet}], notes}
+    suspect_locations: list[dict] | None = None  # {path, line, symbol?} anchors the LLM extracted from diffs/fetched files — used as blame targets
+    blame_evidence: list[dict] | None = None  # Deterministic git-blame results for suspect_locations — each entry: {path, line, symbol, repo, commit_sha, commit_short, commit_message, commit_date, author, pr_number, pr_title, pr_url}
 
 
 # ============================================================================
