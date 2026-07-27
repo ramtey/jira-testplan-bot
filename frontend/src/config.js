@@ -2,6 +2,8 @@
  * Frontend configuration
  */
 
+import { useSyncExternalStore } from 'react'
+
 // API base URL - can be overridden with VITE_API_URL environment variable
 export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -11,6 +13,11 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:80
 // before the network call completes; backend value wins once it arrives.
 let jiraBaseUrl = null
 let workflowProjectPrefixes = ['SK']
+const configListeners = new Set()
+
+const notifyConfigChange = () => {
+  configListeners.forEach((cb) => cb())
+}
 
 export const fetchConfig = async () => {
   try {
@@ -21,6 +28,7 @@ export const fetchConfig = async () => {
       if (Array.isArray(data.workflow_project_prefixes)) {
         workflowProjectPrefixes = data.workflow_project_prefixes
       }
+      notifyConfigChange()
     }
   } catch (error) {
     console.error('Failed to fetch config:', error)
@@ -30,9 +38,24 @@ export const fetchConfig = async () => {
 export const getJiraBaseUrl = () => jiraBaseUrl
 
 export const getJiraTicketUrl = (ticketKey) => {
-  if (!jiraBaseUrl) return null
+  if (!jiraBaseUrl || !ticketKey) return null
   return `${jiraBaseUrl}/browse/${ticketKey}`
 }
+
+const subscribeConfig = (cb) => {
+  configListeners.add(cb)
+  return () => configListeners.delete(cb)
+}
+
+// React hook variant of getJiraTicketUrl. Subscribes to fetchConfig() so a
+// component that mounts before the config request resolves still re-renders
+// once jiraBaseUrl arrives — otherwise the ticket key falls through to the
+// plain-text branch on first paint and stays that way.
+export const useJiraTicketUrl = (ticketKey) =>
+  useSyncExternalStore(
+    subscribeConfig,
+    () => getJiraTicketUrl(ticketKey),
+  )
 
 // Returns true when the QA workflow buttons should be shown for this ticket.
 // Match is case-insensitive on the project prefix (the part before the `-`).

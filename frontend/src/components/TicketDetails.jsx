@@ -3,7 +3,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { API_BASE_URL, getJiraTicketUrl } from '../config'
+import { API_BASE_URL, useJiraTicketUrl } from '../config'
 import DevelopmentInfo from './DevelopmentInfo'
 import WorkflowActions from './WorkflowActions'
 import RowQuickAction from './RowQuickAction'
@@ -404,7 +404,7 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
     }
   }
 
-  const jiraTicketUrl = getJiraTicketUrl(ticketData.key)
+  const jiraTicketUrl = useJiraTicketUrl(ticketData.key)
   const cat = statusCategory(ticketData.status)
   const shouldTruncateDescription = (description) => description && description.length > 500
   const getDisplayDescription = (description) => {

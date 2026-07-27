@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { API_BASE_URL, getJiraTicketUrl } from '../config'
+import { API_BASE_URL, useJiraTicketUrl } from '../config'
 import TestPlanDisplay from './TestPlanDisplay'
 import BugAnalysisDisplay from './BugAnalysisDisplay'
 import Icon from './Icon'
@@ -125,7 +125,7 @@ function EpicChildRow({ child }) {
     }
   }
 
-  const jiraUrl = getJiraTicketUrl(child.key)
+  const jiraUrl = useJiraTicketUrl(child.key)
   const cat = statusCat(child.status_category || child.status)
 
   return (
