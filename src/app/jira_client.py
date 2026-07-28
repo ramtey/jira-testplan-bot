@@ -42,8 +42,60 @@ def is_blocked_bot_display_name(name: str | None) -> bool:
     return bool(name) and name.strip().lower() in BOT_DISPLAY_NAME_BLOCKLIST
 
 
+# URLs pasted into freeform comment fields (UAT summary, fail reason,
+# generic post_comment) render as plain text in Jira unless we wrap them
+# in an ADF `link` mark. Match markdown-link syntax first so `[label](url)`
+# beats the bare-URL scan on the same span.
+_MD_LINK_RE = re.compile(r'\[([^\]\n]+)\]\((https?://[^\s)]+)\)')
+_BARE_URL_RE = re.compile(r'https?://[^\s<>"\'`\[\]()]+')
+# Punctuation that commonly hugs the end of a URL in prose ("see https://x.com.")
+# and should not be part of the link target.
+_URL_TRAILING_PUNCT = ".,;:!?"
+
+
 def _parse_inline_markdown(text: str) -> list:
-    """Convert inline markdown (bold, italic, code) to ADF text nodes."""
+    """Convert inline markdown (bold, italic, code, links) to ADF text nodes.
+
+    Bare URLs and `[label](url)` markdown links are emitted with a `link`
+    mark so freeform comment text (UAT summaries, fail-back reasons,
+    generic /jira/post-comment payloads) renders clickable in Jira instead
+    of appearing as plain text. Everything between/around links is passed
+    through the bold/italic/code parser unchanged.
+    """
+    nodes: list = []
+    cursor = 0
+    while cursor < len(text):
+        md_link = _MD_LINK_RE.search(text, cursor)
+        bare_url = _BARE_URL_RE.search(text, cursor)
+        candidates = [m for m in (md_link, bare_url) if m]
+        if not candidates:
+            nodes.extend(_parse_inline_formatting(text[cursor:]))
+            break
+        # Earliest match wins; on a tie the markdown link wins because its
+        # regex starts at `[`, which the bare-URL regex never matches.
+        match = min(candidates, key=lambda m: m.start())
+        if match.start() > cursor:
+            nodes.extend(_parse_inline_formatting(text[cursor:match.start()]))
+        if match is md_link:
+            href = match.group(2)
+            label = match.group(1)
+            cursor = match.end()
+        else:
+            href = match.group(0).rstrip(_URL_TRAILING_PUNCT)
+            label = href
+            cursor = match.start() + len(href)
+        nodes.append({
+            "type": "text",
+            "text": label,
+            "marks": [{"type": "link", "attrs": {"href": href}}],
+        })
+    return nodes or [{"type": "text", "text": text}]
+
+
+def _parse_inline_formatting(text: str) -> list:
+    """Bold / italic / code pass for a URL-free text chunk."""
+    if not text:
+        return []
     nodes = []
     pattern = r'(\*\*(.+?)\*\*|__(.+?)__|`(.+?)`|\*(.+?)\*|_(.+?)_|([^*_`]+))'
     for match in re.finditer(pattern, text, re.DOTALL):
@@ -58,7 +110,7 @@ def _parse_inline_markdown(text: str) -> list:
             nodes.append({"type": "text", "text": inner, "marks": [{"type": "em"}]})
         elif full:
             nodes.append({"type": "text", "text": full})
-    return nodes or [{"type": "text", "text": text}]
+    return nodes
 
 
 def markdown_to_adf(markdown_text: str) -> dict:
