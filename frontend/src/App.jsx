@@ -192,15 +192,12 @@ function App() {
     const seq = ++fetchSeqRef.current
     const isStale = () => seq !== fetchSeqRef.current
 
-    // Stale-while-revalidate: if the requested keys match the current set,
-    // keep the ticket UI and its derived state (test plan, bug lens, run
-    // history, expanded description) on screen while the refetch runs.
-    // Wiping `ticketsData` up front used to collapse the whole main pane
-    // and register as a UI flash even for fast fetches. When the keys
-    // change (different ticket), reset the derived state so it doesn't
-    // read as belonging to the new ticket, but still leave the old
-    // ticketsData in place until the new payload lands so the layout
-    // doesn't blank between fetches.
+    // Stale-while-revalidate applies ONLY to same-key refetches (enrichment
+    // refresh on the currently-shown ticket): keep ticketsData and derived
+    // state so the pane doesn't flash. When the keys change (user picked a
+    // different ticket), clear ticketsData so the fetch overlay shows —
+    // otherwise the previous ticket stays interactive against a not-yet-
+    // loaded new ticket.
     const currentKeys = ticketsData.map((t) => t.key)
     const isSameKeys =
       keys.length === currentKeys.length &&
@@ -211,6 +208,7 @@ function App() {
     setSlowFetch(false)
     setError(null)
     if (!isSameKeys) {
+      setTicketsData([])
       setIsDescriptionExpanded(false)
       testPlan.reset()
       bugLens.reset()
@@ -220,16 +218,44 @@ function App() {
 
     try {
       if (keys.length === 1) {
-        const response = await fetch(`${API_BASE_URL}/issue/${keys[0]}`)
-        if (isStale()) return
-        if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.detail || 'Failed to fetch ticket')
+        const k = keys[0]
+        // Progressive load: fire /basic and the full fetch concurrently.
+        // The basic endpoint returns the ticket's header, description,
+        // labels, status, assignee, story points, attachments, and
+        // description-quality gaps in ~one Jira round-trip. Enrichment
+        // (dev_info, comments, PR analysis, parent, children, linked
+        // issues, bounce history) arrives with the full response and
+        // replaces the partial. Whichever finishes first paints; a slow
+        // /basic that arrives after /full won't clobber it.
+        let fullLanded = false
+        const basicPromise = fetch(`${API_BASE_URL}/issue/${k}/basic`)
+          .then(async (r) => {
+            if (isStale() || fullLanded || !r.ok) return
+            const partial = await r.json()
+            if (isStale() || fullLanded) return
+            setTicketsData([partial])
+          })
+          .catch(() => {
+            // best-effort — the full fetch below is authoritative
+          })
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/issue/${k}`)
+          fullLanded = true
+          if (isStale()) return
+          if (!response.ok) {
+            const errorData = await response.json()
+            throw new Error(errorData.detail || 'Failed to fetch ticket')
+          }
+          const data = await response.json()
+          if (isStale()) return
+          setTicketsData([data])
+          loadRunHistory(data.key)
+        } finally {
+          // Let the basic promise settle so its guards run against the
+          // final fullLanded/isStale state before we exit this scope.
+          await basicPromise
         }
-        const data = await response.json()
-        if (isStale()) return
-        setTicketsData([data])
-        loadRunHistory(data.key)
       } else {
         const responses = await Promise.all(
           keys.map((k) => fetch(`${API_BASE_URL}/issue/${k}`))

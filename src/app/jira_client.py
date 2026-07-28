@@ -2154,9 +2154,14 @@ class JiraClient:
             )
         return results
 
-    async def get_issue(self, issue_key: str) -> JiraIssue:
+    async def _fetch_issue_base_data(self, issue_key: str) -> tuple[dict, str]:
+        """
+        Single Jira `/rest/api/3/issue/{key}` GET. Shared by get_issue (full,
+        with enrichment) and get_issue_basic (fast path, no enrichment) so both
+        rely on identical field selection, expansion, and error mapping.
+        Returns (raw response JSON, story-points field key for downstream parse).
+        """
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
-        # Ask Jira for fields we need + development info if available
         story_points_field = settings.jira_story_points_field or ""
         base_fields = "summary,description,labels,issuetype,attachment,parent,issuelinks,assignee,status"
         fields_param = f"{base_fields},{story_points_field}" if story_points_field else base_fields
@@ -2180,8 +2185,82 @@ class JiraClient:
                 error_type="insufficient_permissions",
             )
         r.raise_for_status()
+        return r.json(), story_points_field
 
-        data = r.json()
+    async def get_issue_basic(self, issue_key: str) -> JiraIssue:
+        """
+        Fast-path counterpart to get_issue: the same base Jira fetch and
+        field parse, but skips the network-heavy enrichment (dev status API,
+        comments, Figma, parent issue, children, linked issues, bounce
+        history, text-linked PR scan). Enrichment-derived fields on the
+        returned JiraIssue are left as None so callers/UIs can treat them
+        as "not yet loaded" and re-render when the full get_issue lands.
+        Wall-clock is roughly one Jira REST round-trip (~200-500ms).
+        """
+        data, story_points_field = await self._fetch_issue_base_data(issue_key)
+        fields = data.get("fields", {})
+        summary = fields.get("summary") or ""
+        description = fields.get("description")
+        labels = fields.get("labels", [])
+        issue_type = fields.get("issuetype", {}).get("name", "Unknown")
+        story_points_raw = fields.get(story_points_field) if story_points_field else None
+        try:
+            story_points = float(story_points_raw) if story_points_raw is not None else None
+        except (TypeError, ValueError):
+            story_points = None
+        assignee_field = fields.get("assignee") or {}
+        assignee = assignee_field.get("displayName") or assignee_field.get("emailAddress")
+        assignee_account_id = assignee_field.get("accountId")
+        status_field = fields.get("status") or {}
+        status_name = status_field.get("name")
+        status_category = (status_field.get("statusCategory") or {}).get("key")
+
+        assignee_history: list[str] = []
+        assignee_history_account_ids: list[str | None] = []
+        seen_assignees: set[str] = set()
+        for history in data.get("changelog", {}).get("histories", []):
+            for item in history.get("items", []):
+                if item.get("field") == "assignee":
+                    for name, acct in (
+                        (item.get("fromString"), item.get("from")),
+                        (item.get("toString"), item.get("to")),
+                    ):
+                        if name and name not in seen_assignees:
+                            seen_assignees.add(name)
+                            assignee_history.append(name)
+                            assignee_history_account_ids.append(acct)
+        if assignee and assignee not in seen_assignees:
+            assignee_history.append(assignee)
+            assignee_history_account_ids.append(assignee_account_id)
+
+        description_str = extract_text_from_adf(description)
+        analysis = analyze_description(description_str, issue_type=issue_type)
+        attachments = self._extract_image_attachments(fields.get("attachment", []))
+
+        return JiraIssue(
+            key=data["key"],
+            summary=summary,
+            description=description_str if description_str else None,
+            description_analysis=analysis,
+            labels=labels,
+            issue_type=issue_type,
+            assignee=assignee,
+            assignee_account_id=assignee_account_id,
+            assignee_history=assignee_history if assignee_history else None,
+            assignee_history_account_ids=(
+                assignee_history_account_ids if assignee_history_account_ids else None
+            ),
+            attachments=attachments if attachments else None,
+            status=status_name,
+            status_category=status_category,
+            story_points=story_points,
+            # Enrichment fields intentionally left None — the /issue/{key}/basic
+            # caller renders these sections as "loading" until the full fetch
+            # replaces this issue.
+        )
+
+    async def get_issue(self, issue_key: str) -> JiraIssue:
+        data, story_points_field = await self._fetch_issue_base_data(issue_key)
         fields = data.get("fields", {})
         summary = fields.get("summary") or ""
         description = fields.get("description")  # Jira Cloud often returns ADF (dict)

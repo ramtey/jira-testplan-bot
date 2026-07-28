@@ -662,23 +662,81 @@ def get_config():
     }
 
 
+async def _safe_account_id_for(jira: JiraClient):
+    """Best-effort /myself lookup used by both /issue/{key} and /issue/{key}/basic."""
+    try:
+        return await jira.get_my_account_id()
+    except Exception:
+        return None
+
+
+@app.get("/issue/{issue_key}/basic")
+async def get_issue_basic(issue_key: str):
+    """
+    Fast progressive-load endpoint: returns the ticket's base data (description,
+    labels, status, assignee, story points, attachments, description-quality
+    gaps) without waiting on network-heavy enrichment (dev status API, comments,
+    Figma, parent, children, linked issues, bounce history). The response shape
+    matches /issue/{key} — enrichment-derived fields are explicitly null so the
+    frontend can render "loading" placeholders for those sections and swap them
+    in when the full /issue/{key} response lands.
+    """
+    jira = JiraClient()
+    try:
+        issue, current_user_account_id = await asyncio.gather(
+            jira.get_issue_basic(issue_key),
+            _safe_account_id_for(jira),
+        )
+        attachments_list = (
+            [asdict(a) for a in issue.attachments] if issue.attachments else None
+        )
+        return {
+            "key": issue.key,
+            "summary": issue.summary,
+            "description": issue.description,
+            "labels": issue.labels,
+            "issue_type": issue.issue_type,
+            "assignee": issue.assignee,
+            "assignee_account_id": issue.assignee_account_id,
+            "assignee_history": issue.assignee_history,
+            "assignee_history_account_ids": issue.assignee_history_account_ids,
+            "current_user_account_id": current_user_account_id,
+            "description_quality": {
+                "has_description": issue.description_analysis.has_description,
+                "gaps": issue.description_analysis.gaps,
+                "char_count": issue.description_analysis.char_count,
+                "word_count": issue.description_analysis.word_count,
+            },
+            # Enrichment fields — the full /issue/{key} response will fill these in.
+            "development_info": None,
+            "attachments": attachments_list,
+            "comments": None,
+            "parent": None,
+            "children": None,
+            "linked_issues": None,
+            "status": issue.status,
+            "status_category": issue.status_category,
+            "bounce_history": None,
+            "story_points": issue.story_points,
+            # Marker so the frontend can distinguish a partial ticket from a
+            # full one (e.g. show a subtle "loading enrichment" indicator).
+            "is_partial": True,
+        }
+    except JiraNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @app.get("/issue/{issue_key}")
 async def get_issue(issue_key: str):
     jira = JiraClient()
     try:
-        # /myself is independent of the issue fetch — run it concurrently so
-        # the caller doesn't pay a serial round-trip on top of get_issue().
-        # Cached on the class after the first success, so later fetches skip
-        # the network call entirely.
-        async def _safe_account_id():
-            try:
-                return await jira.get_my_account_id()
-            except Exception:
-                return None
-
         issue, current_user_account_id = await asyncio.gather(
             jira.get_issue(issue_key),
-            _safe_account_id(),
+            _safe_account_id_for(jira),
         )
 
         # Serialize development info if available
