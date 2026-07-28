@@ -376,6 +376,41 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
   text-align: center;
 }
 
+/* Compact non-blocking indicator shown when refetching over an existing
+   ticket — pinned above the main pane so the ticket stays interactive. */
+.refresh-pill {
+  position: fixed;
+  top: calc(var(--s-3) + 44px);
+  right: var(--s-4);
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-1) var(--s-3);
+  border-radius: 999px;
+  background: rgba(8, 9, 11, 0.78);
+  color: var(--fg);
+  font-size: var(--t-xs);
+  line-height: 1.4;
+  border: 1px solid var(--border);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: fadein 160ms ease-out;
+  pointer-events: none;
+}
+.refresh-pill__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--fg-faint);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.refresh-pill__label {
+  color: var(--fg-muted);
+  letter-spacing: 0.01em;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

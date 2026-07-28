@@ -2178,49 +2178,103 @@ class JiraClient:
         # Analyze description quality (type-aware: bugs vs. stories have different gaps)
         analysis = analyze_description(description_str, issue_type=issue_type)
 
-        # Fetch development information (commits, PRs, branches)
-        # This is optional and non-blocking - if it fails, we continue without it
+        # The next block of enrichments are network-bound and independent of one
+        # another — dev-status API, comments, Figma, parent issue, children.
+        # Run them concurrently so wall-clock is max(single call) instead of
+        # sum(all calls). Each helper is wrapped so a failure in one doesn't
+        # torpedo the gather; the surrounding try/except-and-warn pattern from
+        # the sequential version is preserved per-call.
         issue_id = data["id"]
-        development_info = await self._get_development_info(issue_id, issue_key)
 
-        # Extract Figma URL from description and fetch design context (Phase 5)
-        if description_str and settings.figma_token:
+        parent_data = fields.get("parent")
+        parent_key: str | None = None
+        if parent_data:
+            candidate = parent_data.get("key")
+            if candidate and isinstance(candidate, str) and candidate.strip():
+                parent_key = candidate
+            elif candidate is not None:
+                logger.warning(
+                    f"Invalid parent key received: '{candidate}' "
+                    f"(type: {type(candidate).__name__})"
+                )
+
+        async def _fetch_figma_context():
+            if not (description_str and settings.figma_token):
+                return None
             figma_url = self._extract_figma_url(description_str)
-            if figma_url:
-                try:
-                    figma_client = FigmaClient()
-                    figma_context = await figma_client.fetch_file_context(figma_url)
-                    if figma_context and development_info:
-                        development_info.figma_context = figma_context
-                        logger.info(f"Enriched with Figma design context: {figma_context.file_name}")
-                    elif figma_context and not development_info:
-                        # Create DevelopmentInfo with just Figma context
-                        development_info = DevelopmentInfo(
-                            commits=[],
-                            pull_requests=[],
-                            branches=[],
-                            repository_context=None,
-                            figma_context=figma_context,
-                        )
-                        logger.info(f"Added Figma design context: {figma_context.file_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch Figma context: {e}")
+            if not figma_url:
+                return None
+            try:
+                figma_client = FigmaClient()
+                return await figma_client.fetch_file_context(figma_url)
+            except Exception as e:
+                logger.warning(f"Failed to fetch Figma context: {e}")
+                return None
+
+        async def _fetch_comments():
+            try:
+                return await self.get_comments(issue_key)
+            except Exception as e:
+                logger.warning(f"Failed to fetch comments for {issue_key}: {e}")
+                return []
+
+        async def _fetch_parent():
+            if not parent_key:
+                return None
+            logger.info(f"Fetching parent issue {parent_key} for additional context")
+            return await self._get_parent_issue(parent_key)
+
+        (
+            development_info,
+            comments_data,
+            figma_context,
+            parent_issue,
+            children,
+        ) = await asyncio.gather(
+            self._get_development_info(issue_id, issue_key),
+            _fetch_comments(),
+            _fetch_figma_context(),
+            _fetch_parent(),
+            self._get_children(issue_key),
+        )
+
+        # Merge Figma context into development_info (matches the pre-parallel
+        # ordering: enrich if dev_info exists, otherwise wrap it in a fresh
+        # DevelopmentInfo so downstream consumers don't need a None-check).
+        if figma_context:
+            if development_info:
+                development_info.figma_context = figma_context
+                logger.info(f"Enriched with Figma design context: {figma_context.file_name}")
+            else:
+                development_info = DevelopmentInfo(
+                    commits=[],
+                    pull_requests=[],
+                    branches=[],
+                    repository_context=None,
+                    figma_context=figma_context,
+                )
+                logger.info(f"Added Figma design context: {figma_context.file_name}")
+
+        filtered_comments = None
+        if comments_data:
+            filtered_comments = self._filter_testing_comments(comments_data)
+            if filtered_comments:
+                logger.info(f"Found {len(filtered_comments)} relevant comments for {issue_key}")
+
+        if parent_issue:
+            resources = []
+            if parent_issue.figma_context:
+                resources.append(f"Figma: {parent_issue.figma_context.file_name}")
+            if parent_issue.attachments:
+                resources.append(f"{len(parent_issue.attachments)} images")
+            if resources:
+                logger.info(f"Parent {parent_key} has: {', '.join(resources)}")
+
+        if children:
+            logger.info(f"{issue_key} has {len(children)} direct child ticket(s) for context")
 
         # Extract image attachments (PNG, JPG, JPEG, GIF)
         attachments = self._extract_image_attachments(fields.get("attachment", []))
-
-        # Fetch and filter comments for testing-related content
-        comments_data: list[dict] = []  # kept for text-based PR scanning below
-        filtered_comments = None
-        try:
-            comments_data = await self.get_comments(issue_key)
-            if comments_data:
-                filtered_comments = self._filter_testing_comments(comments_data)
-                if filtered_comments:
-                    logger.info(f"Found {len(filtered_comments)} relevant comments for {issue_key}")
-        except Exception as e:
-            # Non-critical - continue without comments if fetching fails
-            logger.warning(f"Failed to fetch comments for {issue_key}: {e}")
 
         # Detect QA/UAT → ToDo bounce-backs from the changelog. Reason text is
         # pulled from the unfiltered comment list since bounce reasons may not
@@ -2242,6 +2296,7 @@ class JiraClient:
 
         # Fallback PR discovery: scan description and comments for GitHub PR URLs.
         # Catches PRs pasted as plain links in text when Jira-GitHub integration is absent.
+        # Depends on dev_info (for the dedup set) + comments — must run after the gather.
         existing_pr_urls = {
             pr.url
             for pr in (development_info.pull_requests if development_info else [])
@@ -2260,35 +2315,6 @@ class JiraClient:
                     branches=[],
                 )
             logger.info(f"Found {len(text_linked_prs)} text-linked PR(s) for {issue_key}")
-
-        # Fetch parent issue if it exists (for sub-tasks)
-        # Parent tickets often contain design resources (Figma links, images) that sub-tasks lack
-        parent_issue = None
-        parent_data = fields.get("parent")
-        if parent_data:
-            parent_key = parent_data.get("key")
-            # Validate parent_key is not None and not empty string
-            if parent_key and isinstance(parent_key, str) and parent_key.strip():
-                logger.info(f"Fetching parent issue {parent_key} for additional context")
-                parent_issue = await self._get_parent_issue(parent_key)
-            elif parent_key is not None:
-                # Log if we received an invalid parent key
-                logger.warning(f"Invalid parent key received: '{parent_key}' (type: {type(parent_key).__name__})")
-                if parent_issue:
-                    resources = []
-                    if parent_issue.figma_context:
-                        resources.append(f"Figma: {parent_issue.figma_context.file_name}")
-                    if parent_issue.attachments:
-                        resources.append(f"{len(parent_issue.attachments)} images")
-                    if resources:
-                        logger.info(f"Parent {parent_key} has: {', '.join(resources)}")
-
-        # Fetch direct children (sub-tasks / Epic children). When present, the
-        # test-plan prompt will switch to integration/cross-subtask coverage
-        # rather than treating this ticket as a leaf. Empty list is a no-op.
-        children = await self._get_children(issue_key)
-        if children:
-            logger.info(f"{issue_key} has {len(children)} direct child ticket(s) for context")
 
         # Fetch linked issues (blocks, blocked by, causes, caused by)
         # These provide horizontal dependency context to complement parent hierarchy

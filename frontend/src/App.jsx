@@ -192,16 +192,31 @@ function App() {
     const seq = ++fetchSeqRef.current
     const isStale = () => seq !== fetchSeqRef.current
 
+    // Stale-while-revalidate: if the requested keys match the current set,
+    // keep the ticket UI and its derived state (test plan, bug lens, run
+    // history, expanded description) on screen while the refetch runs.
+    // Wiping `ticketsData` up front used to collapse the whole main pane
+    // and register as a UI flash even for fast fetches. When the keys
+    // change (different ticket), reset the derived state so it doesn't
+    // read as belonging to the new ticket, but still leave the old
+    // ticketsData in place until the new payload lands so the layout
+    // doesn't blank between fetches.
+    const currentKeys = ticketsData.map((t) => t.key)
+    const isSameKeys =
+      keys.length === currentKeys.length &&
+      keys.every((k, i) => k === currentKeys[i])
+
     setLoading(true)
     setFetchingKeys(keys)
     setSlowFetch(false)
     setError(null)
-    setTicketsData([])
-    setIsDescriptionExpanded(false)
-    testPlan.reset()
-    bugLens.reset()
-    setRunHistory([])
-    setHistoryPreview(null)
+    if (!isSameKeys) {
+      setIsDescriptionExpanded(false)
+      testPlan.reset()
+      bugLens.reset()
+      setRunHistory([])
+      setHistoryPreview(null)
+    }
 
     try {
       if (keys.length === 1) {
@@ -389,7 +404,7 @@ function App() {
         <Icon name={railCollapsed ? 'chevron-right' : 'chevron-left'} size={15} />
       </button>
 
-      {loading && (
+      {loading && ticketsData.length === 0 && (
         <div className="fetch-overlay" role="status" aria-live="polite">
           <div className="fetch-overlay__spinner" aria-hidden="true" />
           <div className="fetch-overlay__label">
@@ -404,6 +419,18 @@ function App() {
               Still loading from Jira — large tickets can take a few seconds.
             </div>
           )}
+        </div>
+      )}
+      {loading && ticketsData.length > 0 && (
+        <div className="refresh-pill" role="status" aria-live="polite">
+          <span className="refresh-pill__spinner" aria-hidden="true" />
+          <span className="refresh-pill__label">
+            {fetchingKeys.length === 1
+              ? `Refreshing ${fetchingKeys[0]}…`
+              : fetchingKeys.length > 1
+                ? `Refreshing ${fetchingKeys.length} tickets…`
+                : 'Refreshing…'}
+          </span>
         </div>
       )}
 

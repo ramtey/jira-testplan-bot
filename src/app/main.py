@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from dataclasses import asdict
@@ -665,7 +666,20 @@ def get_config():
 async def get_issue(issue_key: str):
     jira = JiraClient()
     try:
-        issue = await jira.get_issue(issue_key)
+        # /myself is independent of the issue fetch — run it concurrently so
+        # the caller doesn't pay a serial round-trip on top of get_issue().
+        # Cached on the class after the first success, so later fetches skip
+        # the network call entirely.
+        async def _safe_account_id():
+            try:
+                return await jira.get_my_account_id()
+            except Exception:
+                return None
+
+        issue, current_user_account_id = await asyncio.gather(
+            jira.get_issue(issue_key),
+            _safe_account_id(),
+        )
 
         # Serialize development info if available
         development_info_dict = None
@@ -728,17 +742,6 @@ async def get_issue(issue_key: str):
         bounce_history_list = None
         if issue.bounce_history:
             bounce_history_list = [asdict(b) for b in issue.bounce_history]
-
-        # Best-effort: include the bot user's accountId so the frontend
-        # can filter self-mentions out of the Notify picker. Cached in the
-        # JiraClient class after first call. Any failure (network, auth,
-        # malformed /myself response) is non-fatal — the picker just keeps
-        # the self entry instead.
-        current_user_account_id = None
-        try:
-            current_user_account_id = await jira.get_my_account_id()
-        except Exception:
-            pass
 
         return {
             "key": issue.key,
