@@ -5,7 +5,7 @@ alongside a snapshot of what the merged PR actually did (title, body,
 commits, files, diffs) and returns a supported/unsupported verdict.
 Unsupported cases are badged in place with
 ``needs_manual_verification=True`` and gain a ``grounding_warnings`` entry
-so the frontend renders them under the existing "Ungrounded UI ref" badge.
+so the frontend renders them under the existing "Unverified UI" badge.
 
 Regression coverage is anchored on the real-world SK-2373 example: an
 edge-case titled "Verify Freddie Mac default rate is NOT auto-applied…"

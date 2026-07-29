@@ -402,7 +402,7 @@ async def _run_grounding_critic(llm, test_plan, tickets_data: list[dict]) -> Non
     Any case flagged ungrounded is badged in place with
     ``needs_manual_verification=True`` and gets an entry in the plan's
     ``grounding_warnings`` list. The UI then renders the existing
-    "Ungrounded UI ref" badge on the case so QA can visibly skip it.
+    "Unverified UI" badge on the case so QA can visibly skip it.
 
     Failures inside the critic (transport errors, malformed output,
     provider not implementing it) are non-fatal — the plan ships without

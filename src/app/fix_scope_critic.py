@@ -17,7 +17,7 @@ changed, key diffs, and commit messages — and an LLM-side critic returns a
 supported/unsupported verdict per case. Unsupported cases get badged
 (``needs_manual_verification=True``) and gain a matching entry in the
 plan's ``grounding_warnings`` so the UI surfaces them under the existing
-"Ungrounded UI ref" badge, letting QA skip them.
+"Unverified UI" badge, letting QA skip them.
 
 This is a sibling of ``grounding_critic``:
   - ``grounding_critic`` checks the case against the AC text it cites
@@ -344,7 +344,7 @@ def apply_scope_verdicts(
 
     For each unsupported case:
       1. Set ``needs_manual_verification=True`` so the frontend renders
-         the existing "Ungrounded UI ref" badge.
+         the existing "Unverified UI" badge.
       2. Append a ``grounding_warnings`` entry with ``ac_id`` (first cited
          AC), ``missing_element`` (case title), and ``explanation``
          prefixed "Fix-scope critic: …" so operators can tell this warning

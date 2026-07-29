@@ -4,7 +4,7 @@ The critic reads each test case's (title, steps, expected) alongside the
 verbatim text of every AC ID it cites and returns a grounded/ungrounded
 verdict. Ungrounded cases are badged in place with
 ``needs_manual_verification=True`` and gain a ``grounding_warnings`` entry
-so the frontend renders the existing "Ungrounded UI ref" badge.
+so the frontend renders the existing "Unverified UI" badge.
 
 Regression coverage is anchored on the real-world SK-2290 example: a case
 titled "Audit log viewer correctly filters by date range" tagged against

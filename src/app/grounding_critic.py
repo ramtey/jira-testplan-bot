@@ -12,7 +12,7 @@ plan. Each case is paired with the verbatim text of every AC it cites, and
 an LLM-side critic returns a grounded/ungrounded verdict per case. Cases
 the critic marks ungrounded get badged (``needs_manual_verification=True``)
 and gain a matching entry in the plan's ``grounding_warnings`` so the UI
-surfaces them under the existing "Ungrounded UI ref" badge, letting QA
+surfaces them under the existing "Unverified UI" badge, letting QA
 skip them.
 
 The functions here are pure — the LLM call itself lives on ``LLMClient``.
@@ -225,7 +225,7 @@ def apply_verdicts(
 
     For each ungrounded case:
       1. Set ``needs_manual_verification=True`` on the case so the frontend
-         renders the existing "Ungrounded UI ref" badge.
+         renders the existing "Unverified UI" badge.
       2. Append a ``grounding_warnings`` entry with ``ac_id`` (first cited
          AC), ``missing_element`` (case title), and ``explanation`` (critic
          reason, prefixed to make the source clear).

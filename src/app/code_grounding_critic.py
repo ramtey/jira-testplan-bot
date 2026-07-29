@@ -360,7 +360,7 @@ def apply_code_verdicts(
         file paths that anchored the call, so QA can jump straight to the
         code.
       - Clear the matching case's ``needs_manual_verification`` flag so
-        the "Ungrounded UI ref" badge disappears alongside the downgrade.
+        the "Unverified UI" badge disappears alongside the downgrade.
 
     ``not_implemented`` and ``unclear`` verdicts leave the warning
     untouched — QA still sees the original WARN entry.
@@ -407,7 +407,7 @@ def apply_code_verdicts(
                 }
 
         # Un-badge the matching case so it stops showing the
-        # "Ungrounded UI ref" pill in the UI.
+        # "Unverified UI" pill in the UI.
         located = _case_by_title(test_plan, warning.get("missing_element") or "")
         if located:
             _, _, case = located

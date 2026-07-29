@@ -201,7 +201,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
                 }}
               >
                 <Icon name="scan" size={10} />
-                Ungrounded UI ref
+                Unverified UI
               </span>
             )}
             {isUntraced && (
