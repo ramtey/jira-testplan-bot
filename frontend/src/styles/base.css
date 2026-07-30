@@ -24,7 +24,7 @@ input, textarea, select { font: inherit; color: inherit; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-hover); text-decoration: underline; text-underline-offset: 2px; }
 
-::selection { background: var(--accent-soft); color: var(--fg-strong); }
+::selection { background: rgba(59,130,246,.45); color: var(--fg-strong); }
 
 .tnum { font-variant-numeric: tabular-nums; }
 .mono { font-family: var(--font-mono); }
