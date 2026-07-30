@@ -42,10 +42,12 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Epic children view**: fetching an Epic lists every child ticket with per-row Generate and Analyze buttons that render results inline beneath the row
 - **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does. Clicking Summary triggers the fetch **without** expanding the panel — the preview line carries the loading state and eventual snippet, so a second click expands to the full text (or error)
 - **Description URL linkification**: `http(s)://` URLs in the Jira description render as new-tab links (trailing `.,;:!?` stays as text so `see https://foo.com.` doesn't point at a 404); long URLs word-break inside the pre so they can't overflow horizontally
+- **Story-points chip**: Story-typed tickets render a small `N pts` chip next to the type badge, pulled from Jira's story-points custom field (configurable via `JIRA_STORY_POINTS_FIELD`; defaults to `customfield_10004`) so testers can see effort at a glance without opening the sidebar
 - **Inline UX feedback**: auto-scroll to results, per-test checkmarks, a viewport-pinned overall + per-section progress bar, and a hover-only Copy button on each unchecked test card that yanks the title + Preconditions/Steps/Expected/Test data as plain text (flips to a green check for 1.5s to confirm; hidden until hover/focus so it doesn't compete with card content)
+- **Progressive ticket load**: fetching a ticket paints the header, description, labels, status, assignee, story points, and attachments in ~one Jira round-trip via `GET /issue/{key}/basic`, then continues enriching (dev info, comments, PR analysis, parent, children, linked issues, bounce history) in parallel in the background. The partial view stays on screen while enrichment lands so re-fetches don't blank the ticket — the fetch overlay is scoped to the first paint, not the refresh
 - **Per-test `grounded_in` attribution**: every generated test case carries a `grounded_in` list (e.g. `comments:123`, `PR:456`, `Figma:abc`) rendered as small chips under the test; tests with neither AC coverage nor grounded_in entries get an "Untraced" pill (hidden when the ticket has no ACs at all) so reviewers can spot ungrounded claims at a glance
 - **Linked Confluence specs**: Confluence URLs in the Jira description or comments are fetched and injected into the LLM prompt as a LINKED SPECS section so quoted requirements come from the actual spec page, not just the ticket body. Best-effort — per-page failures don't block plan generation
-- **Live in Jira badge**: Jira posting is update-in-place, so at most one generated version is the one teammates see on the ticket. The run-history drawer tags that version with a pulsing "Live in Jira" chip so users don't double-post or wonder which regeneration is current. The chip is scoped to the latest run — the collapsed banner header always reads as the newest version, so surfacing the chip there when an older version is live read as a second version being live; the chip now only appears on the per-row pill inside the expanded version drawer
+- **Live in Jira badge**: Jira posting is update-in-place, so at most one generated version is the one teammates see on the ticket. The run-history drawer tags that version with a pulsing "Live in Jira" chip so users don't double-post or wonder which regeneration is current. The chip is scoped to the latest run — the collapsed banner header always reads as the newest version, so surfacing the chip there when an older version is live read as a second version being live; the chip now only appears on the per-row pill inside the expanded version drawer. A red **Not live in Jira** chip mirrors it (banner header + latest expanded row) when the newest run hasn't been posted yet, so a re-run after prompt changes doesn't quietly leave the stale version live. Posts made from the history banner and from multi-ticket flows now correctly forward `plan_id` so both credit the run in the DB rather than falsely reading as "Not live"
 - **Shareable URLs**: the active ticket key is mirrored into the URL bar via `?key=…`, so every browser tab is a bookmarkable / refresh-safe handle on a ticket (works alongside the existing per-tab sessionStorage)
 - **UAT walkthrough**: every plan is tagged with `uat_complexity` and a plain-language "How to test this" summary. The walkthrough is treated as the UAT hand-off *payload* — not a sibling artifact — so authoring lives inside the Pass-to-UAT form itself (a "Steps to cover in the video" collapsible above the Loom input pulls the plan's happy path, capped at 6). Planners can attach a Loom link, drag-and-drop screenshots (uploaded to Jira as attachments and rendered inline in the comment via `mediaSingle` nodes), and setup/repro notes that persist across regenerations; images and videos already uploaded to the linked PR are surfaced in the same form. A single server-side gate (`uat_readiness`) decides whether the ticket needs walkthrough material — high-complexity + no Loom/upload/notes/PR-attached media returns a 409 `walkthrough_required` before any Jira calls fire, and the UI opens a single override prompt instead of the old two-step client-side nudge
 - **Covered-by-unit-tests flag**: cases whose behavior an existing unit test already exercises are flagged and moved into a collapsed section, and excluded from the Jira comment by default
@@ -105,10 +107,14 @@ A collapsible left rail that lets testers find a ticket without typing a key.
 Three drill-down panels mirror Jira's own structure: **Projects → Status
 columns → Issues**.
 
-- **Status columns**: statuses are grouped by Jira's `statusCategory` (To Do /
-  In Progress / Done) so the rail looks the same across projects with custom
-  workflows. Statuses outside the three known categories appear under "Other"
-  so nothing is silently hidden
+- **Status columns**: the column list is pulled from the project's agile
+  board configuration and rendered in board order, so the rail mirrors the
+  columns testers already see in Jira instead of exposing every workflow
+  status (e.g. hidden "Ready for Release" statuses no longer surface).
+  Projects without a board fall back to the full workflow. Within each
+  column the statuses are grouped by Jira's `statusCategory` (To Do / In
+  Progress / Done), with anything outside the three known categories under
+  "Other" so nothing is silently hidden
 - **Backlog muting**: for projects that use Jira sprints, issues that aren't on
   the active sprint come back with `in_active_sprint=False` and render with a
   soft visual treatment plus a small "Backlog" tag, so the column makes it
@@ -247,6 +253,21 @@ opt in.
   additions+deletions), mapping GitHub login → Jira account via commit
   author email, then public profile email/name, then login. If neither
   resolves, the ticket is left unassigned and the UI toast says so
+- **Assign-to picker on the workflow form**: an "Assign to" pill row is
+  exposed on both Pass-to-UAT and Fail-back so the tester can override
+  the auto-pick without editing the ticket after the fact. Pass-to-UAT
+  opens with the developer (same person the fallback chain would land
+  on) preselected so the common "hand it back to them" case stays one
+  click; Fail-back opens with nothing selected and unassigns if the
+  tester leaves it empty. Candidates come from prior assignees in the
+  changelog, and the resolved PR contributor is slotted in behind them
+  (surfaced via `GET /issue/{key}/resolved-pr-contributor`) so tickets
+  where the tester is the only person in the history still expose the
+  developer the server would auto-assign. When the tester sets an
+  explicit override the payload carries `assignee_override_set` /
+  `_account_id` / `_display_name` and the workflow route honours it
+  verbatim, skipping the auto-pick chain (the bot-safety-net still
+  redirects to unassigned if the bot user is picked)
 - **Available transition guard**: each action looks up the issue's available
   transitions before acting. If the target status isn't reachable from the
   current state the API returns 400 with the list of valid transitions, so
@@ -264,6 +285,7 @@ Analyze bug tickets to go beyond the ticket description and into the code:
 - **Regression tests**: Concrete, actionable test cases to prevent the bug from recurring
 - **Similar patterns**: Classes of related bugs to proactively look for in the codebase
 - **Code evidence**: Deterministic GitHub code search for LLM-suspected symbols — each analysis lists the exact files, line numbers, and code snippets where the suspects appear, with clickable links. Doc files (`.md`/`.rst`) are filtered and zero-hit suspects are hidden.
+- **Blame on suspected defect sites**: The LLM is asked for `{path, line}` anchors alongside the symbol names. Each anchor runs through GitHub's GraphQL blame API to attach the commit and PR that introduced the current line, so a change that never got linked to the ticket can still surface as the likely origin, and the analysis renders a "Introduced in" link straight to the culprit commit/PR
 - **Multi-ticket support**: Analyze multiple related bug tickets together for a combined root cause analysis
 - **Download as .md**: Export the full analysis as a Markdown file
 - Only shown for `Bug` issue type; automatically uses the same GitHub PR diff pipeline as test plan generation
@@ -280,7 +302,12 @@ recoverable and comparable.
   comment in place, so at most one version is the one teammates actually
   see. That version is tagged "Live in Jira" on the run-history rows and
   on the plan banner so reviewers don't double-post or wonder which
-  regeneration is current
+  regeneration is current. A red "Not live in Jira" chip mirrors it on
+  the banner header and the latest expanded row when the newest run
+  hasn't been posted, so a fresh generation doesn't quietly leave the
+  stale version live. Posts routed through the history banner and
+  multi-ticket flows now correctly forward `plan_id` so those paths
+  register in the DB instead of misreading as unposted
 - **Side-by-side preview**: Clicking *View* on a row renders the historical
   plan below the live one in muted gray styling, so versions can be read
   side-by-side without losing the active output. The preview is read-only —
@@ -522,7 +549,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
 - **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`, `fail-to-in-progress`); backend still rejects non-`SK-` keys with 400 (frontend visibility is the config-driven layer). Accepts `multipart/form-data` with optional comment fields (envs, `loom_urls` list, summary, reason, screenshot file uploads), `mention_account_ids` for ADF @mentions, `cascade_to_subtasks` to re-apply the transition to each direct subtask whose status matched the parent's *pre-transition* status, and `override_missing_walkthrough` to bypass the server-side walkthrough gate. When the walkthrough gate rejects the request, the response is 409 `{ error_code: "walkthrough_required", … }` so the UI can prompt the tester before retrying with the override
-- **PR-Loom discovery**: `GET /issue/{issue_key}/pr-looms` - Scans the ticket's merged PR descriptions for `loom.com` share URLs, returning either the harvested URLs or a reason (`no_prs` / `no_merged_prs` / `no_looms` / `no_token` / `github_unreachable` / `error`). Merge state comes from Jira's dev-status API (source of truth for MERGED / DECLINED / OPEN), so declined PRs and transient GitHub 403/rate-limit errors don't masquerade as "nothing merged yet." Powers the Pass-to-UAT preview panel
+- **PR-Loom discovery**: `GET /issue/{issue_key}/pr-looms` - Scans the ticket's merged PR descriptions for `loom.com` share URLs, returning either the harvested URLs or a reason (`no_prs` / `no_merged_prs` / `no_looms` / `no_token` / `github_unreachable` / `error`). Merge state comes from Jira's dev-status API (source of truth for MERGED / DECLINED / OPEN), so declined PRs and transient GitHub 403/rate-limit errors don't masquerade as "nothing merged yet." Powers the Pass-to-UAT preview panel. PR-sourced URLs are routed on their own field end-to-end and rendered in the posted comment with a "📹 Loom (from merged PR):" prefix (deduped against typed URLs) so reviewers can tell tester-attached recordings from ones scraped off a PR description
 - **Ticket walkthrough**: `GET/PUT /tickets/{ticket_key}/walkthrough` - Human-authored Loom link, screenshots (uploaded to Jira as attachments), and setup/repro notes for the ticket; folded into the Pass-to-UAT comment automatically. GET also returns the server-computed readiness triple (`walkthrough_present` / `walkthrough_sources` / `needs_walkthrough`) alongside the latest known `uat_complexity`, so the workflow UI and the server gate share one definition of "walkthrough covered"
 - **Test-plan progress**: `GET/PUT /test-plan-progress/{progress_key}` - Shared per-ticket checkmark state (which test cases QA has ticked off), keyed by ticket + plan fingerprint so the whole team converges on the same set
 
