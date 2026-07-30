@@ -63,7 +63,7 @@ async def _harvest(jira, key="SK-1"):
 
 
 def test_loom_regex_matches_share_urls():
-    assert workflow_routes._LOOM_URL_RE.findall(
+    assert workflow_routes.LOOM_URL_RE.findall(
         "Demo: https://www.loom.com/share/abc123 and https://loom.com/share/DEF-456_x"
     ) == [
         "https://www.loom.com/share/abc123",
@@ -72,14 +72,14 @@ def test_loom_regex_matches_share_urls():
 
 
 def test_loom_regex_is_case_insensitive():
-    assert workflow_routes._LOOM_URL_RE.findall(
+    assert workflow_routes.LOOM_URL_RE.findall(
         "See HTTPS://LOOM.COM/share/abc"
     ) == ["HTTPS://LOOM.COM/share/abc"]
 
 
 def test_loom_regex_ignores_non_share_paths():
     # Only /share/<slug> — /looms/, /embed/, /profile/ etc. don't count.
-    assert workflow_routes._LOOM_URL_RE.findall(
+    assert workflow_routes.LOOM_URL_RE.findall(
         "Not a Loom: https://loom.com/looms/abc or https://loom.com/embed/abc"
     ) == []
 

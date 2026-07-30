@@ -282,6 +282,11 @@ function ImageDropzone({ files, onAdd, onRemove, disabled }) {
   )
 }
 
+// Mirrors LOOM_URL_RE in src/app/models.py. Gates the pass-to-UAT /
+// fail-to-* forms so the tester sees an inline error instead of a 422
+// from the backend validator. Keep the two in sync.
+const LOOM_URL_RE = /^https?:\/\/(?:www\.)?loom\.com\/share\/[A-Za-z0-9_-]+$/i
+
 // Human-facing message per status returned by GET /issue/{key}/pr-looms.
 // Kept as a lookup instead of an if-tree so cases stay parallel and easy to
 // read. Note: "skipped" (non-SK project) is handled by not rendering the
@@ -831,6 +836,15 @@ function WorkflowActions({
       .split(/\r?\n/)
       .map((s) => s.trim())
       .filter(Boolean)
+
+    const badLoom = looms.find((u) => !LOOM_URL_RE.test(u))
+    if (badLoom) {
+      setFeedback({
+        kind: 'error',
+        text: `"${badLoom}" is not a valid Loom URL (expected https://www.loom.com/share/…).`,
+      })
+      return
+    }
 
     if (noteForAction.id === 'pass-to-uat') {
       // No client-side gate — the server enforces the walkthrough rule and

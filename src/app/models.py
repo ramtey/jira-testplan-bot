@@ -4,9 +4,20 @@ Data models for the Jira Test Plan Bot.
 This module contains all Pydantic and dataclass models used throughout the application.
 """
 
+import re
 from dataclasses import dataclass
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# Canonical Loom share-URL pattern. Used both to validate tester input on
+# `WorkflowActionRequest.loom_urls` / `pr_loom_urls` and to scrape URLs out
+# of merged-PR descriptions in workflow_routes. Kept here as the single
+# source of truth so the two callers can't drift.
+LOOM_URL_RE = re.compile(
+    r"https?://(?:www\.)?loom\.com/share/[A-Za-z0-9_-]+",
+    re.IGNORECASE,
+)
 
 
 # ============================================================================
@@ -501,6 +512,26 @@ class WorkflowActionRequest(BaseModel):
     assignee_override_set: bool = False
     assignee_override_account_id: str | None = None
     assignee_override_display_name: str | None = None
+
+    @field_validator("loom_urls", "pr_loom_urls")
+    @classmethod
+    def _validate_loom_urls(cls, value: list[str] | None) -> list[str] | None:
+        if not value:
+            return value
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError("Loom URLs must be strings")
+            trimmed = raw.strip()
+            if not trimmed:
+                # Blank/whitespace entries get dropped downstream by
+                # _normalize_url_list; no reason to reject the whole payload.
+                continue
+            if not LOOM_URL_RE.fullmatch(trimmed):
+                raise ValueError(
+                    f"{trimmed!r} is not a valid Loom share URL "
+                    f"(expected https://www.loom.com/share/…)"
+                )
+        return value
 
 
 class BugAnalysisRequest(BaseModel):
