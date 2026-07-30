@@ -194,6 +194,343 @@ _ALLOWED_IMAGE_MIME = {
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB per file; Jira allows more but this is a sane UI cap.
 
 
+def _parse_workflow_payload(payload: str | None) -> WorkflowActionRequest | None:
+    if not payload:
+        return None
+    try:
+        return WorkflowActionRequest.model_validate_json(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid payload JSON: {exc}")
+
+
+async def _enforce_pass_to_uat_walkthrough_gate(
+    issue_key: str,
+    parsed_payload: WorkflowActionRequest | None,
+    images: list[UploadFile] | None,
+) -> None:
+    """Server-side gate for the "high-complexity ticket needs a walkthrough" rule.
+
+    Fires *before* any Jira calls so a 409 here leaves the ticket exactly
+    where it was. The frontend sets `override_missing_walkthrough` once the
+    tester has consciously acknowledged the missing walkthrough (or when it
+    sees material the server can't — e.g., PR-attached demo video).
+    """
+    override = bool(parsed_payload and parsed_payload.override_missing_walkthrough)
+    form_looms = bool(
+        parsed_payload
+        and (
+            (
+                parsed_payload.loom_urls
+                and any(u and u.strip() for u in parsed_payload.loom_urls)
+            )
+            or (
+                parsed_payload.pr_loom_urls
+                and any(u and u.strip() for u in parsed_payload.pr_loom_urls)
+            )
+        )
+    )
+    # Form-uploaded images are counted below via `images`; the raw UploadFile
+    # list is still open at this point, so we test filenames rather than
+    # reading bytes just to gate the request.
+    form_images = bool(images and any(u and u.filename for u in images))
+    if override or form_looms or form_images:
+        return
+
+    async with get_sessionmaker()() as session:
+        readiness = await uat_readiness.fetch_readiness(session, ticket_key=issue_key)
+    if not readiness.get("needs_walkthrough"):
+        return
+
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error_code": "walkthrough_required",
+            "uat_complexity": readiness.get("uat_complexity"),
+            "message": (
+                "This ticket is high-complexity for UAT and has "
+                "no walkthrough attached. Add a Loom, screenshot, "
+                "or notes on the walkthrough card, or resubmit "
+                "with override_missing_walkthrough=true."
+            ),
+        },
+    )
+
+
+async def _validate_and_read_images(
+    images: list[UploadFile] | None,
+) -> list[tuple[str, bytes, str]]:
+    image_files: list[tuple[str, bytes, str]] = []
+    if not images:
+        return image_files
+    for upload in images:
+        if upload is None or not upload.filename:
+            continue
+        mime = (upload.content_type or "").lower()
+        if mime not in _ALLOWED_IMAGE_MIME:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported attachment type: {mime or 'unknown'}. "
+                       f"Allowed: PNG, JPEG, GIF, WEBP, PDF.",
+            )
+        content = await upload.read()
+        if len(content) > _MAX_IMAGE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{upload.filename} is larger than 10 MB.",
+            )
+        image_files.append((upload.filename, content, mime))
+    return image_files
+
+
+async def _upload_and_enrich_attachments(
+    jira: JiraClient,
+    issue_key: str,
+    image_files: list[tuple[str, bytes, str]],
+) -> list[ImageAttachment]:
+    """Upload attachments and resolve each one's media-services UUID.
+
+    Runs *before* the workflow transition so a Jira-side failure aborts
+    without moving the ticket. Media UUIDs let the ADF builder embed
+    each image inline via `mediaSingle`; unresolved uploads fall back to
+    a `📷 <filename>` text callout.
+    """
+    try:
+        uploaded = await jira.upload_attachments(issue_key, image_files)
+        return await jira.enrich_attachments_with_media_ids(uploaded)
+    except JiraNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+async def _lookup_target_transition(
+    jira: JiraClient, issue_key: str, target_status: str
+) -> dict:
+    transitions = await jira.list_transitions(issue_key)
+    transition = next(
+        (
+            t for t in transitions
+            if (t.get("to") or {}).get("name", "").strip().lower()
+            == target_status.lower()
+        ),
+        None,
+    )
+    if transition is None:
+        available = sorted({
+            (t.get("to") or {}).get("name") for t in transitions
+            if (t.get("to") or {}).get("name")
+        })
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No transition to '{target_status}' is available from the "
+                f"current status. Available transitions: {available or 'none'}."
+            ),
+        )
+    return transition
+
+
+async def _resolve_assignee_for_workflow(
+    jira: JiraClient,
+    issue_key: str,
+    action: str,
+    parsed_payload: WorkflowActionRequest | None,
+    my_account_id: str | None,
+) -> tuple[str | None, str, str]:
+    """Return (target_account_id, assigned_label, resolved_via)."""
+    override_assignee = bool(parsed_payload and parsed_payload.assignee_override_set)
+    if action == "pull-to-testing":
+        # pull-to-testing always parks the ticket on the bot's own account;
+        # a manual override on this action makes no sense (there's no form
+        # in the UI that exposes it), so we don't honor it here.
+        return my_account_id, "you", "self"
+
+    if override_assignee:
+        # Tester picked a specific person (or "unassign") in the form — skip
+        # the auto-pick chain entirely and use the choice verbatim. Display
+        # name is passed through so the response label matches the pill they
+        # clicked without an extra Jira round-trip.
+        target_account_id = parsed_payload.assignee_override_account_id
+        if target_account_id:
+            assigned_label = (
+                parsed_payload.assignee_override_display_name or "selected assignee"
+            )
+        else:
+            assigned_label = "unassigned"
+        return target_account_id, assigned_label, "manual-override"
+
+    # Exclude the bot's own account from both lookups: pull-to-testing always
+    # parks the ticket on the bot, so the bot showing up as a prior `from` (or
+    # as a loose name match in PR-contributor search) is noise, not a real
+    # developer to hand the ticket back to.
+    target_account_id, prior_name = await jira.get_prior_assignee_account_id(
+        issue_key, exclude_account_id=my_account_id
+    )
+    if target_account_id:
+        return target_account_id, prior_name or "prior assignee", "prior-assignee"
+
+    target_account_id, contributor_name = await jira.get_top_pr_contributor_account_id(
+        issue_key, exclude_account_id=my_account_id
+    )
+    if target_account_id:
+        return target_account_id, contributor_name or "top contributor", "pr-contributor"
+
+    return None, "unassigned", "unassigned"
+
+
+def _apply_bot_safety_net(
+    target_account_id: str | None,
+    assigned_label: str,
+    resolved_via: str,
+    my_account_id: str | None,
+) -> tuple[str | None, str, str]:
+    """If auto-pick OR manual override landed on a bot, unassign instead.
+
+    Covers both a stale prior-assignee that's the bot and a tester picking
+    the bot by mistake — either way, parking the ticket back on the bot is
+    never what we want on pass/fail.
+    """
+    if (
+        target_account_id == my_account_id
+        or is_blocked_bot_display_name(assigned_label)
+    ):
+        return None, "unassigned", f"{resolved_via}+unassigned-safety-net"
+    return target_account_id, assigned_label, resolved_via
+
+
+async def _fold_walkthrough_into_pass_data(
+    jira: JiraClient,
+    issue_key: str,
+    parsed_payload: WorkflowActionRequest | None,
+    image_attachments: list[ImageAttachment],
+) -> tuple[list[str], list[str], str, list[str] | None, list[str] | None, list[ImageAttachment]]:
+    """Merge the saved walkthrough into the pass-to-UAT comment inputs.
+
+    Returns (looms, pr_looms, summary, environments, mentions, image_attachments)
+    with the walkthrough's Loom prepended to `looms`, its notes appended to
+    `summary`, and its screenshots prepended to `image_attachments`. Legacy
+    walkthrough screenshots that were persisted before `media_id` was
+    captured get their UUID re-resolved from the content URL so old entries
+    still render inline.
+    """
+    looms = (
+        list(parsed_payload.loom_urls)
+        if parsed_payload and parsed_payload.loom_urls
+        else []
+    )
+    pr_looms = (
+        list(parsed_payload.pr_loom_urls)
+        if parsed_payload and parsed_payload.pr_loom_urls
+        else []
+    )
+    summary = (parsed_payload.summary if parsed_payload else None) or ""
+    environments = parsed_payload.environments if parsed_payload else None
+    mentions = parsed_payload.mention_account_ids if parsed_payload else None
+
+    try:
+        async with get_sessionmaker()() as session:
+            walkthrough = await walkthrough_repository.get_walkthrough(
+                session, ticket_key=issue_key
+            )
+    except Exception:
+        walkthrough = None
+
+    if not walkthrough:
+        return looms, pr_looms, summary, environments, mentions, image_attachments
+
+    if walkthrough.loom_url and walkthrough.loom_url not in looms:
+        looms.insert(0, walkthrough.loom_url)
+    if walkthrough.notes:
+        summary = (
+            f"{summary}\n\n{walkthrough.notes}".strip()
+            if summary
+            else walkthrough.notes
+        )
+
+    walkthrough_shots = walkthrough_repository.decode_screenshots(walkthrough)
+    seen_urls = {img.url for img in image_attachments}
+    pending: list[tuple[str, str, str | None]] = []
+    for shot in walkthrough_shots:
+        if shot["url"] in seen_urls:
+            continue
+        seen_urls.add(shot["url"])
+        pending.append((shot["filename"], shot["url"], shot.get("media_id")))
+
+    to_resolve = [
+        _attachment_id_from_content_url(url)
+        for _, url, media_id in pending
+        if not media_id
+    ]
+    resolved = (
+        await _resolve_media_ids_for_urls(jira, to_resolve) if to_resolve else {}
+    )
+
+    to_prepend: list[ImageAttachment] = []
+    for filename, url, media_id in pending:
+        if not media_id:
+            att_id = _attachment_id_from_content_url(url)
+            media_id = resolved.get(att_id) if att_id else None
+        to_prepend.append(
+            ImageAttachment(filename=filename, url=url, media_id=media_id)
+        )
+    return looms, pr_looms, summary, environments, mentions, to_prepend + image_attachments
+
+
+async def _post_workflow_comment(
+    jira: JiraClient,
+    action: str,
+    issue_key: str,
+    parsed_payload: WorkflowActionRequest | None,
+    image_attachments: list[ImageAttachment],
+) -> bool:
+    """Post the pass or fail comment after the transition has already run.
+
+    Exceptions are swallowed and logged: the transition + reassign already
+    succeeded, so surfacing a comment failure as a 500 would misrepresent
+    the state of the ticket. Catches broad `Exception` on purpose to cover
+    httpx errors (e.g., Jira ADF validation 400s) and keep CORS headers on
+    the response.
+    """
+    if action == "pass-to-uat":
+        looms, pr_looms, summary, environments, mentions, image_attachments = (
+            await _fold_walkthrough_into_pass_data(
+                jira, issue_key, parsed_payload, image_attachments
+            )
+        )
+        try:
+            result = await jira.post_qa_pass_comment(
+                issue_key,
+                looms or None,
+                summary or None,
+                environments,
+                mentions,
+                image_attachments or None,
+                pr_looms or None,
+            )
+            return result is not None
+        except Exception as exc:
+            logger.warning("pass-to-uat comment failed on %s: %s", issue_key, exc)
+            return False
+
+    if action in _FAIL_ACTIONS and parsed_payload is not None:
+        try:
+            result = await jira.post_qa_fail_comment(
+                issue_key,
+                parsed_payload.reason,
+                parsed_payload.loom_urls,
+                image_attachments or None,
+                parsed_payload.mention_account_ids,
+            )
+            return result is not None
+        except Exception as exc:
+            logger.warning("%s comment failed on %s: %s", action, issue_key, exc)
+            return False
+
+    return False
+
+
 @router.post("/{issue_key}/workflow/{action}")
 async def run_workflow_action(
     issue_key: str,
@@ -217,186 +554,37 @@ async def run_workflow_action(
     if action not in SK_WORKFLOW_ACTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
-    parsed_payload: WorkflowActionRequest | None = None
-    if payload:
-        try:
-            parsed_payload = WorkflowActionRequest.model_validate_json(payload)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid payload JSON: {exc}")
+    parsed_payload = _parse_workflow_payload(payload)
 
-    # Pass-to-UAT readiness gate — enforce the "high-complexity ticket needs a
-    # walkthrough" rule server-side so bypassing the frontend can't sneak an
-    # unwalked-through ticket into UAT. Fires *before* any Jira calls: a 409
-    # here leaves the ticket exactly where it was. The client sets the override
-    # flag once the user has consciously acknowledged the missing walkthrough
-    # (or when it sees material the server can't — e.g. PR-attached demo video).
     if action == "pass-to-uat":
-        override = bool(
-            parsed_payload and parsed_payload.override_missing_walkthrough
-        )
-        form_looms = bool(
-            parsed_payload
-            and (
-                (
-                    parsed_payload.loom_urls
-                    and any(u and u.strip() for u in parsed_payload.loom_urls)
-                )
-                or (
-                    parsed_payload.pr_loom_urls
-                    and any(u and u.strip() for u in parsed_payload.pr_loom_urls)
-                )
-            )
-        )
-        # Form-uploaded images are counted below via `images`; the raw
-        # UploadFile list is still open at this point, so we test filenames
-        # rather than reading bytes just to gate the request.
-        form_images = bool(
-            images and any(u and u.filename for u in images)
-        )
-        if not override and not form_looms and not form_images:
-            async with get_sessionmaker()() as session:
-                readiness = await uat_readiness.fetch_readiness(
-                    session, ticket_key=issue_key
-                )
-            if readiness.get("needs_walkthrough"):
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error_code": "walkthrough_required",
-                        "uat_complexity": readiness.get("uat_complexity"),
-                        "message": (
-                            "This ticket is high-complexity for UAT and has "
-                            "no walkthrough attached. Add a Loom, screenshot, "
-                            "or notes on the walkthrough card, or resubmit "
-                            "with override_missing_walkthrough=true."
-                        ),
-                    },
-                )
+        await _enforce_pass_to_uat_walkthrough_gate(issue_key, parsed_payload, images)
 
-    image_files: list[tuple[str, bytes, str]] = []
-    if images:
-        for upload in images:
-            if upload is None or not upload.filename:
-                continue
-            mime = (upload.content_type or "").lower()
-            if mime not in _ALLOWED_IMAGE_MIME:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported attachment type: {mime or 'unknown'}. "
-                           f"Allowed: PNG, JPEG, GIF, WEBP, PDF.",
-                )
-            content = await upload.read()
-            if len(content) > _MAX_IMAGE_BYTES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{upload.filename} is larger than 10 MB.",
-                )
-            image_files.append((upload.filename, content, mime))
+    image_files = await _validate_and_read_images(images)
 
     target_status = SK_WORKFLOW_ACTIONS[action]
     jira = JiraClient()
 
-    # Upload attachments first so that a Jira-side failure aborts before
-    # the ticket moves. Skipped for pull-to-testing — that action has no
-    # comment flow, so any images would be orphaned attachments. We
-    # resolve each upload's media-services UUID (the 303-redirect trick
-    # on the content URL — see JiraClient.resolve_media_id) so the ADF
-    # builder can embed the image inline via `mediaSingle` rather than
-    # just linking a filename. UUID lookup failures fall back to plain
-    # `📷 <filename>` callouts so the comment still posts.
+    # pull-to-testing has no comment flow, so attachments there would be
+    # orphaned — skip the upload for that action even if the tester sent files.
     image_attachments: list[ImageAttachment] = []
     if image_files and (action == "pass-to-uat" or action in _FAIL_ACTIONS):
-        try:
-            uploaded = await jira.upload_attachments(issue_key, image_files)
-            image_attachments = await jira.enrich_attachments_with_media_ids(uploaded)
-        except JiraNotFoundError as e:
-            raise HTTPException(status_code=404, detail=str(e))
-        except JiraAuthError as e:
-            raise HTTPException(status_code=e.status_code, detail=str(e))
-        except JiraConnectionError as e:
-            raise HTTPException(status_code=502, detail=str(e))
+        image_attachments = await _upload_and_enrich_attachments(
+            jira, issue_key, image_files
+        )
 
     try:
-        transitions = await jira.list_transitions(issue_key)
-        transition = next(
-            (
-                t for t in transitions
-                if (t.get("to") or {}).get("name", "").strip().lower()
-                == target_status.lower()
-            ),
-            None,
-        )
-        if transition is None:
-            available = sorted({
-                (t.get("to") or {}).get("name") for t in transitions
-                if (t.get("to") or {}).get("name")
-            })
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"No transition to '{target_status}' is available from the "
-                    f"current status. Available transitions: {available or 'none'}."
-                ),
-            )
+        transition = await _lookup_target_transition(jira, issue_key, target_status)
 
         my_account_id = await jira.get_my_account_id()
-        override_assignee = bool(
-            parsed_payload and parsed_payload.assignee_override_set
-        )
-        if action == "pull-to-testing":
-            # pull-to-testing always parks the ticket on the bot's own account;
-            # a manual override on this action makes no sense (there's no form
-            # in the UI that exposes it), so we don't honor it here.
-            target_account_id = my_account_id
-            assigned_label = "you"
-            resolved_via = "self"
-        elif override_assignee:
-            # Tester picked a specific person (or "unassign") in the form —
-            # skip the auto-pick chain entirely and use the choice verbatim.
-            # Display name is passed through so the response label matches the
-            # pill they clicked without an extra Jira round-trip.
-            target_account_id = parsed_payload.assignee_override_account_id
-            if target_account_id:
-                assigned_label = (
-                    parsed_payload.assignee_override_display_name or "selected assignee"
-                )
-            else:
-                assigned_label = "unassigned"
-            resolved_via = "manual-override"
-        else:
-            # Exclude the bot's own account from both lookups: pull-to-testing
-            # always parks the ticket on the bot, so the bot showing up as a
-            # prior `from` (or as a loose name match in PR-contributor search)
-            # is noise, not a real developer to hand the ticket back to.
-            target_account_id, prior_name = await jira.get_prior_assignee_account_id(
-                issue_key, exclude_account_id=my_account_id
+        target_account_id, assigned_label, resolved_via = (
+            await _resolve_assignee_for_workflow(
+                jira, issue_key, action, parsed_payload, my_account_id
             )
-            if target_account_id:
-                assigned_label = prior_name or "prior assignee"
-                resolved_via = "prior-assignee"
-            else:
-                target_account_id, contributor_name = await jira.get_top_pr_contributor_account_id(
-                    issue_key, exclude_account_id=my_account_id
-                )
-                if target_account_id:
-                    assigned_label = contributor_name or "top contributor"
-                    resolved_via = "pr-contributor"
-                else:
-                    assigned_label = "unassigned"
-                    resolved_via = "unassigned"
-
+        )
         if action != "pull-to-testing":
-            # Final safety net: if anything upstream (auto-pick OR manual
-            # override) resolved to a known bot, treat it as "no real
-            # developer" and unassign instead of parking the ticket back
-            # on the bot. Also covers a tester picking the bot by mistake.
-            if (
-                target_account_id == my_account_id
-                or is_blocked_bot_display_name(assigned_label)
-            ):
-                target_account_id = None
-                assigned_label = "unassigned"
-                resolved_via = f"{resolved_via}+unassigned-safety-net"
+            target_account_id, assigned_label, resolved_via = _apply_bot_safety_net(
+                target_account_id, assigned_label, resolved_via, my_account_id
+            )
 
         logger.info(
             "Workflow %s on %s: resolved assignee via %s -> %s",
@@ -406,10 +594,10 @@ async def run_workflow_action(
             assigned_label,
         )
 
-        # Capture parent's status BEFORE the transition so the subtask
-        # cascade can match only siblings that share the parent's
-        # pre-transition state (e.g., a parent in "Ready to Test" should
-        # only pull subtasks that are also in "Ready to Test").
+        # Capture parent's status BEFORE the transition so the subtask cascade
+        # can match only siblings that share the parent's pre-transition state
+        # (e.g., a parent in "Ready to Test" should only pull subtasks that
+        # are also in "Ready to Test").
         parent_pre_status: str | None = None
         if parsed_payload is not None and parsed_payload.cascade_to_subtasks:
             try:
@@ -424,114 +612,9 @@ async def run_workflow_action(
         await jira.transition_issue(issue_key, transition["id"])
         await jira.assign_issue(issue_key, target_account_id)
 
-        comment_posted = False
-        if action == "pass-to-uat":
-            # Fold the ticket's saved walkthrough (Loom / screenshot / notes)
-            # into the UAT hand-off comment so the "how to test this" guidance
-            # travels with the transition even when the form was left empty.
-            looms = (
-                list(parsed_payload.loom_urls)
-                if parsed_payload and parsed_payload.loom_urls
-                else []
-            )
-            pr_looms = (
-                list(parsed_payload.pr_loom_urls)
-                if parsed_payload and parsed_payload.pr_loom_urls
-                else []
-            )
-            summary = (parsed_payload.summary if parsed_payload else None) or ""
-            environments = parsed_payload.environments if parsed_payload else None
-            mentions = parsed_payload.mention_account_ids if parsed_payload else None
-            try:
-                async with get_sessionmaker()() as session:
-                    walkthrough = await walkthrough_repository.get_walkthrough(
-                        session, ticket_key=issue_key
-                    )
-            except Exception:
-                walkthrough = None
-            if walkthrough:
-                if walkthrough.loom_url and walkthrough.loom_url not in looms:
-                    looms.insert(0, walkthrough.loom_url)
-                if walkthrough.notes:
-                    summary = (
-                        f"{summary}\n\n{walkthrough.notes}".strip()
-                        if summary
-                        else walkthrough.notes
-                    )
-                # The walkthrough's screenshots are already Jira attachments
-                # (uploaded when the planner saved them); fold each into
-                # image_attachments so post_qa_pass_comment renders them
-                # inline the same way screenshots uploaded from the UAT
-                # modal do. Legacy walkthrough entries were persisted
-                # before media_id was captured — re-resolve their UUIDs
-                # from the content URL so old walkthroughs still render
-                # inline instead of falling back to text.
-                walkthrough_shots = walkthrough_repository.decode_screenshots(
-                    walkthrough
-                )
-                seen_urls = {img.url for img in image_attachments}
-                pending: list[tuple[str, str, str | None]] = []
-                for shot in walkthrough_shots:
-                    if shot["url"] in seen_urls:
-                        continue
-                    seen_urls.add(shot["url"])
-                    pending.append(
-                        (shot["filename"], shot["url"], shot.get("media_id"))
-                    )
-                to_resolve = [
-                    _attachment_id_from_content_url(url)
-                    for _, url, media_id in pending
-                    if not media_id
-                ]
-                if to_resolve:
-                    resolved = await _resolve_media_ids_for_urls(jira, to_resolve)
-                else:
-                    resolved = {}
-                to_prepend: list[ImageAttachment] = []
-                for filename, url, media_id in pending:
-                    if not media_id:
-                        att_id = _attachment_id_from_content_url(url)
-                        media_id = resolved.get(att_id) if att_id else None
-                    to_prepend.append(
-                        ImageAttachment(
-                            filename=filename, url=url, media_id=media_id
-                        )
-                    )
-                image_attachments = to_prepend + image_attachments
-            try:
-                result = await jira.post_qa_pass_comment(
-                    issue_key,
-                    looms or None,
-                    summary or None,
-                    environments,
-                    mentions,
-                    image_attachments or None,
-                    pr_looms or None,
-                )
-                comment_posted = result is not None
-            except Exception as exc:
-                # Transition + reassign already succeeded — surface the
-                # comment failure but don't roll back the workflow move.
-                # Catches httpx.HTTPStatusError too (e.g., Jira ADF
-                # validation 400s) so the response carries CORS headers
-                # instead of bubbling as a bare 500.
-                logger.warning(
-                    "pass-to-uat comment failed on %s: %s", issue_key, exc
-                )
-        elif action in _FAIL_ACTIONS and parsed_payload is not None:
-            try:
-                result = await jira.post_qa_fail_comment(
-                    issue_key,
-                    parsed_payload.reason,
-                    parsed_payload.loom_urls,
-                    image_attachments or None,
-                    parsed_payload.mention_account_ids,
-                )
-                comment_posted = result is not None
-            except Exception as exc:
-                logger.warning(
-                    "%s comment failed on %s: %s", action, issue_key, exc
-                )
+        comment_posted = await _post_workflow_comment(
+            jira, action, issue_key, parsed_payload, image_attachments
+        )
 
         parent_transitioned = False
         parent_key: str | None = None
