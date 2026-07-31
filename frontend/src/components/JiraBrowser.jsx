@@ -530,7 +530,18 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
               <div style={{ padding: '8px 14px', color: 'var(--danger)', fontSize: 'var(--t-xs)' }}>{issuesError}</div>
             )}
             {issues && issues.length === 0 && !issuesLoading && (
-              <div style={{ padding: '8px 14px', color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>No issues in this column.</div>
+              <div className="rail-empty">
+                <div className="rail-empty__icon">
+                  <Icon name="beaker" size={26} />
+                </div>
+                <div className="rail-empty__title">All clear</div>
+                <div className="rail-empty__body">
+                  No tickets in <b>{activeStatus.name}</b> for {activeProject.key} right now.
+                </div>
+                <div className="rail-empty__hint">
+                  New ones will show up here as they move into this column.
+                </div>
+              </div>
             )}
 
             {(() => {

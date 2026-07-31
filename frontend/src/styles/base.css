@@ -309,6 +309,50 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
   text-transform: none;
 }
 
+/* Empty state — used when a column/list has no rows */
+.rail-empty {
+  padding: 56px var(--s-6) var(--s-8);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--s-3);
+  color: var(--fg-muted);
+  animation: fadein var(--d-slow) var(--ease-out);
+}
+.rail-empty__icon {
+  width: 56px; height: 56px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  border: 1px dashed var(--line-strong);
+  color: var(--fg-faint);
+  margin-bottom: var(--s-2);
+}
+.rail-empty__title {
+  color: var(--fg-strong);
+  font-size: var(--t-md);
+  font-weight: var(--w-semi);
+  letter-spacing: -.005em;
+}
+.rail-empty__body {
+  color: var(--fg-muted);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  max-width: 220px;
+}
+.rail-empty__body b {
+  color: var(--fg);
+  font-weight: var(--w-semi);
+}
+.rail-empty__hint {
+  color: var(--fg-faint);
+  font-size: var(--t-xs);
+  line-height: 1.45;
+  max-width: 220px;
+  margin-top: var(--s-1);
+}
+
 /* Main column */
 .main-shell {
   height: 100%;
