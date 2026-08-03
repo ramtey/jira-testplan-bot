@@ -20,6 +20,7 @@ from .config import settings
 from .confluence_client import ConfluenceClient, ConfluencePage
 from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
 from .models import BugAnalysis, TestPlan
+from .shared_component_fanout import detect_fanout, render_fanout_guidance
 
 _VALID_FIX_STATUSES = ("not_fixed", "in_testing", "fixed")
 
@@ -234,6 +235,40 @@ _OBSERVABILITY_KEYWORDS_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+def _merge_fanout_contexts(contexts):
+    """Union multiple per-ticket ``FanoutContext`` objects into one block
+    for the multi-ticket prompt.
+
+    A batch fires the fan-out if ANY ticket does; the merged context
+    aggregates every field, trigger, and shared path seen across the
+    bundle so the LLM gets the full picture in one place.
+    """
+    from .shared_component_fanout import FanoutContext
+
+    merged: FanoutContext | None = None
+    seen_field_names: set[str] = set()
+    seen_paths: set[str] = set()
+    seen_triggers: set[str] = set()
+    for ctx in contexts:
+        if ctx is None:
+            continue
+        if merged is None:
+            merged = FanoutContext(roles=ctx.roles)
+        for f in ctx.fields:
+            if f.name not in seen_field_names:
+                seen_field_names.add(f.name)
+                merged.fields.append(f)
+        for p in ctx.shared_paths:
+            if p not in seen_paths:
+                seen_paths.add(p)
+                merged.shared_paths.append(p)
+        for t in ctx.triggers:
+            if t not in seen_triggers:
+                seen_triggers.add(t)
+                merged.triggers.append(t)
+    return merged
 
 
 def _is_observability_ticket(summary: str | None, description: str | None) -> bool:
@@ -2500,6 +2535,15 @@ TICKET INFORMATION
         if _is_observability_ticket(summary, description):
             prompt += OBSERVABILITY_TESTING_GUIDANCE
 
+        fanout_ctx = detect_fanout(
+            summary=summary,
+            description=description,
+            development_info=development_info,
+            testing_context=testing_context,
+        )
+        if fanout_ctx is not None:
+            prompt += render_fanout_guidance(fanout_ctx)
+
         prompt += UI_GROUNDING_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
 
@@ -2795,6 +2839,23 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
 
         if any(_is_observability_ticket(t.get("summary"), t.get("description")) for t in tickets):
             prompt += OBSERVABILITY_TESTING_GUIDANCE
+
+        # Fire the shared-component fan-out block once for the batch if ANY
+        # ticket in the bundle implicates a shared component without scoping
+        # to a role. The block is per-batch (not per-ticket) because it
+        # governs the SHAPE of the plan (per-role cases + negative-space
+        # checks), which the LLM emits once for the whole batch.
+        merged_fanout = _merge_fanout_contexts(
+            detect_fanout(
+                summary=t.get("summary"),
+                description=t.get("description"),
+                development_info=t.get("development_info"),
+                testing_context=t.get("testing_context") or {},
+            )
+            for t in tickets
+        )
+        if merged_fanout is not None:
+            prompt += render_fanout_guidance(merged_fanout)
 
         prompt += UI_GROUNDING_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
