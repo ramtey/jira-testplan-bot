@@ -349,7 +349,31 @@ function App() {
       const runs = Array.isArray(data.runs) ? data.runs : []
       setRunHistory(runs)
       if (runs.length === 0) {
-        handleGenerateTestPlan([refreshed])
+        const plan = await handleGenerateTestPlan([refreshed])
+        // First-entry-into-In-Testing hook: for Bug tickets, follow the plan
+        // with an auto Bug Lens run. Persistent claim in `auto_bug_analysis_
+        // dispatched_at` on the backend guarantees at-most-once even when the
+        // test plan was aborted (which leaves runs.length === 0).
+        if (
+          plan &&
+          refreshed.issue_type === 'Bug' &&
+          !data.auto_bug_analysis_dispatched_at
+        ) {
+          try {
+            const claim = await fetch(
+              `${API_BASE_URL}/bug-lens/auto-dispatch/${key}`,
+              { method: 'POST' }
+            )
+            if (claim.ok) {
+              const claimData = await claim.json()
+              if (claimData.first_time) {
+                bugLens.analyze([refreshed], { auto: true })
+              }
+            }
+          } catch {
+            // Claim failed — skip the auto-fire this time; user can click manually.
+          }
+        }
       }
     } catch {
       // network blip — leave the user to click Generate manually
@@ -373,10 +397,11 @@ function App() {
 
   const handleGenerateTestPlan = async (overrideTickets) => {
     const tickets = overrideTickets || ticketsData
-    if (tickets.length === 0) return
+    if (tickets.length === 0) return null
     bugLens.reset()
     const plan = await testPlan.generate(tickets)
     if (plan && tickets.length === 1) loadRunHistory(tickets[0].key)
+    return plan
   }
 
   const handleAnalyzeBug = async () => {
@@ -519,8 +544,10 @@ function App() {
                 <>
                   {!isMultiTicket &&
                     runHistory.length > 0 &&
-                    !bugLens.analyzing &&
-                    !bugLens.analysis && (
+                    // Hide the version banner only when Bug Lens is showing
+                    // standalone (no plan). When both are up (auto flow), the
+                    // plan is present and the banner is still relevant.
+                    (testPlan.plan || (!bugLens.analyzing && !bugLens.analysis)) && (
                       <RunHistoryBanner
                         runs={runHistory}
                         ticketData={ticketData}
@@ -538,6 +565,8 @@ function App() {
                     onStopBugAnalysis={bugLens.stop}
                     analyzingBug={bugLens.analyzing}
                     showBugLens={isBugTickets}
+                    bugAnalysisAutoTriggered={bugLens.autoTriggered}
+                    bugAnalysisComplete={!!bugLens.analysis}
                   />
 
                   {testPlan.error && (
@@ -565,7 +594,9 @@ function App() {
                     </div>
                   )}
 
-                  {!isMultiTicket && historyPreview && !bugLens.analysis && !bugLens.analyzing && (
+                  {!isMultiTicket &&
+                    historyPreview &&
+                    (testPlan.plan || (!bugLens.analysis && !bugLens.analyzing)) && (
                     <HistoricalPlanPreview
                       key={historyPreview.planId}
                       plan={historyPreview.plan}

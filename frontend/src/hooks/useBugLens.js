@@ -23,10 +23,16 @@ function buildTicketPayload(td) {
 /**
  * Owns Bug Lens analysis state. Mirrors useTestPlan so the App layer can treat
  * both flows the same way: kick off, abort, clear.
+ *
+ * analyze() accepts { auto: true } when the run was kicked off by the workflow
+ * auto-trigger (first-time entry into In Testing) rather than a manual click,
+ * so the UI can label the resulting card and suppress the "reset test plan"
+ * behavior around it.
  */
 export function useBugLens() {
   const [analyzing, setAnalyzing] = useState(false)
   const [analysis, setAnalysis] = useState(() => loadStored(STORAGE_KEY, null))
+  const [autoTriggered, setAutoTriggered] = useState(false)
   const [error, setError] = useState(null)
   const [controller, setController] = useState(null)
 
@@ -35,13 +41,14 @@ export function useBugLens() {
   const reset = () => {
     setAnalysis(null)
     setError(null)
+    setAutoTriggered(false)
   }
 
   const stop = () => {
     if (controller) controller.abort()
   }
 
-  const analyze = async (ticketsData) => {
+  const analyze = async (ticketsData, { auto = false } = {}) => {
     if (!ticketsData || ticketsData.length === 0) return null
 
     const abort = new AbortController()
@@ -49,6 +56,7 @@ export function useBugLens() {
     setAnalyzing(true)
     setError(null)
     setAnalysis(null)
+    setAutoTriggered(auto)
 
     const isMulti = ticketsData.length > 1
     const url = isMulti
@@ -87,5 +95,5 @@ export function useBugLens() {
     }
   }
 
-  return { analyzing, analysis, error, setAnalysis, analyze, stop, reset }
+  return { analyzing, analysis, autoTriggered, error, setAnalysis, analyze, stop, reset }
 }

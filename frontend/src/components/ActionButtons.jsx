@@ -12,8 +12,17 @@ function ActionButtons({
   onStopBugAnalysis,
   analyzingBug,
   showBugLens,
+  bugAnalysisAutoTriggered,
+  bugAnalysisComplete,
 }) {
   const isBusy = generatingPlan || analyzingBug
+  const busyLabel = generatingPlan
+    ? 'Generating test plan…'
+    : bugAnalysisAutoTriggered
+      ? 'Auto-analyzing after test plan…'
+      : 'Analyzing bug…'
+  const showAutoRunCaption =
+    showBugLens && bugAnalysisAutoTriggered && bugAnalysisComplete && !isBusy
 
   return (
     <div style={{ marginTop: 'var(--s-6)' }}>
@@ -53,7 +62,24 @@ function ActionButtons({
         {isBusy && (
           <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-sm)', marginLeft: 'var(--s-3)', display: 'inline-flex', alignItems: 'center', gap: 'var(--s-3)' }}>
             <span className="spin" style={{ color: 'var(--accent)' }} />
-            {generatingPlan ? 'Generating test plan…' : 'Analyzing bug…'}
+            {busyLabel}
+          </span>
+        )}
+
+        {showAutoRunCaption && (
+          <span
+            title="Bug Lens ran automatically the first time this ticket entered In Testing."
+            style={{
+              color: 'var(--fg-subtle)',
+              fontSize: 'var(--t-sm)',
+              marginLeft: 'var(--s-3)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 'var(--s-2)',
+            }}
+          >
+            <span aria-hidden="true">·</span>
+            Auto-run after test plan
           </span>
         )}
       </div>

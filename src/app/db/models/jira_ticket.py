@@ -23,3 +23,11 @@ class JiraTicket(TimestampedBase, table=True):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"nullable": False},
     )
+    # Set the first time the "pull to In Testing" workflow auto-dispatched a
+    # Bug Lens run for this ticket. Persists across aborted plan generations so
+    # we never auto-fire the analysis twice.
+    auto_bug_analysis_dispatched_at: datetime | None = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"nullable": True},
+    )

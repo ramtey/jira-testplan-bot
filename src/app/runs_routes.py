@@ -11,7 +11,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from .db.session import get_sessionmaker
-from .repositories import plan_repository
+from .repositories import jira_ticket_repository, plan_repository
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,21 @@ async def runs_by_ticket(ticket_key: str):
             runs = await plan_repository.list_runs_with_plans_by_ticket(
                 session, ticket_key=key
             )
+            auto_dispatched_at = (
+                await jira_ticket_repository.get_auto_bug_analysis_dispatched_at(
+                    session, ticket_key=key
+                )
+            )
     except Exception:
         logger.exception("runs_by_ticket failed for %s", key)
         raise HTTPException(status_code=503, detail="History unavailable")
-    return {"ticket_key": key, "runs": runs}
+    return {
+        "ticket_key": key,
+        "runs": runs,
+        "auto_bug_analysis_dispatched_at": (
+            auto_dispatched_at.isoformat() if auto_dispatched_at else None
+        ),
+    }
 
 
 @router.get("/plans/{plan_id}")

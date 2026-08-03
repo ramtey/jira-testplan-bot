@@ -12,9 +12,11 @@ from fastapi import APIRouter, HTTPException
 
 from .config import settings
 from .db.models.run import RunType
+from .db.session import get_sessionmaker
 from .github_client import GitHubClient
 from .llm_client import LLMError, get_llm_client
 from .models import BugAnalysisRequest, MultiBugAnalysisRequest
+from .repositories import jira_ticket_repository
 from .services import run_tracker
 
 logger = logging.getLogger(__name__)
@@ -533,3 +535,38 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
     except Exception as e:
         await run_tracker.fail(run_ctx, error_code=f"{type(e).__name__}: {e}")
         raise
+
+
+@router.post("/auto-dispatch/{ticket_key}")
+async def claim_auto_dispatch(ticket_key: str):
+    """Idempotently claim the "auto Bug Lens has been dispatched" flag.
+
+    The frontend calls this the first time a Bug ticket enters In Testing —
+    before kicking off the automatic Bug Lens run — so that aborted or failed
+    analyses don't cause a re-fire on the next transition. Manual clicks are
+    unaffected; they always run.
+
+    Returns the stored timestamp (the existing one if already claimed, or the
+    freshly stamped one) plus a `first_time` flag telling the caller whether
+    the claim happened just now.
+    """
+    key = ticket_key.upper()
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            existing = await jira_ticket_repository.get_auto_bug_analysis_dispatched_at(
+                session, ticket_key=key
+            )
+            dispatched_at = await jira_ticket_repository.mark_auto_bug_analysis_dispatched(
+                session, ticket_key=key
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("auto-dispatch claim failed for %s", key)
+        raise HTTPException(status_code=503, detail="Auto-dispatch store unavailable")
+
+    return {
+        "ticket_key": key,
+        "auto_bug_analysis_dispatched_at": dispatched_at.isoformat(),
+        "first_time": existing is None,
+    }
