@@ -8,9 +8,14 @@ per-project config once a second project needs it.
 
 import asyncio
 import logging
+import mimetypes
+import posixpath
 import re
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 
 from .config import settings
 from .db.session import get_sessionmaker
@@ -84,13 +89,39 @@ async def _resolve_media_ids_for_urls(
 # is naturally excluded by the character class.
 
 
+# GitHub-hosted image URLs that show up in PR descriptions. Three shapes:
+#   1) github.com/user-attachments/assets/<uuid>            (newest — private repos)
+#   2) (private-)user-images.githubusercontent.com/…/<name>.<ext>   (older)
+#   3) camo.githubusercontent.com/<hash>/<b64-target>       (proxied external)
+# Only these hosts are matched so we don't accidentally treat linked
+# non-image assets (favicons, tracking pixels, arbitrary CDN URLs) as
+# screenshots. Keep in sync with `PR_IMAGE_ALLOWED_HOSTS` below — the
+# validator on the request payload and the proxy endpoint both reuse
+# this whitelist to gate what the client can ask us to fetch.
+PR_IMAGE_ALLOWED_HOSTS = frozenset({
+    "github.com",
+    "user-images.githubusercontent.com",
+    "private-user-images.githubusercontent.com",
+    "camo.githubusercontent.com",
+})
+_PR_IMAGE_URL_RE = re.compile(
+    r"https?://(?:"
+    r"github\.com/user-attachments/assets/[A-Za-z0-9\-]+"
+    r"|(?:private-)?user-images\.githubusercontent\.com/[A-Za-z0-9/_.\-%?=&]+?"
+    r"\.(?:png|jpe?g|gif|webp)"
+    r"|camo\.githubusercontent\.com/[A-Za-z0-9/_.\-%]+"
+    r")",
+    re.IGNORECASE,
+)
+
+
 async def _harvest_loom_urls_from_merged_prs(
     jira: "JiraClient", issue_key: str
-) -> tuple[list[str], str]:
-    """Pull Loom share URLs out of the *description* of merged PRs linked to
-    an issue. Description-only on purpose: PR review comments are dev-facing
-    chatter and inflate noise; the author-written body is the closest thing
-    to a curated demo pointer.
+) -> tuple[list[str], list[str], str]:
+    """Pull Loom share URLs and GitHub-hosted image URLs out of the
+    *description* of merged PRs linked to an issue. Description-only on
+    purpose: PR review comments are dev-facing chatter and inflate noise;
+    the author-written body is the closest thing to a curated demo pointer.
 
     Merge state comes from Jira's dev-status API (not GitHub's `merged`
     field) so a transient GitHub 403/404 doesn't collapse into a
@@ -98,27 +129,31 @@ async def _harvest_loom_urls_from_merged_prs(
     to read the PR body for Loom URLs, but its failure surfaces as
     `github_unreachable`, distinct from "no merged PRs exist."
 
-    Returns (urls, status) where status is one of:
-      - "found"              — at least one Loom URL harvested
+    Returns (loom_urls, image_urls, status). `status` reports why the
+    combined list is empty when it is:
+      - "found"              — at least one Loom OR image harvested
       - "no_token"           — GITHUB_TOKEN not configured (server-side)
       - "no_prs"             — no PRs linked to this issue at all
       - "no_merged_prs"      — PRs exist but none marked MERGED in Jira
-      - "no_looms"           — merged PRs exist but no Loom in any body
+      - "no_looms"           — merged PRs exist but no media in any body
+                               (name preserved for frontend backwards-compat
+                               — the panel copy already reads "no Loom link";
+                               update in tandem if the copy changes)
       - "github_unreachable" — merged PRs exist but every GitHub fetch failed
       - "error"              — a Jira call raised; opt-in enrichment,
                                never blocks the UAT hand-off
 
-    urls is always [] when status != "found".
+    Both lists are always [] when status != "found".
     """
     if not settings.github_token:
-        return [], "no_token"
+        return [], [], "no_token"
     try:
         issue_id = await jira._get_issue_internal_id(issue_key)
     except Exception:
         logger.exception("PR-Loom harvest for %s: failed to resolve Jira issue id", issue_key)
-        return [], "error"
+        return [], [], "error"
     if not issue_id:
-        return [], "no_prs"
+        return [], [], "no_prs"
     try:
         pr_rows = await jira._list_dev_status_pr_summaries(issue_id)
     except Exception:
@@ -127,12 +162,12 @@ async def _harvest_loom_urls_from_merged_prs(
             issue_key,
             issue_id,
         )
-        return [], "error"
+        return [], [], "error"
     github_rows = [
         row for row in pr_rows if row.get("url") and "github.com" in row["url"]
     ]
     if not github_rows:
-        return [], "no_prs"
+        return [], [], "no_prs"
     merged_urls = [
         row["url"]
         for row in github_rows
@@ -145,7 +180,7 @@ async def _harvest_loom_urls_from_merged_prs(
             len(github_rows),
             [row.get("status") for row in github_rows],
         )
-        return [], "no_merged_prs"
+        return [], [], "no_merged_prs"
     github_client = GitHubClient()
     details_list = await asyncio.gather(
         *[
@@ -157,8 +192,10 @@ async def _harvest_loom_urls_from_merged_prs(
         return_exceptions=True,
     )
     fetched_any = False
-    harvested: list[str] = []
-    seen: set[str] = set()
+    looms: list[str] = []
+    images: list[str] = []
+    seen_looms: set[str] = set()
+    seen_images: set[str] = set()
     for details in details_list:
         if isinstance(details, Exception) or details is None:
             continue
@@ -166,19 +203,24 @@ async def _harvest_loom_urls_from_merged_prs(
         body = details.description or ""
         for match in LOOM_URL_RE.finditer(body):
             url = match.group(0).rstrip(".,);:]")
-            if url not in seen:
-                seen.add(url)
-                harvested.append(url)
-    if harvested:
-        return harvested, "found"
+            if url not in seen_looms:
+                seen_looms.add(url)
+                looms.append(url)
+        for match in _PR_IMAGE_URL_RE.finditer(body):
+            url = match.group(0).rstrip(".,);:]")
+            if url not in seen_images:
+                seen_images.add(url)
+                images.append(url)
+    if looms or images:
+        return looms, images, "found"
     if not fetched_any:
         logger.warning(
             "PR-Loom harvest for %s: %d merged PR(s) but every GitHub fetch failed",
             issue_key,
             len(merged_urls),
         )
-        return [], "github_unreachable"
-    return [], "no_looms"
+        return [], [], "github_unreachable"
+    return [], [], "no_looms"
 
 
 _ALLOWED_IMAGE_MIME = {
@@ -231,7 +273,14 @@ async def _enforce_pass_to_uat_walkthrough_gate(
     # list is still open at this point, so we test filenames rather than
     # reading bytes just to gate the request.
     form_images = bool(images and any(u and u.filename for u in images))
-    if override or form_looms or form_images:
+    # PR-scraped images the tester ticked count the same as a hand-uploaded
+    # screenshot — they'll be downloaded and attached below.
+    pr_images = bool(
+        parsed_payload
+        and parsed_payload.pr_image_urls
+        and any(u and u.strip() for u in parsed_payload.pr_image_urls)
+    )
+    if override or form_looms or form_images or pr_images:
         return
 
     async with get_sessionmaker()() as session:
@@ -559,6 +608,17 @@ async def run_workflow_action(
 
     image_files = await _validate_and_read_images(images)
 
+    # PR-scraped screenshots the tester ticked ride the same upload path as
+    # hand-attached files: download bytes via the GitHub token, then feed
+    # them into the same enrich+upload step so they render inline as media
+    # nodes in the pass comment. Only pass-to-uat supports this — fail-back
+    # forms don't surface the PR panel client-side.
+    if action == "pass-to-uat" and parsed_payload and parsed_payload.pr_image_urls:
+        pr_image_files = await _download_pr_images_as_uploads(
+            parsed_payload.pr_image_urls
+        )
+        image_files.extend(pr_image_files)
+
     target_status = SK_WORKFLOW_ACTIONS[action]
     jira = JiraClient()
 
@@ -783,20 +843,178 @@ async def _cascade_transition_to_subtasks(
 async def get_pr_looms(issue_key: str) -> dict:
     """Preview endpoint for the Pass-to-UAT modal.
 
-    Returns Loom share URLs found in the description of merged PRs linked
-    to this issue plus a `status` telling the frontend *why* the list is
-    empty when it is. Always 200 — this is opt-in enrichment, not a gate.
+    Returns Loom share URLs and GitHub-hosted image URLs found in the
+    description of merged PRs linked to this issue, plus a `status` telling
+    the frontend *why* both lists are empty when they are. Always 200 —
+    this is opt-in enrichment, not a gate.
+
+    Endpoint name is preserved for stability even though it now also
+    surfaces images; the frontend reads `loom_urls` and `image_urls`
+    off the same response. Image URLs are rendered via
+    `/pr-image-proxy?url=…` so previews work for private-repo assets
+    that the browser can't authenticate to directly.
 
     Status values: see `_harvest_loom_urls_from_merged_prs`. The endpoint
     adds `"skipped"` for tickets outside the SK-project gate so the modal
-    can stay silent instead of showing a misleading "no looms" line for
+    can stay silent instead of showing a misleading "no media" line for
     a project the feature doesn't cover.
     """
     if not issue_key.upper().startswith("SK-"):
-        return {"loom_urls": [], "status": "skipped"}
+        return {"loom_urls": [], "image_urls": [], "status": "skipped"}
     jira = JiraClient()
-    loom_urls, status = await _harvest_loom_urls_from_merged_prs(jira, issue_key)
-    return {"loom_urls": loom_urls, "status": status}
+    loom_urls, image_urls, status = await _harvest_loom_urls_from_merged_prs(
+        jira, issue_key
+    )
+    return {
+        "loom_urls": loom_urls,
+        "image_urls": image_urls,
+        "status": status,
+    }
+
+
+# Cap on how many bytes we'll pipe through the proxy in one shot. Set to
+# the same 10 MB ceiling that gates hand-uploaded screenshots so the two
+# entry points behave symmetrically — a browser preview and a submit
+# accept the same size envelope.
+_PR_IMAGE_PROXY_MAX_BYTES = _MAX_IMAGE_BYTES
+
+
+def _guard_pr_image_url(url: str) -> str:
+    """Validate a PR-image URL against the host whitelist.
+
+    Returns the normalized URL, raises HTTPException on anything outside
+    the whitelist. Shared by the proxy endpoint (preview time) and the
+    pass-to-uat downloader (submit time) so a URL the validator on the
+    payload rejects can't slip in via a differently-shaped query string.
+    """
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="url must be http(s)")
+    if parsed.hostname not in PR_IMAGE_ALLOWED_HOSTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"host {parsed.hostname!r} is not an accepted PR image host",
+        )
+    return url
+
+
+async def _fetch_pr_image_bytes(url: str) -> tuple[bytes, str]:
+    """Pull raw bytes for a PR-hosted image URL through the GitHub token.
+
+    Uses the same `Authorization: Bearer …` header the rest of the
+    GitHub client uses so private-repo user-attachments assets resolve
+    (they 302 to a signed CDN URL — httpx follows the redirect and the
+    Bearer header rides along until the redirect target is off-host,
+    at which point httpx drops it automatically). Returns (bytes,
+    content_type). Raises HTTPException on any transport error so the
+    caller can surface a specific status back to the client instead of
+    a bare 500.
+    """
+    headers = {"User-Agent": "jira-testplan-bot"}
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"GitHub fetch failed: {exc}"
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=(
+                f"GitHub returned {response.status_code} for the "
+                f"image URL — the repo may be private or the token "
+                f"is missing 'repo' scope."
+            ),
+        )
+    content = response.content
+    if len(content) > _PR_IMAGE_PROXY_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Image exceeds the {_PR_IMAGE_PROXY_MAX_BYTES // (1024 * 1024)} MB "
+                f"cap ({len(content)} bytes)."
+            ),
+        )
+    content_type = (
+        response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    )
+    if not content_type:
+        # Fallback: guess from the URL path. GitHub asset URLs sometimes come
+        # back with `application/octet-stream` too — treat those the same and
+        # let the ADF builder decide whether the extension is renderable.
+        guessed, _ = mimetypes.guess_type(urlparse(url).path)
+        content_type = guessed or "application/octet-stream"
+    return content, content_type
+
+
+@router.get("/pr-image-proxy")
+async def pr_image_proxy(url: str) -> Response:
+    """Authenticated pass-through for a whitelisted GitHub image URL.
+
+    The preview panel on the Pass-to-UAT form loads image thumbnails
+    through this endpoint instead of hitting GitHub directly, so
+    private-repo assets (which require the token) still render inline
+    in the browser. Not mounted under `/issue/{key}` because the URL
+    itself already identifies the resource — no ticket context needed.
+    Returns 4xx via `_guard_pr_image_url` / `_fetch_pr_image_bytes` on
+    anything the whitelist rejects, so this is not an open proxy.
+    """
+    _guard_pr_image_url(url)
+    content, content_type = await _fetch_pr_image_bytes(url)
+    # Cache aggressively — the GitHub asset id is immutable, and the
+    # preview panel re-renders on every form open otherwise.
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+def _filename_for_pr_image(url: str, content_type: str, index: int) -> str:
+    """Pick a stable filename for a PR-scraped image attachment.
+
+    Uses the last path segment when the URL ends in one (older
+    `user-images.githubusercontent.com` links carry the original filename),
+    otherwise falls back to `pr-screenshot-N.<ext>`. Kept deterministic
+    per (issue, url, index) so re-runs don't spawn duplicate attachments
+    with different names.
+    """
+    path = urlparse(url).path or ""
+    tail = posixpath.basename(path)
+    if tail and "." in tail:
+        return tail
+    ext = mimetypes.guess_extension(content_type or "") or ".png"
+    return f"pr-screenshot-{index + 1}{ext}"
+
+
+async def _download_pr_images_as_uploads(
+    pr_image_urls: list[str] | None,
+) -> list[tuple[str, bytes, str]]:
+    """Materialize selected PR image URLs into upload tuples.
+
+    Shape matches what `_upload_and_enrich_attachments` expects
+    (`(filename, bytes, mime)`). One 4xx from the GitHub fetch aborts
+    the whole pass-to-UAT submit — the tester ticked these deliberately,
+    so silently dropping a broken URL would be a lie of omission, not
+    graceful degradation.
+    """
+    if not pr_image_urls:
+        return []
+    out: list[tuple[str, bytes, str]] = []
+    for i, raw in enumerate(pr_image_urls):
+        url = (raw or "").strip()
+        if not url:
+            continue
+        _guard_pr_image_url(url)
+        content, content_type = await _fetch_pr_image_bytes(url)
+        filename = _filename_for_pr_image(url, content_type, i)
+        out.append((filename, content, content_type or "application/octet-stream"))
+    return out
 
 
 @router.get("/{issue_key}/pr-contributor")

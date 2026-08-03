@@ -488,6 +488,14 @@ class WorkflowActionRequest(BaseModel):
     # label them as coming from the PR rather than the tester's own
     # walkthrough.
     pr_loom_urls: list[str] | None = None
+    # GitHub-hosted image URLs scraped from the same merged-PR descriptions.
+    # On pass-to-uat the server downloads each selected URL (auth-gated
+    # against private repos), uploads it as a Jira attachment, and inlines
+    # it alongside tester-uploaded screenshots — so the QA comment shows a
+    # thumbnail instead of a dead link. The validator restricts these to a
+    # short whitelist of GitHub hosts to prevent the endpoint being used
+    # as an open SSRF surface via the /pr-image-proxy sibling endpoint.
+    pr_image_urls: list[str] | None = None
     summary: str | None = None
     environments: list[str] | None = None
     reason: str | None = None
@@ -530,6 +538,44 @@ class WorkflowActionRequest(BaseModel):
                 raise ValueError(
                     f"{trimmed!r} is not a valid Loom share URL "
                     f"(expected https://www.loom.com/share/…)"
+                )
+        return value
+
+    @field_validator("pr_image_urls")
+    @classmethod
+    def _validate_pr_image_urls(cls, value: list[str] | None) -> list[str] | None:
+        """Restrict PR-image URLs to a small set of trusted GitHub hosts.
+
+        The proxy endpoint fetches these server-side with the GitHub token,
+        so anything that gets through this validator is effectively an
+        outbound URL our token can be used against. Keeping the whitelist
+        tight (the same hosts that harvest_pr_images matches) closes the
+        door on a client using this field as an SSRF surface.
+        """
+        if not value:
+            return value
+        from urllib.parse import urlparse
+
+        # Duplicated from workflow_routes.PR_IMAGE_ALLOWED_HOSTS to keep
+        # models importable without pulling in the routes module. Only
+        # four hosts — cheap to keep in sync by hand; any drift is caught
+        # by the endpoint's own guard on the fetch side.
+        allowed = {
+            "github.com",
+            "user-images.githubusercontent.com",
+            "private-user-images.githubusercontent.com",
+            "camo.githubusercontent.com",
+        }
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError("PR image URLs must be strings")
+            trimmed = raw.strip()
+            if not trimmed:
+                continue
+            parsed = urlparse(trimmed)
+            if parsed.scheme not in ("http", "https") or parsed.hostname not in allowed:
+                raise ValueError(
+                    f"{trimmed!r} is not an accepted GitHub image host"
                 )
         return value
 

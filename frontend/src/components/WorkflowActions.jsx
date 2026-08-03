@@ -302,6 +302,130 @@ const PR_LOOM_STATUS_COPY = {
   error: 'PR scan failed — check the server log.',
 }
 
+// Copy for the sibling PR-image panel. Uses the same status keys as the Loom
+// scan (both come off the same fetch), but only the "found" copy differs —
+// the empty/error states share a scanner, so we key the "images specifically
+// were absent" case as `no_images` (frontend-only) to avoid overriding the
+// Loom panel's "no_looms" message when both are absent.
+const PR_IMAGE_STATUS_COPY = {
+  found: 'Screenshots from the merged PR — tick to attach them to the hand-off comment.',
+  no_images: 'The merged PR description has no screenshots.',
+}
+
+// Route through the backend proxy so private-repo user-attachments URLs
+// (which the browser can't authenticate to) still render as previews.
+// See /pr-image-proxy in workflow_routes.py — it enforces the same host
+// whitelist as the payload validator on the submit side.
+function proxyImageUrl(rawUrl) {
+  return `${API_BASE_URL}/issue/pr-image-proxy?url=${encodeURIComponent(rawUrl)}`
+}
+
+function PrImageDiscoveryPanel({ discovered, selected, onToggle }) {
+  // Kept separate from the Loom panel because the layout differs — Loom
+  // renders one URL per row, images render a tile grid so the tester can
+  // see *what* they're about to attach without opening each link. Only
+  // rendered when `discovered.length > 0`; empty/error states share the
+  // Loom panel's status line.
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        padding: 'var(--s-3) var(--s-4)',
+        background: 'rgba(59,130,246,.05)',
+        border: '1px solid rgba(59,130,246,.20)',
+        borderRadius: 'var(--r-md)',
+      }}
+    >
+      <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', marginBottom: 2 }}>
+        {PR_IMAGE_STATUS_COPY.found}
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))',
+          gap: 8,
+        }}
+      >
+        {discovered.map((url) => {
+          const isSelected = selected.has(url)
+          return (
+            <button
+              type="button"
+              key={url}
+              onClick={() => onToggle(url)}
+              title={isSelected ? 'Click to skip this screenshot' : 'Click to include this screenshot'}
+              aria-pressed={isSelected}
+              style={{
+                position: 'relative',
+                padding: 0,
+                border: '2px solid ' + (isSelected ? 'var(--accent)' : 'var(--border)'),
+                borderRadius: 'var(--r-sm)',
+                background: 'var(--bg-subtle)',
+                cursor: 'pointer',
+                overflow: 'hidden',
+                aspectRatio: '4 / 3',
+                boxShadow: isSelected ? '0 0 0 3px rgba(59,130,246,.15)' : 'none',
+                transition: 'border-color 120ms, box-shadow 120ms',
+              }}
+            >
+              <img
+                src={proxyImageUrl(url)}
+                alt=""
+                loading="lazy"
+                onError={(e) => {
+                  // Preview failed (private asset without token / expired /
+                  // gone). Swap in a placeholder icon so the tile stays a
+                  // recognizable checkbox target — the URL still submits.
+                  e.currentTarget.style.display = 'none'
+                  const parent = e.currentTarget.parentElement
+                  if (parent && !parent.querySelector('[data-fallback]')) {
+                    const fallback = document.createElement('div')
+                    fallback.dataset.fallback = 'true'
+                    fallback.style.cssText =
+                      'width:100%;height:100%;display:flex;align-items:center;' +
+                      'justify-content:center;color:var(--fg-subtle);font-size:var(--t-xs);' +
+                      'padding:8px;text-align:center;line-height:1.2;'
+                    fallback.textContent = 'Preview unavailable'
+                    parent.appendChild(fallback)
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  display: 'block',
+                }}
+              />
+              {isSelected && (
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: 4,
+                    right: 4,
+                    background: 'var(--accent)',
+                    color: 'white',
+                    borderRadius: '50%',
+                    width: 18,
+                    height: 18,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    boxShadow: '0 1px 2px rgba(0,0,0,.25)',
+                  }}
+                >
+                  <Icon name="check" size={11} />
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function PrLoomDiscoveryPanel({ status, discovered, selected, onToggle }) {
   const tone =
     status === 'found' ? 'info'
@@ -413,6 +537,12 @@ function WorkflowActions({
   const [prLoomStatus, setPrLoomStatus] = useState(null)
   const [discoveredPrLooms, setDiscoveredPrLooms] = useState([])
   const [selectedPrLooms, setSelectedPrLooms] = useState(() => new Set())
+  // Same lifecycle as Loom discovery, but the panel below the Loom one shows
+  // *thumbnails* of screenshots found in the merged PR description. Selected
+  // URLs are downloaded server-side on submit and attached to the pass
+  // comment as media nodes (same treatment as tester-uploaded screenshots).
+  const [discoveredPrImages, setDiscoveredPrImages] = useState([])
+  const [selectedPrImages, setSelectedPrImages] = useState(() => new Set())
   // Top PR contributor resolved to a Jira user, fetched lazily on
   // Pass-to-UAT open (see effect below). Shape: { accountId, name } | null.
   // Feeds into the mention picker so tickets where the current user is the
@@ -537,6 +667,8 @@ function WorkflowActions({
     setPrLoomStatus('loading')
     setDiscoveredPrLooms([])
     setSelectedPrLooms(new Set())
+    setDiscoveredPrImages([])
+    setSelectedPrImages(new Set())
     ;(async () => {
       try {
         const response = await fetch(
@@ -548,10 +680,18 @@ function WorkflowActions({
           return
         }
         const data = await response.json().catch(() => ({}))
-        const urls = Array.isArray(data?.loom_urls) ? data.loom_urls : []
-        setDiscoveredPrLooms(urls)
-        setSelectedPrLooms(new Set(urls))
-        setPrLoomStatus(data?.status || (urls.length > 0 ? 'found' : 'no_looms'))
+        const looms = Array.isArray(data?.loom_urls) ? data.loom_urls : []
+        const images = Array.isArray(data?.image_urls) ? data.image_urls : []
+        setDiscoveredPrLooms(looms)
+        setSelectedPrLooms(new Set(looms))
+        setDiscoveredPrImages(images)
+        // Default images to *unchecked*: they attach as real Jira attachments
+        // (downloaded server-side), which is a heavier action than a URL
+        // link — the tester should tick in deliberately, not out.
+        setSelectedPrImages(new Set())
+        setPrLoomStatus(
+          data?.status || (looms.length + images.length > 0 ? 'found' : 'no_looms')
+        )
       } catch (err) {
         if (err?.name !== 'AbortError') setPrLoomStatus('error')
       }
@@ -602,6 +742,15 @@ function WorkflowActions({
 
   const togglePrLoom = (url) => {
     setSelectedPrLooms((prev) => {
+      const next = new Set(prev)
+      if (next.has(url)) next.delete(url)
+      else next.add(url)
+      return next
+    })
+  }
+
+  const togglePrImage = (url) => {
+    setSelectedPrImages((prev) => {
       const next = new Set(prev)
       if (next.has(url)) next.delete(url)
       else next.add(url)
@@ -664,6 +813,8 @@ function WorkflowActions({
     setPrLoomStatus(null)
     setDiscoveredPrLooms([])
     setSelectedPrLooms(new Set())
+    setDiscoveredPrImages([])
+    setSelectedPrImages(new Set())
     setPrContributor(null)
     userChoseAssigneeRef.current = false
     setChecklistTicked(new Set())
@@ -856,6 +1007,7 @@ function WorkflowActions({
       const prLooms = discoveredPrLooms.filter(
         (url) => selectedPrLooms.has(url) && !seenLooms.has(url)
       )
+      const prImages = discoveredPrImages.filter((url) => selectedPrImages.has(url))
       const trimmedSummary = summary.trim()
       // Fold the "steps demonstrated" checklist into the Jira comment when
       // at least one box is ticked. Silent when nothing is checked so the
@@ -877,6 +1029,7 @@ function WorkflowActions({
       const hasAnyField =
         looms.length > 0 ||
         prLooms.length > 0 ||
+        prImages.length > 0 ||
         composedSummary ||
         environments.length > 0 ||
         imageFiles.length > 0
@@ -884,6 +1037,7 @@ function WorkflowActions({
         ? {
             loom_urls: looms.length > 0 ? looms : null,
             pr_loom_urls: prLooms.length > 0 ? prLooms : null,
+            pr_image_urls: prImages.length > 0 ? prImages : null,
             summary: composedSummary,
             environments: environments.length > 0 ? environments : null,
             mention_account_ids:
@@ -1112,6 +1266,17 @@ function WorkflowActions({
                   discovered={discoveredPrLooms}
                   selected={selectedPrLooms}
                   onToggle={togglePrLoom}
+                />
+              </>
+            )}
+
+            {noteForAction.id === 'pass-to-uat' && discoveredPrImages.length > 0 && (
+              <>
+                <span className="lbl">PR screenshots</span>
+                <PrImageDiscoveryPanel
+                  discovered={discoveredPrImages}
+                  selected={selectedPrImages}
+                  onToggle={togglePrImage}
                 />
               </>
             )}

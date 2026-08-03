@@ -1,10 +1,11 @@
 """
-Tests for the PR-Loom discovery path used by Pass-to-UAT:
+Tests for the PR-media discovery path used by Pass-to-UAT:
 
   - `_harvest_loom_urls_from_merged_prs`: the underlying helper. Scans
     the description of each merged PR linked to the ticket and pulls
-    out loom.com share URLs, returning (urls, status) so callers can
-    show the tester *why* the list is empty when it is.
+    out loom.com share URLs AND GitHub-hosted image URLs, returning
+    (loom_urls, image_urls, status) so callers can show the tester
+    *why* both lists are empty when they are.
   - `GET /issue/{key}/pr-looms`: the preview endpoint the frontend calls
     when the Pass-to-UAT modal opens.
 
@@ -92,7 +93,7 @@ async def test_status_no_token_when_github_token_missing():
     """No token → skip the whole thing; Jira is never even queried."""
     jira = _jira_client()
     with patch.object(workflow_routes.settings, "github_token", None):
-        assert await _harvest(jira) == ([], "no_token")
+        assert await _harvest(jira) == ([], [], "no_token")
     jira._get_issue_internal_id.assert_not_called()
 
 
@@ -102,7 +103,7 @@ async def test_status_no_prs_when_issue_id_not_resolved():
     (indistinguishable from a real 'no PRs linked' state at this layer)."""
     jira = _jira_client(issue_id=None)
     with patch.object(workflow_routes.settings, "github_token", "gh-fake"):
-        assert await _harvest(jira) == ([], "no_prs")
+        assert await _harvest(jira) == ([], [], "no_prs")
     jira._list_dev_status_pr_summaries.assert_not_called()
 
 
@@ -110,7 +111,7 @@ async def test_status_no_prs_when_issue_id_not_resolved():
 async def test_status_no_prs_when_dev_status_returns_none():
     jira = _jira_client(pr_urls=[])
     with patch.object(workflow_routes.settings, "github_token", "gh-fake"):
-        assert await _harvest(jira) == ([], "no_prs")
+        assert await _harvest(jira) == ([], [], "no_prs")
 
 
 @pytest.mark.asyncio
@@ -121,7 +122,7 @@ async def test_status_no_prs_when_only_non_github_pr_urls():
     with patch.object(workflow_routes.settings, "github_token", "gh-fake"), \
             patch.object(workflow_routes, "GitHubClient") as gh_cls:
         gh_cls.return_value.fetch_pr_details = AsyncMock()
-        assert await _harvest(jira) == ([], "no_prs")
+        assert await _harvest(jira) == ([], [], "no_prs")
         gh_cls.return_value.fetch_pr_details.assert_not_called()
 
 
@@ -139,7 +140,7 @@ async def test_status_no_merged_prs_when_jira_says_none_merged():
     with patch.object(workflow_routes.settings, "github_token", "gh-fake"), \
             patch.object(workflow_routes, "GitHubClient") as gh_cls:
         gh_cls.return_value.fetch_pr_details = AsyncMock()
-        assert await _harvest(jira) == ([], "no_merged_prs")
+        assert await _harvest(jira) == ([], [], "no_merged_prs")
         gh_cls.return_value.fetch_pr_details.assert_not_called()
 
 
@@ -161,12 +162,13 @@ async def test_declined_pr_is_ignored_but_merged_sibling_yields_looms():
                 _pr_details("Follow-up: https://loom.com/share/two"),
             ]
         )
-        urls, status = await _harvest(jira)
+        looms, images, status = await _harvest(jira)
         assert status == "found"
-        assert urls == [
+        assert looms == [
             "https://loom.com/share/one",
             "https://loom.com/share/two",
         ]
+        assert images == []
         # Only the two MERGED PRs get a GitHub fetch — the DECLINED one skipped early.
         assert gh_cls.return_value.fetch_pr_details.await_count == 2
 
@@ -185,7 +187,7 @@ async def test_status_github_unreachable_when_every_merged_pr_fetch_fails():
         gh_cls.return_value.fetch_pr_details = AsyncMock(
             side_effect=[None, RuntimeError("rate limited")]
         )
-        assert await _harvest(jira) == ([], "github_unreachable")
+        assert await _harvest(jira) == ([], [], "github_unreachable")
 
 
 # ---------- Happy path ----------
@@ -200,6 +202,7 @@ async def test_status_found_with_loom_in_merged_pr_body():
         gh_cls.return_value.fetch_pr_details = AsyncMock(return_value=_pr_details(body))
         assert await _harvest(jira) == (
             ["https://www.loom.com/share/abc123"],
+            [],
             "found",
         )
 
@@ -213,12 +216,13 @@ async def test_strips_trailing_punctuation_from_matches():
     with patch.object(workflow_routes.settings, "github_token", "gh-fake"), \
             patch.object(workflow_routes, "GitHubClient") as gh_cls:
         gh_cls.return_value.fetch_pr_details = AsyncMock(return_value=_pr_details(body))
-        urls, status = await _harvest(jira)
+        looms, images, status = await _harvest(jira)
         assert status == "found"
-        assert urls == [
+        assert looms == [
             "https://loom.com/share/abc123",
             "https://loom.com/share/def456",
         ]
+        assert images == []
 
 
 @pytest.mark.asyncio
@@ -238,12 +242,13 @@ async def test_dedups_same_loom_across_multiple_prs():
                 _pr_details("https://loom.com/share/dup and https://loom.com/share/new"),
             ]
         )
-        urls, status = await _harvest(jira)
+        looms, images, status = await _harvest(jira)
         assert status == "found"
-        assert urls == [
+        assert looms == [
             "https://loom.com/share/dup",
             "https://loom.com/share/new",
         ]
+        assert images == []
 
 
 @pytest.mark.asyncio
@@ -254,7 +259,7 @@ async def test_status_no_looms_when_merged_pr_body_has_none():
         gh_cls.return_value.fetch_pr_details = AsyncMock(
             return_value=_pr_details("Fixed a null-pointer in the auth layer.")
         )
-        assert await _harvest(jira) == ([], "no_looms")
+        assert await _harvest(jira) == ([], [], "no_looms")
 
 
 @pytest.mark.asyncio
@@ -266,7 +271,7 @@ async def test_status_no_looms_when_merged_pr_has_null_description():
         gh_cls.return_value.fetch_pr_details = AsyncMock(
             return_value=_pr_details(None)
         )
-        assert await _harvest(jira) == ([], "no_looms")
+        assert await _harvest(jira) == ([], [], "no_looms")
 
 
 # ---------- Failure isolation ----------
@@ -278,7 +283,7 @@ async def test_status_error_when_issue_id_lookup_raises():
     jira = MagicMock()
     jira._get_issue_internal_id = AsyncMock(side_effect=RuntimeError("boom"))
     with patch.object(workflow_routes.settings, "github_token", "gh-fake"):
-        assert await _harvest(jira) == ([], "error")
+        assert await _harvest(jira) == ([], [], "error")
 
 
 @pytest.mark.asyncio
@@ -286,7 +291,7 @@ async def test_status_error_when_pr_url_lookup_raises():
     jira = _jira_client()
     jira._list_dev_status_pr_summaries = AsyncMock(side_effect=RuntimeError("boom"))
     with patch.object(workflow_routes.settings, "github_token", "gh-fake"):
-        assert await _harvest(jira) == ([], "error")
+        assert await _harvest(jira) == ([], [], "error")
 
 
 @pytest.mark.asyncio
@@ -311,6 +316,7 @@ async def test_per_pr_failures_dont_taint_batch():
         )
         assert await _harvest(jira) == (
             ["https://loom.com/share/ok"],
+            [],
             "found",
         )
 
@@ -327,6 +333,7 @@ def test_pr_looms_endpoint_returns_urls_and_status():
         "_harvest_loom_urls_from_merged_prs",
         new=AsyncMock(return_value=(
             ["https://loom.com/share/one", "https://loom.com/share/two"],
+            ["https://github.com/user-attachments/assets/aaa-bbb-ccc"],
             "found",
         )),
     ):
@@ -337,6 +344,7 @@ def test_pr_looms_endpoint_returns_urls_and_status():
             "https://loom.com/share/one",
             "https://loom.com/share/two",
         ],
+        "image_urls": ["https://github.com/user-attachments/assets/aaa-bbb-ccc"],
         "status": "found",
     }
 
@@ -347,11 +355,15 @@ def test_pr_looms_endpoint_passes_status_through_when_empty():
     with patch.object(
         workflow_routes,
         "_harvest_loom_urls_from_merged_prs",
-        new=AsyncMock(return_value=([], "no_looms")),
+        new=AsyncMock(return_value=([], [], "no_looms")),
     ):
         response = _endpoint_client.get("/issue/SK-999/pr-looms")
     assert response.status_code == 200
-    assert response.json() == {"loom_urls": [], "status": "no_looms"}
+    assert response.json() == {
+        "loom_urls": [],
+        "image_urls": [],
+        "status": "no_looms",
+    }
 
 
 def test_pr_looms_endpoint_skips_non_sk_projects_with_skipped_status():
@@ -360,11 +372,17 @@ def test_pr_looms_endpoint_skips_non_sk_projects_with_skipped_status():
     with patch.object(
         workflow_routes,
         "_harvest_loom_urls_from_merged_prs",
-        new=AsyncMock(return_value=(["https://loom.com/share/should-not-appear"], "found")),
+        new=AsyncMock(return_value=(
+            ["https://loom.com/share/should-not-appear"], [], "found",
+        )),
     ) as harvest:
         response = _endpoint_client.get("/issue/FOO-1/pr-looms")
     assert response.status_code == 200
-    assert response.json() == {"loom_urls": [], "status": "skipped"}
+    assert response.json() == {
+        "loom_urls": [],
+        "image_urls": [],
+        "status": "skipped",
+    }
     harvest.assert_not_called()
 
 
@@ -374,14 +392,86 @@ def test_pr_looms_endpoint_accepts_lowercase_project_key():
     with patch.object(
         workflow_routes,
         "_harvest_loom_urls_from_merged_prs",
-        new=AsyncMock(return_value=(["https://loom.com/share/x"], "found")),
+        new=AsyncMock(return_value=(["https://loom.com/share/x"], [], "found")),
     ):
         response = _endpoint_client.get("/issue/sk-1/pr-looms")
     assert response.status_code == 200
     assert response.json() == {
         "loom_urls": ["https://loom.com/share/x"],
+        "image_urls": [],
         "status": "found",
     }
+
+
+@pytest.mark.asyncio
+async def test_harvest_extracts_github_user_attachment_images():
+    """Newest GitHub image shape — `user-attachments/assets/<uuid>` — has no
+    file extension in the URL. It's the format GitHub emits when you drag a
+    screenshot into the PR body, so the harvester has to key on the host+path
+    prefix, not the extension."""
+    jira = _jira_client(pr_urls=["https://github.com/o/r/pull/1"])
+    body = (
+        "Before/after:\n\n"
+        "![before](https://github.com/user-attachments/assets/1111-aaaa-bbbb-2222)\n"
+        "![after](https://github.com/user-attachments/assets/3333-cccc-dddd-4444)\n"
+    )
+    with patch.object(workflow_routes.settings, "github_token", "gh-fake"), \
+            patch.object(workflow_routes, "GitHubClient") as gh_cls:
+        gh_cls.return_value.fetch_pr_details = AsyncMock(
+            return_value=_pr_details(body)
+        )
+        looms, images, status = await _harvest(jira)
+    assert status == "found"
+    assert looms == []
+    assert images == [
+        "https://github.com/user-attachments/assets/1111-aaaa-bbbb-2222",
+        "https://github.com/user-attachments/assets/3333-cccc-dddd-4444",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_harvest_extracts_legacy_user_images_googleusercontent():
+    """The older `user-images.githubusercontent.com/<id>/<name>.<ext>` shape
+    is still emitted by GitHub for PRs opened before user-attachments went
+    GA. Matched on host + image extension."""
+    jira = _jira_client(pr_urls=["https://github.com/o/r/pull/1"])
+    body = (
+        "Repro screenshot: "
+        "https://user-images.githubusercontent.com/12345/foo-bar.png "
+        "and the redirect page: "
+        "https://private-user-images.githubusercontent.com/999/rt.jpg"
+    )
+    with patch.object(workflow_routes.settings, "github_token", "gh-fake"), \
+            patch.object(workflow_routes, "GitHubClient") as gh_cls:
+        gh_cls.return_value.fetch_pr_details = AsyncMock(
+            return_value=_pr_details(body)
+        )
+        looms, images, status = await _harvest(jira)
+    assert status == "found"
+    assert images == [
+        "https://user-images.githubusercontent.com/12345/foo-bar.png",
+        "https://private-user-images.githubusercontent.com/999/rt.jpg",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_harvest_returns_looms_and_images_together():
+    """The common case: PR body has both a Loom link (dev's demo) and one
+    or more screenshots (repro / before-after). Both surface, no drops."""
+    jira = _jira_client(pr_urls=["https://github.com/o/r/pull/1"])
+    body = (
+        "Walkthrough: https://loom.com/share/abcd\n\n"
+        "Before: ![](https://github.com/user-attachments/assets/aaa-bbb)"
+    )
+    with patch.object(workflow_routes.settings, "github_token", "gh-fake"), \
+            patch.object(workflow_routes, "GitHubClient") as gh_cls:
+        gh_cls.return_value.fetch_pr_details = AsyncMock(
+            return_value=_pr_details(body)
+        )
+        looms, images, status = await _harvest(jira)
+    assert status == "found"
+    assert looms == ["https://loom.com/share/abcd"]
+    assert images == ["https://github.com/user-attachments/assets/aaa-bbb"]
 
 
 # ---------- GET /issue/{key}/pr-contributor endpoint ----------
