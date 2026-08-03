@@ -3311,3 +3311,7 @@ button:disabled {
   }
   .jira-browser--collapsed { width: 100%; height: 36px; }
 }
+
+@media (max-width: 1024px) {
+  .tp-section-chips { display: none !important; }
+}

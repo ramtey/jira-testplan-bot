@@ -1501,7 +1501,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                 {checkedAll} / {totalAll}
               </span>
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div className="tp-section-chips" style={{ display: 'flex', gap: 6 }}>
               {SECTIONS.map((s, i) => {
                 const t = totals[i]
                 if (t === 0) return null
