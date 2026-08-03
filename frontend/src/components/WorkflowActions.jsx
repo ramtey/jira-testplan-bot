@@ -434,10 +434,10 @@ function WorkflowActions({
   //   { message: string, retry: fn }  → prompt open, retry() resends with the
   //                                     override flag on confirm
   const [walkthroughOverridePrompt, setWalkthroughOverridePrompt] = useState(null)
-  // Ephemeral "steps to cover in the video" checklist that lives above the
-  // Loom URL input in the Pass-to-UAT form. Opt-in dropdown; state resets
-  // when the form closes — it's a scratch tool, not persisted server-side.
-  const [checklistOpen, setChecklistOpen] = useState(false)
+  // "Steps demonstrated in the video" checklist rendered inside the Notes
+  // block of the Pass-to-UAT form. On submit, ticked/unticked state is
+  // folded into the Jira comment (see composedSummary in onNoteSubmit).
+  // State resets when the form closes.
   const [checklistTicked, setChecklistTicked] = useState(() => new Set())
   const checklistSteps = Array.isArray(videoChecklistSteps) ? videoChecklistSteps : []
   const loomInputRef = useRef(null)
@@ -666,7 +666,6 @@ function WorkflowActions({
     setSelectedPrLooms(new Set())
     setPrContributor(null)
     userChoseAssigneeRef.current = false
-    setChecklistOpen(false)
     setChecklistTicked(new Set())
   }
 
@@ -858,17 +857,34 @@ function WorkflowActions({
         (url) => selectedPrLooms.has(url) && !seenLooms.has(url)
       )
       const trimmedSummary = summary.trim()
+      // Fold the "steps demonstrated" checklist into the Jira comment when
+      // at least one box is ticked. Silent when nothing is checked so the
+      // comment stays clean for testers who don't engage with the widget.
+      const composedSummary = (() => {
+        if (checklistSteps.length === 0 || checklistTicked.size === 0) {
+          return trimmedSummary || null
+        }
+        const bullets = checklistSteps
+          .map((step, i) =>
+            checklistTicked.has(i)
+              ? `- [x] ${step}`
+              : `- [ ] ${step} *(not covered)*`
+          )
+          .join('\n')
+        const block = `**Steps demonstrated in the video**\n${bullets}`
+        return trimmedSummary ? `${trimmedSummary}\n\n${block}` : block
+      })()
       const hasAnyField =
         looms.length > 0 ||
         prLooms.length > 0 ||
-        trimmedSummary ||
+        composedSummary ||
         environments.length > 0 ||
         imageFiles.length > 0
       const baseBody = hasAnyField
         ? {
             loom_urls: looms.length > 0 ? looms : null,
             pr_loom_urls: prLooms.length > 0 ? prLooms : null,
-            summary: trimmedSummary || null,
+            summary: composedSummary,
             environments: environments.length > 0 ? environments : null,
             mention_account_ids:
               mentionAccountIds.length > 0 ? mentionAccountIds : null,
@@ -1076,56 +1092,6 @@ function WorkflowActions({
               </>
             )}
 
-            {noteForAction.id === 'pass-to-uat' && checklistSteps.length > 0 && (
-              <div style={{ gridColumn: '1 / -1' }}>
-                <button
-                  type="button"
-                  onClick={() => setChecklistOpen((v) => !v)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    fontSize: 'var(--t-sm)',
-                    color: 'var(--fg-muted)',
-                    fontWeight: 600,
-                  }}
-                  aria-expanded={checklistOpen}
-                >
-                  <Icon name={checklistOpen ? 'chevron-down' : 'chevron-right'} size={13} />
-                  Steps to cover in the video
-                  <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', fontWeight: 500 }}>
-                    {checklistTicked.size > 0
-                      ? `${checklistTicked.size} / ${checklistSteps.length} covered`
-                      : `${checklistSteps.length} main change${checklistSteps.length === 1 ? '' : 's'}`}
-                  </span>
-                </button>
-                {checklistOpen && (
-                  <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {checklistSteps.map((step, i) => (
-                      <Cbx
-                        key={i}
-                        id={`video-checklist-${i}`}
-                        checked={checklistTicked.has(i)}
-                        onChange={(next) =>
-                          setChecklistTicked((prev) => {
-                            const copy = new Set(prev)
-                            if (next) copy.add(i)
-                            else copy.delete(i)
-                            return copy
-                          })
-                        }
-                        label={step}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
             <span className="lbl">Loom URL{loomUrlsText.includes('\n') ? 's' : ''}</span>
             <textarea
               ref={loomInputRef}
@@ -1153,14 +1119,66 @@ function WorkflowActions({
             {noteForAction.id === 'pass-to-uat' && (
               <>
                 <span className="lbl">Notes</span>
-                <textarea
-                  className="inp"
-                  rows={3}
-                  placeholder="Optional. Markdown supported."
-                  value={summary}
-                  onChange={(e) => setSummary(e.target.value)}
-                  disabled={pendingAction !== null}
-                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {checklistSteps.length > 0 && (
+                    <div
+                      style={{
+                        border: '1px solid var(--border-muted)',
+                        borderRadius: 6,
+                        padding: '8px 10px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          fontSize: 'var(--t-sm)',
+                          color: 'var(--fg-muted)',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Steps demonstrated in the video
+                        <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', fontWeight: 500 }}>
+                          {checklistTicked.size} / {checklistSteps.length}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {checklistSteps.map((step, i) => (
+                          <Cbx
+                            key={i}
+                            id={`video-checklist-${i}`}
+                            checked={checklistTicked.has(i)}
+                            onChange={(next) =>
+                              setChecklistTicked((prev) => {
+                                const copy = new Set(prev)
+                                if (next) copy.add(i)
+                                else copy.delete(i)
+                                return copy
+                              })
+                            }
+                            label={step}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <textarea
+                    className="inp"
+                    rows={3}
+                    placeholder={
+                      checklistSteps.length > 0
+                        ? 'Additional notes (optional). Markdown supported.'
+                        : 'Optional. Markdown supported.'
+                    }
+                    value={summary}
+                    onChange={(e) => setSummary(e.target.value)}
+                    disabled={pendingAction !== null}
+                  />
+                </div>
               </>
             )}
 
