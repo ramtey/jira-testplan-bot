@@ -2,6 +2,7 @@
  * Display bug analysis results from Jira Bug Lens.
  */
 
+import { useState } from 'react'
 import { formatBugAnalysisAsMarkdown } from '../utils/markdown'
 import Icon from './Icon'
 import { Btn, Chip } from './ui'
@@ -91,6 +92,10 @@ function BugAnalysisDisplay({ analysis }) {
   const isMulti = Array.isArray(analysis.ticket_keys)
   const allKeys = isMulti ? analysis.ticket_keys : [analysis.ticket_key]
   const fixStatus = analysis.fix_status || (analysis.is_fixed ? 'fixed' : 'not_fixed')
+  // Default to collapsed — the analysis often lands automatically after the
+  // test plan, so we don't want to shove a long report in front of the user
+  // until they ask for it.
+  const [expanded, setExpanded] = useState(false)
 
   const handleDownloadMarkdown = () => {
     const markdown = formatBugAnalysisAsMarkdown(analysis)
@@ -114,26 +119,58 @@ function BugAnalysisDisplay({ analysis }) {
 
   return (
     <div style={{ marginTop: 'var(--s-7)' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-4)', marginBottom: 'var(--s-5)' }}>
+      {/* Header — click to expand/collapse */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            setExpanded((v) => !v)
+          }
+        }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--s-4)',
+          marginBottom: expanded ? 'var(--s-5)' : 0,
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+        aria-expanded={expanded}
+      >
+        <Icon
+          name={expanded ? 'chevron-down' : 'chevron-right'}
+          size={14}
+          style={{ color: 'var(--fg-subtle)' }}
+        />
         <Icon name="scan" size={16} style={{ color: 'var(--warning)' }} />
         <h2 style={{ margin: 0, fontSize: 'var(--t-xl)', fontWeight: 600, color: 'var(--fg-strong)' }}>Bug Lens Analysis</h2>
         <Chip>{allKeys.join(' + ')}</Chip>
         <span style={{ flex: 1 }} />
-        <Btn variant="ghost" size="sm" icon="download" onClick={handleDownloadMarkdown}>Download .md</Btn>
+        <Btn
+          variant="ghost"
+          size="sm"
+          icon="download"
+          onClick={(e) => {
+            e.stopPropagation()
+            handleDownloadMarkdown()
+          }}
+        >
+          Download .md
+        </Btn>
       </div>
 
+      {!expanded && null}
+
+      {expanded && (
+        <>
       {/* Status row */}
       <div style={{ display: 'grid', gridTemplateColumns: analysis.is_regression != null ? '1fr 1fr' : '1fr', gap: 'var(--s-4)', marginBottom: 'var(--s-6)' }}>
         <FixStatusCard analysis={analysis} fixStatus={fixStatus} />
         <OriginCard analysis={analysis} />
       </div>
-
-      {analysis.bug_summary && (
-        <Section icon="info" title="Bug Summary">
-          <p style={{ margin: 0, color: 'var(--fg)' }}>{analysis.bug_summary}</p>
-        </Section>
-      )}
 
       <Section icon="alert-circle" title="Root Cause">
         {analysis.root_cause ? (
@@ -334,6 +371,8 @@ function BugAnalysisDisplay({ analysis }) {
       <div style={{ marginTop: 'var(--s-8)', display: 'flex', justifyContent: 'flex-end' }}>
         <Btn variant="ghost" icon="download" onClick={handleDownloadMarkdown}>Download as .md</Btn>
       </div>
+        </>
+      )}
     </div>
   )
 }
