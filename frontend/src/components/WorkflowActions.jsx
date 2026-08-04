@@ -320,12 +320,16 @@ function proxyImageUrl(rawUrl) {
   return `${API_BASE_URL}/issue/pr-image-proxy?url=${encodeURIComponent(rawUrl)}`
 }
 
-function PrImageDiscoveryPanel({ discovered, selected, onToggle }) {
+function PrImageDiscoveryPanel({ discovered, selected, onToggle, onPreviewFail }) {
   // Kept separate from the Loom panel because the layout differs — Loom
   // renders one URL per row, images render a tile grid so the tester can
   // see *what* they're about to attach without opening each link. Only
   // rendered when `discovered.length > 0`; empty/error states share the
-  // Loom panel's status line.
+  // Loom panel's status line. URLs whose preview fails to load are dropped
+  // via `onPreviewFail` so the panel disappears entirely when nothing
+  // actually renders — a URL that can't be previewed almost certainly
+  // can't be downloaded server-side either, so keeping it around as an
+  // opt-in checkbox would just invite a broken attachment.
   return (
     <div
       style={{
@@ -374,23 +378,7 @@ function PrImageDiscoveryPanel({ discovered, selected, onToggle }) {
                 src={proxyImageUrl(url)}
                 alt=""
                 loading="lazy"
-                onError={(e) => {
-                  // Preview failed (private asset without token / expired /
-                  // gone). Swap in a placeholder icon so the tile stays a
-                  // recognizable checkbox target — the URL still submits.
-                  e.currentTarget.style.display = 'none'
-                  const parent = e.currentTarget.parentElement
-                  if (parent && !parent.querySelector('[data-fallback]')) {
-                    const fallback = document.createElement('div')
-                    fallback.dataset.fallback = 'true'
-                    fallback.style.cssText =
-                      'width:100%;height:100%;display:flex;align-items:center;' +
-                      'justify-content:center;color:var(--fg-subtle);font-size:var(--t-xs);' +
-                      'padding:8px;text-align:center;line-height:1.2;'
-                    fallback.textContent = 'Preview unavailable'
-                    parent.appendChild(fallback)
-                  }
-                }}
+                onError={() => onPreviewFail(url)}
                 style={{
                   width: '100%',
                   height: '100%',
@@ -754,6 +742,20 @@ function WorkflowActions({
       const next = new Set(prev)
       if (next.has(url)) next.delete(url)
       else next.add(url)
+      return next
+    })
+  }
+
+  // Drop a PR image URL whose thumbnail failed to load. The proxy uses the
+  // same GitHub token the server would use to download it on submit, so if
+  // the preview 404s / 401s, the attachment step would too — better to hide
+  // it than let the tester tick a broken URL and get a 502 at submit time.
+  const forgetPrImage = (url) => {
+    setDiscoveredPrImages((prev) => prev.filter((u) => u !== url))
+    setSelectedPrImages((prev) => {
+      if (!prev.has(url)) return prev
+      const next = new Set(prev)
+      next.delete(url)
       return next
     })
   }
@@ -1277,6 +1279,7 @@ function WorkflowActions({
                   discovered={discoveredPrImages}
                   selected={selectedPrImages}
                   onToggle={togglePrImage}
+                  onPreviewFail={forgetPrImage}
                 />
               </>
             )}
