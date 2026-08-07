@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { API_BASE_URL } from '../config'
+import { API_BASE_URL, useJiraTicketUrl } from '../config'
 import Icon from './Icon'
 import { TypeMark } from './ui'
 
@@ -120,6 +120,68 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
   // of firing onSelectIssue, then the footer's Fetch button hands the whole
   // batch off to the parent. Reset whenever the issue list changes underneath.
   const [stagedKeys, setStagedKeys] = useState([])
+
+  // Custom right-click menu on issue rows. The row is a <button> so the browser
+  // shows its generic menu ("Copy", "Inspect", …) which has no useful actions
+  // for a ticket. Intercepting contextmenu lets us offer ticket-scoped actions.
+  const [ctxMenu, setCtxMenu] = useState(null)
+  const closeCtxMenu = () => setCtxMenu(null)
+  const ctxJiraUrl = useJiraTicketUrl(ctxMenu?.key || '')
+
+  useEffect(() => {
+    if (!ctxMenu) return
+    const onDocDown = (e) => {
+      if (e.target?.closest?.('[data-ctx-menu="true"]')) return
+      closeCtxMenu()
+    }
+    const onKey = (e) => { if (e.key === 'Escape') closeCtxMenu() }
+    document.addEventListener('mousedown', onDocDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', closeCtxMenu, true)
+    window.addEventListener('resize', closeCtxMenu)
+    window.addEventListener('blur', closeCtxMenu)
+    return () => {
+      document.removeEventListener('mousedown', onDocDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', closeCtxMenu, true)
+      window.removeEventListener('resize', closeCtxMenu)
+      window.removeEventListener('blur', closeCtxMenu)
+    }
+  }, [ctxMenu])
+
+  const openIssueInNewTab = (key) => {
+    try {
+      const url = new URL(window.location.href)
+      url.searchParams.set('key', key)
+      window.open(url.toString(), '_blank', 'noopener,noreferrer')
+    } catch {
+      // URL API unavailable — fall back to a plain query-string join.
+      window.open(`${window.location.pathname}?key=${encodeURIComponent(key)}`, '_blank', 'noopener,noreferrer')
+    }
+  }
+
+  const copyIssueKey = async (key) => {
+    try {
+      await navigator.clipboard.writeText(key)
+    } catch {
+      // Clipboard API blocked (insecure context / permissions) — fall back to
+      // an off-screen textarea + execCommand so the copy still works.
+      const ta = document.createElement('textarea')
+      ta.value = key
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      try { document.execCommand('copy') } catch { /* nothing we can do */ }
+      document.body.removeChild(ta)
+    }
+  }
+
+  const openIssueInJira = (jiraUrl) => {
+    if (!jiraUrl) return
+    window.open(jiraUrl, '_blank', 'noopener,noreferrer')
+  }
 
   const toggleStaged = (key) => {
     setStagedKeys((prev) =>
@@ -347,6 +409,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
   )
 
   return (
+    <>
     <div className="rail">
       {/* ─── Projects view ─────────────────────────────────────────────── */}
       {!activeProject && (
@@ -580,6 +643,10 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
                     data-active={selectedIssueKey === iss.key ? 'true' : 'false'}
                     data-staged={isStaged ? 'true' : 'false'}
                     onClick={(e) => handleIssueClick(e, iss.key)}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setCtxMenu({ x: e.clientX, y: e.clientY, key: iss.key })
+                    }}
                     title={
                       subCount > 0
                         ? `${iss.issue_type || ''} · ${iss.summary} (+${subCount} subtask${subCount === 1 ? '' : 's'} in this column)${outOfSprint ? ' · not in active sprint' : ''}`
@@ -725,6 +792,92 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
         </>
       )}
     </div>
+    {ctxMenu && (
+      <div
+        data-ctx-menu="true"
+        role="menu"
+        style={{
+          position: 'fixed',
+          top: Math.min(ctxMenu.y, (typeof window !== 'undefined' ? window.innerHeight : 0) - 140),
+          left: Math.min(ctxMenu.x, (typeof window !== 'undefined' ? window.innerWidth : 0) - 220),
+          zIndex: 1000,
+          minWidth: 200,
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--divider)',
+          borderRadius: 'var(--r-md, 6px)',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+          padding: '4px',
+          fontSize: 'var(--t-sm)',
+        }}
+      >
+        <CtxMenuItem
+          icon="external"
+          onClick={() => {
+            openIssueInNewTab(ctxMenu.key)
+            closeCtxMenu()
+          }}
+        >
+          Open <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-subtle)' }}>{ctxMenu.key}</span> in new tab
+        </CtxMenuItem>
+        <CtxMenuItem
+          icon={ctxMenu.copied ? 'check' : 'copy'}
+          onClick={async () => {
+            await copyIssueKey(ctxMenu.key)
+            setCtxMenu((m) => (m ? { ...m, copied: true } : m))
+            setTimeout(closeCtxMenu, 700)
+          }}
+        >
+          {ctxMenu.copied
+            ? <>Copied <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-subtle)' }}>{ctxMenu.key}</span></>
+            : <>Copy <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-subtle)' }}>{ctxMenu.key}</span></>}
+        </CtxMenuItem>
+        <CtxMenuItem
+          icon="external"
+          disabled={!ctxJiraUrl}
+          onClick={() => {
+            openIssueInJira(ctxJiraUrl)
+            closeCtxMenu()
+          }}
+          title={ctxJiraUrl ? undefined : 'Jira base URL not configured'}
+        >
+          Open in Jira
+        </CtxMenuItem>
+      </div>
+    )}
+    </>
+  )
+}
+
+function CtxMenuItem({ icon, children, onClick, disabled, title }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        width: '100%',
+        padding: '6px 10px',
+        background: 'transparent',
+        border: 0,
+        borderRadius: 'var(--r-sm, 4px)',
+        color: disabled ? 'var(--fg-faint)' : 'var(--fg-strong)',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        textAlign: 'left',
+        opacity: disabled ? 0.6 : 1,
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.background = 'var(--bg-hover, rgba(255,255,255,0.06))'
+      }}
+      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+    >
+      <Icon name={icon} size={12} />
+      <span style={{ flex: 1 }}>{children}</span>
+    </button>
   )
 }
 
