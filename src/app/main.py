@@ -358,12 +358,24 @@ async def get_epic_children(epic_key: str):
 
 
 @app.get("/jira/projects")
-async def list_jira_projects():
-    """List Jira projects accessible to the configured account."""
+async def list_jira_projects(active_within_days: int | None = None):
+    """List Jira projects accessible to the configured account.
+
+    Optional `active_within_days` runs a JQL sweep for issues updated within
+    that window and returns the distinct project keys alongside the full
+    list, so the sidebar can filter to recently active projects while
+    keeping the full set one toggle away.
+    """
     jira = JiraClient()
     try:
-        projects = await jira.list_projects()
-        return {"projects": projects}
+        projects_task = jira.list_projects()
+        if active_within_days and active_within_days > 0:
+            active_task = jira.list_active_project_keys(days=active_within_days)
+            projects, active_keys = await asyncio.gather(projects_task, active_task)
+        else:
+            projects = await projects_task
+            active_keys = None
+        return {"projects": projects, "active_keys": active_keys}
     except JiraAuthError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except JiraConnectionError as e:

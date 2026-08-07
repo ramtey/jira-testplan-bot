@@ -22,7 +22,9 @@ const CATEGORY_DOT_COLOR = {
 
 const PINNED_STORAGE_KEY = 'jtb.browser.pinnedProjects'
 const RECENTS_STORAGE_KEY = 'jtb.browser.recentProjects'
+const ACTIVE_ONLY_STORAGE_KEY = 'jtb.browser.activeOnly'
 const MAX_RECENTS = 5
+const ACTIVE_WINDOW_DAYS = 30
 
 const IS_MAC =
   typeof navigator !== 'undefined' &&
@@ -45,6 +47,17 @@ const saveStored = (key, value) => {
     localStorage.setItem(key, JSON.stringify(value))
   } catch {
     // storage quota / disabled — ignore
+  }
+}
+
+const loadStoredBool = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === null) return fallback
+    const parsed = JSON.parse(raw)
+    return typeof parsed === 'boolean' ? parsed : fallback
+  } catch {
+    return fallback
   }
 }
 
@@ -99,9 +112,11 @@ function RefreshBtn({ busy, onClick }) {
 
 function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCollapsed }) {
   const [projects, setProjects] = useState(null)
+  const [activeKeys, setActiveKeys] = useState(null)
   const [projectsError, setProjectsError] = useState(null)
   const [projectsLoading, setProjectsLoading] = useState(false)
   const [projectFilter, setProjectFilter] = useState('')
+  const [activeOnly, setActiveOnly] = useState(() => loadStoredBool(ACTIVE_ONLY_STORAGE_KEY, true))
 
   const [activeProject, setActiveProject] = useState(null)
   const [statuses, setStatuses] = useState(null)
@@ -213,6 +228,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
 
   useEffect(() => saveStored(PINNED_STORAGE_KEY, pinnedKeys), [pinnedKeys])
   useEffect(() => saveStored(RECENTS_STORAGE_KEY, recentKeys), [recentKeys])
+  useEffect(() => saveStored(ACTIVE_ONLY_STORAGE_KEY, activeOnly), [activeOnly])
 
   const togglePin = (projectKey) => {
     setPinnedKeys((prev) =>
@@ -233,13 +249,17 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
     setProjectsError(null)
     setProjectsLoading(true)
     try {
-      const res = await fetch(`${API_BASE_URL}/jira/projects`, { cache: 'no-store' })
+      const res = await fetch(
+        `${API_BASE_URL}/jira/projects?active_within_days=${ACTIVE_WINDOW_DAYS}`,
+        { cache: 'no-store' },
+      )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.detail || 'Failed to load projects')
       }
       const data = await res.json()
       setProjects(data.projects || [])
+      setActiveKeys(Array.isArray(data.active_keys) ? data.active_keys : null)
     } catch (e) {
       setProjectsError(e.message)
     } finally {
@@ -385,10 +405,26 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
   }
 
   const isFiltering = projectFilter.trim().length > 0
+  // Active filter only applies when we have a definitive active_keys list from
+  // the backend AND the user hasn't opted into "show all". While a text filter
+  // is active, dormant projects should surface too — the user is searching for
+  // a specific one and hiding it based on staleness would look broken.
+  const activeSet = activeKeys ? new Set(activeKeys) : null
+  const applyActiveFilter = activeOnly && activeSet && !isFiltering
+  // Count dormant projects against the accessible project list — not
+  // activeSet.size, since JQL can surface keys the /project/search page
+  // didn't return (e.g. archived/restricted). That would misreport the
+  // toggle's effect.
+  const dormantCount = activeSet
+    ? (projects || []).filter((p) => !activeSet.has(p.key)).length
+    : 0
   const filteredProjects = (projects || []).filter((p) => {
-    if (!isFiltering) return true
-    const q = projectFilter.toLowerCase()
-    return p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q)
+    if (isFiltering) {
+      const q = projectFilter.toLowerCase()
+      return p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q)
+    }
+    if (applyActiveFilter) return activeSet.has(p.key)
+    return true
   })
 
   const projectByKey = Object.fromEntries((projects || []).map((p) => [p.key, p]))
@@ -457,9 +493,37 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
               </>
             )}
 
-            <div className="rail-group">
-              {isFiltering ? 'Matches' : 'All projects'}{' '}
+            <div className="rail-group" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>{isFiltering ? 'Matches' : (applyActiveFilter ? 'Active projects' : 'All projects')}</span>
               <span className="count">{filteredProjects.length}</span>
+              {!isFiltering && activeSet && (
+                <button
+                  type="button"
+                  onClick={() => setActiveOnly((v) => !v)}
+                  title={
+                    applyActiveFilter
+                      ? `Showing projects updated in the last ${ACTIVE_WINDOW_DAYS} days. Click to include ${dormantCount} dormant project${dormantCount === 1 ? '' : 's'}.`
+                      : `Showing every accessible project. Click to hide ${dormantCount} dormant project${dormantCount === 1 ? '' : 's'}.`
+                  }
+                  style={{
+                    marginLeft: 'auto',
+                    height: 18,
+                    padding: '0 6px',
+                    fontSize: 10,
+                    fontWeight: 600,
+                    textTransform: 'none',
+                    letterSpacing: 0,
+                    color: applyActiveFilter ? 'var(--accent)' : 'var(--fg-muted)',
+                    background: 'transparent',
+                    border: `1px solid ${applyActiveFilter ? 'var(--accent)' : 'var(--divider)'}`,
+                    borderRadius: 'var(--r-sm)',
+                    cursor: 'pointer',
+                    lineHeight: 1,
+                  }}
+                >
+                  {applyActiveFilter ? `Active · ${ACTIVE_WINDOW_DAYS}d` : 'Show all'}
+                </button>
+              )}
             </div>
             {filteredProjects.length === 0 && !projectsLoading && (
               <div style={{ padding: '8px 14px', color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>No projects match.</div>
@@ -473,6 +537,26 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
                 onTogglePin={togglePin}
               />
             ))}
+            {applyActiveFilter && dormantCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveOnly(false)}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  padding: '6px 14px',
+                  background: 'transparent',
+                  border: 0,
+                  color: 'var(--fg-subtle)',
+                  fontSize: 'var(--t-xs)',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                }}
+                title={`Include projects with no activity in the last ${ACTIVE_WINDOW_DAYS} days`}
+              >
+                +{dormantCount} dormant project{dormantCount === 1 ? '' : 's'} hidden — show all
+              </button>
+            )}
           </div>
         </>
       )}

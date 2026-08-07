@@ -1903,6 +1903,65 @@ class JiraClient:
             })
         return projects
 
+    async def list_active_project_keys(
+        self, days: int = 30, max_issues: int = 500
+    ) -> list[str]:
+        """Return project keys with at least one issue updated in the last `days`.
+
+        Runs a single JQL query ordered by updated DESC, paginating up to
+        `max_issues` results, and collects distinct project keys. `days`
+        clamps to 1..365; `max_issues` clamps to 1..2000. Auth/connection
+        failures raise; anything else falls back to an empty list so the
+        sidebar can still render without the "active" annotation.
+        """
+        days = max(1, min(365, int(days)))
+        max_issues = max(1, min(2000, int(max_issues)))
+
+        url = f"{self.base_url}/rest/api/3/search/jql"
+        headers = {**self._headers(), "Content-Type": "application/json"}
+        keys: list[str] = []
+        seen: set[str] = set()
+        next_token: str | None = None
+        fetched = 0
+        page_size = 100
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                while fetched < max_issues:
+                    payload = {
+                        "jql": f"updated >= -{days}d ORDER BY updated DESC",
+                        "fields": ["project"],
+                        "maxResults": min(page_size, max_issues - fetched),
+                    }
+                    if next_token:
+                        payload["nextPageToken"] = next_token
+                    r = await client.post(url, headers=headers, json=payload)
+                    if r.status_code == 401:
+                        error_message, error_type = self._parse_auth_error(r)
+                        raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+                    if r.status_code == 403:
+                        raise JiraAuthError(
+                            "Jira access forbidden. Check permissions for searching issues.",
+                            status_code=403,
+                            error_type="insufficient_permissions",
+                        )
+                    r.raise_for_status()
+                    data = r.json() or {}
+                    issues = data.get("issues") or []
+                    for issue in issues:
+                        pkey = ((issue.get("fields") or {}).get("project") or {}).get("key")
+                        if pkey and pkey not in seen:
+                            seen.add(pkey)
+                            keys.append(pkey)
+                    fetched += len(issues)
+                    next_token = data.get("nextPageToken")
+                    if not next_token or not issues:
+                        break
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        return keys
+
     async def list_project_statuses(self, project_key: str) -> list[dict]:
         """List the status columns that appear on the project's active board.
 
