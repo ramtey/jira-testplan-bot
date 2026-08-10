@@ -2130,7 +2130,7 @@ class JiraClient:
         # rows that aren't in the current sprint.
         main_payload = {
             "jql": f'project = {project_key} AND status = "{escaped_status}" ORDER BY Rank ASC, created ASC',
-            "fields": ["summary", "issuetype", "status", "parent", "customfield_10007"],
+            "fields": ["summary", "issuetype", "status", "parent", "customfield_10007", "assignee"],
             "maxResults": 100,
         }
         # Probe whether this project uses sprints at all. A Kanban project with
@@ -2191,6 +2191,8 @@ class JiraClient:
             status_field = fields.get("status") or {}
             parent_field = fields.get("parent") or {}
             sprint_field = fields.get("customfield_10007")
+            assignee_field = fields.get("assignee") or {}
+            assignee_avatars = assignee_field.get("avatarUrls") or {}
             if not project_uses_sprints:
                 in_active_sprint: bool | None = None
             elif not sprint_field:
@@ -2209,6 +2211,12 @@ class JiraClient:
                     status_category=(status_field.get("statusCategory") or {}).get("key"),
                     parent_key=parent_field.get("key") or None,
                     in_active_sprint=in_active_sprint,
+                    assignee_name=assignee_field.get("displayName") or None,
+                    assignee_account_id=assignee_field.get("accountId") or None,
+                    assignee_avatar_url=(
+                        assignee_avatars.get("24x24")
+                        or next(iter(assignee_avatars.values()), None)
+                    ),
                 )
             )
         return results

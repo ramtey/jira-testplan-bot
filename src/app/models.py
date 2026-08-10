@@ -236,6 +236,9 @@ class EpicChildSummary:
     # True if the issue is in an active sprint, False if it has sprint history
     # but no active sprint, None if the project doesn't use sprints at all.
     in_active_sprint: bool | None = None
+    assignee_name: str | None = None
+    assignee_account_id: str | None = None
+    assignee_avatar_url: str | None = None
 
 
 @dataclass

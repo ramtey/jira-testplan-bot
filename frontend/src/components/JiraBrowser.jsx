@@ -61,6 +61,83 @@ const loadStoredBool = (key, fallback) => {
   }
 }
 
+// First char of first name + third char of last name (e.g. "Ram Teymouri" → "Ry").
+// Falls back to whatever chars are actually there so short names don't render blank.
+function assigneeInitials(name) {
+  const parts = (name || '').trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return '?'
+  const first = parts[0][0] || ''
+  const last = parts.length > 1 ? parts[parts.length - 1] : ''
+  const secondChar = last[2] || last[1] || last[0] || ''
+  return (first + secondChar).toUpperCase() || '?'
+}
+
+const AVATAR_HUES = ['#a855f7', '#ec4899', '#14b8a6', '#f59e0b', '#3b82f6', '#ef4444', '#22c55e']
+function assigneeHue(seed) {
+  const s = seed || ''
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i)) % AVATAR_HUES.length
+  return AVATAR_HUES[h]
+}
+
+function AssigneeAvatar({ name, accountId, avatarUrl, size = 16 }) {
+  const [imgFailed, setImgFailed] = useState(false)
+  const label = name ? `Assignee: ${name}` : 'Unassigned'
+  const style = {
+    width: size,
+    height: size,
+    borderRadius: '50%',
+    flexShrink: 0,
+    display: 'inline-block',
+    verticalAlign: 'middle',
+  }
+  if (!name) {
+    return (
+      <span
+        title={label}
+        aria-label={label}
+        style={{
+          ...style,
+          border: '1px dashed var(--divider)',
+          background: 'transparent',
+          boxSizing: 'border-box',
+        }}
+      />
+    )
+  }
+  if (avatarUrl && !imgFailed) {
+    return (
+      <img
+        src={avatarUrl}
+        alt=""
+        title={label}
+        onError={() => setImgFailed(true)}
+        style={{ ...style, objectFit: 'cover' }}
+      />
+    )
+  }
+  return (
+    <span
+      title={label}
+      aria-label={label}
+      style={{
+        ...style,
+        background: assigneeHue(accountId || name),
+        color: 'white',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: Math.max(8, Math.round(size * 0.5)),
+        fontWeight: 700,
+        fontFamily: 'var(--font-sans)',
+        letterSpacing: 0,
+      }}
+    >
+      {assigneeInitials(name)}
+    </span>
+  )
+}
+
 function projectMark(project, size = 14) {
   const initials = (project.key || '?').slice(0, 2)
   // Hash project key into a color for a stable per-project tint.
@@ -732,11 +809,12 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
                       setCtxMenu({ x: e.clientX, y: e.clientY, key: iss.key })
                     }}
                     title={
-                      subCount > 0
+                      (subCount > 0
                         ? `${iss.issue_type || ''} · ${iss.summary} (+${subCount} subtask${subCount === 1 ? '' : 's'} in this column)${outOfSprint ? ' · not in active sprint' : ''}`
                         : isOrphanSub
                           ? `Subtask of ${iss.parent_key} · ${iss.summary}${outOfSprint ? ' · not in active sprint' : ''}`
-                          : `${iss.issue_type || ''} · ${iss.summary}${outOfSprint ? ' · not in active sprint' : ''}`
+                          : `${iss.issue_type || ''} · ${iss.summary}${outOfSprint ? ' · not in active sprint' : ''}`)
+                      + (iss.assignee_name ? ` · ${iss.assignee_name}` : ' · unassigned')
                     }
                     style={{
                       padding: isOrphanSub
@@ -760,6 +838,11 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
                       />
                     )}
                     {iss.issue_type && <TypeMark type={iss.issue_type} size={13} />}
+                    <AssigneeAvatar
+                      name={iss.assignee_name}
+                      accountId={iss.assignee_account_id}
+                      avatarUrl={iss.assignee_avatar_url}
+                    />
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: selectedIssueKey === iss.key ? 'var(--accent)' : 'var(--fg-subtle)', flexShrink: 0 }}>
                       {iss.key}
                     </span>
