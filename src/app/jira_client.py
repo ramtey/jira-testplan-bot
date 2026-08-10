@@ -3360,6 +3360,49 @@ class JiraClient:
             return user.get("accountId"), user.get("displayName")
         return None, None
 
+    async def search_users(
+        self, query: str, max_results: int = 5
+    ) -> list[dict[str, str]]:
+        """Return up to `max_results` active human users matching `query`.
+
+        Feeds the Pass-to-UAT "add someone else" picker so testers can @-mention
+        or reassign to people outside the ticket's existing history. Same
+        active/atlassian filter as `find_user`, but the caller wants a short
+        list to render rather than a single hit.
+        """
+        if not query:
+            return []
+        url = f"{self.base_url}/rest/api/3/user/search"
+        params = {"query": query, "maxResults": max(1, min(max_results, 20))}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(url, headers=self._headers(), params=params)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code != 200:
+            return []
+
+        results: list[dict[str, str]] = []
+        for user in r.json() or []:
+            if user.get("accountType") and user.get("accountType") != "atlassian":
+                continue
+            if user.get("active") is False:
+                continue
+            account_id = user.get("accountId")
+            display_name = user.get("displayName")
+            if not account_id or not display_name:
+                continue
+            if is_blocked_bot_display_name(display_name):
+                continue
+            results.append({"account_id": account_id, "display_name": display_name})
+            if len(results) >= max_results:
+                break
+        return results
+
     async def get_top_pr_contributor_account_id(
         self, issue_key: str, exclude_account_id: str | None = None
     ) -> tuple[str | None, str | None]:

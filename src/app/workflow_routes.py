@@ -1039,3 +1039,24 @@ async def get_pr_contributor(issue_key: str) -> dict:
         issue_key, exclude_account_id=my_account_id
     )
     return {"account_id": account_id, "display_name": display_name}
+
+
+@router.get("/users/search")
+async def search_jira_users(q: str = "", limit: int = 5) -> dict:
+    """Typeahead for the Pass-to-UAT "add someone else" picker.
+
+    Short-circuits on empty/short queries so the frontend can wire this to
+    every keystroke without hammering Jira on stray focus events. Silent on
+    Jira errors — the picker just shows no results rather than surfacing a
+    dropdown full of failure copy.
+    """
+    query = (q or "").strip()
+    if len(query) < 2:
+        return {"results": []}
+    capped = max(1, min(limit, 10))
+    try:
+        results = await JiraClient().search_users(query, max_results=capped)
+    except (JiraAuthError, JiraConnectionError) as exc:
+        logger.warning("user search failed for %r: %s", query, exc)
+        return {"results": []}
+    return {"results": results}

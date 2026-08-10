@@ -483,6 +483,151 @@ function PrLoomDiscoveryPanel({ status, discovered, selected, onToggle }) {
   )
 }
 
+// Typeahead for people who never touched the ticket. Debounces onto the
+// server-side Jira user-search endpoint so keystrokes don't hammer it, and
+// filters out anyone already in the picker (picking them again would be a
+// no-op and just clutters the dropdown). Silent on network failure — the
+// dropdown stays empty rather than showing an error, matching how the
+// pr-looms / pr-contributor fetches behave elsewhere in this form.
+function UserSearchInput({ excludeAccountIds, currentUserAccountId, onPick, disabled }) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [isFocused, setIsFocused] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const blurTimerRef = useRef(null)
+
+  useEffect(() => {
+    const trimmed = query.trim()
+    if (trimmed.length < 2) {
+      setResults([])
+      setIsLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    setIsLoading(true)
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/issue/users/search?q=${encodeURIComponent(trimmed)}&limit=8`,
+          { signal: controller.signal }
+        )
+        if (!response.ok) {
+          setResults([])
+          return
+        }
+        const data = await response.json().catch(() => ({}))
+        setResults(Array.isArray(data?.results) ? data.results : [])
+      } catch (err) {
+        if (err?.name !== 'AbortError') setResults([])
+      } finally {
+        setIsLoading(false)
+      }
+    }, 200)
+    return () => {
+      controller.abort()
+      clearTimeout(timer)
+    }
+  }, [query])
+
+  useEffect(() => () => {
+    if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
+  }, [])
+
+  // Exclude anyone already in the picker AND the current user — nobody
+  // needs to @-mention or assign to themselves from this form.
+  const excluded = new Set(excludeAccountIds || [])
+  if (currentUserAccountId) excluded.add(currentUserAccountId)
+  const visibleResults = results.filter((r) => !excluded.has(r.account_id))
+  const showDropdown = isFocused && query.trim().length >= 2
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        type="text"
+        className="inp"
+        placeholder="Search anyone in Jira by name or email…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onFocus={() => {
+          if (blurTimerRef.current) clearTimeout(blurTimerRef.current)
+          setIsFocused(true)
+        }}
+        onBlur={() => {
+          // Delay so a click on a result registers before we tear the
+          // dropdown down (mousedown → blur → click order).
+          blurTimerRef.current = setTimeout(() => setIsFocused(false), 120)
+        }}
+        disabled={disabled}
+      />
+      {showDropdown && (
+        <div
+          role="listbox"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            left: 0,
+            right: 0,
+            background: 'var(--bg-overlay)',
+            border: '1px solid var(--line-strong)',
+            borderRadius: 'var(--r-md)',
+            boxShadow: '0 12px 32px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35)',
+            zIndex: 20,
+            maxHeight: 260,
+            overflowY: 'auto',
+            padding: 4,
+          }}
+        >
+          {isLoading && visibleResults.length === 0 && (
+            <div style={{ padding: '10px 12px', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+              Searching…
+            </div>
+          )}
+          {!isLoading && visibleResults.length === 0 && (
+            <div style={{ padding: '10px 12px', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+              {query.trim().length < 2 ? 'Type at least 2 characters.' : 'No matches.'}
+            </div>
+          )}
+          {visibleResults.map((r) => (
+            <button
+              key={r.account_id}
+              type="button"
+              role="option"
+              onMouseDown={(e) => {
+                // Fire on mousedown so the input's onBlur (which hides the
+                // dropdown) doesn't win the race and swallow the click.
+                e.preventDefault()
+                onPick({ accountId: r.account_id, name: r.display_name })
+                setQuery('')
+                setResults([])
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                width: '100%',
+                textAlign: 'left',
+                padding: '8px 10px',
+                background: 'transparent',
+                border: 'none',
+                borderRadius: 'var(--r-sm)',
+                cursor: 'pointer',
+                fontSize: 'var(--t-sm)',
+                color: 'var(--fg)',
+                transition: 'background 80ms',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,.06)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <Icon name="plus" size={12} style={{ color: 'var(--fg-subtle)' }} />
+              {r.display_name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WorkflowActions({
   ticketKey,
   currentStatus,
@@ -507,6 +652,11 @@ function WorkflowActions({
   const [reason, setReason] = useState('')
   const [imageFiles, setImageFiles] = useState([])
   const [mentionAccountIds, setMentionAccountIds] = useState([])
+  // Tester-added people who never touched the ticket. Populated by the
+  // "Add someone" typeahead. Merged into `mentionCandidates` below so they
+  // render as pills alongside the ticket's own history, and dedup'd against
+  // the base candidates so re-picking someone already listed is a no-op.
+  const [extraCandidates, setExtraCandidates] = useState([])
   // Manual override for who gets the ticket after the transition.
   // Shapes:
   //   null                                    → server auto-picks (prior assignee → PR contributor)
@@ -564,7 +714,7 @@ function WorkflowActions({
   // `defaultPassToUatAssignee` as a dep without re-registering every render.
   // Must live before the effects below (they close over these values) and
   // before the early returns further down (Rules of Hooks).
-  const mentionCandidates = useMemo(
+  const baseCandidates = useMemo(
     () =>
       buildMentionCandidates({
         assignee,
@@ -586,22 +736,41 @@ function WorkflowActions({
     ]
   )
 
+  // Tester-added extras get flagged `isExtra: true` so the pill renderer can
+  // show a "+" prefix instead of the ★/plain treatment used for people the
+  // ticket already touched. Dedup'd against baseCandidates in case the tester
+  // searched for someone who's already in the list — we prefer the base entry
+  // (it may carry `isAssignee: true`).
+  const mentionCandidates = useMemo(() => {
+    const seen = new Set(baseCandidates.map((p) => p.accountId))
+    const additions = extraCandidates
+      .filter((p) => p?.accountId && !seen.has(p.accountId))
+      .map((p) => ({
+        accountId: p.accountId,
+        name: p.name || p.accountId,
+        isAssignee: false,
+        isExtra: true,
+      }))
+    return additions.length === 0 ? baseCandidates : [...baseCandidates, ...additions]
+  }, [baseCandidates, extraCandidates])
+
   // For Pass-to-UAT, the ticket almost always goes back to the developer
-  // who owned it before QA pulled it. mentionCandidates[0] is exactly that
+  // who owned it before QA pulled it. baseCandidates[0] is exactly that
   // person (buildMentionCandidates orders current-assignee-first → prior
   // assignees → comment authors, skipping the current user), which matches
-  // the server's own auto-pick. Null when there's no candidate to default
-  // to (fresh ticket, no history, no comments). Memoized so effects that
-  // depend on it don't re-fire every render.
+  // the server's own auto-pick. Deliberately reads from baseCandidates, not
+  // mentionCandidates, so an "Add someone else" pick on a fresh ticket
+  // doesn't get silently auto-assigned. Null when there's no candidate to
+  // default to (fresh ticket, no history, no comments).
   const defaultPassToUatAssignee = useMemo(
     () =>
-      mentionCandidates[0]
+      baseCandidates[0]
         ? {
-            accountId: mentionCandidates[0].accountId,
-            name: mentionCandidates[0].name,
+            accountId: baseCandidates[0].accountId,
+            name: baseCandidates[0].name,
           }
         : null,
-    [mentionCandidates]
+    [baseCandidates]
   )
 
   useEffect(() => {
@@ -810,6 +979,7 @@ function WorkflowActions({
     setReason('')
     setImageFiles([])
     setMentionAccountIds([])
+    setExtraCandidates([])
     setAssigneeOverride(null)
     setCascadeToSubtasks(hasSubtasks)
     setPrLoomStatus(null)
@@ -963,15 +1133,19 @@ function WorkflowActions({
 
   // Merge the assignee override into the outgoing payload.
   //
-  // - Picker visible (mentionCandidates non-empty):
-  //     Selected pill → assign to that person.
-  //     No pill selected → explicit unassign (server override, no auto-pick).
-  // - Picker hidden (no candidates to show, e.g. a fresh ticket with no
-  //   history and no prior comments): omit the override so the server's
-  //   auto-pick chain runs — otherwise we'd silently strip the assignee on
-  //   every one of those tickets.
+  // The picker is now always available for Pass-to-UAT (the "Add someone
+  // else" search box lets the tester add candidates on a fresh ticket), so
+  // the old "candidates non-empty" heuristic no longer identifies whether
+  // the tester made a choice. Instead:
+  //
+  // - assigneeOverride set (default pre-selected, or the tester picked a
+  //   pill) → send the override.
+  // - Tester clicked a pill to clear the selection (userChoseAssigneeRef)
+  //   → send an explicit unassign; they deliberately deselected.
+  // - Neither → let the server's auto-pick chain run (prior assignee → PR
+  //   contributor). Matches the pre-search-box behavior for fresh tickets.
   const applyAssigneeOverride = (body) => {
-    if (mentionCandidates.length === 0) return body
+    if (!assigneeOverride && !userChoseAssigneeRef.current) return body
     return {
       ...(body || {}),
       assignee_override_set: true,
@@ -1358,54 +1532,86 @@ function WorkflowActions({
               disabled={pendingAction !== null}
             />
 
-            {mentionCandidates.length > 0 && (
+            {(noteForAction.id === 'pass-to-uat' || mentionCandidates.length > 0) && (
               <>
-                <span className="lbl">Assign to</span>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {mentionCandidates.map((person) => {
-                      const selected =
-                        assigneeOverride?.accountId === person.accountId
-                      return (
-                        <EnvPill
-                          key={person.accountId}
-                          value={person.isAssignee ? `★ ${person.name}` : person.name}
-                          on={selected}
-                          onToggle={() => {
-                            userChoseAssigneeRef.current = true
-                            setAssigneeOverride((prev) =>
-                              prev?.accountId === person.accountId
-                                ? null
-                                : { accountId: person.accountId, name: person.name }
-                            )
-                          }}
-                          disabled={pendingAction !== null}
-                        />
-                      )
-                    })}
-                  </div>
-                  <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
-                    {assigneeOverride
-                      ? `Ticket will be assigned to ${assigneeOverride.name}.`
-                      : 'Ticket will be unassigned — pick someone above to change that.'}
-                  </div>
-                </div>
+                {noteForAction.id === 'pass-to-uat' && (
+                  <>
+                    <span className="lbl">Add someone</span>
+                    <UserSearchInput
+                      excludeAccountIds={mentionCandidates.map((p) => p.accountId)}
+                      currentUserAccountId={currentUserAccountId}
+                      onPick={(person) =>
+                        setExtraCandidates((prev) =>
+                          prev.some((p) => p.accountId === person.accountId)
+                            ? prev
+                            : [...prev, person]
+                        )
+                      }
+                      disabled={pendingAction !== null}
+                    />
+                  </>
+                )}
 
-                <span className="lbl">Notify</span>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {mentionCandidates.map((person) => {
-                    const selected = mentionAccountIds.includes(person.accountId)
-                    return (
-                      <EnvPill
-                        key={person.accountId}
-                        value={person.isAssignee ? `★ ${person.name}` : person.name}
-                        on={selected}
-                        onToggle={() => toggleMention(person.accountId)}
-                        disabled={pendingAction !== null}
-                      />
-                    )
-                  })}
-                </div>
+                {mentionCandidates.length > 0 && (
+                  <>
+                    <span className="lbl">Assign to</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {mentionCandidates.map((person) => {
+                          const selected =
+                            assigneeOverride?.accountId === person.accountId
+                          const prefix = person.isAssignee
+                            ? '★ '
+                            : person.isExtra
+                              ? '+ '
+                              : ''
+                          return (
+                            <EnvPill
+                              key={person.accountId}
+                              value={`${prefix}${person.name}`}
+                              on={selected}
+                              onToggle={() => {
+                                userChoseAssigneeRef.current = true
+                                setAssigneeOverride((prev) =>
+                                  prev?.accountId === person.accountId
+                                    ? null
+                                    : { accountId: person.accountId, name: person.name }
+                                )
+                              }}
+                              disabled={pendingAction !== null}
+                            />
+                          )
+                        })}
+                      </div>
+                      <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+                        {assigneeOverride
+                          ? `Ticket will be assigned to ${assigneeOverride.name}.`
+                          : 'Ticket will be unassigned — pick someone above to change that.'}
+                      </div>
+                    </div>
+
+                    <span className="lbl">Notify</span>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {mentionCandidates.map((person) => {
+                        const selected = mentionAccountIds.includes(person.accountId)
+                        const prefix = person.isAssignee
+                          ? '★ '
+                          : person.isExtra
+                            ? '+ '
+                            : ''
+                        return (
+                          <EnvPill
+                            key={person.accountId}
+                            value={`${prefix}${person.name}`}
+                            on={selected}
+                            onToggle={() => toggleMention(person.accountId)}
+                            disabled={pendingAction !== null}
+                          />
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
