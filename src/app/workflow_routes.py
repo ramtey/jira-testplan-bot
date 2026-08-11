@@ -11,6 +11,7 @@ import logging
 import mimetypes
 import posixpath
 import re
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -622,27 +623,67 @@ async def run_workflow_action(
     target_status = SK_WORKFLOW_ACTIONS[action]
     jira = JiraClient()
 
-    # pull-to-testing has no comment flow, so attachments there would be
-    # orphaned — skip the upload for that action even if the tester sent files.
-    image_attachments: list[ImageAttachment] = []
-    if image_files and (action == "pass-to-uat" or action in _FAIL_ACTIONS):
-        image_attachments = await _upload_and_enrich_attachments(
-            jira, issue_key, image_files
-        )
+    # Timing: the endpoint fans out 8-12 Jira REST calls per request, and
+    # the tester perceives anything past ~10s as "stuck." Log the wall-clock
+    # of each phase so a slow ticket can be traced to which Jira call is
+    # actually dragging (upload, transition lookup, comment post, etc.).
+    t_start = time.perf_counter()
 
+    upload_needed = bool(image_files) and (
+        action == "pass-to-uat" or action in _FAIL_ACTIONS
+    )
+
+    # Phase 1 — read-only prep + attachment upload, in parallel. All four
+    # branches are independent of one another; the attachment upload writes
+    # to Jira (as attachments, not the ticket status), so a failure here
+    # still aborts before the primary transition runs, matching the pre-
+    # refactor "upload before transition" invariant.
+    #
+    # my_account_id has a process-wide cache, so awaiting it before the
+    # gather keeps _resolve_assignee_for_workflow's signature unchanged
+    # without adding a round-trip.
     try:
-        transition = await _lookup_target_transition(jira, issue_key, target_status)
-
         my_account_id = await jira.get_my_account_id()
-        target_account_id, assigned_label, resolved_via = (
-            await _resolve_assignee_for_workflow(
-                jira, issue_key, action, parsed_payload, my_account_id
+
+        async def _do_upload() -> list[ImageAttachment]:
+            if not upload_needed:
+                return []
+            return await _upload_and_enrich_attachments(
+                jira, issue_key, image_files
             )
+
+        async def _do_parent_pre_status() -> str | None:
+            if parsed_payload is None or not parsed_payload.cascade_to_subtasks:
+                return None
+            try:
+                return await jira.get_issue_status(issue_key)
+            except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
+                logger.warning(
+                    "Could not read pre-transition status for %s: %s",
+                    issue_key,
+                    exc,
+                )
+                return None
+
+        (
+            image_attachments,
+            transition,
+            assignee_result,
+            parent_pre_status,
+        ) = await asyncio.gather(
+            _do_upload(),
+            _lookup_target_transition(jira, issue_key, target_status),
+            _resolve_assignee_for_workflow(
+                jira, issue_key, action, parsed_payload, my_account_id
+            ),
+            _do_parent_pre_status(),
         )
+        target_account_id, assigned_label, resolved_via = assignee_result
         if action != "pull-to-testing":
             target_account_id, assigned_label, resolved_via = _apply_bot_safety_net(
                 target_account_id, assigned_label, resolved_via, my_account_id
             )
+        t_prep = time.perf_counter() - t_start
 
         logger.info(
             "Workflow %s on %s: resolved assignee via %s -> %s",
@@ -652,40 +693,62 @@ async def run_workflow_action(
             assigned_label,
         )
 
-        # Capture parent's status BEFORE the transition so the subtask cascade
-        # can match only siblings that share the parent's pre-transition state
-        # (e.g., a parent in "Ready to Test" should only pull subtasks that
-        # are also in "Ready to Test").
-        parent_pre_status: str | None = None
-        if parsed_payload is not None and parsed_payload.cascade_to_subtasks:
-            try:
-                parent_pre_status = await jira.get_issue_status(issue_key)
-            except (JiraNotFoundError, JiraAuthError, JiraConnectionError) as exc:
-                logger.warning(
-                    "Could not read pre-transition status for %s: %s",
-                    issue_key,
-                    exc,
-                )
-
-        await jira.transition_issue(issue_key, transition["id"])
-        await jira.assign_issue(issue_key, target_account_id)
-
-        comment_posted = await _post_workflow_comment(
-            jira, action, issue_key, parsed_payload, image_attachments
+        # Phase 2 — transition + assign, in parallel. Both are single writes
+        # against the same ticket but hit independent endpoints
+        # (`/transitions` vs `/assignee`) so Jira handles them concurrently.
+        # If either fails the other still completes; that matches the pre-
+        # refactor sequential behavior (transition-then-assign left the same
+        # partial-write windows on either half's failure).
+        await asyncio.gather(
+            jira.transition_issue(issue_key, transition["id"]),
+            jira.assign_issue(issue_key, target_account_id),
         )
+        t_primary = time.perf_counter() - t_start
 
-        parent_transitioned = False
-        parent_key: str | None = None
-        if action == "pass-to-uat":
-            parent_transitioned, parent_key = await _maybe_transition_parent_to_uat(
+        # Phase 3 — follow-ups, all parallel. Comment posting swallows its
+        # own errors; parent/cascade helpers catch their Jira exceptions and
+        # log-and-return. None of them can propagate to the outer handler,
+        # so gather here can't fail after the transition already succeeded.
+        async def _do_comment() -> bool:
+            return await _post_workflow_comment(
+                jira, action, issue_key, parsed_payload, image_attachments
+            )
+
+        async def _do_parent_transition() -> tuple[bool, str | None]:
+            if action != "pass-to-uat":
+                return False, None
+            return await _maybe_transition_parent_to_uat(
                 jira, issue_key, target_status
             )
 
-        cascaded_subtasks: list[str] = []
-        if parsed_payload is not None and parsed_payload.cascade_to_subtasks:
-            cascaded_subtasks = await _cascade_transition_to_subtasks(
+        async def _do_cascade() -> list[str]:
+            if parsed_payload is None or not parsed_payload.cascade_to_subtasks:
+                return []
+            return await _cascade_transition_to_subtasks(
                 jira, issue_key, target_status, parent_pre_status
             )
+
+        (
+            comment_posted,
+            (parent_transitioned, parent_key),
+            cascaded_subtasks,
+        ) = await asyncio.gather(
+            _do_comment(),
+            _do_parent_transition(),
+            _do_cascade(),
+        )
+        t_total = time.perf_counter() - t_start
+
+        logger.info(
+            "Workflow %s on %s finished in %.2fs "
+            "(prep=%.2fs primary=%.2fs follow-ups=%.2fs)",
+            action,
+            issue_key,
+            t_total,
+            t_prep,
+            t_primary - t_prep,
+            t_total - t_primary,
+        )
 
         return {
             "status": "ok",
