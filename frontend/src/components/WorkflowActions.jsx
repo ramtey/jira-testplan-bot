@@ -1196,8 +1196,7 @@ function WorkflowActions({
           .filter((_, i) => checklistTicked.has(i))
           .map((step) => `- ${step}`)
           .join('\n')
-        const block = `**Steps demonstrated in the video**\n${bullets}`
-        return trimmedSummary ? `${trimmedSummary}\n\n${block}` : block
+        return trimmedSummary ? `${trimmedSummary}\n\n${bullets}` : bullets
       })()
       const hasAnyField =
         looms.length > 0 ||
