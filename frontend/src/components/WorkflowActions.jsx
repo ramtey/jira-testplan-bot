@@ -1193,11 +1193,8 @@ function WorkflowActions({
           return trimmedSummary || null
         }
         const bullets = checklistSteps
-          .map((step, i) =>
-            checklistTicked.has(i)
-              ? `- [x] ${step}`
-              : `- [ ] ${step} *(not covered)*`
-          )
+          .filter((_, i) => checklistTicked.has(i))
+          .map((step) => `- ${step}`)
           .join('\n')
         const block = `**Steps demonstrated in the video**\n${bullets}`
         return trimmedSummary ? `${trimmedSummary}\n\n${block}` : block
