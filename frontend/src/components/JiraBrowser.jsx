@@ -437,6 +437,21 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
     fetchProjects()
   }, [])
 
+  // With exactly one pinned project, the list view is a single-item detour —
+  // jump straight into it on first load. Guard with a ref so navigating back
+  // to the project list doesn't immediately snap forward again.
+  const didAutoSelectPinnedRef = useRef(false)
+  useEffect(() => {
+    if (didAutoSelectPinnedRef.current) return
+    if (!Array.isArray(projects)) return
+    if (activeProject) return
+    if (pinnedKeys.length !== 1) return
+    const project = projects.find((p) => p.key === pinnedKeys[0])
+    if (!project) return
+    didAutoSelectPinnedRef.current = true
+    selectProject(project)
+  }, [projects, pinnedKeys, activeProject])
+
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState === 'visible') {
