@@ -161,10 +161,13 @@ function App() {
   }, [testPlan.plan])
 
   useEffect(() => {
-    if (bugLens.analysis && bugAnalysisRef.current) {
+    // Skip the scroll for auto-triggered runs (Bug + first pull-to-testing):
+    // the test plan generation just scrolled the user to the plan section,
+    // and jumping to the analysis when it finishes yanks them off it.
+    if (bugLens.analysis && bugAnalysisRef.current && !bugLens.autoTriggered) {
       bugAnalysisRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-  }, [bugLens.analysis])
+  }, [bugLens.analysis, bugLens.autoTriggered])
 
   const isMultiTicket = ticketsData.length > 1
   const ticketData = ticketsData.length === 1 ? ticketsData[0] : null
