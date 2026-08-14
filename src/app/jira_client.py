@@ -353,6 +353,175 @@ def _normalize_attachments(
     return out
 
 
+# Inline image tokens the tester can drop into a reason/summary field so a
+# screenshot renders next to a specific bullet instead of getting dumped at
+# the bottom of the comment:
+#   [[img:filename.png]]  → matches an uploaded attachment by filename
+#   ![alt](https://…)     → external image URL (Jira Cloud renders these
+#                            as media nodes when the host is reachable)
+# Kept together in one regex so a paragraph containing a mix of both is
+# processed in a single pass, preserving the tester's ordering.
+_INLINE_IMG_TOKEN_RE = re.compile(
+    r'\[\[img:(?P<name>[^\]\n]+)\]\]'
+    r'|!\[(?P<alt>[^\]\n]*)\]\((?P<url>[^)\s]+)\)'
+)
+
+# Private-use-area sentinels bracket a numeric index while the raw reason
+# text passes through the markdown parser. PUA codepoints (U+E000..U+F8FF)
+# are guaranteed to never appear in a tester's typed text and survive the
+# inline formatting/URL scan as opaque characters — so `![alt](url)` gets
+# swapped out *before* the bare-URL regex can eat the URL inside it.
+_TOKEN_SENTINEL_START = ""
+_TOKEN_SENTINEL_END = ""
+_TOKEN_SENTINEL_RE = re.compile(r"(\d+)")
+
+
+def _media_block_from_token(
+    match: "re.Match[str]",
+    attachments_by_name: dict[str, ImageAttachment],
+) -> "tuple[dict | None, str | None]":
+    """Resolve one image token to an ADF block.
+
+    Returns `(block, used_filename)`. `block` is None when the token
+    can't be resolved (unknown filename), in which case the caller
+    leaves the raw token as literal text so the tester notices the
+    typo. `used_filename` is set when the token consumed one of the
+    uploaded attachments so the caller can skip re-appending it at
+    the bottom of the comment.
+    """
+    name = match.group("name")
+    if name is not None:
+        att = attachments_by_name.get(name.strip().lower())
+        if att is None:
+            return None, None
+        if att.media_id:
+            return _build_attachment_media_node(att.media_id), att.filename
+        # No UUID resolved — fall back to the labeled callout the rest of
+        # the pipeline uses for attach-without-media cases. Still counts
+        # as "used" so we don't render the same filename twice.
+        return _build_attachment_label_paragraph(att.filename), att.filename
+    url = match.group("url")
+    if url:
+        return {
+            "type": "mediaSingle",
+            "attrs": {"layout": "center"},
+            "content": [
+                {"type": "media", "attrs": {"type": "external", "url": url}},
+            ],
+        }, None
+    return None, None
+
+
+def _expand_inline_image_tokens(
+    reason: str,
+    attachments: "list[ImageAttachment]",
+) -> "tuple[list[dict], set[str]]":
+    """Run reason markdown through `markdown_to_adf` with inline image
+    tokens preserved, then swap the sentinels back for real media blocks.
+
+    The two-phase design sidesteps a subtle interaction with the inline
+    URL scanner: `![alt](https://…)` contains a bare URL that would
+    otherwise be grabbed by `_BARE_URL_RE` before the token processor
+    ever sees it, leaving nothing to expand. Sentinels made of PUA
+    codepoints look like plain characters to every parser pass and only
+    get interpreted here, so token positions survive intact.
+
+    Returns `(new_content, used_filenames)`. `used_filenames` lets the
+    caller drop those attachments from the trailing image list so the
+    same screenshot doesn't render twice.
+    """
+    token_matches: list["re.Match[str]"] = []
+
+    def replace(match: "re.Match[str]") -> str:
+        idx = len(token_matches)
+        token_matches.append(match)
+        return f"{_TOKEN_SENTINEL_START}{idx}{_TOKEN_SENTINEL_END}"
+
+    stripped = _INLINE_IMG_TOKEN_RE.sub(replace, reason)
+    adf = markdown_to_adf(stripped)
+    content = adf.get("content", [])
+    if not token_matches:
+        return content, set()
+
+    attachments_by_name = {
+        att.filename.strip().lower(): att for att in attachments
+    }
+    used: set[str] = set()
+
+    def split_paragraph(para: dict) -> list[dict]:
+        """Walk the paragraph text and replace sentinel spans with real
+        media blocks. Text on either side is re-parsed so surrounding
+        bare URLs / markdown links stay clickable.
+        """
+        text = _adf_paragraph_text(para)
+        sentinels = list(_TOKEN_SENTINEL_RE.finditer(text))
+        if not sentinels:
+            return [para]
+
+        blocks: list[dict] = []
+        text_buffer = ""
+        cursor = 0
+        resolved_any = False
+
+        def flush_text() -> None:
+            nonlocal text_buffer
+            if text_buffer:
+                blocks.append(
+                    {"type": "paragraph", "content": _parse_inline_markdown(text_buffer)}
+                )
+                text_buffer = ""
+
+        for sentinel in sentinels:
+            text_buffer += text[cursor:sentinel.start()]
+            idx = int(sentinel.group(1))
+            token_match = token_matches[idx]
+            media_block, used_filename = _media_block_from_token(
+                token_match, attachments_by_name
+            )
+            if media_block is None:
+                # Unresolvable token → put the original characters back
+                # so the tester sees the typo instead of a silently
+                # missing image.
+                text_buffer += token_match.group(0)
+            else:
+                flush_text()
+                blocks.append(media_block)
+                resolved_any = True
+                if used_filename is not None:
+                    used.add(used_filename)
+            cursor = sentinel.end()
+
+        text_buffer += text[cursor:]
+        if not resolved_any:
+            # Rebuild the paragraph verbatim (with tokens re-inlined as
+            # text) rather than reflowing marks for nothing.
+            return [
+                {"type": "paragraph", "content": _parse_inline_markdown(text_buffer)}
+            ]
+        flush_text()
+        return blocks or [para]
+
+    new_content: list[dict] = []
+    for block in content:
+        btype = block.get("type")
+        if btype == "paragraph":
+            new_content.extend(split_paragraph(block))
+        elif btype in ("bulletList", "orderedList"):
+            new_items: list[dict] = []
+            for item in block.get("content", []):
+                new_children: list[dict] = []
+                for child in item.get("content", []):
+                    if child.get("type") == "paragraph":
+                        new_children.extend(split_paragraph(child))
+                    else:
+                        new_children.append(child)
+                new_items.append({**item, "content": new_children})
+            new_content.append({**block, "content": new_items})
+        else:
+            new_content.append(block)
+    return new_content, used
+
+
 def _build_qa_pass_adf(
     loom_urls: list[str] | None,
     summary: str | None,
@@ -430,15 +599,24 @@ def _build_qa_pass_adf(
             ],
         })
 
+    # Expand summary tokens up-front so we know which uploads were
+    # consumed inline; those are dropped from the trailing image loop
+    # so the same screenshot doesn't render twice (once at the top,
+    # once next to the sentence that referenced it).
+    if summary:
+        summary_blocks, used_filenames = _expand_inline_image_tokens(summary, images)
+    else:
+        summary_blocks, used_filenames = [], set()
+
     for image in images:
+        if image.filename in used_filenames:
+            continue
         if image.media_id:
             content.append(_build_attachment_media_node(image.media_id))
         else:
             content.append(_build_attachment_label_paragraph(image.filename))
 
-    if summary:
-        summary_doc = markdown_to_adf(summary)
-        content.extend(summary_doc.get("content", []))
+    content.extend(summary_blocks)
 
     mentions_para = _build_mentions_paragraph(mention_account_ids)
     if mentions_para:
@@ -496,6 +674,14 @@ def _build_qa_fail_adf(
     when the Atlassian media-services UUID is known, falling back to
     `📷 <filename>` plain text when it isn't. Mentioned accountIds
     get a final "cc:" paragraph that triggers Jira notifications.
+
+    Testers can pair a specific attached screenshot with a specific
+    bullet by dropping a `[[img:filename.png]]` token inline (or
+    `![alt](https://…)` for a hosted URL); tokens are expanded into
+    real media nodes at the token's position (see
+    `_process_inline_image_tokens`) and any attachment consumed inline
+    is dropped from the trailing image list so nothing renders twice.
+
     Returns None if no reason is supplied: callers use that signal
     to skip posting (the transition still runs). Mentions without a
     reason still return None — there's no value in pinging people
@@ -512,8 +698,8 @@ def _build_qa_fail_adf(
         {"type": "paragraph", "content": [{"type": "text", "text": QA_FAIL_MARKER}]}
     ]
 
-    reason_doc = markdown_to_adf(reason)
-    content.extend(reason_doc.get("content", []))
+    reason_blocks, used_filenames = _expand_inline_image_tokens(reason, images)
+    content.extend(reason_blocks)
 
     for loom_url in looms:
         content.append({
@@ -529,6 +715,8 @@ def _build_qa_fail_adf(
         })
 
     for image in images:
+        if image.filename in used_filenames:
+            continue
         if image.media_id:
             content.append(_build_attachment_media_node(image.media_id))
         else:

@@ -159,7 +159,7 @@ function EnvPill({ value, on, onToggle, disabled }) {
   )
 }
 
-function ImageDropzone({ files, onAdd, onRemove, disabled }) {
+function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef(null)
 
@@ -246,7 +246,39 @@ function ImageDropzone({ files, onAdd, onRemove, disabled }) {
               title={`${f.name} · ${(f.size / 1024).toFixed(0)} KB`}
             >
               <Icon name="image" size={11} />
-              {f.name.length > 28 ? f.name.slice(0, 25) + '…' : f.name}
+              {truncateMiddle(f.name)}
+              {onInsertToken && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onInsertToken(f.name)
+                  }}
+                  disabled={disabled}
+                  title={`Inline "${f.name}" at the cursor — renders as an image next to that line`}
+                  aria-label={`Inline ${f.name} at cursor`}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    color: 'var(--accent, #3b82f6)',
+                    padding: 0,
+                    minWidth: 0,
+                    width: 16,
+                    height: 16,
+                    boxShadow: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 999,
+                    marginLeft: 2,
+                    fontWeight: 700,
+                    fontSize: 11,
+                  }}
+                >
+                  ⇢
+                </button>
+              )}
               <button
                 type="button"
                 onClick={(e) => {
@@ -280,6 +312,23 @@ function ImageDropzone({ files, onAdd, onRemove, disabled }) {
       )}
     </div>
   )
+}
+
+// Screenshots pasted from macOS all share the same "Screenshot YYYY-MM-DD at "
+// prefix, so a tail-cut leaves every chip looking identical. Truncate in the
+// middle (Finder-style) so the distinguishing timestamp at the end stays
+// visible; preserve the extension on the right so the filetype still reads.
+function truncateMiddle(name, max = 32) {
+  if (!name || name.length <= max) return name
+  const ellipsis = '…'
+  const dot = name.lastIndexOf('.')
+  const ext = dot > 0 && name.length - dot <= 6 ? name.slice(dot) : ''
+  const base = ext ? name.slice(0, -ext.length) : name
+  const budget = max - ellipsis.length - ext.length
+  if (budget < 4) return name.slice(0, max - 1) + ellipsis
+  const head = Math.ceil(budget / 2)
+  const tail = budget - head
+  return base.slice(0, head) + ellipsis + base.slice(-tail) + ext
 }
 
 // Mirrors LOOM_URL_RE in src/app/models.py. Gates the pass-to-UAT /
@@ -709,6 +758,11 @@ function WorkflowActions({
   const [checklistTicked, setChecklistTicked] = useState(() => new Set())
   const checklistSteps = Array.isArray(videoChecklistSteps) ? videoChecklistSteps : []
   const loomInputRef = useRef(null)
+  // Refs so the "insert [[img:filename]]" chip button can drop the token
+  // at the current caret position in whichever textarea the tester is
+  // filling out: the Reason on fail-back, the Notes on pass-to-UAT.
+  const reasonInputRef = useRef(null)
+  const summaryInputRef = useRef(null)
 
   // Memoized so the OPEN_PASS_TO_UAT_EVENT effect can take
   // `defaultPassToUatAssignee` as a dep without re-registering every render.
@@ -990,6 +1044,39 @@ function WorkflowActions({
     setPrContributor(null)
     userChoseAssigneeRef.current = false
     setChecklistTicked(new Set())
+  }
+
+  // Drop a `[[img:filename]]` token at the caret in whichever textarea is
+  // active for this form (Reason on fail-back, Notes on pass). The backend
+  // swaps the token for the resolved attachment's media node at the exact
+  // spot the tester placed it — see `_expand_inline_image_tokens` in
+  // src/app/jira_client.py — so a single screenshot can sit next to the
+  // specific bullet it belongs to instead of getting dumped at the bottom.
+  const insertImageToken = (filename) => {
+    const isFailForm = isFailAction(noteForAction?.id)
+    const ref = isFailForm ? reasonInputRef : summaryInputRef
+    const setValue = isFailForm ? setReason : setSummary
+    const currentValue = isFailForm ? reason : summary
+    const token = `[[img:${filename}]]`
+    const el = ref.current
+    if (!el) {
+      // Textarea not mounted (e.g. Notes field hidden) — append at end
+      // with a leading space so we don't glue onto the previous word.
+      const sep = currentValue && !/\s$/.test(currentValue) ? ' ' : ''
+      setValue(currentValue + sep + token)
+      return
+    }
+    const start = el.selectionStart ?? currentValue.length
+    const end = el.selectionEnd ?? currentValue.length
+    const next = currentValue.slice(0, start) + token + currentValue.slice(end)
+    setValue(next)
+    // Restore focus + caret after React commits the new value.
+    requestAnimationFrame(() => {
+      if (!el.isConnected) return
+      el.focus()
+      const pos = start + token.length
+      el.setSelectionRange(pos, pos)
+    })
   }
 
   const addImageFiles = (files) => {
@@ -1385,6 +1472,7 @@ function WorkflowActions({
             <div style={{ marginBottom: 'var(--s-5)' }}>
               <span className="lbl req">Reason</span>
               <textarea
+                ref={reasonInputRef}
                 className="inp"
                 style={{ minHeight: 70, borderColor: 'rgba(239,68,68,.45)', boxShadow: '0 0 0 3px rgba(239,68,68,.10)' }}
                 placeholder="Required. What broke, where, and how to reproduce…"
@@ -1396,6 +1484,9 @@ function WorkflowActions({
               />
               <div style={{ marginTop: 6, fontSize: 'var(--t-xs)', color: 'var(--danger)' }}>
                 This becomes the bounce-back history. Be specific.
+              </div>
+              <div style={{ marginTop: 4, fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+                Tip: click ⇢ on an attached screenshot to inline it next to a specific bullet, or type <code>![](https://…)</code> for an image URL.
               </div>
             </div>
           )}
@@ -1505,6 +1596,7 @@ function WorkflowActions({
                     </div>
                   )}
                   <textarea
+                    ref={summaryInputRef}
                     className="inp"
                     rows={3}
                     placeholder={
@@ -1516,6 +1608,9 @@ function WorkflowActions({
                     onChange={(e) => setSummary(e.target.value)}
                     disabled={pendingAction !== null}
                   />
+                  <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+                    Tip: click ⇢ on an attached screenshot to inline it next to a specific line, or type <code>![](https://…)</code> for an image URL.
+                  </div>
                 </div>
               </>
             )}
@@ -1525,6 +1620,7 @@ function WorkflowActions({
               files={imageFiles}
               onAdd={addImageFiles}
               onRemove={removeImageFile}
+              onInsertToken={insertImageToken}
               disabled={pendingAction !== null}
             />
 

@@ -481,6 +481,136 @@ def test_build_qa_pass_adf_dedups_mixed_tuple_and_namedtuple_by_url():
     assert len(media) + len(text_callouts) == 1
 
 
+# ---------- inline image tokens ([[img:name]] and ![alt](url)) ----------
+
+
+def test_build_qa_fail_adf_inline_img_token_pulls_media_next_to_bullet():
+    # Tester pairs an attached screenshot with a specific bullet — the
+    # media node lands as a sibling block inside the same listItem so it
+    # visually nests under the bullet it belongs to, and the attachment
+    # is dropped from the trailing image loop so nothing renders twice.
+    doc = _build_qa_fail_adf(
+        "- Toggle blends in dark mode [[img:toggle.png]]\n- Empty state has no CTA",
+        None,
+        [
+            ImageAttachment("toggle.png", "https://jira.example/toggle", "uuid-t"),
+            ImageAttachment("misc.png", "https://jira.example/misc", "uuid-m"),
+        ],
+    )
+    assert doc is not None
+    top_media = _media_single_nodes(doc)
+    # Only the un-referenced attachment appears at the top level; the
+    # tokenized one is nested inside the bullet.
+    assert len(top_media) == 1
+    assert top_media[0]["content"][0]["attrs"]["id"] == "uuid-m"
+
+    # Locate the bulletList and confirm the first listItem now carries
+    # both the paragraph and the mediaSingle as sibling blocks.
+    bullet_list = next(n for n in doc["content"] if n["type"] == "bulletList")
+    first_item_children = bullet_list["content"][0]["content"]
+    child_types = [c["type"] for c in first_item_children]
+    assert child_types == ["paragraph", "mediaSingle"]
+    assert (
+        first_item_children[1]["content"][0]["attrs"]["id"] == "uuid-t"
+    )
+    # The token itself is stripped from the bullet text.
+    bullet_text = "".join(
+        n.get("text", "") for n in first_item_children[0]["content"]
+    )
+    assert "[[img:" not in bullet_text
+    assert "Toggle blends in dark mode" in bullet_text
+
+
+def test_build_qa_fail_adf_inline_img_token_is_case_insensitive_on_filename():
+    # Filename lookups are case-insensitive so testers don't have to
+    # match the exact casing of the uploaded file.
+    doc = _build_qa_fail_adf(
+        "See [[img:Screenshot.PNG]] for detail",
+        None,
+        [ImageAttachment("screenshot.png", "https://jira.example/s", "uuid-s")],
+    )
+    assert doc is not None
+    media = _media_single_nodes(doc)
+    assert len(media) == 1
+    assert media[0]["content"][0]["attrs"]["id"] == "uuid-s"
+
+
+def test_build_qa_fail_adf_inline_img_token_unknown_filename_stays_as_text():
+    # Typo in the token → leave it as literal text so the tester notices
+    # the mismatch instead of getting a silently-missing image.
+    doc = _build_qa_fail_adf(
+        "See [[img:typo.png]] please",
+        None,
+        [ImageAttachment("real.png", "https://jira.example/real", "uuid-r")],
+    )
+    assert doc is not None
+    # The unresolved token is preserved in the reason paragraph.
+    reason_para = doc["content"][1]
+    assert "[[img:typo.png]]" in "".join(
+        n.get("text", "") for n in reason_para["content"]
+    )
+    # And the un-referenced attachment still renders at the bottom.
+    media = _media_single_nodes(doc)
+    assert len(media) == 1
+
+
+def test_build_qa_fail_adf_external_image_markdown_renders_as_media_single():
+    # ![alt](url) becomes a mediaSingle with an external media node so
+    # Jira can preview the image inline where the tester dropped it.
+    doc = _build_qa_fail_adf(
+        "Bug repro: ![repro](https://example.com/bug.png)",
+        None,
+        None,
+    )
+    assert doc is not None
+    media = _media_single_nodes(doc)
+    assert len(media) == 1
+    inner = media[0]["content"][0]
+    assert inner["type"] == "media"
+    assert inner["attrs"] == {
+        "type": "external",
+        "url": "https://example.com/bug.png",
+    }
+
+
+def test_build_qa_fail_adf_inline_token_without_media_id_falls_back_to_callout():
+    # Attachment without a resolved UUID still gets pulled inline as a
+    # `📷 <filename>` callout paragraph at the token position, and is
+    # skipped from the trailing image loop.
+    doc = _build_qa_fail_adf(
+        "See [[img:orphan.png]] for detail",
+        None,
+        [ImageAttachment("orphan.png", "https://jira.example/orphan", None)],
+    )
+    assert doc is not None
+    text_callouts = _image_paragraphs(doc)
+    assert len(text_callouts) == 1
+    # Only one — not one inline plus one at the bottom.
+    assert text_callouts[0]["content"][0]["text"] == "📷 orphan.png"
+
+
+def test_build_qa_pass_adf_inline_img_token_swaps_screenshot_next_to_summary():
+    # Same behavior on the pass side: token inside the summary consumes
+    # the attachment inline so it doesn't also render at the top of the
+    # comment.
+    doc = _build_qa_pass_adf(
+        None,
+        "All tests green [[img:pass.png]] — shipping.",
+        None,
+        None,
+        [ImageAttachment("pass.png", "https://jira.example/pass", "uuid-p")],
+    )
+    assert doc is not None
+    media = _media_single_nodes(doc)
+    assert len(media) == 1
+    # And no duplicate mediaSingle from the top-of-comment images loop.
+    media_ids = [m["content"][0]["attrs"]["id"] for m in media]
+    assert media_ids == ["uuid-p"]
+
+
+# ---------- back to structural tests ----------
+
+
 def test_build_qa_fail_adf_dedups_images_and_drops_blanks():
     doc = _build_qa_fail_adf(
         "Reason",
