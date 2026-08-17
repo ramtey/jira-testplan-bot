@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     # the extra GitHub search + LLM round-trip (~2s + ~1s per flagged case).
     code_grounding_recheck_enabled: bool = True
 
+    # Pre-plan deliverable classifier + post-plan surface-mismatch critic.
+    # Adds one LLM round-trip BEFORE plan generation to name what the ticket
+    # actually changes and where a tester observes that change, then a second
+    # round-trip AFTER generation to badge cases that don't touch that surface.
+    # Off by default while the prototype is validated against SK-2546-shape
+    # tickets (asset uploads, config flips, doc changes where the current
+    # planner defaults to "compare against the running app").
+    surface_classifier_enabled: bool = False
+
     # Bug Lens repo hints: maps a regex pattern (matched against summary + description + comments)
     # to one or more "owner/repo" strings to search when the ticket has no explicit GitHub links.
     # Set via env as JSON, e.g. BUG_LENS_REPO_HINTS='{"title.?rep|folders": ["skyslope/mobile-app"]}'

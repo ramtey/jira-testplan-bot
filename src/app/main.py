@@ -37,6 +37,7 @@ from .runs_routes import router as runs_router
 from .seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from .services import run_tracker
 from .services.test_plan_generator import (
+    classify_deliverable,
     compute_ac_coverage,
     derive_context_flags,
     flatten_cases_for_persistence,
@@ -44,7 +45,9 @@ from .services.test_plan_generator import (
     run_code_grounding_critic,
     run_fix_scope_critic,
     run_grounding_critic,
+    run_surface_mismatch_critic,
 )
+from .deliverable_classifier import aggregate_deliverables_for_critique, format_deliverable_hint
 from .slack_client import resolve_slack_messages_in_text
 from .token_service import token_health_service
 from . import uat_readiness
@@ -58,6 +61,8 @@ _compute_ac_coverage = compute_ac_coverage
 _run_grounding_critic = run_grounding_critic
 _run_code_grounding_critic = run_code_grounding_critic
 _run_fix_scope_critic = run_fix_scope_critic
+_classify_deliverable = classify_deliverable
+_run_surface_mismatch_critic = run_surface_mismatch_critic
 _flatten_cases_for_persistence = flatten_cases_for_persistence
 
 
@@ -590,11 +595,29 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         )
 
         llm = get_llm_client()
+
+        # Pre-plan classifier — name the deliverable + verification surface
+        # so the generator can anchor cases to the right target and the
+        # post-plan surface critic has something to check against. Gated
+        # by settings.surface_classifier_enabled; off means the pipeline
+        # runs exactly as it did before this step existed.
+        deliverable = await _classify_deliverable(
+            llm,
+            ticket_key=request.ticket_key,
+            summary=request.summary,
+            description=request.description,
+            issue_type=request.issue_type,
+            development_info=request.development_info,
+        )
+        testing_context = dict(request.testing_context or {})
+        if deliverable is not None and deliverable.artifact_type != "unknown":
+            testing_context["deliverable_hint"] = format_deliverable_hint(deliverable)
+
         test_plan = await llm.generate_test_plan(
             ticket_key=request.ticket_key,
             summary=request.summary,
             description=request.description,
-            testing_context=request.testing_context,
+            testing_context=testing_context,
             development_info=request.development_info,
             images=images,
             comments=request.comments,
@@ -643,6 +666,11 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             test_plan,
             single_ticket_dev_info,
         )
+        # Surface-mismatch critic — for tickets whose deliverable lives
+        # OUTSIDE the running app (asset upload, config flip, doc edit),
+        # badge cases whose steps target the app anyway. Skipped for
+        # code_behavior / unknown / classifier-off (see should_run).
+        await _run_surface_mismatch_critic(llm, test_plan, deliverable)
         ac_coverage = _compute_ac_coverage(test_plan, single_ticket_data)
 
         response = {
@@ -762,6 +790,38 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
                 cross_project_payload = catalog.to_dict()
 
         llm = get_llm_client()
+
+        # Pre-plan classifier — one call per ticket in parallel. Each ticket's
+        # non-code deliverable hint is attached into its own testing_context so
+        # the multi prompt anchors that ticket's block without leaking hints
+        # across sibling tickets in the batch. The aggregated deliverable is
+        # then handed to the surface critic after generation (skipped when the
+        # batch contains any code_behavior ticket — see
+        # aggregate_deliverables_for_critique for why).
+        import asyncio as _asyncio
+        classifier_results = await _asyncio.gather(
+            *[
+                _classify_deliverable(
+                    llm,
+                    ticket_key=t["ticket_key"],
+                    summary=t.get("summary") or "",
+                    description=t.get("description") or "",
+                    issue_type=t.get("issue_type"),
+                    development_info=t.get("development_info"),
+                )
+                for t in tickets_data
+            ],
+            return_exceptions=False,
+        )
+        per_ticket_deliverables: list[tuple[str, object]] = []
+        for t, d in zip(tickets_data, classifier_results):
+            per_ticket_deliverables.append((t["ticket_key"], d))
+            if d is not None and getattr(d, "artifact_type", "unknown") != "unknown":
+                tc = dict(t.get("testing_context") or {})
+                tc["deliverable_hint"] = format_deliverable_hint(d)
+                t["testing_context"] = tc
+        aggregated_deliverable = aggregate_deliverables_for_critique(per_ticket_deliverables)
+
         test_plan = await llm.generate_multi_ticket_test_plan(
             tickets=tickets_data,
             images=all_images,
@@ -785,6 +845,12 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
             test_plan,
             multi_ticket_dev_info,
         )
+        # Surface-mismatch critic — runs against the aggregated deliverable.
+        # Skipped for pure-code batches or when the batch mixes code with
+        # non-code work (see aggregate_deliverables_for_critique). This
+        # matches the single-ticket route's guard so the two endpoints
+        # behave symmetrically.
+        await _run_surface_mismatch_critic(llm, test_plan, aggregated_deliverable)
         ac_coverage = _compute_ac_coverage(test_plan, tickets_data)
         valid_ac_ids = {
             f"{t['ticket_key']}-AC{i}"

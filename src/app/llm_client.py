@@ -1628,6 +1628,37 @@ class LLMClient(ABC):
         """
         return {}
 
+    async def classify_deliverable(
+        self,
+        ticket_key: str,
+        summary: str,
+        description: str,
+        issue_type: str | None = None,
+        development_info: dict | None = None,
+    ):
+        """Pre-plan classifier — name the ticket's deliverable and the
+        surface where the change is observable.
+
+        Returns a ``Deliverable`` (from ``deliverable_classifier``) or
+        ``None`` when the provider can't run it. Default is ``None`` so
+        providers that opt out behave exactly as they did before this
+        step existed.
+        """
+        return None
+
+    async def verify_surface(
+        self,
+        cases: list[dict],
+        deliverable,
+    ) -> dict[str, dict]:
+        """Post-generation critic — check each case against the
+        classifier-named verification surface.
+
+        Default returns an empty dict; providers that opt out simply
+        skip the badge pass.
+        """
+        return {}
+
     def _build_bounce_reason_prompt(
         self,
         from_status: str,
@@ -2529,6 +2560,14 @@ TICKET INFORMATION
         if testing_context.get("specialInstructions"):
             prompt += f"\n**Special Testing Instructions:**\n{testing_context['specialInstructions']}\n"
 
+        # Deliverable-classifier hint (injected by /generate-test-plan
+        # before this call — see deliverable_classifier.format_deliverable_hint).
+        # Present ONLY when the pre-plan classifier ran and returned a
+        # non-unknown artifact type; absent otherwise so behaviour is
+        # unchanged when the feature flag is off.
+        if testing_context.get("deliverable_hint"):
+            prompt += f"\n{testing_context['deliverable_hint']}\n"
+
         if _is_voice_ticket(summary, description):
             prompt += VOICE_TESTING_GUIDANCE
 
@@ -2659,6 +2698,15 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                     body = comment.get("body", "")
                     body_preview = body[:300] + "..." if len(body) > 300 else body
                     prompt += f"- @{comment.get('author', 'Unknown')}: {body_preview}\n"
+
+            # Deliverable-classifier hint attached by the multi endpoint via
+            # ticket["testing_context"]["deliverable_hint"]. Present only for
+            # tickets whose deliverable lives OUTSIDE the running app; anchors
+            # this ticket's cases to the classified surface without touching
+            # sibling tickets in the batch.
+            hint = (ticket.get("testing_context") or {}).get("deliverable_hint")
+            if hint:
+                prompt += f"\n{hint}\n"
 
             prompt += "\n"
 
@@ -4152,6 +4200,148 @@ class ClaudeClient(LLMClient):
         if not tool_block:
             return {}
         return parse_code_verdicts(tool_block.get("input"))
+
+    async def classify_deliverable(
+        self,
+        ticket_key: str,
+        summary: str,
+        description: str,
+        issue_type: str | None = None,
+        development_info: dict | None = None,
+    ):
+        """Ask Claude to classify the ticket's deliverable + verification surface.
+
+        Soft best-effort: transport errors, malformed tool output, and
+        per-call rate limits degrade to ``None`` rather than failing the
+        whole /generate-test-plan request. The pipeline treats a missing
+        classification the same as this step being disabled.
+        """
+        from .deliverable_classifier import (
+            CLASSIFY_DELIVERABLE_SYSTEM_PROMPT,
+            REPORT_DELIVERABLE_TOOL,
+            build_classifier_user_message,
+            parse_deliverable,
+        )
+
+        if not (summary or description):
+            return None
+
+        user_message = build_classifier_user_message(
+            ticket_key=ticket_key,
+            summary=summary,
+            description=description,
+            issue_type=issue_type,
+            development_info=development_info,
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "anthropic-version": "2023-06-01",
+                        "x-api-key": self.api_key,
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 1024,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": CLASSIFY_DELIVERABLE_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                        "messages": [{"role": "user", "content": user_message}],
+                        **self._temperature_kwargs(0.0),
+                        "tools": [REPORT_DELIVERABLE_TOOL],
+                        "tool_choice": {"type": "tool", "name": "report_deliverable"},
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
+            import logging
+            logging.getLogger(__name__).warning(
+                "classify_deliverable: transport error; skipping classifier",
+                exc_info=True,
+            )
+            return None
+
+        tool_block = next(
+            (b for b in (data.get("content") or []) if b.get("type") == "tool_use"),
+            None,
+        )
+        if not tool_block:
+            return None
+        return parse_deliverable(tool_block.get("input"))
+
+    async def verify_surface(
+        self,
+        cases: list[dict],
+        deliverable,
+    ) -> dict[str, dict]:
+        """Ask Claude to grade each case against the classified surface.
+
+        Soft best-effort: any transport error or malformed response
+        degrades to an empty verdict dict rather than failing the whole
+        /generate-test-plan request.
+        """
+        from .surface_mismatch_critic import (
+            SURFACE_CRITIC_SYSTEM_PROMPT,
+            REPORT_SURFACE_TOOL,
+            build_surface_critic_user_message,
+            parse_surface_verdicts,
+        )
+
+        if not cases or deliverable is None:
+            return {}
+
+        user_message = build_surface_critic_user_message(cases, deliverable)
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "anthropic-version": "2023-06-01",
+                        "x-api-key": self.api_key,
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 4096,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": SURFACE_CRITIC_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                        "messages": [{"role": "user", "content": user_message}],
+                        **self._temperature_kwargs(0.0),
+                        "tools": [REPORT_SURFACE_TOOL],
+                        "tool_choice": {"type": "tool", "name": "report_surface"},
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
+            import logging
+            logging.getLogger(__name__).warning(
+                "verify_surface: transport error; skipping critic pass",
+                exc_info=True,
+            )
+            return {}
+
+        tool_block = next(
+            (b for b in (data.get("content") or []) if b.get("type") == "tool_use"),
+            None,
+        )
+        if not tool_block:
+            return {}
+        return parse_surface_verdicts(tool_block.get("input"))
 
     async def _claude_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)

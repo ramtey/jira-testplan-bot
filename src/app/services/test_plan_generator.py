@@ -492,6 +492,89 @@ async def run_code_grounding_critic(
         )
 
 
+async def classify_deliverable(
+    llm,
+    ticket_key: str,
+    summary: str,
+    description: str,
+    issue_type: str | None = None,
+    development_info: dict | None = None,
+):
+    """Pre-plan step — classify the ticket's deliverable + verification surface.
+
+    Runs BEFORE ``llm.generate_test_plan(...)``. Returns a
+    ``Deliverable`` (from ``deliverable_classifier``) or ``None`` on
+    any failure — the caller degrades to "no hint injected, no surface
+    critic" without failing the request.
+
+    Only classifies when the feature flag is on. Rationale: adds one
+    LLM round-trip per request (~1–2s + tokens), and the pre-existing
+    flow is already tuned. Gate it so it can be enabled per-env.
+    """
+    if not settings.surface_classifier_enabled:
+        return None
+    try:
+        return await llm.classify_deliverable(
+            ticket_key=ticket_key,
+            summary=summary,
+            description=description,
+            issue_type=issue_type,
+            development_info=development_info,
+        )
+    except Exception:
+        logger.exception("classify_deliverable raised; continuing without classification")
+        return None
+
+
+async def run_surface_mismatch_critic(
+    llm,
+    test_plan,
+    deliverable,
+) -> None:
+    """Post-generation critic — badge cases whose steps don't touch the
+    classifier-named verification surface.
+
+    Safety net for the classifier hint injected into the generator
+    prompt: sometimes the generator still writes an off-surface case
+    (e.g. "launch the app and check X" on a ticket whose deliverable
+    is an App Store screenshot upload). This pass catches those.
+
+    Skips when the classifier didn't produce a usable result — see
+    ``surface_mismatch_critic.should_run`` for the guard.
+
+    Failures inside the critic (transport, malformed output) are
+    non-fatal: the plan ships without the surface badge rather than
+    with a broken request.
+    """
+    from ..surface_mismatch_critic import (
+        should_run,
+        build_case_surface_inputs,
+        apply_surface_verdicts,
+    )
+
+    if not should_run(deliverable):
+        return
+
+    cases = build_case_surface_inputs(test_plan)
+    if not cases:
+        return
+
+    try:
+        verdicts = await llm.verify_surface(cases, deliverable)
+    except Exception:
+        logger.exception("verify_surface raised; skipping surface-mismatch critic")
+        return
+
+    added = apply_surface_verdicts(test_plan, verdicts, deliverable)
+    if added:
+        logger.info(
+            "surface_mismatch_critic: flagged %d off-surface case(s) against %s: %s",
+            len(added),
+            deliverable.verification_surface,
+            [w["ac_id"] + ": " + w["missing_element"] for w in added],
+        )
+
+
 async def run_fix_scope_critic(
     llm,
     test_plan,
