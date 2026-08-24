@@ -367,6 +367,28 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState(null)
   const [isDescriptionOpen, setIsDescriptionOpen] = useState(false)
+  const [keyCopied, setKeyCopied] = useState(false)
+
+  const copyTicketKey = async () => {
+    const key = ticketData.key
+    try {
+      await navigator.clipboard.writeText(key)
+    } catch {
+      // Clipboard API blocked (insecure context / permissions) — fall back
+      // to an off-screen textarea so the copy still lands.
+      const ta = document.createElement('textarea')
+      ta.value = key
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      try { document.execCommand('copy') } catch { /* nothing we can do */ }
+      document.body.removeChild(ta)
+    }
+    setKeyCopied(true)
+    setTimeout(() => setKeyCopied(false), 1400)
+  }
 
   const handleToggleSummary = async () => {
     // Once a summary exists (or errored), the click is a normal expand/collapse toggle.
@@ -450,19 +472,32 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
       {/* Header card */}
       <div className="card" style={{ padding: 'var(--s-7)' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--s-4)', marginBottom: 'var(--s-4)' }}>
-          {jiraTicketUrl ? (
-            <a
-              href={jiraTicketUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-md)', color: 'var(--accent)' }}
+          <span className="ticket-key-group" style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
+            {jiraTicketUrl ? (
+              <a
+                href={jiraTicketUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-md)', color: 'var(--accent)' }}
+              >
+                {ticketData.key}
+                <Icon name="external" size={11} style={{ marginLeft: 4, verticalAlign: -1 }} />
+              </a>
+            ) : (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-md)', color: 'var(--fg-strong)' }}>{ticketData.key}</span>
+            )}
+            <button
+              type="button"
+              className="tc-copy-btn"
+              onClick={copyTicketKey}
+              title={keyCopied ? 'Copied' : 'Copy ticket number'}
+              aria-label={keyCopied ? 'Copied ticket number' : 'Copy ticket number'}
+              data-copied={keyCopied ? 'true' : 'false'}
+              style={{ width: 14, height: 14 }}
             >
-              {ticketData.key}
-              <Icon name="external" size={11} style={{ marginLeft: 4, verticalAlign: -1 }} />
-            </a>
-          ) : (
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-md)', color: 'var(--fg-strong)' }}>{ticketData.key}</span>
-          )}
+              <Icon name={keyCopied ? 'check' : 'copy'} size={14} />
+            </button>
+          </span>
         </div>
         <h1 style={{ fontSize: 'var(--t-2xl)', lineHeight: 'var(--lh-2xl)', fontWeight: 600, letterSpacing: '-.005em', margin: '0 0 var(--s-6)', color: 'var(--fg-strong)' }}>
           {ticketData.summary}

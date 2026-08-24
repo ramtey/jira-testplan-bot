@@ -373,6 +373,7 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
 .tc-copy-btn:hover { background: transparent; box-shadow: none; transform: none; color: var(--fg); }
 .tc-copy-btn[data-copied="true"] { color: var(--success); }
 .card:hover .tc-copy-btn,
+.ticket-key-group:hover .tc-copy-btn,
 .tc-copy-btn:focus-visible,
 .tc-copy-btn[data-copied="true"] { opacity: 1; }
 .card-pad { padding: var(--s-6); }
