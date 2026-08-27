@@ -236,7 +236,18 @@ def _fit_to_jira_comment_limit(marked_text: str) -> str:
     return best
 
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
+# The fail-back action lets the tester return a ticket to either "To Do"
+# or "In Progress" (see SK_WORKFLOW_ACTIONS in workflow_routes.py), so the
+# marker text is built at post time from the actual target column. This
+# constant is preserved as the default so callers that don't specify a
+# target still get the historical wording.
 QA_FAIL_MARKER = "❌ QA Failed — back to To Do"
+
+
+def qa_fail_marker(target_status: str | None) -> str:
+    """Header line for a QA fail-back comment, keyed to the target column."""
+    target = (target_status or "").strip() or "To Do"
+    return f"❌ QA Failed — back to {target}"
 
 
 class ImageAttachment(NamedTuple):
@@ -664,6 +675,7 @@ def _build_qa_fail_adf(
     loom_urls: list[str] | None,
     image_attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None" = None,
     mention_account_ids: list[str] | None = None,
+    target_status: str | None = None,
 ) -> dict | None:
     """Build the ADF body for a QA→To Do fail-back comment.
 
@@ -695,7 +707,7 @@ def _build_qa_fail_adf(
     images = _normalize_attachments(image_attachments)
 
     content: list[dict] = [
-        {"type": "paragraph", "content": [{"type": "text", "text": QA_FAIL_MARKER}]}
+        {"type": "paragraph", "content": [{"type": "text", "text": qa_fail_marker(target_status)}]}
     ]
 
     reason_blocks, used_filenames = _expand_inline_image_tokens(reason, images)
@@ -3032,13 +3044,23 @@ class JiraClient:
         loom_urls: list[str] | None,
         image_attachments: "list[ImageAttachment | tuple[str, str] | tuple[str, str, str | None]] | None" = None,
         mention_account_ids: list[str] | None = None,
+        target_status: str | None = None,
     ) -> dict | None:
-        """Post a QA→To Do fail-back comment.
+        """Post a QA fail-back comment (target column = To Do or In Progress).
 
         Returns None when no reason is supplied (nothing to post — the
         caller still runs the transition). Always creates a new comment.
+        `target_status` names the column the ticket is being returned to
+        so the marker line matches; defaults to "To Do" for backwards
+        compatibility with callers that predate the two-way fail-back.
         """
-        body = _build_qa_fail_adf(reason, loom_urls, image_attachments, mention_account_ids)
+        body = _build_qa_fail_adf(
+            reason,
+            loom_urls,
+            image_attachments,
+            mention_account_ids,
+            target_status,
+        )
         if body is None:
             return None
 

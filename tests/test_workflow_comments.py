@@ -412,6 +412,23 @@ def test_build_qa_fail_adf_reason_is_above_fold_not_in_expand():
     assert all(node["type"] != "expand" for node in doc["content"])
 
 
+def test_build_qa_fail_adf_marker_reflects_target_status():
+    # Fail-back can target either "To Do" or "In Progress" — the marker
+    # line has to name whichever column the ticket actually landed in,
+    # otherwise a dev seeing "back to To Do" will assume the wrong state.
+    doc = _build_qa_fail_adf(
+        "Bug still repros", None, None, None, target_status="In Progress"
+    )
+    assert doc is not None
+    assert _marker_text(doc) == "❌ QA Failed — back to In Progress"
+
+    doc_todo = _build_qa_fail_adf(
+        "Bug still repros", None, None, None, target_status="To Do"
+    )
+    assert doc_todo is not None
+    assert _marker_text(doc_todo) == QA_FAIL_MARKER
+
+
 def test_build_qa_fail_adf_renders_markdown_in_reason():
     doc = _build_qa_fail_adf("- step one\n- step two", None, None)
     assert doc is not None

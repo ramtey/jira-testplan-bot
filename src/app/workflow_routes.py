@@ -570,6 +570,7 @@ async def _post_workflow_comment(
                 parsed_payload.loom_urls,
                 image_attachments or None,
                 parsed_payload.mention_account_ids,
+                target_status=SK_WORKFLOW_ACTIONS[action],
             )
             return result is not None
         except Exception as exc:
