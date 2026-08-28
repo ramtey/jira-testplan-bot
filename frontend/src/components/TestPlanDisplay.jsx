@@ -1451,7 +1451,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
               <Icon name="beaker" size={14} style={{ color: 'var(--accent)' }} />
               <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)' }}>
-                Test plan{isMulti ? '' : ` · ${ticketData?.key || ''}`}
+                Test plan
               </span>
               {isMulti && (
                 <span className="tip">
