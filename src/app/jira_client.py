@@ -30,7 +30,7 @@ TEAM_GITHUB_LOGIN_TO_JIRA: dict[str, tuple[str, str]] = {
 }
 
 # Bot accounts that must never be the final assignee on pass-to-UAT or
-# fail-to-todo, regardless of which lookup surfaced them. Compared
+# either fail-back action, regardless of which lookup surfaced them. Compared
 # case-insensitively against Jira display names. Belt-and-suspenders for
 # the accountId-based safety net: catches stale credentials, additional
 # bot accounts, or any path that returns a name we recognize as a bot.
@@ -677,7 +677,11 @@ def _build_qa_fail_adf(
     mention_account_ids: list[str] | None = None,
     target_status: str | None = None,
 ) -> dict | None:
-    """Build the ADF body for a QA→To Do fail-back comment.
+    """Build the ADF body for a QA fail-back comment.
+
+    `target_status` names the column the ticket is returning to (either
+    "To Do" or "In Progress") and drives the marker line so the header
+    matches where the ticket lands.
 
     The reason is the load-bearing field — devs need to see *why* the
     ticket bounced without expanding anything, so it's rendered above
