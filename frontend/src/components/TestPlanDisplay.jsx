@@ -149,7 +149,7 @@ function TestCardCopyButton({ test }) {
   )
 }
 
-function TestCard({ test, section, index, checked, onToggle, showCategory, planHasAcs }) {
+function TestCard({ test, section, index, checked, onToggle, showCategory, planHasAcs, ticketKeys }) {
   const acIds = Array.isArray(test.covers_acs)
     ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
     : []
@@ -177,7 +177,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 6 }}>
             {test.priority && <Pri level={test.priority} />}
-            {acIds.map((id) => <ACTag key={id}>{id}</ACTag>)}
+            {acIds.map((id) => <ACTag key={id}>{shortAcId(id, ticketKeys)}</ACTag>)}
             {showCategory && test.category && (
               <span style={{ height: 18, padding: '0 6px', background: 'rgba(255,255,255,.04)', color: 'var(--fg-muted)', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center' }}>
                 {test.category}
@@ -398,7 +398,7 @@ function ChecklistSection({ section, items, checkedTests, onToggle }) {
   )
 }
 
-function CardSection({ section, items, checkedTests, onToggle, planHasAcs }) {
+function CardSection({ section, items, checkedTests, onToggle, planHasAcs, ticketKeys }) {
   const c = items.reduce((acc, _, i) => acc + (checkedTests.has(`${section.key}:${i}`) ? 1 : 0), 0)
   return (
     <section id={`sect-${section.key}`} style={{ marginTop: 'var(--s-8)' }}>
@@ -418,11 +418,29 @@ function CardSection({ section, items, checkedTests, onToggle, planHasAcs }) {
             onToggle={() => onToggle(section.key, i)}
             showCategory={section.showCategory}
             planHasAcs={planHasAcs}
+            ticketKeys={ticketKeys}
           />
         ))}
       </div>
     </section>
   )
+}
+
+// AC IDs are ticket-scoped ("SK-2585-AC1"), but the surrounding UI often
+// already names the ticket. Drop the "SK-XXXX-" prefix only when the
+// reader can't confuse it with another ticket's ACs: single-ticket plans
+// at panel level, or any per-ticket group whose header already names the
+// key. In a multi-ticket panel-level list ("2 invented AC IDs") we keep
+// the full id so a bare "AC1" can't ambiguously belong to either ticket.
+function shortAcId(id, knownKeys) {
+  if (!id || !knownKeys || knownKeys.size !== 1) return id
+  const [key] = knownKeys
+  return id.startsWith(`${key}-`) ? id.slice(key.length + 1) : id
+}
+
+function stripKeyPrefix(id, key) {
+  if (!id || !key) return id
+  return id.startsWith(`${key}-`) ? id.slice(key.length + 1) : id
 }
 
 function AcCoveragePanel({ coverage }) {
@@ -431,6 +449,7 @@ function AcCoveragePanel({ coverage }) {
     ([, info]) => info && (info.total > 0 || (info.superseded?.length ?? 0) > 0)
   )
   if (entries.length === 0) return null
+  const ticketKeys = new Set(Object.keys(coverage.tickets))
 
   const uncoveredTotal = coverage.uncovered_total ?? 0
   const underCoveredTotal = coverage.under_covered_total ?? 0
@@ -460,7 +479,7 @@ function AcCoveragePanel({ coverage }) {
       {invalidIds.length > 0 && (
         <div style={{ marginBottom: 'var(--s-4)' }}>
           <Alert tone="danger" title={`Model invented ${invalidIds.length} unknown AC ID${invalidIds.length === 1 ? '' : 's'}`}>
-            {invalidIds.map((id) => <span key={id} style={{ display: 'inline-block', marginRight: 6 }}><ACTag>{id}</ACTag></span>)}
+            {invalidIds.map((id) => <span key={id} style={{ display: 'inline-block', marginRight: 6 }}><ACTag>{shortAcId(id, ticketKeys)}</ACTag></span>)}
             <div style={{ marginTop: 4, fontSize: 'var(--t-xs)' }}>These were dropped from the test cases.</div>
           </Alert>
         </div>
@@ -472,9 +491,9 @@ function AcCoveragePanel({ coverage }) {
             <ul style={{ margin: 4, paddingLeft: 18 }}>
               {superseded.map((s) => (
                 <li key={s.loser_id} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <ACTag>{s.loser_id}</ACTag>
+                  <ACTag>{shortAcId(s.loser_id, ticketKeys)}</ACTag>
                   <Icon name="arrow-right" size={11} style={{ color: 'var(--fg-faint)' }} />
-                  <ACTag>{s.winner_id}</ACTag>
+                  <ACTag>{shortAcId(s.winner_id, ticketKeys)}</ACTag>
                   {s.reason && <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>{s.reason}</span>}
                 </li>
               ))}
@@ -500,7 +519,7 @@ function AcCoveragePanel({ coverage }) {
                 <ul style={{ margin: '6px 0 0 88px', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {info.uncovered.map((u) => (
                     <li key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
-                      <ACTag>{u.id}</ACTag>
+                      <ACTag>{stripKeyPrefix(u.id, key)}</ACTag>
                       <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }} title={u.text}>{u.text}</span>
                     </li>
                   ))}
@@ -510,7 +529,7 @@ function AcCoveragePanel({ coverage }) {
                 <ul style={{ margin: '6px 0 0 88px', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {info.under_covered.map((u) => (
                     <li key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
-                      <ACTag>{u.id}</ACTag>
+                      <ACTag>{stripKeyPrefix(u.id, key)}</ACTag>
                       <span style={{ fontSize: 'var(--t-xs)', color: 'var(--warning)' }}>
                         missing: {(u.missing_actions || []).join(', ')}
                       </span>
@@ -537,7 +556,7 @@ function AcCoveragePanel({ coverage }) {
 //     a follow-up code-grounding pass found the behaviour implemented in
 //     the linked repo. Kept here as an informational trail rather than
 //     silently dropped, so QA can spot-check the code_evidence link.
-function GroundingWarningsPanel({ warnings }) {
+function GroundingWarningsPanel({ warnings, ticketKeys }) {
   if (!Array.isArray(warnings) || warnings.length === 0) return null
   const warnItems = warnings.filter((w) => (w?.severity ?? 'warn') === 'warn')
   const infoItems = warnings.filter((w) => w?.severity === 'info')
@@ -551,7 +570,7 @@ function GroundingWarningsPanel({ warnings }) {
         >
           <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {warnItems.map((w, idx) => (
-              <GroundingWarningRow key={`warn-${w.ac_id}-${idx}`} warning={w} />
+              <GroundingWarningRow key={`warn-${w.ac_id}-${idx}`} warning={w} ticketKeys={ticketKeys} />
             ))}
           </ul>
         </Alert>
@@ -563,7 +582,7 @@ function GroundingWarningsPanel({ warnings }) {
         >
           <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {infoItems.map((w, idx) => (
-              <GroundingWarningRow key={`info-${w.ac_id}-${idx}`} warning={w} />
+              <GroundingWarningRow key={`info-${w.ac_id}-${idx}`} warning={w} ticketKeys={ticketKeys} />
             ))}
           </ul>
         </Alert>
@@ -572,11 +591,11 @@ function GroundingWarningsPanel({ warnings }) {
   )
 }
 
-function GroundingWarningRow({ warning }) {
+function GroundingWarningRow({ warning, ticketKeys }) {
   const files = warning?.code_evidence?.files || []
   return (
     <li style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
-      <ACTag>{warning.ac_id}</ACTag>
+      <ACTag>{shortAcId(warning.ac_id, ticketKeys)}</ACTag>
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-xs)', color: 'var(--fg)' }}>{warning.missing_element}</span>
       <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)' }}>{warning.explanation}</span>
       {files.length > 0 && (
@@ -1307,6 +1326,12 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         t.covers_acs.some((id) => typeof id === 'string' && id.trim())
     )
   })
+  // Ticket keys drive AC-id shortening on both the coverage panel and
+  // per-test-case chips: a single-ticket plan drops the redundant
+  // "SK-XXXX-" prefix so "SK-2585-AC1" reads as just "AC1".
+  const ticketKeys = testPlan.ac_coverage?.tickets
+    ? new Set(Object.keys(testPlan.ac_coverage.tickets))
+    : undefined
 
   const handleCopyMarkdown = () => {
     const markdown = formatTestPlanAsMarkdown(testPlan, primaryTicketData, walkthrough)
@@ -1632,7 +1657,10 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         <AcCoveragePanel coverage={testPlan.ac_coverage} />
       )}
 
-      <GroundingWarningsPanel warnings={testPlan.grounding_warnings} />
+      <GroundingWarningsPanel
+        warnings={testPlan.grounding_warnings}
+        ticketKeys={ticketKeys}
+      />
 
       {SECTIONS.map((section) => {
         const items = displayPlan[section.key]
@@ -1656,6 +1684,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
             checkedTests={checkedTests}
             onToggle={toggleTest}
             planHasAcs={planHasAcs}
+            ticketKeys={ticketKeys}
           />
         )
       })}
