@@ -87,6 +87,57 @@ function normalize(status) {
   return (status || '').trim().toLowerCase()
 }
 
+// Note-form drafts survive an accidental refresh: while a form is open we
+// mirror the typed fields (reason / summary / loom URLs) to localStorage on
+// a short debounce, and re-hydrate them the next time the same form opens.
+// Cleared on both successful submit and explicit Cancel/X — the store only
+// exists to bridge unintended navigation, not to keep discarded drafts.
+// Keyed per-ticket so switching tickets never resurrects the wrong text.
+// The two fail-back variants share one bucket because their form is identical.
+const NOTE_DRAFT_PREFIX = 'wf-note-draft'
+const DRAFT_DEBOUNCE_MS = 400
+
+function noteDraftKey(ticketKey, formId) {
+  if (!ticketKey || !formId) return null
+  const bucket = isFailAction(formId) ? 'fail' : formId
+  return `${NOTE_DRAFT_PREFIX}:${ticketKey}:${bucket}`
+}
+
+function readNoteDraft(ticketKey, formId) {
+  const key = noteDraftKey(ticketKey, formId)
+  if (!key) return null
+  try {
+    const raw = window.localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function writeNoteDraft(ticketKey, formId, draft) {
+  const key = noteDraftKey(ticketKey, formId)
+  if (!key) return
+  const isEmpty = Object.values(draft).every(
+    (v) => typeof v !== 'string' || !v.trim()
+  )
+  try {
+    if (isEmpty) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, JSON.stringify(draft))
+  } catch {
+    // localStorage full / disabled — silently skip; the in-memory form still works.
+  }
+}
+
+function clearNoteDraft(ticketKey, formId) {
+  const key = noteDraftKey(ticketKey, formId)
+  if (!key) return
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    // ignore
+  }
+}
+
 function buildMentionCandidates({
   assignee,
   assigneeAccountId,
@@ -951,6 +1002,33 @@ function WorkflowActions({
     setAssigneeOverride(defaultPassToUatAssignee)
   }, [noteForAction, defaultPassToUatAssignee])
 
+  // Draft restore: on form open, re-seed the text fields from any draft the
+  // last (refresh-killed) session left behind. Runs once per open — the deps
+  // are the form identity, not the field values, so hydrating won't re-fire.
+  useEffect(() => {
+    if (!noteForAction || !ticketKey) return
+    const draft = readNoteDraft(ticketKey, noteForAction.id)
+    if (!draft) return
+    if (typeof draft.reason === 'string') setReason(draft.reason)
+    if (typeof draft.summary === 'string') setSummary(draft.summary)
+    if (typeof draft.loomUrlsText === 'string') setLoomUrlsText(draft.loomUrlsText)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteForAction?.id, ticketKey])
+
+  // Draft persist: debounced mirror of the typed fields to localStorage while
+  // the form is open. Empty payloads remove the key so we don't leave
+  // breadcrumbs after the user backspaces everything.
+  useEffect(() => {
+    if (!noteForAction || !ticketKey) return
+    const t = setTimeout(() => {
+      const payload = isFailAction(noteForAction.id)
+        ? { reason, loomUrlsText }
+        : { summary, loomUrlsText }
+      writeNoteDraft(ticketKey, noteForAction.id, payload)
+    }, DRAFT_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [noteForAction, ticketKey, reason, summary, loomUrlsText])
+
   const togglePrLoom = (url) => {
     setSelectedPrLooms((prev) => {
       const next = new Set(prev)
@@ -1026,6 +1104,12 @@ function WorkflowActions({
     isWalkthroughCardCtaEnabled()
 
   const closeNoteForm = () => {
+    // Explicit close (Cancel/X or post-submit teardown) discards the draft —
+    // only accidental navigation should resurrect text. The refresh path
+    // never runs this handler, so its debounced write survives.
+    if (noteForAction && ticketKey) {
+      clearNoteDraft(ticketKey, noteForAction.id)
+    }
     setNoteForAction(null)
     setLoomUrlsText('')
     setSummary('')
