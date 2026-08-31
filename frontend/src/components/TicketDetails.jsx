@@ -2,7 +2,7 @@
  * Display Jira ticket details and quality analysis.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE_URL, useJiraTicketUrl } from '../config'
 import DevelopmentInfo from './DevelopmentInfo'
 import WorkflowActions from './WorkflowActions'
@@ -75,7 +75,17 @@ function formatRelativeTime(iso) {
 }
 
 // State shape shared between BounceSection (owner) and BounceCard (presenter):
-//   { state: 'loading' | 'ready' | 'no-reason' | 'no-comment' | 'error', headline: string | null }
+//   { state, headline: string | null }
+// where state is one of:
+//   - 'loading'         → summarizing the reviewer's comment
+//   - 'ready'           → comment-derived headline available
+//   - 'no-reason'       → comment existed but didn't explain the bounce
+//   - 'error'           → LLM call for comment summary failed
+//   - 'pr-summarizing'  → no comment; summarizing the follow-up PR's diff
+//   - 'pr-ready'        → follow-up-PR-derived summary available
+//   - 'pr-empty'        → LLM couldn't honestly summarize the diff
+//   - 'pr-error'        → LLM call for PR-diff summary failed
+//   - 'no-comment'      → no comment and no follow-up PR to lean on
 // Ownership sits at the section level so the collapsed preview can reflect the
 // latest bounce's headline before the user expands the panel — the whole reason
 // this refactor exists.
@@ -123,6 +133,15 @@ function BounceCard({ bounce, headlineState, resultingPr }) {
     if (state === 'no-reason') {
       return <span style={{ color: 'var(--fg-muted)', fontStyle: 'italic' }}>The nearby comment didn't explain a clear reason — see the full comment for context.</span>
     }
+    if (state === 'pr-summarizing') {
+      return <span style={{ color: 'var(--fg-muted)', fontStyle: 'italic' }}>No comment was posted — reading the follow-up PR's changes…</span>
+    }
+    if (state === 'pr-ready' && headline) {
+      return <span style={{ color: 'var(--fg-strong)' }}>{headline}</span>
+    }
+    if (state === 'pr-empty' || state === 'pr-error') {
+      return <span style={{ color: 'var(--fg-muted)', fontStyle: 'italic' }}>No comment was posted — see the follow-up PR's changes below.</span>
+    }
     if (state === 'no-comment') {
       return <span style={{ color: 'var(--fg-muted)', fontStyle: 'italic' }}>No comment was posted near this transition.</span>
     }
@@ -149,6 +168,11 @@ function BounceCard({ bounce, headlineState, resultingPr }) {
             </>
           )}
         </div>
+        {state === 'pr-ready' && (
+          <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', fontStyle: 'italic' }}>
+            Inferred from the follow-up PR's changes — no reviewer comment was posted.
+          </div>
+        )}
         {bounce.reason && (
           <div>
             <button
@@ -272,11 +296,59 @@ function BounceSection({ events, pullRequests }) {
     setHeadlines({})
   }
 
+  // Pair every bounce with its follow-up PR once, so both fetchHeadline (below)
+  // and the child cards read from the same source. Keyed by timestamp because
+  // that's the identity the headlines cache already uses.
+  const resultingPrByTs = useMemo(() => {
+    const m = {}
+    for (const b of events) {
+      m[b.timestamp] = findResultingPr(b, pullRequests)
+    }
+    return m
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, pullRequests])
+
   const latest = events[events.length - 1]
 
   const fetchHeadline = useCallback(async (b) => {
+    // No reviewer comment → try to derive a summary from the follow-up PR's diff.
+    // A silent send-back with a merged fix is common; leaving the panel blank
+    // ("No comment was posted…") threw away the most useful signal we have.
     if (!b?.reason) {
-      setHeadlines((prev) => (prev[b.timestamp] ? prev : { ...prev, [b.timestamp]: { state: 'no-comment', headline: null } }))
+      const resultingPr = resultingPrByTs[b.timestamp] || null
+      const files = resultingPr?.files_changed
+      const hasFiles = Array.isArray(files) && files.length > 0
+      if (!hasFiles) {
+        setHeadlines((prev) => (prev[b.timestamp] ? prev : { ...prev, [b.timestamp]: { state: 'no-comment', headline: null } }))
+        return
+      }
+      let started = false
+      setHeadlines((prev) => {
+        if (prev[b.timestamp]) return prev
+        started = true
+        return { ...prev, [b.timestamp]: { state: 'pr-summarizing', headline: null } }
+      })
+      if (!started) return
+      try {
+        const r = await fetch(`${API_BASE_URL}/bounce/summarize-changes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pr_title: resultingPr.title || null,
+            files_changed: files,
+          }),
+        })
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const data = await r.json()
+        setHeadlines((prev) => ({
+          ...prev,
+          [b.timestamp]: data.summary
+            ? { state: 'pr-ready', headline: data.summary }
+            : { state: 'pr-empty', headline: null },
+        }))
+      } catch {
+        setHeadlines((prev) => ({ ...prev, [b.timestamp]: { state: 'pr-error', headline: null } }))
+      }
       return
     }
     let started = false
@@ -307,7 +379,7 @@ function BounceSection({ events, pullRequests }) {
     } catch {
       setHeadlines((prev) => ({ ...prev, [b.timestamp]: { state: 'error', headline: null } }))
     }
-  }, [])
+  }, [resultingPrByTs])
 
   // Eagerly fetch the latest bounce's headline so the collapsed preview can carry
   // the actual reason. Older bounces stay lazy — only fetched when the panel opens.
@@ -333,8 +405,9 @@ function BounceSection({ events, pullRequests }) {
 
   const latestState = latest ? headlines[latest.timestamp] : null
   const latestRelative = latest ? formatRelativeTime(latest.timestamp) : ''
-  const preview = latestState?.state === 'ready' && latestState.headline
-    ? (latestRelative ? `${latestState.headline} · ${latestRelative}` : latestState.headline)
+  const latestHeadline = latestState?.headline
+  const preview = latestHeadline
+    ? (latestRelative ? `${latestHeadline} · ${latestRelative}` : latestHeadline)
     : latestRelative
 
   return (
@@ -352,7 +425,7 @@ function BounceSection({ events, pullRequests }) {
             key={`${b.timestamp}-${i}`}
             bounce={b}
             headlineState={headlines[b.timestamp]}
-            resultingPr={findResultingPr(b, pullRequests)}
+            resultingPr={resultingPrByTs[b.timestamp] || null}
           />
         ))}
       </div>

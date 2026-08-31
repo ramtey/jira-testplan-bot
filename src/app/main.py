@@ -488,6 +488,35 @@ async def summarize_bounce(request: dict):
     return {"headline": cleaned}
 
 
+@app.post("/bounce/summarize-changes")
+async def summarize_bounce_changes(request: dict):
+    """Summarize what a follow-up PR actually changed after a silent send-back.
+
+    Called when a bounce transition had no reviewer comment attached, so the
+    UI would otherwise show a bare "No comment was posted" placeholder. The
+    file list + captured diffs are our best signal for what got fixed.
+
+    Expects `{"pr_title": str | None, "files_changed": [{...}, ...]}` and
+    returns `{"summary": str | null}`. Returns `null` when the model decided
+    the diffs weren't clear enough to summarize honestly (NO_SUMMARY).
+    """
+    files_changed = request.get("files_changed") or []
+    if not isinstance(files_changed, list) or not files_changed:
+        raise HTTPException(status_code=400, detail="files_changed is required")
+    pr_title = request.get("pr_title")
+    if pr_title is not None and not isinstance(pr_title, str):
+        raise HTTPException(status_code=400, detail="pr_title must be a string when provided")
+    try:
+        llm = get_llm_client()
+        text = await llm.summarize_pr_changes(pr_title=pr_title, files_changed=files_changed)
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    cleaned = text.strip().strip('"').strip("'")
+    if not cleaned or cleaned.upper().startswith("NO_SUMMARY"):
+        return {"summary": None}
+    return {"summary": cleaned}
+
+
 @app.post("/issues/summarize-batch")
 async def summarize_issues_batch(request: dict):
     """Summarize a bundle of related tickets in one LLM call.

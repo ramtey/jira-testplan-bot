@@ -1573,6 +1573,21 @@ class LLMClient(ABC):
         """
         pass
 
+    @abstractmethod
+    async def summarize_pr_changes(
+        self,
+        pr_title: str | None,
+        files_changed: list[dict],
+    ) -> str:
+        """Produce a plain-English summary of what a follow-up PR actually changed.
+
+        Used as a fallback when a bounce transition has no reviewer comment
+        attached — the file list + diffs are all we have. Each entry in
+        `files_changed` carries `filename`, `status`, `additions`,
+        `deletions`, and (for runtime source files only) `patch`.
+        """
+        pass
+
     async def verify_case_grounding(
         self,
         cases: list[dict],
@@ -1678,6 +1693,60 @@ class LLMClient(ABC):
             "acknowledgement or an unrelated update), reply with exactly: NO_REASON\n\n"
             "Reply with only the sentence — no preamble, no quotes.\n\n"
             f"Comment:\n{reason_text}"
+        )
+
+    def _build_pr_changes_prompt(
+        self,
+        pr_title: str | None,
+        files_changed: list[dict],
+    ) -> str:
+        """Shared prompt for describing a follow-up PR's changes in plain English.
+
+        We keep the payload lean: file list first, then patches for the runtime
+        source files only, each truncated so a single very long diff can't push
+        the budget past a couple of thousand tokens.
+        """
+        per_patch_char_budget = 2500
+        total_patch_char_budget = 8000
+
+        title_line = pr_title.strip() if pr_title else ""
+
+        files_summary_lines: list[str] = []
+        patch_blocks: list[str] = []
+        remaining_budget = total_patch_char_budget
+        for fc in files_changed or []:
+            filename = (fc.get("filename") or "").strip() or "?"
+            status = (fc.get("status") or "").strip() or "modified"
+            adds = fc.get("additions") or 0
+            dels = fc.get("deletions") or 0
+            files_summary_lines.append(f"- [{status}] {filename} (+{adds} / −{dels})")
+            patch = fc.get("patch")
+            if not patch or remaining_budget <= 0:
+                continue
+            snippet = patch.strip()
+            if len(snippet) > per_patch_char_budget:
+                snippet = snippet[:per_patch_char_budget] + "\n… (patch truncated)"
+            if len(snippet) > remaining_budget:
+                snippet = snippet[:remaining_budget] + "\n… (patch truncated)"
+            remaining_budget -= len(snippet)
+            patch_blocks.append(f"--- {filename} ---\n{snippet}")
+
+        patch_section = "\n\n".join(patch_blocks) if patch_blocks else "(no source diffs were captured for this PR)"
+
+        return (
+            "A Jira ticket was moved back for more work, but the reviewer did not leave a "
+            "written comment near that transition. The follow-up PR below was merged after the "
+            "bounce, and its file changes are our best signal for what was actually fixed.\n\n"
+            "Write ONE plain-English sentence (max ~25 words) that explains what changed and, "
+            "if the diffs make it obvious, why. Speak in past tense, no jargon, no filenames or "
+            "code identifiers, no ticket keys, no bullet points. If the changes are too varied or "
+            "opaque to summarize honestly, reply with exactly: NO_SUMMARY\n\n"
+            "Reply with only the sentence — no preamble, no quotes.\n\n"
+            f"PR title: {title_line or '(untitled)'}\n\n"
+            "Files changed:\n"
+            f"{chr(10).join(files_summary_lines) if files_summary_lines else '(none)'}\n\n"
+            "Diffs (source files only, may be truncated):\n"
+            f"{patch_section}"
         )
 
     def _build_batch_summary_prompt(self, tickets: list[dict]) -> str:
@@ -3176,6 +3245,31 @@ class OllamaClient(LLMClient):
         except httpx.HTTPStatusError as e:
             raise LLMError(f"Ollama returned error status {e.response.status_code}", error_type="service_unavailable") from e
 
+    async def summarize_pr_changes(
+        self,
+        pr_title: str | None,
+        files_changed: list[dict],
+    ) -> str:
+        """One-sentence follow-up-PR change summary via Ollama."""
+        prompt = self._build_pr_changes_prompt(pr_title, files_changed)
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.2},
+                    },
+                )
+                response.raise_for_status()
+                return (response.json().get("response") or "").strip()
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise LLMError(f"Cannot connect to Ollama at {self.base_url}", error_type="connection_failed") from e
+        except httpx.HTTPStatusError as e:
+            raise LLMError(f"Ollama returned error status {e.response.status_code}", error_type="service_unavailable") from e
+
     async def _ollama_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)
         schema = {
@@ -3910,6 +4004,66 @@ class ClaudeClient(LLMClient):
                         json={
                             "model": self.model,
                             "max_tokens": 128,
+                            "messages": [{"role": "user", "content": prompt}],
+                            **self._temperature_kwargs(0.2),
+                        },
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    return result["content"][0]["text"].strip()
+            except httpx.HTTPStatusError as e:
+                last_status = e.response.status_code
+                if last_status in retryable_statuses and attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
+                    continue
+                if last_status == 529:
+                    raise LLMError(
+                        "Claude is temporarily overloaded. Please try again in a moment.",
+                        error_type="service_unavailable",
+                    ) from e
+                raise LLMError(
+                    f"Claude API returned error status {last_status}",
+                    error_type="service_unavailable",
+                ) from e
+            except httpx.TimeoutException as e:
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
+                    continue
+                raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
+
+        raise LLMError(
+            f"Claude API returned error status {last_status} after {max_attempts} attempts",
+            error_type="service_unavailable",
+        )
+
+    async def summarize_pr_changes(
+        self,
+        pr_title: str | None,
+        files_changed: list[dict],
+    ) -> str:
+        """One-sentence follow-up-PR change summary via Claude API."""
+        import asyncio
+
+        prompt = self._build_pr_changes_prompt(pr_title, files_changed)
+
+        retryable_statuses = {502, 503, 504, 529}
+        max_attempts = 4
+        backoff_seconds = 1.0
+
+        last_status: int | None = None
+        for attempt in range(max_attempts):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "anthropic-version": "2023-06-01",
+                            "x-api-key": self.api_key,
+                            "content-type": "application/json",
+                        },
+                        json={
+                            "model": self.model,
+                            "max_tokens": 160,
                             "messages": [{"role": "user", "content": prompt}],
                             **self._temperature_kwargs(0.2),
                         },
