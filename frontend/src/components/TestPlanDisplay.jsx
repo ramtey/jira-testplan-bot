@@ -1231,17 +1231,36 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     // optimistic state if the server is unreachable.
     const serverKey = storageKey.slice(PROGRESS_STORAGE_PREFIX.length)
     let cancelled = false
-    fetch(`${API_BASE}/test-plan-progress/${encodeURIComponent(serverKey)}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (cancelled || !data || !Array.isArray(data.checked_ids)) return
-        setCheckedTests(new Set(data.checked_ids))
-      })
-      .catch(() => {
-        /* offline / server down — keep the local optimistic state */
-      })
+    let lastUpdatedAt = null
+
+    const syncFromServer = () => {
+      // Skip while a local edit is still queued or mid-PUT — otherwise the poll
+      // could land with pre-save data and undo the checkbox the user just toggled.
+      if (progressSaveTimer.current) return
+      fetch(`${API_BASE}/test-plan-progress/${encodeURIComponent(serverKey)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (cancelled || !data || !Array.isArray(data.checked_ids)) return
+          if (data.updated_at && data.updated_at === lastUpdatedAt) return
+          lastUpdatedAt = data.updated_at || lastUpdatedAt
+          setCheckedTests(new Set(data.checked_ids))
+        })
+        .catch(() => {
+          /* offline / server down — keep the local optimistic state */
+        })
+    }
+
+    syncFromServer()
+    // Poll so external writers (the UAT runner script marking cases as it goes)
+    // show up without a manual page refresh. Paused when the tab is hidden.
+    const pollId = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      syncFromServer()
+    }, 3000)
+
     return () => {
       cancelled = true
+      clearInterval(pollId)
     }
   }, [storageKey])
 
@@ -1279,9 +1298,14 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ checked_ids: payload }),
-      }).catch(() => {
-        /* offline — localStorage holds it; resyncs on the next successful save */
       })
+        .catch(() => {
+          /* offline — localStorage holds it; resyncs on the next successful save */
+        })
+        .finally(() => {
+          // Clear so the poll loop knows no local write is in flight anymore.
+          progressSaveTimer.current = null
+        })
     }, 600)
   }
 
