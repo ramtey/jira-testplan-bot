@@ -564,30 +564,73 @@ function GroundingWarningsPanel({ warnings, ticketKeys }) {
   return (
     <div style={{ marginBottom: 'var(--s-5)', display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
       {warnItems.length > 0 && (
-        <Alert
+        <CollapsibleWarningAlert
           tone="warning"
           title={`${warnItems.length} behaviour${warnItems.length === 1 ? '' : 's'} not confirmed in AC or code — verify before testing`}
-        >
-          <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {warnItems.map((w, idx) => (
-              <GroundingWarningRow key={`warn-${w.ac_id}-${idx}`} warning={w} ticketKeys={ticketKeys} />
-            ))}
-          </ul>
-        </Alert>
+          items={warnItems}
+          rowPrefix="warn"
+          ticketKeys={ticketKeys}
+        />
       )}
       {infoItems.length > 0 && (
-        <Alert
+        <CollapsibleWarningAlert
           tone="info"
           title={`${infoItems.length} behaviour${infoItems.length === 1 ? '' : 's'} beyond the cited AC but present in code`}
-        >
-          <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {infoItems.map((w, idx) => (
-              <GroundingWarningRow key={`info-${w.ac_id}-${idx}`} warning={w} ticketKeys={ticketKeys} />
-            ))}
-          </ul>
-        </Alert>
+          items={infoItems}
+          rowPrefix="info"
+          ticketKeys={ticketKeys}
+        />
       )}
     </div>
+  )
+}
+
+function CollapsibleWarningAlert({ tone, title, items, rowPrefix, ticketKeys }) {
+  const [open, setOpen] = useState(false)
+  const header = (
+    <button
+      type="button"
+      onClick={() => setOpen((v) => !v)}
+      aria-expanded={open}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 'var(--s-2)',
+        background: 'none',
+        border: 'none',
+        padding: 0,
+        margin: 0,
+        color: 'inherit',
+        font: 'inherit',
+        fontWeight: 'var(--w-semi)',
+        cursor: 'pointer',
+        textAlign: 'left',
+        width: '100%',
+      }}
+    >
+      <Icon
+        name="chevron-right"
+        style={{
+          width: 14,
+          height: 14,
+          transition: 'transform 120ms',
+          transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
+          flexShrink: 0,
+        }}
+      />
+      <span>{title}</span>
+    </button>
+  )
+  return (
+    <Alert tone={tone} title={header}>
+      {open && (
+        <ul style={{ margin: 4, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {items.map((w, idx) => (
+            <GroundingWarningRow key={`${rowPrefix}-${w.ac_id}-${idx}`} warning={w} ticketKeys={ticketKeys} />
+          ))}
+        </ul>
+      )}
+    </Alert>
   )
 }
 
