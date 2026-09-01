@@ -2314,6 +2314,83 @@ class JiraClient:
                 ordered.append((str(sid) if sid else None, col_name))
         return ordered
 
+    async def count_project_issues_by_status(
+        self, project_key: str, status_names: list[str]
+    ) -> dict[str, int]:
+        """Return {status_name: approximate_issue_count} for each given status.
+
+        Uses Jira's approximate-count endpoint (one call per status, in
+        parallel). Approximate counts are Lucene-index-based — accurate for
+        sidebar badges. A per-status failure omits that key from the result
+        so the UI just skips the badge rather than surfacing an error.
+
+        For projects that use sprints, tickets outside an open sprint are
+        excluded — they render as muted "BACKLOG" rows in the column and
+        shouldn't inflate the badge. Kanban projects are counted as-is.
+        """
+        if not re.match(r"^[A-Z][A-Z0-9_]*$", project_key):
+            raise ValueError(f"Invalid Jira project key: {project_key}")
+        if not status_names:
+            return {}
+
+        count_url = f"{self.base_url}/rest/api/3/search/approximate-count"
+        probe_url = f"{self.base_url}/rest/api/3/search/jql"
+        headers = {**self._headers(), "Content-Type": "application/json"}
+
+        async def _project_uses_sprints(client: httpx.AsyncClient) -> bool:
+            payload = {
+                "jql": f"project = {project_key} AND sprint is not EMPTY",
+                "fields": ["summary"],
+                "maxResults": 1,
+            }
+            try:
+                r = await client.post(probe_url, headers=headers, json=payload)
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                logger.warning("Sprint probe for %s failed: %s", project_key, exc)
+                return False
+            if r.status_code != 200:
+                return False
+            try:
+                return bool((r.json() or {}).get("issues"))
+            except ValueError:
+                return False
+
+        async def _count_one(
+            client: httpx.AsyncClient, status_name: str, uses_sprints: bool
+        ) -> tuple[str, int | None]:
+            escaped = status_name.replace("\\", "\\\\").replace('"', '\\"')
+            sprint_clause = " AND sprint in openSprints()" if uses_sprints else ""
+            payload = {
+                "jql": f'project = {project_key} AND status = "{escaped}"{sprint_clause}'
+            }
+            try:
+                r = await client.post(count_url, headers=headers, json=payload)
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                logger.warning(
+                    "Count fetch for %s/%s failed: %s",
+                    project_key, status_name, exc,
+                )
+                return (status_name, None)
+            if r.status_code != 200:
+                logger.info(
+                    "Count for %s/%s returned %d.",
+                    project_key, status_name, r.status_code,
+                )
+                return (status_name, None)
+            try:
+                data = r.json() or {}
+            except ValueError:
+                return (status_name, None)
+            count = data.get("count")
+            return (status_name, int(count) if isinstance(count, int) else None)
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            uses_sprints = await _project_uses_sprints(client)
+            results = await asyncio.gather(
+                *(_count_one(client, s, uses_sprints) for s in status_names)
+            )
+        return {name: cnt for name, cnt in results if cnt is not None}
+
     async def search_project_issues(
         self, project_key: str, status_name: str
     ) -> list[EpicChildSummary]:

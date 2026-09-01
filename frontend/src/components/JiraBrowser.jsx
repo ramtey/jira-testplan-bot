@@ -358,11 +358,52 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
         throw new Error(err.detail || 'Failed to load statuses')
       }
       const data = await res.json()
-      setStatuses(data.statuses || [])
+      const list = data.statuses || []
+      setStatuses(list)
+      // Fire-and-forget count fetch — the sidebar renders immediately with
+      // the status list, then badges pop in a moment later. A failure just
+      // means no badges; not worth surfacing. Backlog statuses ('new') are
+      // excluded — a backlog can be huge and the number isn't actionable
+      // the way active/done counts are.
+      fetchStatusCounts(
+        projectKey,
+        list.filter((s) => s.status_category !== 'new').map((s) => s.name),
+      )
     } catch (e) {
       setStatusesError(e.message)
     } finally {
       setStatusesLoading(false)
+    }
+  }
+
+  const statusesProjectRef = useRef(null)
+  const fetchStatusCounts = async (projectKey, statusNames) => {
+    if (!statusNames || statusNames.length === 0) return
+    statusesProjectRef.current = projectKey
+    const params = new URLSearchParams()
+    for (const name of statusNames) params.append('statuses', name)
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/jira/projects/${projectKey}/status-counts?${params.toString()}`,
+        { cache: 'no-store' },
+      )
+      if (!res.ok) return
+      const data = await res.json()
+      // Guard against a project switch that happened while this fetch was
+      // in flight — otherwise "In Progress: 7" from project A could overlay
+      // onto project B's identically-named row.
+      if (statusesProjectRef.current !== projectKey) return
+      const counts = data.counts || {}
+      setStatuses((prev) => {
+        if (!prev) return prev
+        return prev.map((s) =>
+          Object.prototype.hasOwnProperty.call(counts, s.name)
+            ? { ...s, count: counts[s.name] }
+            : s,
+        )
+      })
+    } catch {
+      // Best-effort — badges just don't show.
     }
   }
 
@@ -536,6 +577,15 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
     (s) => !CATEGORY_ORDER.includes(s.status_category),
   )
 
+  // Category header count: sum of ticket counts once any counts have loaded,
+  // otherwise fall back to the number of statuses in the group so we still
+  // render something on the initial paint (and if the count endpoint fails).
+  const groupCount = (items) => {
+    const withCounts = items.filter((s) => typeof s.count === 'number')
+    if (withCounts.length === 0) return items.length
+    return withCounts.reduce((sum, s) => sum + s.count, 0)
+  }
+
   return (
     <>
     <div className="rail">
@@ -688,7 +738,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
                 <div className="rail-group">
                   <span style={{ width: 6, height: 6, borderRadius: 50, background: CATEGORY_DOT_COLOR[group.key] }} />
                   <span style={{ color: 'var(--fg-muted)' }}>{group.label}</span>
-                  <span className="count">{group.items.length}</span>
+                  <span className="count">{groupCount(group.items)}</span>
                 </div>
                 {group.items.map((s) => (
                   <button
@@ -698,6 +748,9 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
                     onClick={() => selectStatus(s)}
                   >
                     <span className="name">{s.name}</span>
+                    {typeof s.count === 'number' && s.count > 0 && (
+                      <span className="count">{s.count}</span>
+                    )}
                     <Icon name="chevron-right" size={11} style={{ color: 'var(--fg-faint)' }} />
                   </button>
                 ))}
@@ -707,7 +760,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
             {ungroupedStatuses.length > 0 && (
               <div>
                 <div className="rail-group">
-                  Other <span className="count">{ungroupedStatuses.length}</span>
+                  Other <span className="count">{groupCount(ungroupedStatuses)}</span>
                 </div>
                 {ungroupedStatuses.map((s) => (
                   <button
@@ -717,6 +770,9 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
                     onClick={() => selectStatus(s)}
                   >
                     <span className="name">{s.name}</span>
+                    {typeof s.count === 'number' && s.count > 0 && (
+                      <span className="count">{s.count}</span>
+                    )}
                     <Icon name="chevron-right" size={11} style={{ color: 'var(--fg-faint)' }} />
                   </button>
                 ))}

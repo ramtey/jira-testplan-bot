@@ -2,7 +2,7 @@ import asyncio
 import json
 from dataclasses import asdict
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .bug_lens_routes import router as bug_lens_router
@@ -415,6 +415,38 @@ async def list_jira_project_statuses(project_key: str):
         raise HTTPException(
             status_code=500,
             detail="An unexpected error occurred while listing project statuses",
+        )
+
+
+@app.get("/jira/projects/{project_key}/status-counts")
+async def list_jira_project_status_counts(
+    project_key: str, statuses: list[str] = Query(default_factory=list)
+):
+    """Return approximate issue counts per status name for a project.
+
+    Approximate counts are cheap (one Lucene-index call per status, in
+    parallel) and only power sidebar badges — the exact count isn't
+    load-bearing anywhere.
+    """
+    jira = JiraClient()
+    try:
+        counts = await jira.count_project_issues_by_status(project_key, statuses)
+        return {"counts": counts}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        import logging
+        logging.error(
+            f"Unexpected error counting statuses for {project_key}: "
+            f"{type(e).__name__}: {e}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while counting project statuses",
         )
 
 

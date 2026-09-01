@@ -291,6 +291,13 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
 }
 .rail-row .star[data-on="true"] { color: var(--warning); fill: var(--warning); }
 .rail-row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.rail-row .count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+  letter-spacing: 0;
+  flex-shrink: 0;
+}
 .rail-row .it { width: 14px; height: 14px; border-radius: 3px; display: grid; place-items: center; font-size: 9px; font-weight: var(--w-bold); color: white; flex-shrink: 0; }
 .rail-group {
   padding: var(--s-4) var(--s-4) var(--s-2);
