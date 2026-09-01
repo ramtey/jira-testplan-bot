@@ -169,7 +169,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
         transition: 'border-color var(--d-fast)',
       }}
     >
-      {!checked && <TestCardCopyButton test={test} />}
+      <TestCardCopyButton test={test} />
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-5)', padding: checked ? 'var(--s-5) var(--s-6)' : 'var(--s-6) var(--s-6) var(--s-5)' }}>
         <span onClick={() => onToggle && onToggle()} style={{ flexShrink: 0, marginTop: 1 }}>
           <span className="cbx" data-checked={checked ? 'true' : 'false'} role="checkbox" aria-checked={checked} />
