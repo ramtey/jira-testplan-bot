@@ -329,7 +329,9 @@ def test_multi_ticket_cross_project_returns_summary():
         ]
     }
 
-    with patch("src.app.main.get_llm_client", return_value=_stub_llm(captured)):
+    with patch(
+        "src.app.services.plan_service.get_llm_client", return_value=_stub_llm(captured)
+    ):
         response = client.post("/generate-test-plan/multi", json=payload)
 
     assert response.status_code == 200, response.text
@@ -371,7 +373,9 @@ def test_multi_ticket_single_repo_omits_summary():
         ]
     }
 
-    with patch("src.app.main.get_llm_client", return_value=_stub_llm(captured)):
+    with patch(
+        "src.app.services.plan_service.get_llm_client", return_value=_stub_llm(captured)
+    ):
         response = client.post("/generate-test-plan/multi", json=payload)
 
     assert response.status_code == 200, response.text

@@ -6,11 +6,8 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .bug_lens_routes import router as bug_lens_router
-from .config import NON_TESTABLE_ISSUE_TYPES, settings
-from .db.models.plan import PlanFormat
+from .config import settings
 from .db.models.ticket_hold import HOLD_REASONS
-from .description_analyzer import extract_acceptance_criteria
-from .db.models.run import RunType
 from .db.session import get_sessionmaker
 from .jira_client import (
     JiraAuthError,
@@ -26,19 +23,17 @@ from .models import (
     PostCommentRequest,
     TestPlanProgressUpdateRequest,
     TicketHoldRequest,
-    TicketInput,
     WalkthroughUpdateRequest,
 )
 from .repositories import (
-    bug_analysis_repository,
     plan_repository,
     test_plan_progress_repository,
     ticket_hold_repository,
     walkthrough_repository,
 )
 from .runs_routes import router as runs_router
-from .seam_extractor import build_seam_catalog, classify_multi_ticket_mode
-from .services import run_tracker
+from .services import plan_service
+from .services.plan_service import NonTestableIssueError
 from .services.test_plan_generator import (
     classify_deliverable,
     compute_ac_coverage,
@@ -50,8 +45,6 @@ from .services.test_plan_generator import (
     run_grounding_critic,
     run_surface_mismatch_critic,
 )
-from .deliverable_classifier import aggregate_deliverables_for_critique, format_deliverable_hint
-from .slack_client import resolve_slack_messages_in_text
 from .token_service import token_health_service
 from . import uat_readiness
 from .workflow_routes import router as workflow_router
@@ -225,96 +218,13 @@ async def get_issue(issue_key: str):
             _safe_account_id_for(jira),
         )
 
-        # Serialize development info if available
-        development_info_dict = None
-        if issue.development_info:
-            development_info_dict = {
-                "commits": [asdict(commit) for commit in issue.development_info.commits],
-                "pull_requests": [asdict(pr) for pr in issue.development_info.pull_requests],
-                "branches": issue.development_info.branches,
-                "repository_context": asdict(issue.development_info.repository_context) if issue.development_info.repository_context else None,
-                "figma_context": asdict(issue.development_info.figma_context) if issue.development_info.figma_context else None,
-            }
-
-        # Serialize attachments if available
-        attachments_list = None
-        if issue.attachments:
-            attachments_list = [asdict(attachment) for attachment in issue.attachments]
-
-        # Serialize comments if available
-        comments_list = None
-        if issue.comments:
-            comments_list = [asdict(comment) for comment in issue.comments]
-
-        # Serialize parent info if available
-        parent_info_dict = None
-        if issue.parent:
-            parent_info_dict = {
-                "key": issue.parent.key,
-                "summary": issue.parent.summary,
-                "description": issue.parent.description,
-                "issue_type": issue.parent.issue_type,
-                "labels": issue.parent.labels,
-            }
-            # Include parent attachments if available
-            if issue.parent.attachments:
-                parent_info_dict["attachments"] = [asdict(att) for att in issue.parent.attachments]
-            # Include parent Figma context if available
-            if issue.parent.figma_context:
-                parent_info_dict["figma_context"] = asdict(issue.parent.figma_context)
-
-        # Serialize children (direct sub-tasks / Epic children) if present.
-        # The frontend echoes these back to /generate-test-plan so the prompt
-        # can switch into parent/integration-test mode.
-        children_list = None
-        if issue.children:
-            children_list = [asdict(child) for child in issue.children]
-
-        # Serialize linked issues if available
-        linked_info_dict = None
-        if issue.linked_issues:
-            linked_info_dict = {}
-            if issue.linked_issues.blocks:
-                linked_info_dict["blocks"] = [asdict(link) for link in issue.linked_issues.blocks]
-            if issue.linked_issues.blocked_by:
-                linked_info_dict["blocked_by"] = [asdict(link) for link in issue.linked_issues.blocked_by]
-            if issue.linked_issues.causes:
-                linked_info_dict["causes"] = [asdict(link) for link in issue.linked_issues.causes]
-            if issue.linked_issues.caused_by:
-                linked_info_dict["caused_by"] = [asdict(link) for link in issue.linked_issues.caused_by]
-
-        bounce_history_list = None
-        if issue.bounce_history:
-            bounce_history_list = [asdict(b) for b in issue.bounce_history]
-
+        # Serialization lives in plan_service so a server-side generate can
+        # rebuild this exact payload without a browser round-trip.
         return {
-            "key": issue.key,
-            "summary": issue.summary,
-            "description": issue.description,
-            "labels": issue.labels,
-            "issue_type": issue.issue_type,
-            "assignee": issue.assignee,
-            "assignee_account_id": issue.assignee_account_id,
-            "assignee_history": issue.assignee_history,
-            "assignee_history_account_ids": issue.assignee_history_account_ids,
+            **plan_service.serialize_issue(issue),
             "current_user_account_id": current_user_account_id,
-            "description_quality": {
-                "has_description": issue.description_analysis.has_description,
-                "gaps": issue.description_analysis.gaps,
-                "char_count": issue.description_analysis.char_count,
-                "word_count": issue.description_analysis.word_count,
-            },
-            "development_info": development_info_dict,
-            "attachments": attachments_list,
-            "comments": comments_list,
-            "parent": parent_info_dict,
-            "children": children_list,
-            "linked_issues": linked_info_dict,
-            "status": issue.status,
-            "status_category": issue.status_category,
-            "bounce_history": bounce_history_list,
-            "story_points": issue.story_points,
         }
+
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except JiraAuthError as e:
@@ -590,372 +500,65 @@ async def summarize_issues_batch(request: dict):
 
 @app.post("/generate-test-plan")
 async def generate_test_plan(request: GenerateTestPlanRequest):
+    """Generate a structured test plan from an already-assembled ticket payload.
+
+    The browser holds the ticket data it fetched from ``GET /issue/{key}``, so
+    it posts that context back here. Callers that only have a key should use
+    ``POST /tickets/{ticket_key}/plan`` instead of re-implementing the
+    assembly — see ``services/plan_service`` for why that matters.
     """
-    Generate a structured test plan using LLM.
-
-    This endpoint accepts ticket data and optional testing context,
-    then uses the configured LLM provider (Ollama or Claude) to generate
-    a comprehensive test plan.
-    """
-    if request.issue_type in NON_TESTABLE_ISSUE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Test plans are not generated for {request.issue_type} issues. "
-            f"Only Story, Task, and Bug issues are supported.",
-        )
-
-    flags = _derive_context_flags(request)
-    parent_key = (request.parent_info or {}).get("key")
-    parent_key_clean = parent_key if isinstance(parent_key, str) and parent_key.strip() else None
-    run_ctx = await run_tracker.start_run(
-        run_type=RunType.test_plan,
-        ticket_keys=[request.ticket_key],
-        model=settings.llm_model,
-        llm_provider=settings.llm_provider,
-        ticket_title=request.summary,
-        ticket_issue_type=request.issue_type,
-        ticket_parent_key=parent_key_clean,
-        **flags,
-    )
-
-    seed_regressions: list[dict] = []
-    if parent_key_clean:
-        import logging as _logging
-        _log = _logging.getLogger(__name__)
-        try:
-            sessionmaker = get_sessionmaker()
-            async with sessionmaker() as session:
-                seed_regressions = await bug_analysis_repository.find_seed_regression_tests(
-                    session,
-                    ticket_key=request.ticket_key,
-                    parent_key=parent_key_clean,
-                    limit=5,
-                )
-            seed_count = sum(len(s.get("regression_tests") or []) for s in seed_regressions)
-            _log.info(
-                "seed_regressions: ticket=%s parent=%s sources=%d total_tests=%d",
-                request.ticket_key, parent_key_clean, len(seed_regressions), seed_count,
-            )
-        except Exception:
-            _log.exception("find_seed_regression_tests failed; continuing without seeds")
-
     try:
-        images = None
-        if request.image_urls:
-            jira = JiraClient()
-            images = []
-            for image_url in request.image_urls[:3]:
-                image_data = await jira.download_image_as_base64(image_url)
-                if image_data:
-                    images.append(image_data)
-            if not images:
-                images = None
-
-        resolved_slack = await resolve_slack_messages_in_text(
-            request.description, request.comments
-        )
-        slack_messages_for_prompt = (
-            [asdict(m) for m in resolved_slack] if resolved_slack else None
-        )
-
-        llm = get_llm_client()
-
-        # Pre-plan classifier — name the deliverable + verification surface
-        # so the generator can anchor cases to the right target and the
-        # post-plan surface critic has something to check against. Gated
-        # by settings.surface_classifier_enabled; off means the pipeline
-        # runs exactly as it did before this step existed.
-        deliverable = await _classify_deliverable(
-            llm,
-            ticket_key=request.ticket_key,
-            summary=request.summary,
-            description=request.description,
-            issue_type=request.issue_type,
-            development_info=request.development_info,
-        )
-        testing_context = dict(request.testing_context or {})
-        if deliverable is not None and deliverable.artifact_type != "unknown":
-            testing_context["deliverable_hint"] = format_deliverable_hint(deliverable)
-
-        test_plan = await llm.generate_test_plan(
-            ticket_key=request.ticket_key,
-            summary=request.summary,
-            description=request.description,
-            testing_context=testing_context,
-            development_info=request.development_info,
-            images=images,
-            comments=request.comments,
-            parent_info=request.parent_info,
-            child_info=request.child_info,
-            linked_info=request.linked_info,
-            slack_messages=slack_messages_for_prompt,
-            seed_regressions=seed_regressions or None,
-            bounce_history=request.bounce_history,
-        )
-
-        # AC coverage for the single-ticket plan. Previously only the
-        # multi-ticket endpoint computed this, so a plain Story (no children)
-        # had no coverage safety net at all — the SK-2290 failure, where
-        # dropped AC items shipped silently. Build the same per-ticket index
-        # the multi-ticket path uses so `_compute_ac_coverage` can flag both
-        # fully-uncovered ACs and compound ACs whose sub-actions were dropped.
-        single_ticket_data = [
-            {
-                "ticket_key": request.ticket_key,
-                "acceptance_criteria": extract_acceptance_criteria(request.description),
-            }
-        ]
-        # Grounding critic — catch cases that cite an AC by number but test a
-        # behaviour that AC's text doesn't actually contain (e.g. a "filter by
-        # date range" case tagged against an AC that only says "viewable").
-        # Runs before _compute_ac_coverage so any badges added here survive
-        # the covers_acs cleanup pass.
-        await _run_grounding_critic(llm, test_plan, single_ticket_data)
-        # Code-grounding recheck — for each just-added AC-critic warning,
-        # look at the linked repo's source and downgrade the warning to
-        # INFO when the behaviour under test is demonstrably implemented.
-        # Runs immediately after the AC critic so fresh warnings can be
-        # softened before the fix-scope critic keys off them.
-        single_ticket_dev_info = [{
-            "ticket_key": request.ticket_key,
-            "development_info": request.development_info,
-        }]
-        await _run_code_grounding_critic(llm, test_plan, single_ticket_dev_info)
-        # Fix-scope critic — catch reporter-drift cases that cite a real AC
-        # but test behaviour the merged PR explicitly did NOT change.
-        # Ordered after the grounding critic so already-badged cases skip
-        # the second LLM call.
-        await _run_fix_scope_critic(
-            llm,
-            test_plan,
-            single_ticket_dev_info,
-        )
-        # Surface-mismatch critic — for tickets whose deliverable lives
-        # OUTSIDE the running app (asset upload, config flip, doc edit),
-        # badge cases whose steps target the app anyway. Skipped for
-        # code_behavior / unknown / classifier-off (see should_run).
-        await _run_surface_mismatch_critic(llm, test_plan, deliverable)
-        ac_coverage = _compute_ac_coverage(test_plan, single_ticket_data)
-
-        response = {
-            "ticket_key": request.ticket_key,
-            "happy_path": test_plan.happy_path,
-            "edge_cases": test_plan.edge_cases,
-            "regression_checklist": test_plan.regression_checklist,
-            "integration_tests": test_plan.integration_tests or [],
-            "ac_coverage": ac_coverage,
-            "grounding_warnings": _normalize_grounding_warnings(test_plan),
-            "uat_complexity": test_plan.uat_complexity,
-            "how_to_see_it": test_plan.how_to_see_it,
-        }
-
-        saved = await run_tracker.complete_with_plan(
-            run_ctx,
-            plan_body=json.dumps(response),
-            plan_format=PlanFormat.json,
-            cases=_flatten_cases_for_persistence(test_plan),
-        )
-        if saved:
-            response["plan_id"] = saved["plan_id"]
-            response["version"] = saved["version"]
-        return response
-
+        return await plan_service.generate_single(request)
+    except NonTestableIssueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except LLMError as e:
-        await run_tracker.fail(run_ctx, error_code=f"LLMError: {e}")
         raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        await run_tracker.fail(run_ctx, error_code=f"{type(e).__name__}: {e}")
-        raise
 
 
 @app.post("/generate-test-plan/multi")
 async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
-    """
-    Generate a unified test plan for multiple related Jira tickets.
+    """Generate a unified test plan for multiple related Jira tickets.
 
     Two modes:
     - **single_repo**: all tickets touch the same repository (or have no
-      development info). Existing behaviour — one unified plan keyed off
-      shared files.
-    - **cross_project**: tickets span multiple repositories. The endpoint
-      runs the seam extractor to find verified producer/consumer pairs
-      across repos and feeds them into the prompt so the LLM writes
-      integration tests against the seams, not just per-side behaviour.
+      development info). One unified plan keyed off shared files.
+    - **cross_project**: tickets span multiple repositories. A seam catalog
+      of verified producer/consumer pairs is fed into the prompt so the LLM
+      writes integration tests against the seams, not just per-side
+      behaviour.
     """
-    for ticket in request.tickets:
-        if ticket.issue_type in NON_TESTABLE_ISSUE_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Test plans are not generated for {ticket.issue_type} issues ({ticket.ticket_key}).",
-            )
-
-    aggregated_flags = {
-        "had_pr_diff": False,
-        "had_figma": False,
-        "had_parent": False,
-        "linked_ticket_count": 0,
-        "pr_count": 0,
-        "comment_count": 0,
-    }
-    for t in request.tickets:
-        flags = _derive_context_flags(t)
-        aggregated_flags["had_pr_diff"] = aggregated_flags["had_pr_diff"] or flags["had_pr_diff"]
-        aggregated_flags["had_figma"] = aggregated_flags["had_figma"] or flags["had_figma"]
-        aggregated_flags["had_parent"] = aggregated_flags["had_parent"] or flags["had_parent"]
-        aggregated_flags["linked_ticket_count"] += flags["linked_ticket_count"]
-        aggregated_flags["pr_count"] += flags["pr_count"]
-        aggregated_flags["comment_count"] += flags["comment_count"]
-
-    run_ctx = await run_tracker.start_run(
-        run_type=RunType.test_plan,
-        ticket_keys=[t.ticket_key for t in request.tickets],
-        model=settings.llm_model,
-        llm_provider=settings.llm_provider,
-        **aggregated_flags,
-    )
-
     try:
-        # Collect images from all tickets (cap at 3 total)
-        all_images: list | None = None
-        jira = JiraClient()
-        for ticket in request.tickets:
-            if ticket.image_urls and (all_images is None or len(all_images) < 3):
-                for url in ticket.image_urls:
-                    if all_images is not None and len(all_images) >= 3:
-                        break
-                    image_data = await jira.download_image_as_base64(url)
-                    if image_data:
-                        if all_images is None:
-                            all_images = []
-                        all_images.append(image_data)
-
-        tickets_data = [
-            {
-                "ticket_key": t.ticket_key,
-                "summary": t.summary,
-                "description": t.description,
-                "issue_type": t.issue_type,
-                "testing_context": t.testing_context,
-                "development_info": t.development_info,
-                "comments": t.comments,
-                "parent_info": t.parent_info,
-                "child_info": t.child_info,
-                "linked_info": t.linked_info,
-                "acceptance_criteria": extract_acceptance_criteria(t.description),
-            }
-            for t in request.tickets
-        ]
-
-        mode = classify_multi_ticket_mode(tickets_data)
-        cross_project_payload: dict | None = None
-        if mode == "cross_project":
-            catalog = build_seam_catalog(tickets_data)
-            if not catalog.is_empty:
-                cross_project_payload = catalog.to_dict()
-
-        llm = get_llm_client()
-
-        # Pre-plan classifier — one call per ticket in parallel. Each ticket's
-        # non-code deliverable hint is attached into its own testing_context so
-        # the multi prompt anchors that ticket's block without leaking hints
-        # across sibling tickets in the batch. The aggregated deliverable is
-        # then handed to the surface critic after generation (skipped when the
-        # batch contains any code_behavior ticket — see
-        # aggregate_deliverables_for_critique for why).
-        import asyncio as _asyncio
-        classifier_results = await _asyncio.gather(
-            *[
-                _classify_deliverable(
-                    llm,
-                    ticket_key=t["ticket_key"],
-                    summary=t.get("summary") or "",
-                    description=t.get("description") or "",
-                    issue_type=t.get("issue_type"),
-                    development_info=t.get("development_info"),
-                )
-                for t in tickets_data
-            ],
-            return_exceptions=False,
-        )
-        per_ticket_deliverables: list[tuple[str, object]] = []
-        for t, d in zip(tickets_data, classifier_results):
-            per_ticket_deliverables.append((t["ticket_key"], d))
-            if d is not None and getattr(d, "artifact_type", "unknown") != "unknown":
-                tc = dict(t.get("testing_context") or {})
-                tc["deliverable_hint"] = format_deliverable_hint(d)
-                t["testing_context"] = tc
-        aggregated_deliverable = aggregate_deliverables_for_critique(per_ticket_deliverables)
-
-        test_plan = await llm.generate_multi_ticket_test_plan(
-            tickets=tickets_data,
-            images=all_images,
-            cross_project=cross_project_payload,
-        )
-
-        # Grounding critic — see the single-ticket endpoint for context.
-        await _run_grounding_critic(llm, test_plan, tickets_data)
-        multi_ticket_dev_info = [
-            {
-                "ticket_key": t.get("ticket_key"),
-                "development_info": t.get("development_info"),
-            }
-            for t in tickets_data
-        ]
-        # Code-grounding recheck — see the single-ticket endpoint.
-        await _run_code_grounding_critic(llm, test_plan, multi_ticket_dev_info)
-        # Fix-scope critic — see the single-ticket endpoint for context.
-        await _run_fix_scope_critic(
-            llm,
-            test_plan,
-            multi_ticket_dev_info,
-        )
-        # Surface-mismatch critic — runs against the aggregated deliverable.
-        # Skipped for pure-code batches or when the batch mixes code with
-        # non-code work (see aggregate_deliverables_for_critique). This
-        # matches the single-ticket route's guard so the two endpoints
-        # behave symmetrically.
-        await _run_surface_mismatch_critic(llm, test_plan, aggregated_deliverable)
-        ac_coverage = _compute_ac_coverage(test_plan, tickets_data)
-        valid_ac_ids = {
-            f"{t['ticket_key']}-AC{i}"
-            for t in tickets_data
-            for i in range(1, len(t.get("acceptance_criteria") or []) + 1)
-        }
-        grounding_warnings = _normalize_grounding_warnings(test_plan, valid_ac_ids)
-
-        response = {
-            "ticket_keys": [t.ticket_key for t in request.tickets],
-            "happy_path": test_plan.happy_path,
-            "edge_cases": test_plan.edge_cases,
-            "regression_checklist": test_plan.regression_checklist,
-            "integration_tests": test_plan.integration_tests or [],
-            "ac_coverage": ac_coverage,
-            "superseded_acs": ac_coverage.get("superseded_acs", []),
-            "grounding_warnings": grounding_warnings,
-            "uat_complexity": test_plan.uat_complexity,
-            "how_to_see_it": test_plan.how_to_see_it,
-        }
-        if cross_project_payload is not None:
-            response["cross_project_summary"] = (
-                test_plan.cross_project_summary or cross_project_payload
-            )
-
-        saved = await run_tracker.complete_with_plan(
-            run_ctx,
-            plan_body=json.dumps(response),
-            plan_format=PlanFormat.json,
-            cases=_flatten_cases_for_persistence(test_plan),
-        )
-        if saved:
-            response["plan_id"] = saved["plan_id"]
-            response["version"] = saved["version"]
-        return response
+        return await plan_service.generate_multi(request.tickets)
+    except NonTestableIssueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except LLMError as e:
-        await run_tracker.fail(run_ctx, error_code=f"LLMError: {e}")
         raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        await run_tracker.fail(run_ctx, error_code=f"{type(e).__name__}: {e}")
-        raise
+
+
+@app.post("/tickets/{ticket_key}/plan")
+async def generate_plan_for_ticket(ticket_key: str):
+    """Generate a test plan from a ticket *key* alone — the automation door.
+
+    Fetches the ticket's context server-side (dev info, comments, parent,
+    children, linked issues, bounce history) and runs the identical pipeline
+    the browser flow uses. Comma-separate keys for a unified multi-ticket
+    plan.
+    """
+    keys = [k.strip().upper() for k in ticket_key.split(",") if k.strip()]
+    if not keys:
+        raise HTTPException(status_code=400, detail="No ticket key supplied.")
+    try:
+        return await plan_service.generate_for_tickets(keys)
+    except NonTestableIssueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except JiraNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @app.post("/jira/post-comment")

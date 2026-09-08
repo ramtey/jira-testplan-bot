@@ -5,17 +5,18 @@ to Claude desktop app and other MCP-compatible clients.
 """
 
 import asyncio
-import json
 import os
-from dataclasses import asdict
 from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+from ..app.config import settings
 from ..app.jira_client import JiraClient, JiraAuthError, JiraNotFoundError
-from ..app.llm_client import get_llm_client, LLMError
+from ..app.llm_client import LLMError
+from ..app.services import plan_service
+from ..app.services.plan_service import NonTestableIssueError
 from ..app.token_service import TokenHealthService
 
 # Initialize MCP server
@@ -282,65 +283,17 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
 
 
 async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
-    """Generate test plan for a Jira ticket."""
+    """Generate test plan for a Jira ticket.
+
+    Delegates to ``plan_service.generate_for_ticket``, which is the same
+    pipeline the web UI runs — deliverable classifier, generation, the four
+    post-generation critics, AC coverage and run persistence. This function
+    used to assemble its own context and call ``llm.generate_test_plan``
+    directly, which meant MCP-generated plans silently carried no critic
+    badges, no AC coverage and no run history.
+    """
     try:
-        # Fetch ticket
-        jira_client = JiraClient()
-        issue = await jira_client.get_issue(ticket_key)
-
-        # Prepare development info
-        development_info = None
-        if issue.development_info:
-            development_info = asdict(issue.development_info)
-
-        # Prepare Jira comments
-        comments = None
-        if issue.comments:
-            comments = [asdict(c) for c in issue.comments]
-
-        # Prepare parent info (for sub-tasks: surfaces parent description, Figma, attachments)
-        parent_info = None
-        if issue.parent:
-            parent_info = asdict(issue.parent)
-
-        # Prepare linked issues info (blocks, blocked_by, causes, etc.)
-        linked_info = None
-        if issue.linked_issues:
-            linked_info = asdict(issue.linked_issues)
-
-        # Prepare bounce-back history (QA/UAT → ToDo regressions)
-        bounce_history = None
-        if issue.bounce_history:
-            bounce_history = [asdict(b) for b in issue.bounce_history]
-
-        # Download image attachments (cap at 3, matching CLI behavior)
-        images = None
-        if issue.attachments:
-            images = []
-            for attachment in issue.attachments[:3]:
-                image_data = await jira_client.download_image_as_base64(attachment.url)
-                if image_data:
-                    images.append(image_data)
-            if not images:
-                images = None
-
-        # Generate test plan
-        llm_client = get_llm_client()
-        test_plan = await llm_client.generate_test_plan(
-            ticket_key=issue.key,
-            summary=issue.summary,
-            description=issue.description or "",
-            testing_context={},
-            development_info=development_info,
-            images=images,
-            comments=comments,
-            parent_info=parent_info,
-            linked_info=linked_info,
-            bounce_history=bounce_history,
-        )
-
-        # Convert to dict for formatting
-        test_plan_dict = asdict(test_plan)
+        test_plan_dict = await plan_service.generate_for_ticket(ticket_key)
 
         # Build Jira-formatted block (same as UI's formatTestPlanAsJira)
         jira_text = _format_test_plan_for_jira(test_plan_dict)
@@ -351,47 +304,34 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
             "",
         ]
 
-        # Happy Path
+        def _render_section(heading: str, cases: list[dict]) -> None:
+            output.append(heading)
+            output.append("")
+            for i, test in enumerate(cases, 1):
+                output.append(f"### Test {i}: {test['title']}")
+                output.append("")
+                if test.get("needs_manual_verification"):
+                    output.append(
+                        "> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference."
+                    )
+                    output.append("")
+                output.append("**Steps:**")
+                for step_num, step in enumerate(test.get("steps", []), 1):
+                    output.append(f"{step_num}. {step}")
+                output.append("")
+                output.append("**Expected Result:**")
+                output.append(test.get("expected", ""))
+                output.append("")
+
         if test_plan_dict.get("happy_path"):
-            output.append("## Happy Path Test Cases")
-            output.append("")
-            for i, test in enumerate(test_plan_dict["happy_path"], 1):
-                output.append(f"### Test {i}: {test['title']}")
-                output.append("")
-                if test.get("needs_manual_verification"):
-                    output.append(
-                        "> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference."
-                    )
-                    output.append("")
-                output.append("**Steps:**")
-                for step_num, step in enumerate(test.get("steps", []), 1):
-                    output.append(f"{step_num}. {step}")
-                output.append("")
-                output.append("**Expected Result:**")
-                output.append(test.get("expected", ""))
-                output.append("")
-
-        # Edge Cases
+            _render_section("## Happy Path Test Cases", test_plan_dict["happy_path"])
         if test_plan_dict.get("edge_cases"):
-            output.append("## Edge Cases")
-            output.append("")
-            for i, test in enumerate(test_plan_dict["edge_cases"], 1):
-                output.append(f"### Test {i}: {test['title']}")
-                output.append("")
-                if test.get("needs_manual_verification"):
-                    output.append(
-                        "> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference."
-                    )
-                    output.append("")
-                output.append("**Steps:**")
-                for step_num, step in enumerate(test.get("steps", []), 1):
-                    output.append(f"{step_num}. {step}")
-                output.append("")
-                output.append("**Expected Result:**")
-                output.append(test.get("expected", ""))
-                output.append("")
+            _render_section("## Edge Cases", test_plan_dict["edge_cases"])
+        if test_plan_dict.get("integration_tests"):
+            _render_section(
+                "## Integration & Backend Tests", test_plan_dict["integration_tests"]
+            )
 
-        # Regression Checklist
         if test_plan_dict.get("regression_checklist"):
             output.append("## Regression Checklist")
             output.append("")
@@ -399,9 +339,35 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
                 output.append(f"- {item}")
             output.append("")
 
+        # Surface the critics' verdicts — the reason this path goes through
+        # plan_service at all. A caller acting on the plan (e.g. a UAT
+        # runner) needs to know which cases the pipeline couldn't ground.
+        warnings = test_plan_dict.get("grounding_warnings") or []
+        if warnings:
+            output.append("## Grounding Warnings")
+            output.append("")
+            for w in warnings:
+                severity = str(w.get("severity", "warn")).upper()
+                output.append(f"- **{severity}** — {w.get('message', w)}")
+            output.append("")
+
+        coverage = test_plan_dict.get("ac_coverage") or {}
+        uncovered = coverage.get("uncovered_acs") or []
+        if uncovered:
+            output.append("## Uncovered Acceptance Criteria")
+            output.append("")
+            for ac in uncovered:
+                output.append(f"- {ac.get('id', '')}: {ac.get('text', ac)}")
+            output.append("")
+
         output.append("---")
         output.append("")
-        output.append("*Generated with Claude Opus 4.5*")
+        output.append(f"*Generated with {settings.llm_model}*")
+        if test_plan_dict.get("plan_id"):
+            output.append(
+                f"*Run persisted as plan {test_plan_dict['plan_id']} "
+                f"(version {test_plan_dict.get('version', '?')})*"
+            )
         output.append("")
         output.append("--- JIRA COMMENT START ---")
         output.append(jira_text.rstrip())
@@ -409,6 +375,8 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
 
         return [TextContent(type="text", text="\n".join(output))]
 
+    except NonTestableIssueError as e:
+        return [TextContent(type="text", text=f"❌ {e}")]
     except JiraNotFoundError:
         return [TextContent(
             type="text",

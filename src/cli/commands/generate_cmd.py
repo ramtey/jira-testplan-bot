@@ -20,7 +20,10 @@ from ...app.jira_client import (
     JiraConnectionError,
     JiraNotFoundError,
 )
-from ...app.llm_client import LLMError, get_llm_client
+from ...app.llm_client import LLMError
+from ...app.models import GenerateTestPlanRequest
+from ...app.services import plan_service
+from ...app.services.plan_service import NonTestableIssueError
 
 console = Console()
 
@@ -152,59 +155,19 @@ def generate(
             ) as progress:
                 task = progress.add_task("Analyzing ticket and generating tests...", total=None)
 
-                # Prepare development info
-                from dataclasses import asdict
-
-                development_info = None
-                if issue.development_info:
-                    development_info = asdict(issue.development_info)
-
-                # Prepare Jira comments
-                comments = None
-                if issue.comments:
-                    comments = [asdict(c) for c in issue.comments]
-
-                # Prepare parent info
-                parent_info = None
-                if issue.parent:
-                    parent_info = asdict(issue.parent)
-
-                # Prepare linked issues info
-                linked_info = None
-                if issue.linked_issues:
-                    linked_info = asdict(issue.linked_issues)
-
-                # Prepare bounce-back history (QA/UAT → ToDo regressions)
-                bounce_history = None
-                if issue.bounce_history:
-                    bounce_history = [asdict(b) for b in issue.bounce_history]
-
-                # Download image attachments
-                images = None
-                if issue.attachments:
-                    jira_client = JiraClient()
-                    images = []
-                    for attachment in issue.attachments[:3]:
-                        image_data = asyncio.run(jira_client.download_image_as_base64(attachment.url))
-                        if image_data:
-                            images.append(image_data)
-                    if not images:
-                        images = None
-
-                # Generate test plan
-                llm_client = get_llm_client()
-                test_plan = asyncio.run(
-                    llm_client.generate_test_plan(
-                        ticket_key=issue.key,
-                        summary=issue.summary,
-                        description=issue.description or "",
-                        testing_context={},
-                        development_info=development_info,
-                        images=images,
-                        comments=comments,
-                        parent_info=parent_info,
-                        linked_info=linked_info,
-                        bounce_history=bounce_history,
+                # One call through plan_service — the same pipeline the web
+                # UI runs (deliverable classifier, four post-generation
+                # critics, AC coverage, run persistence). This block used to
+                # assemble its own context and call llm.generate_test_plan
+                # directly, so CLI plans silently carried no critic badges
+                # and no AC coverage.
+                test_plan_dict = asyncio.run(
+                    plan_service.generate_single(
+                        GenerateTestPlanRequest(
+                            **plan_service.prompt_payload(
+                                plan_service.serialize_issue(issue)
+                            )
+                        )
                     )
                 )
 
@@ -212,9 +175,6 @@ def generate(
 
             if not quiet:
                 console.print("[green]✓[/green] Test plan generated successfully!")
-
-            # Convert TestPlan dataclass to dict for formatting
-            test_plan_dict = asdict(test_plan)
 
             # Format output
             formatted_output = _format_test_plan(test_plan_dict, format, issue.key)
@@ -261,6 +221,13 @@ def generate(
                     else:
                         console.print("[green]✓[/green] Test plan posted to Jira")
 
+        except NonTestableIssueError as e:
+            # Epic / Spike. A per-ticket condition, so a batch skips it and
+            # keeps going rather than aborting the whole run.
+            console.print(f"[yellow]⊘ Skipped:[/yellow] {e}")
+            if len(ticket_keys) == 1:
+                raise typer.Exit(1)
+            continue
         except JiraNotFoundError:
             console.print(f"[red]✗ Ticket not found:[/red] {ticket_key}")
             if len(ticket_keys) == 1:
