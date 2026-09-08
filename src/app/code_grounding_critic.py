@@ -416,3 +416,42 @@ def apply_code_verdicts(
         downgraded.append(warning)
 
     return downgraded
+
+
+# Appended to a warning's explanation when the code recheck couldn't run.
+# Wording matters: the point is that the warning is *unverified*, not that the
+# behaviour was checked and found missing.
+_RECHECK_UNAVAILABLE_NOTE = (
+    " (Code recheck did not run — GitHub code search was rate-limited, so this "
+    "warning is unverified rather than confirmed against the repo.)"
+)
+
+
+def mark_recheck_unavailable(warnings: list[dict]) -> list[dict]:
+    """Record that the code recheck couldn't run for these warnings.
+
+    Severity deliberately stays ``warn``. A throttled recheck tells us nothing
+    about the code, so downgrading to ``info`` would assert confirmation we
+    never got, and dropping the warning would hide a real gap. What changes is
+    that the warning now *says* it wasn't verified: the note lands in
+    ``explanation`` (which the UI's warnings panel already renders, so no
+    frontend change is needed to see it) and ``recheck_status`` carries the
+    same fact in machine-readable form for anything that wants to badge it
+    separately later.
+
+    Idempotent — re-marking a warning won't stack duplicate notes.
+
+    Returns the warnings it actually annotated.
+    """
+    marked: list[dict] = []
+    for warning in warnings or []:
+        if not isinstance(warning, dict):
+            continue
+        if warning.get("recheck_status") == "unavailable":
+            continue
+        warning["recheck_status"] = "unavailable"
+        warning["recheck_unavailable_reason"] = "github_search_rate_limited"
+        explanation = (warning.get("explanation") or "").rstrip()
+        warning["explanation"] = explanation + _RECHECK_UNAVAILABLE_NOTE
+        marked.append(warning)
+    return marked

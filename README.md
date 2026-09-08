@@ -710,6 +710,12 @@ uv run pytest tests/test_plan_service.py -q
 # Queue-watcher guards — the refusals that keep unattended sweeps from
 # overspending (no-PR skip, never-regenerate, retry cooldown, per-sweep cap)
 uv run pytest tests/test_queue_watcher.py -q
+
+# Code-search throttling — a rate-limit 403 must not read as "no hits"
+uv run pytest tests/test_github_search_throttle.py -q
+
+# Bounce history reaches both prompt builders, not just the single-ticket one
+uv run pytest tests/test_bounce_in_prompts.py -q
 ```
 
 ## Status
@@ -741,26 +747,37 @@ per-role fanout and the verification-surface anchor pass, on top of the
 per-test `grounded_in` / Confluence-specs / walkthrough-gated / three-critic
 baseline; prompt quality hardening ongoing.
 
-**Known gaps.** Two things degrade silently rather than failing loudly, so
-they're written down rather than left to be rediscovered:
+**Recently closed — two silent degradations.** Both failed by producing a
+quietly worse plan rather than an error, which is why each now has tests
+pinning the *refusal* rather than the happy path:
 
-- **Code-grounding critic loses its evidence to rate limits.** GitHub's
-  code-search endpoint allows 10 requests/minute (with a stricter secondary
-  limit on bursts), and one generation can spend most of that budget —
-  `_find_test_files` searches once per repo during the ticket fetch, then the
-  critic searches once per recheckable warning per repo.
-  [`search_relevant_files`](src/app/github_client.py) treats **any** non-200 as
-  "no hits", so a rate-limited search is indistinguishable from "the code
-  doesn't implement this": the critic concludes it found no evidence and
-  leaves the warning at WARN with no indication the pass didn't actually run.
-  Needs the client to detect 403/429 + `x-ratelimit-remaining`/`retry-after`,
-  back off once, and report "recheck unavailable" distinctly from "not found".
-- **Multi-ticket plans never see bounce history.** `TicketInput` carries
-  `bounce_history`, but `plan_service.generate_multi` doesn't copy it into
-  `tickets_data`, `generate_multi_ticket_test_plan` takes no such parameter,
-  and `_build_multi_ticket_prompt` renders no bounce block. So the
-  "PRIOR QA / UAT BOUNCE-BACK HISTORY" section that makes single-ticket plans
-  cover prior failure modes is simply absent from every multi-ticket plan.
+- **Code-grounding critic was losing its evidence to rate limits.** GitHub
+  caps code search at 10 requests/minute (plus a secondary limit on bursts)
+  and refuses with 403 — the same status a permissions failure uses.
+  `search_relevant_files` treated every non-200 as "no hits", so a throttled
+  search was indistinguishable from "the code doesn't implement this": the
+  critic concluded there was no evidence when it had never been allowed to
+  look, and left the warning at WARN with nothing saying the pass hadn't run.
+  Now the client tells a rate refusal from a permissions refusal
+  (`retry-after`, `x-ratelimit-remaining`, or the secondary-limit message),
+  backs off once and retries — which recovers most calls, since the window is
+  a minute wide — raises `GitHubSearchThrottled` if still refused, and
+  memoizes per `(repo, query)` so a repeated search costs nothing. A
+  throttled recheck is now recorded on the warning
+  (`recheck_status: "unavailable"`, plus a note in the `explanation` the
+  warnings panel already renders) so an unverified WARN reads differently
+  from one that was checked and not found. Severity deliberately stays WARN:
+  downgrading would assert a confirmation that never happened.
+- **Multi-ticket plans never saw bounce history.** `TicketInput` carried
+  `bounce_history`, but `plan_service.generate_multi` didn't copy it into
+  `tickets_data` and `_build_multi_ticket_prompt` rendered no bounce block —
+  so the `PRIOR QA / UAT BOUNCE-BACK HISTORY` section that makes single-ticket
+  plans cover prior failure modes was absent from exactly the plans covering
+  the most code. Both prompt builders now share one `_render_bounce_entries`
+  helper (the drift was possible because the rendering existed inline in one
+  builder only), and the multi prompt pools the entries into one section with
+  each still labelled by ticket key, since a bounce reason is only meaningful
+  attached to the ticket that bounced.
 
 ## Roadmap
 
@@ -876,6 +893,9 @@ they're written down rather than left to be rediscovered:
 
 - ✅ **One pipeline for every caller**: the deliverable classifier, four critics, AC coverage and run persistence moved out of the route handler into `services/plan_service.py`, and the web UI, CLI, MCP server and queue watcher all call it. Previously each non-browser caller hand-assembled its context and called `llm_client.generate_test_plan` directly, so MCP- and CLI-generated plans had no critic badges, no AC coverage and no run history — the same ticket produced a different plan depending on which door you came in through. `POST /tickets/{key}/plan` generates from a ticket key alone, and the `GET /issue/{key}` serializer moved into the service so a key-only generate rebuilds the exact payload the browser posts (a test pins that shape field-for-field against the frontend's `buildTicketPayload`)
 - ✅ **QA-queue watcher**: `testplan watch` sweeps the configured projects for tickets in the queue status (default *Ready to Test*) and pre-generates a plan — plus Bug Lens for Bugs — so the tester opens a ticket whose plan and critic verdicts are already waiting instead of starting a multi-minute Opus run by hand. Runs as its own process, never off API startup. Guards are individually configurable and each has a test: skip tickets with no linked PR, never regenerate an existing plan, cooldown so a reliably-failing ticket can't burn a call every interval, and a per-sweep cap. Checks run cheapest-first (free DB dedupe → Jira fetch → LLM), and `--dry-run` runs every guard while stopping short of generating
+
+- ✅ **Code-search throttling told apart from "no hits"**: GitHub's 10/min code-search cap refuses with 403, the same status as a permissions failure, and the client used to read every non-200 as an empty result — so the code-grounding critic reported false negatives whenever a generation exhausted the budget (test-file discovery per repo during the fetch, then one search per recheckable warning per repo). The client now discriminates via `retry-after` / `x-ratelimit-remaining` / the secondary-limit message, backs off and retries once, raises `GitHubSearchThrottled` when still refused, and caches per `(repo, query)`. Warnings whose recheck couldn't run are marked `recheck_status: "unavailable"` and say so in their explanation, staying at WARN rather than claiming a confirmation that never happened
+- ✅ **Bounce history reaches multi-ticket plans**: the section that forces explicit coverage of prior QA/UAT failure modes existed in the single-ticket prompt only — `generate_multi` dropped the field and the multi prompt builder rendered nothing. Both builders now share one renderer, and the multi prompt pools entries into one section with per-ticket attribution
 
 ### Future Enhancements
 

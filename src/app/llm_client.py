@@ -169,6 +169,44 @@ def _format_ac_line(ac_id: str, text: str) -> str:
     return line
 
 
+def _render_bounce_entries(bounces: list[dict], *, label_prefix: str = "Bounce") -> str:
+    """Render bounce-back entries as prompt lines.
+
+    Shared by the single-ticket and multi-ticket prompt builders. It exists as
+    one function because it previously existed as one *inline block* in the
+    single-ticket builder only — the multi-ticket builder rendered no bounce
+    history at all, so the coverage that protects against repeat failures was
+    silently absent from exactly the plans covering the most code.
+    """
+    out = ""
+    for i, b in enumerate(bounces, 1):
+        from_status = b.get("from_status") or "?"
+        to_status = b.get("to_status") or "?"
+        out += f"**{label_prefix} {i}:** {from_status} → {to_status}\n"
+        ts = b.get("timestamp")
+        if ts:
+            out += f"  When: {ts[:10]}\n"
+        if b.get("author"):
+            out += f"  Moved by: {b['author']}\n"
+        reason = b.get("reason")
+        if reason:
+            out += f"  Reported reason:\n  > {reason}\n"
+        else:
+            out += "  (No comment found near the transition — reason unknown.)\n"
+        out += "\n"
+    return out
+
+
+# How to act on the history. Kept next to the renderer so the instructions and
+# the data they refer to can't drift apart between the two prompt builders.
+_BOUNCE_USAGE_GUIDANCE = (
+    "**How to use this history:**\n"
+    "- For each bounce, write at least one explicit regression test case that exercises the failure mode the PM described.\n"
+    "- If the reason is vague (e.g. 'doesn't work'), add tests that walk the previously-failing flow end-to-end with realistic data.\n"
+    "- Place these under the regression checklist and edge cases sections — they are the highest-priority coverage for this ticket.\n\n"
+)
+
+
 def _parse_batch_summary_json(raw: str, tickets: list[dict]) -> dict:
     """Parse the LLM's batch-summary JSON, tolerant to common deviations.
 
@@ -2343,25 +2381,8 @@ TICKET INFORMATION
                 "and then sent back to an earlier workflow state. Each entry below is a "
                 "regression-prone moment that the test plan MUST cover explicitly.\n\n"
             )
-            for i, b in enumerate(bounce_history[:5], 1):
-                from_status = b.get("from_status") or "?"
-                to_status = b.get("to_status") or "?"
-                prompt += f"**Bounce {i}:** {from_status} → {to_status}\n"
-                ts = b.get("timestamp")
-                if ts:
-                    prompt += f"  When: {ts[:10]}\n"
-                if b.get("author"):
-                    prompt += f"  Moved by: {b['author']}\n"
-                reason = b.get("reason")
-                if reason:
-                    prompt += f"  Reported reason:\n  > {reason}\n"
-                else:
-                    prompt += "  (No comment found near the transition — reason unknown.)\n"
-                prompt += "\n"
-            prompt += "**How to use this history:**\n"
-            prompt += "- For each bounce, write at least one explicit regression test case that exercises the failure mode the PM described.\n"
-            prompt += "- If the reason is vague (e.g. 'doesn't work'), add tests that walk the previously-failing flow end-to-end with realistic data.\n"
-            prompt += "- Place these under the regression checklist and edge cases sections — they are the highest-priority coverage for this ticket.\n\n"
+            prompt += _render_bounce_entries(bounce_history[:5])
+            prompt += _BOUNCE_USAGE_GUIDANCE
 
         if has_images:
             prompt += "\n**Note:** Screenshots or mockups are attached. Use them to understand the UI requirements and generate specific visual test cases.\n"
@@ -2778,6 +2799,31 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                 prompt += f"\n{hint}\n"
 
             prompt += "\n"
+
+        # ── Prior QA / UAT bounce-backs ───────────────────────────────────────
+        # Pooled into one section rather than repeated per ticket: the usage
+        # guidance is what drives behaviour and it only needs saying once, but
+        # each entry stays labelled with its ticket key because a bounce reason
+        # is only meaningful attached to the ticket that bounced.
+        tickets_with_bounces = [t for t in tickets if t.get("bounce_history")]
+        if tickets_with_bounces:
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "PRIOR QA / UAT BOUNCE-BACK HISTORY\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += (
+                "\nThese tickets were previously moved forward (e.g. to QA, UAT, or "
+                "Testing) and then sent back to an earlier workflow state. Each entry "
+                "below is a regression-prone moment that the unified test plan MUST "
+                "cover explicitly.\n\n"
+            )
+            for ticket in tickets_with_bounces:
+                key = ticket["ticket_key"]
+                bounces = ticket.get("bounce_history") or []
+                prompt += f"**{key}** — {len(bounces)} prior bounce-back(s):\n\n"
+                prompt += _render_bounce_entries(
+                    bounces[:5], label_prefix=f"{key} bounce"
+                )
+            prompt += _BOUNCE_USAGE_GUIDANCE
 
         # ── Shared development activity ───────────────────────────────────────
         tickets_with_dev = [t for t in tickets if t.get("development_info")]

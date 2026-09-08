@@ -8,8 +8,10 @@ This module integrates with GitHub to enrich test plan context with:
 - Modified file paths
 """
 
+import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -17,6 +19,11 @@ import httpx
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+# Cap on how long a single search will block on a rate-limit backoff. A plan
+# generation already runs for minutes, so a short wait is worth the evidence;
+# waiting out a full window is not, and the critic degrades honestly instead.
+_MAX_SEARCH_BACKOFF_SECONDS = 15.0
 
 
 class GitHubAuthError(Exception):
@@ -34,6 +41,21 @@ class GitHubAuthError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.error_type = error_type
+
+
+class GitHubSearchThrottled(Exception):
+    """Raised when GitHub's code-search endpoint refuses us for rate reasons.
+
+    Deliberately NOT a subclass of GitHubAuthError. A throttled search and a
+    search that legitimately found nothing are different facts, and conflating
+    them is what let the code-grounding critic report "no evidence in code"
+    when it had in fact never been allowed to look. Callers that can degrade
+    gracefully must still be able to tell which happened.
+    """
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 @dataclass
@@ -102,6 +124,11 @@ class GitHubClient:
         """
         self.token = token or settings.github_token
         self.base_url = "https://api.github.com"
+        # Code search is capped at 10 requests/minute, and one plan generation
+        # can want more than that (test-file discovery per repo, then one
+        # search per recheckable warning per repo). Memoize per (repo, query)
+        # for the life of the client so a repeated query is free.
+        self._code_search_cache: dict[tuple[str, str, int], list[dict]] = {}
 
     def _headers(self) -> dict:
         """Build headers for GitHub API requests."""
@@ -265,6 +292,48 @@ class GitHubClient:
         ]
         return {"sha": sha[:8], "message": commit_msg, "files": files}
 
+    # GitHub's documented code-search allowance is 10 requests/minute, and it
+    # also applies an undocumented secondary limit to bursts. Both come back as
+    # 403, so status alone can't distinguish them from a permissions failure —
+    # the rate-limit headers can.
+    _SEARCH_THROTTLE_STATUSES = (403, 429)
+
+    @staticmethod
+    def _throttle_retry_after(response: httpx.Response) -> float | None:
+        """Seconds to wait, if this response is a rate-limit refusal.
+
+        Returns None when the response isn't rate-related, which is how the
+        caller tells a throttle apart from a genuine permissions 403.
+        """
+        if response.status_code not in GitHubClient._SEARCH_THROTTLE_STATUSES:
+            return None
+
+        retry_after = response.headers.get("retry-after")
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                pass
+
+        # Primary limit exhausted: remaining hits 0 and reset says when the
+        # window rolls over.
+        if response.headers.get("x-ratelimit-remaining") == "0":
+            reset = response.headers.get("x-ratelimit-reset")
+            if reset:
+                try:
+                    return max(0.0, float(reset) - time.time())
+                except ValueError:
+                    pass
+            return 60.0
+
+        # Secondary limit: no headers, but GitHub names it in the body.
+        body = (response.text or "").lower()
+        if "secondary rate limit" in body or "abuse detection" in body:
+            return 60.0
+        if "rate limit" in body:
+            return 60.0
+        return None
+
     async def search_relevant_files(self, repo: str, query: str, max_files: int = 3) -> list[dict]:
         """
         Search for code in a repo using GitHub code search, then fetch the content
@@ -277,9 +346,19 @@ class GitHubClient:
 
         Returns:
             List of dicts with keys: path, ref, content (same shape as fetch_file_from_blob_url)
+
+        Raises:
+            GitHubSearchThrottled: GitHub refused the search for rate reasons,
+                after one backoff-and-retry. An empty return means the search
+                ran and matched nothing — callers must not treat the two the
+                same, since only one of them is evidence about the code.
         """
         import base64
         import urllib.parse
+
+        cache_key = (repo, query, max_files)
+        if cache_key in self._code_search_cache:
+            return self._code_search_cache[cache_key]
 
         search_url = f"{self.base_url}/search/code?q={urllib.parse.quote(query)}+repo:{repo}&per_page={max_files}"
         results = []
@@ -287,12 +366,36 @@ class GitHubClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(search_url, headers=self._headers())
+
+                # One backoff and retry. The primary code-search window is a
+                # minute wide, so a single wait usually recovers the call —
+                # and recovering it is the difference between the critic having
+                # evidence and silently having none.
+                retry_after = self._throttle_retry_after(response)
+                if retry_after is not None:
+                    wait = min(retry_after, _MAX_SEARCH_BACKOFF_SECONDS)
+                    logger.warning(
+                        "GitHub code search throttled for %s (status %d); "
+                        "waiting %.1fs and retrying once",
+                        repo, response.status_code, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    response = await client.get(search_url, headers=self._headers())
+                    retry_after = self._throttle_retry_after(response)
+                    if retry_after is not None:
+                        raise GitHubSearchThrottled(
+                            f"GitHub code search rate-limited for {repo} "
+                            f"(status {response.status_code}) after one retry",
+                            retry_after=retry_after,
+                        )
+
                 if response.status_code != 200:
                     logger.warning(f"GitHub code search returned {response.status_code} for repo {repo}")
                     return []
 
                 items = response.json().get("items", [])
                 if not items:
+                    self._code_search_cache[cache_key] = []
                     return []
 
                 for item in items[:max_files]:
@@ -318,9 +421,15 @@ class GitHubClient:
 
                     results.append({"path": path, "ref": default_branch, "content": content})
 
+        except GitHubSearchThrottled:
+            # Must reach the caller — swallowing it here would restore exactly
+            # the bug this method was changed to fix.
+            raise
         except Exception as e:
             logger.warning(f"GitHub code search failed for repo {repo}: {e}")
+            return results
 
+        self._code_search_cache[cache_key] = results
         return results
 
     async def blame_line(

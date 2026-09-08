@@ -526,6 +526,10 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
                 "parent_info": t.parent_info,
                 "child_info": t.child_info,
                 "linked_info": t.linked_info,
+                # Carried through so _build_multi_ticket_prompt can render the
+                # bounce-back section. Omitting this key was why multi-ticket
+                # plans never covered prior QA/UAT failure modes.
+                "bounce_history": t.bounce_history,
                 "acceptance_criteria": extract_acceptance_criteria(t.description),
             }
             for t in tickets

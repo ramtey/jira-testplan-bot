@@ -27,8 +27,10 @@ from ..code_grounding_critic import (
     build_code_verification_inputs,
     build_search_query,
     extract_repos,
+    mark_recheck_unavailable,
     select_recheckable_warnings,
 )
+from ..github_client import GitHubSearchThrottled
 from ..config import settings
 from ..description_analyzer import extract_ac_action_facets
 from ..fix_scope_critic import (
@@ -451,6 +453,11 @@ async def run_code_grounding_critic(
     client = GitHubClient()
 
     hits_by_warning: dict[int, list[dict]] = {}
+    # Warnings whose search never actually ran because GitHub throttled us.
+    # Tracked separately from "searched and found nothing": only the latter is
+    # evidence about the code, and treating a throttle as evidence is what made
+    # this critic quietly report false negatives.
+    throttled_warnings: list[dict] = []
     for i, warning in enumerate(recheckable):
         query = build_search_query(warning)
         if not query:
@@ -458,9 +465,19 @@ async def run_code_grounding_critic(
         # Search each linked repo in order; stop as soon as we get
         # anything. Most tickets link one repo — the second-repo path
         # exists only for cross-project batches.
+        throttled = False
         for repo in repos:
             try:
                 hits = await client.search_relevant_files(repo, query, max_files=3)
+            except GitHubSearchThrottled as e:
+                # Every subsequent search in this pass will hit the same
+                # window, so stop asking and record what we couldn't check.
+                logger.warning(
+                    "code_grounding_critic: search throttled repo=%s q=%r (%s)",
+                    repo, query, e,
+                )
+                throttled = True
+                break
             except Exception:
                 logger.exception(
                     "code_grounding_critic: search failed repo=%s q=%r", repo, query
@@ -469,6 +486,16 @@ async def run_code_grounding_critic(
             if hits:
                 hits_by_warning[i] = hits
                 break
+        if throttled and i not in hits_by_warning:
+            throttled_warnings.append(warning)
+
+    if throttled_warnings:
+        mark_recheck_unavailable(throttled_warnings)
+        logger.warning(
+            "code_grounding_critic: %d warning(s) left unverified — GitHub code "
+            "search was rate-limited",
+            len(throttled_warnings),
+        )
 
     cases = build_code_verification_inputs(test_plan, recheckable, hits_by_warning)
     if not cases:
