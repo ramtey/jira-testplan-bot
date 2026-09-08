@@ -5,6 +5,7 @@ from src.app.repositories import (
     plan_repository,
     run_repository,
     test_plan_progress_repository,
+    ticket_hold_repository,
     user_repository,
     walkthrough_repository,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "plan_repository",
     "run_repository",
     "test_plan_progress_repository",
+    "ticket_hold_repository",
     "user_repository",
     "walkthrough_repository",
 ]

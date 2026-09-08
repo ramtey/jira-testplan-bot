@@ -653,3 +653,69 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
 .tip[data-align="end"]:focus-within > .tip-body {
   transform: translateX(0) translateY(0);
 }
+
+/* ── QA hold ──────────────────────────────────────────────────────────────
+   The parked-ticket marker in the ticket header, plus its reason popover.
+   Warning-toned rather than danger-toned: a hold is a deliberate pause, not
+   a failure, and the red is already spoken for by bounce-backs. */
+.hold-wrap { position: relative; display: inline-flex; align-items: center; gap: var(--s-2); }
+.hold-chip {
+  display: inline-flex; align-items: center; gap: var(--s-2);
+  height: 20px; padding: 0 var(--s-3);
+  font-size: var(--t-xs); font-weight: var(--w-semi);
+  border-radius: var(--r-xs);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  color: color-mix(in srgb, var(--warning) 80%, var(--fg-strong));
+  white-space: nowrap;
+  cursor: default;
+}
+.hold-since { color: var(--fg-subtle); font-weight: var(--w-med); }
+
+/* The action-row button while a hold is on. Reads as an active, clickable
+   state rather than a plain secondary button, so "on hold" is obvious at a
+   glance from the row where the workflow buttons live. */
+.hold-btn-on {
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+  color: color-mix(in srgb, var(--warning) 80%, var(--fg-strong));
+}
+.hold-btn-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 80%, transparent);
+}
+
+.hold-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
+  width: 300px; padding: var(--s-5);
+  background: var(--bg-surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  text-align: left;
+  white-space: normal;
+}
+.hold-pop-head { display: flex; align-items: center; margin-bottom: var(--s-4); }
+.hold-reasons { display: flex; flex-direction: column; gap: 2px; }
+.hold-reason {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: 4px var(--s-3);
+  border-radius: var(--r-xs);
+  font-size: var(--t-sm); color: var(--fg-muted);
+  cursor: pointer;
+}
+.hold-reason:hover { background: var(--bg-raised); }
+.hold-reason[data-on="true"] { color: var(--fg-strong); font-weight: var(--w-med); }
+.hold-reason input { margin: 0; accent-color: var(--warning); }
+/* Its own line, not a flex sibling of the buttons: as `flex: 1; min-width: 0`
+   next to them it collapsed to a sliver and wrapped a word per line. */
+.hold-pop-hint {
+  margin: var(--s-4) 0 0;
+  font-size: var(--t-xs);
+  color: var(--fg-subtle);
+  line-height: 1.45;
+}
+.hold-pop-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: var(--s-3);
+  margin-top: var(--s-4);
+}

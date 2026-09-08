@@ -9,6 +9,7 @@ import { API_BASE_URL, fetchConfig } from './config'
 import { loadStored, saveStored } from './utils/sessionStorage'
 import { useTestPlan } from './hooks/useTestPlan'
 import { useBugLens } from './hooks/useBugLens'
+import { useTicketHold } from './hooks/useTicketHold'
 import TicketForm from './components/TicketForm'
 import TicketDetails from './components/TicketDetails'
 import ActionButtons from './components/ActionButtons'
@@ -120,15 +121,14 @@ function App() {
   // Reflect the active ticket set in the URL. Comma-separated for multi-ticket.
   // Drives bookmarkable / shareable links and lets two tabs open different
   // tickets via URL without sharing state.
+  const activeUrlKey = useMemo(
+    () => (ticketsData.length ? ticketsData.map((t) => t.key).join(',') : ''),
+    [ticketsData]
+  )
+
   useEffect(() => {
-    const urlKey = ticketsData.length
-      ? ticketsData.map((t) => t.key).join(',')
-      : ''
-    writeKeyToUrl(urlKey)
-    if (typeof document !== 'undefined') {
-      document.title = urlKey || 'Jira TestPlan Bot'
-    }
-  }, [ticketsData])
+    writeKeyToUrl(activeUrlKey)
+  }, [activeUrlKey])
 
   // Fetch on first paint whenever the URL carries a ?key=. Refetching even
   // when a cached copy is already in sessionStorage means schema additions
@@ -171,6 +171,23 @@ function App() {
 
   const isMultiTicket = ticketsData.length > 1
   const ticketData = ticketsData.length === 1 ? ticketsData[0] : null
+
+  // Shared QA hold on the active ticket. Owned here rather than inside
+  // TicketDetails because the tab title needs it: one ticket per tab means the
+  // title is the only place you can see a parked ticket without opening it.
+  // Bundles are skipped — a multi-ticket view has no single ticket to park.
+  const hold = useTicketHold(ticketData?.key || '')
+
+  // Tab title. The flag trails the key so the key stays flush against the
+  // favicon and reads first; the reason lives on the header chip, not here.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    if (!activeUrlKey) {
+      document.title = 'Jira TestPlan Bot'
+      return
+    }
+    document.title = hold.held ? `${activeUrlKey} 🚩` : activeUrlKey
+  }, [activeUrlKey, hold.held])
 
   const loadRunHistory = async (key) => {
     try {
@@ -530,6 +547,7 @@ function App() {
                   onToggleDescription={toggleDescription}
                   onActionComplete={refreshCurrentTicket}
                   videoChecklistSteps={videoChecklistSteps}
+                  hold={hold}
                 />
               )}
 

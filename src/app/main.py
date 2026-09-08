@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .bug_lens_routes import router as bug_lens_router
 from .config import NON_TESTABLE_ISSUE_TYPES, settings
 from .db.models.plan import PlanFormat
+from .db.models.ticket_hold import HOLD_REASONS
 from .description_analyzer import extract_acceptance_criteria
 from .db.models.run import RunType
 from .db.session import get_sessionmaker
@@ -24,6 +25,7 @@ from .models import (
     MultiTicketGenerateRequest,
     PostCommentRequest,
     TestPlanProgressUpdateRequest,
+    TicketHoldRequest,
     TicketInput,
     WalkthroughUpdateRequest,
 )
@@ -31,6 +33,7 @@ from .repositories import (
     bug_analysis_repository,
     plan_repository,
     test_plan_progress_repository,
+    ticket_hold_repository,
     walkthrough_repository,
 )
 from .runs_routes import router as runs_router
@@ -1195,3 +1198,63 @@ async def put_test_plan_progress(
             checked_ids=request.checked_ids,
         )
         return _serialize_progress(row)
+
+
+def _serialize_hold(row) -> dict:
+    """Shape a TicketHold row (or None) into the JSON the frontend expects.
+
+    ``held`` is explicit rather than implied by the other fields so the client
+    never has to guess from a null reason.
+    """
+    if row is None:
+        return {"held": False, "reason": None, "note": None, "held_since": None}
+    return {
+        "held": True,
+        "reason": row.reason,
+        "note": row.note,
+        "held_since": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@app.get("/tickets/{ticket_key}/hold")
+async def get_ticket_hold(ticket_key: str):
+    """Return the ticket's shared QA hold, or ``held: false`` when it's active.
+
+    A hold means "testing is parked and here's why" — separate from Jira status
+    and from Jira's blocked-by links, and shared across everyone testing it.
+    """
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = await ticket_hold_repository.get_hold(session, ticket_key=ticket_key)
+        return _serialize_hold(row)
+
+
+@app.put("/tickets/{ticket_key}/hold")
+async def put_ticket_hold(ticket_key: str, request: TicketHoldRequest):
+    """Put the ticket on QA hold, or edit the reason/note of an existing hold."""
+    reason = (request.reason or "").strip().lower()
+    if reason not in HOLD_REASONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown hold reason '{request.reason}'. Expected one of: "
+            + ", ".join(sorted(HOLD_REASONS)),
+        )
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = await ticket_hold_repository.upsert_hold(
+            session,
+            ticket_key=ticket_key,
+            reason=reason,
+            note=request.note,
+        )
+        return _serialize_hold(row)
+
+
+@app.delete("/tickets/{ticket_key}/hold")
+async def delete_ticket_hold(ticket_key: str):
+    """Resume the ticket. Idempotent — clearing a ticket that isn't held is fine."""
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        await ticket_hold_repository.clear_hold(session, ticket_key=ticket_key)
+        return _serialize_hold(None)

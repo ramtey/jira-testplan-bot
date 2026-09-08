@@ -473,6 +473,17 @@ class TestPlanProgressUpdateRequest(BaseModel):
     checked_ids: list[str] = []
 
 
+class TicketHoldRequest(BaseModel):
+    """Request body for putting a ticket on QA hold.
+
+    ``reason`` must be one of the canonical codes in HOLD_REASONS; ``note`` is
+    optional detail, and is what makes the ``other`` reason readable.
+    """
+
+    reason: str
+    note: str | None = None
+
+
 class WorkflowActionRequest(BaseModel):
     """Optional payload for /issue/{key}/workflow/{action}.
 

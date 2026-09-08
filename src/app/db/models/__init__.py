@@ -6,6 +6,7 @@ from src.app.db.models.feedback import FeedbackEvent, FeedbackSignal, FeedbackTa
 from src.app.db.models.bug_analysis import BugAnalysisRecord
 from src.app.db.models.ticket_walkthrough import TicketWalkthrough
 from src.app.db.models.test_plan_progress import TestPlanProgress
+from src.app.db.models.ticket_hold import HOLD_REASONS, TicketHold
 
 __all__ = [
     "User",
@@ -22,4 +23,6 @@ __all__ = [
     "BugAnalysisRecord",
     "TicketWalkthrough",
     "TestPlanProgress",
+    "TicketHold",
+    "HOLD_REASONS",
 ]
