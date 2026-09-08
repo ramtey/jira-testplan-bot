@@ -16,7 +16,7 @@ from .db.session import get_sessionmaker
 from .github_client import GitHubClient
 from .llm_client import LLMError, get_llm_client
 from .models import BugAnalysisRequest, MultiBugAnalysisRequest
-from .repositories import jira_ticket_repository
+from .repositories import bug_analysis_repository, jira_ticket_repository
 from .services import run_tracker
 
 logger = logging.getLogger(__name__)
@@ -569,4 +569,46 @@ async def claim_auto_dispatch(ticket_key: str):
         "ticket_key": key,
         "auto_bug_analysis_dispatched_at": dispatched_at.isoformat(),
         "first_time": existing is None,
+    }
+
+
+@router.get("/by-ticket/{ticket_key}")
+async def bug_analysis_by_ticket(ticket_key: str):
+    """Return the newest stored Bug Lens analysis for `ticket_key`, if any.
+
+    The read path that was missing: analyses have always been persisted, but
+    nothing could fetch one back. So an analysis produced outside the current
+    browser session — by the queue watcher, or by a teammate — was invisible,
+    and the tester paid for a second run by clicking Analyze.
+
+    Response mirrors ``POST /bug-lens/analyze`` so the UI renders one
+    component for both, plus `created_at` / `ticket_keys` so it can be
+    labelled as a stored result rather than passed off as a fresh one.
+    Returns ``{"analysis": null}`` when nothing is stored — an absent
+    analysis is a normal state, not an error.
+    """
+    key = ticket_key.upper()
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            stored = await bug_analysis_repository.find_latest_for_ticket(
+                session, ticket_key=key
+            )
+    except Exception:
+        logger.exception("bug_analysis_by_ticket failed for %s", key)
+        raise HTTPException(status_code=503, detail="Analysis store unavailable")
+
+    if stored is None:
+        return {"ticket_key": key, "analysis": None}
+
+    return {
+        "ticket_key": key,
+        "analysis": {
+            "ticket_key": key,
+            **{k: v for k, v in stored.items() if k not in ("run_id", "ticket_keys", "created_at")},
+            "is_fixed": stored.get("fix_status") == "fixed",
+        },
+        "created_at": stored.get("created_at"),
+        "run_id": stored.get("run_id"),
+        "ticket_keys": stored.get("ticket_keys"),
     }

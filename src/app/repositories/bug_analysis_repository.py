@@ -87,3 +87,77 @@ async def find_seed_regression_tests(
             }
         )
     return rows
+
+
+# Columns returned by `find_latest_for_ticket`. Ordered to match the
+# BugAnalysis dataclass so the route can rebuild the same response shape
+# `/bug-lens/analyze` returns — the UI renders one component for both.
+_ANALYSIS_COLUMNS = (
+    "bug_summary",
+    "root_cause",
+    "fix_status",
+    "fix_explanation",
+    "fix_complexity",
+    "fix_effort_estimate",
+    "fix_complexity_reasoning",
+    "why_tests_miss",
+    "is_regression",
+    "regression_introduced_by",
+    "regression_tests",
+    "similar_patterns",
+    "affected_flow",
+    "scope_of_impact",
+    "assumptions",
+    "open_questions",
+    "suspect_symbols",
+    "code_evidence",
+    "suspect_locations",
+    "blame_evidence",
+)
+
+
+async def find_latest_for_ticket(
+    session: AsyncSession,
+    *,
+    ticket_key: str,
+) -> dict | None:
+    """Return the newest stored Bug Lens analysis touching `ticket_key`.
+
+    Exists so a Bug Lens run that happened outside the current browser
+    session — the queue watcher's, or a teammate's — can be *displayed*
+    instead of silently re-run. Analyses were persisted from the start but
+    had no read path, so the watcher was paying for an analysis nobody could
+    see and the tester paid again by clicking Analyze.
+
+    Includes multi-ticket analyses, since those rows apply to every key in
+    the run's `ticket_keys`.
+    """
+    sql = text(
+        f"""
+        SELECT r.ticket_keys, ba.created_at, ba.run_id,
+               {", ".join(f"ba.{c}" for c in _ANALYSIS_COLUMNS)}
+        FROM bug_analyses ba
+        JOIN runs r ON r.id = ba.run_id
+        WHERE :ticket_key = ANY(r.ticket_keys)
+          AND r.status = 'ok'
+        ORDER BY ba.created_at DESC
+        LIMIT 1
+        """
+    )
+    result = await session.execute(sql, {"ticket_key": ticket_key.upper()})
+    row = result.first()
+    if row is None:
+        return None
+
+    ticket_keys, created_at, run_id = row[0], row[1], row[2]
+    analysis = dict(zip(_ANALYSIS_COLUMNS, row[3:]))
+    # JSONB list columns come back as None when empty; the dataclass-derived
+    # response uses [] for regression_tests / similar_patterns, so match it.
+    for key in ("regression_tests", "similar_patterns"):
+        analysis[key] = list(analysis[key] or [])
+    return {
+        **analysis,
+        "run_id": run_id,
+        "ticket_keys": list(ticket_keys or []),
+        "created_at": created_at.isoformat() if created_at else None,
+    }

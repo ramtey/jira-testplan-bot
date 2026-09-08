@@ -194,12 +194,62 @@ function App() {
       const res = await fetch(`${API_BASE_URL}/runs/by-ticket/${key}`)
       if (!res.ok) {
         setRunHistory([])
-        return
+        return []
       }
       const data = await res.json()
-      setRunHistory(Array.isArray(data.runs) ? data.runs : [])
+      const runs = Array.isArray(data.runs) ? data.runs : []
+      setRunHistory(runs)
+      return runs
     } catch {
       setRunHistory([])
+      return []
+    }
+  }
+
+  /**
+   * Show a plan that already exists rather than making the tester dig it out.
+   *
+   * The run-history banner was the right home for stored plans when the only
+   * way to get one was to click Generate in this session — then a stored run
+   * genuinely was history. The queue watcher breaks that assumption: it
+   * writes the plan before anyone opens the ticket, so the newest stored run
+   * is *the* plan, not a previous version. Left to the banner it sat behind
+   * an expand plus a View click and rendered as a muted history preview.
+   *
+   * Both setters use the functional form so this can never clobber a plan or
+   * analysis the tester already has on screen — whichever arrives first wins,
+   * regardless of how the two fetches interleave.
+   */
+  const hydrateStoredArtifacts = async (key, runs) => {
+    const latest = runs?.[0]
+    if (latest?.plan_id) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/plans/${latest.plan_id}`)
+        if (res.ok) {
+          const data = await res.json()
+          const parsed = JSON.parse(data.body)
+          testPlan.setPlan((prev) =>
+            prev ?? { ...parsed, plan_id: latest.plan_id, version: latest.version }
+          )
+        }
+      } catch {
+        // Unparseable or unreachable — the banner is still there as a fallback.
+      }
+    }
+
+    // Bug Lens analyses have always been persisted but had no read path, so a
+    // watcher-run or teammate-run analysis was invisible and got paid for
+    // twice when the tester clicked Analyze.
+    try {
+      const res = await fetch(`${API_BASE_URL}/bug-lens/by-ticket/${key}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.analysis) {
+          bugLens.setAnalysis((prev) => prev ?? data.analysis)
+        }
+      }
+    } catch {
+      // No stored analysis is a normal state; the Analyze button still works.
     }
   }
 
@@ -270,7 +320,9 @@ function App() {
           const data = await response.json()
           if (isStale()) return
           setTicketsData([data])
-          loadRunHistory(data.key)
+          loadRunHistory(data.key).then((runs) =>
+            hydrateStoredArtifacts(data.key, runs)
+          )
         } finally {
           // Let the basic promise settle so its guards run against the
           // final fullLanded/isStale state before we exit this scope.
@@ -368,6 +420,13 @@ function App() {
       const data = res.ok ? await res.json() : { runs: [] }
       const runs = Array.isArray(data.runs) ? data.runs : []
       setRunHistory(runs)
+      if (runs.length > 0) {
+        // A plan already exists — the watcher's, or an earlier session's.
+        // Reusing it is the point (no second LLM spend), but it has to be
+        // *shown*, or the tester sees a collapsed banner where the plan
+        // used to appear and assumes nothing was generated.
+        await hydrateStoredArtifacts(key, runs)
+      }
       if (runs.length === 0) {
         const plan = await handleGenerateTestPlan([refreshed])
         // First-entry-into-In-Testing hook: for Bug tickets, follow the plan

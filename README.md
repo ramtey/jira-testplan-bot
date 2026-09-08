@@ -575,6 +575,13 @@ separately configurable (all via env):
 | `WATCH_REQUIRE_LINKED_PR` | `true` | Skip tickets with no PR; a plan with no diff to ground it is the thin plan QA would rather write by hand |
 | `WATCH_RETRY_COOLDOWN_HOURS` | `6` | Don't re-attempt a ticket attempted this recently, so one that fails every cycle doesn't burn a call every interval |
 
+**What the tester sees.** Opening a watcher-prepared ticket loads the stored
+plan as the live plan, and a stored Bug Lens analysis with it. Pull-to-Testing
+still auto-generates only when no run exists, so it correctly reuses the
+watcher's plan rather than paying twice — and now *shows* it, instead of
+leaving a collapsed history banner where the plan used to appear. The banner
+keeps its real job: older versions.
+
 A ticket that already has a stored plan is never regenerated — regeneration
 stays a human decision. Checks run cheapest-first: the DB dedupe is free,
 the Jira fetch costs a few hundred ms, and only what survives both reaches
@@ -652,6 +659,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Analyze bug**: `POST /bug-lens/analyze` - Root cause, fix explanation, and regression tests for a bug ticket
 - **Summarize bounce reason**: `POST /bounce/summarize` - Takes `{from_status, to_status, reason}` and returns a one-sentence plain-English headline for the bounce card, or `{headline: null}` when the picked comment doesn't actually explain the bounce (UI then falls back to the raw comment)
 - **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
+- **Read a stored analysis**: `GET /bug-lens/by-ticket/{key}` - The newest persisted Bug Lens analysis for a ticket, in the same shape `analyze` returns (plus `created_at` / `run_id` so the UI can label it as stored). Returns `{"analysis": null}` when there is none — an absent analysis is a normal state, not an error. Analyses were persisted from the start but had no read path, so one produced by the queue watcher or a teammate was invisible and got re-run
 - **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
 - **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
 - **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`, `fail-to-in-progress`); backend still rejects non-`SK-` keys with 400 (frontend visibility is the config-driven layer). Accepts `multipart/form-data` with optional comment fields (envs, `loom_urls` list, summary, reason, screenshot file uploads), `mention_account_ids` for ADF @mentions, `cascade_to_subtasks` to re-apply the transition to each direct subtask whose status matched the parent's *pre-transition* status, and `override_missing_walkthrough` to bypass the server-side walkthrough gate. When the walkthrough gate rejects the request, the response is 409 `{ error_code: "walkthrough_required", … }` so the UI can prompt the tester before retrying with the override
@@ -716,6 +724,9 @@ uv run pytest tests/test_github_search_throttle.py -q
 
 # Bounce history reaches both prompt builders, not just the single-ticket one
 uv run pytest tests/test_bounce_in_prompts.py -q
+
+# Stored plans and analyses are reusable rather than re-bought
+uv run pytest tests/test_stored_artifact_reuse.py -q
 ```
 
 ## Status
@@ -896,6 +907,8 @@ pinning the *refusal* rather than the happy path:
 
 - ✅ **Code-search throttling told apart from "no hits"**: GitHub's 10/min code-search cap refuses with 403, the same status as a permissions failure, and the client used to read every non-200 as an empty result — so the code-grounding critic reported false negatives whenever a generation exhausted the budget (test-file discovery per repo during the fetch, then one search per recheckable warning per repo). The client now discriminates via `retry-after` / `x-ratelimit-remaining` / the secondary-limit message, backs off and retries once, raises `GitHubSearchThrottled` when still refused, and caches per `(repo, query)`. Warnings whose recheck couldn't run are marked `recheck_status: "unavailable"` and say so in their explanation, staying at WARN rather than claiming a confirmation that never happened
 - ✅ **Bounce history reaches multi-ticket plans**: the section that forces explicit coverage of prior QA/UAT failure modes existed in the single-ticket prompt only — `generate_multi` dropped the field and the multi prompt builder rendered nothing. Both builders now share one renderer, and the multi prompt pools entries into one section with per-ticket attribution
+
+- ✅ **Pre-generated work is shown, not just saved**: the watcher made stored plans the common case, which broke an assumption the run-history banner was built on — when plans only came from clicking Generate in-session, a stored run genuinely *was* history; now the newest one is *the* plan. Opening a ticket loads it as the live plan instead of hiding it behind an expand plus a View click and a muted "history preview" panel. Bug Lens got the read path it never had (`GET /bug-lens/by-ticket/{key}`): analyses were always persisted but unfetchable, so the watcher paid for one nothing could display and the tester paid again by clicking Analyze. The watcher also stamps `auto_bug_analysis_dispatched_at` now, so it and the UI's auto-dispatch agree on what's been analysed
 
 ### Future Enhancements
 

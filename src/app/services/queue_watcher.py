@@ -158,6 +158,23 @@ async def _dispatch_bug_lens(payload: dict, serialized: dict) -> None:
     """
     from ..bug_lens_routes import analyze_bug
     from ..models import BugAnalysisRequest
+    from ..repositories import jira_ticket_repository
+
+    # Claim the at-most-once flag the UI's own auto-dispatch checks. Without
+    # this the watcher's analysis is invisible to that check, so the two
+    # auto-fire paths disagree about whether a ticket has been analysed.
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            await jira_ticket_repository.mark_auto_bug_analysis_dispatched(
+                session, ticket_key=payload["ticket_key"]
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "watcher: could not claim auto-bug-analysis for %s; analysing anyway",
+            payload["ticket_key"],
+        )
 
     try:
         await analyze_bug(
