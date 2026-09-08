@@ -22,6 +22,10 @@ def _rows(*keys) -> list[EpicChildSummary]:
     ]
 
 
+def _merged_pr():
+    return {"url": "pr/1", "status": "MERGED"}
+
+
 def _payload(*, pull_requests=None, issue_type="Story") -> dict:
     """A prompt payload as plan_service would build it."""
     return {
@@ -55,7 +59,7 @@ class _Harness:
     ):
         self.queue = list(queue)
         self.screen = screen or {}
-        self.payload = payload or _payload(pull_requests=[{"url": "pr/1"}])
+        self.payload = payload or _payload(pull_requests=[_merged_pr()])
         self.plan = plan or {"happy_path": [{"title": "t"}], "plan_id": 7}
         self.generate_error = generate_error
         self.generated: list[str] = []
@@ -152,20 +156,71 @@ async def test_skips_a_ticket_attempted_within_the_cooldown():
 
 
 @pytest.mark.asyncio
-async def test_skips_a_ticket_with_no_linked_pr(monkeypatch):
-    monkeypatch.setattr(settings, "watch_require_linked_pr", True, raising=False)
+async def test_skips_a_ticket_with_no_pr_at_all(monkeypatch):
+    monkeypatch.setattr(settings, "watch_require_merged_pr", True, raising=False)
     with _Harness(payload=_payload(pull_requests=[])) as h:
         result = await queue_watcher.sweep_once(projects=["SK"])
     assert h.generated == []
-    assert _reasons(result) == {"SK-1": queue_watcher.SKIP_NO_LINKED_PR}
+    assert _reasons(result) == {"SK-1": queue_watcher.SKIP_NO_MERGED_PR}
+
+
+@pytest.mark.asyncio
+async def test_skips_a_ticket_whose_pr_is_still_open(monkeypatch):
+    """The permanence trap: the watcher never regenerates, so a plan written
+    against an open PR outlives the code it describes."""
+    monkeypatch.setattr(settings, "watch_require_merged_pr", True, raising=False)
+    with _Harness(payload=_payload(pull_requests=[{"url": "pr/1", "status": "OPEN"}])) as h:
+        result = await queue_watcher.sweep_once(projects=["SK"])
+    assert h.generated == []
+    assert _reasons(result) == {"SK-1": queue_watcher.SKIP_NO_MERGED_PR}
+
+
+@pytest.mark.asyncio
+async def test_skips_a_ticket_whose_only_pr_was_declined(monkeypatch):
+    """A declined PR describes code that will never ship."""
+    monkeypatch.setattr(settings, "watch_require_merged_pr", True, raising=False)
+    with _Harness(
+        payload=_payload(pull_requests=[{"url": "pr/1", "status": "DECLINED"}])
+    ) as h:
+        result = await queue_watcher.sweep_once(projects=["SK"])
+    assert h.generated == []
+    assert _reasons(result) == {"SK-1": queue_watcher.SKIP_NO_MERGED_PR}
+
+
+@pytest.mark.asyncio
+async def test_one_merged_pr_among_others_is_enough(monkeypatch):
+    """Real tickets carry a declined first attempt alongside the merged fix —
+    SK-2563 in the live queue looks exactly like this."""
+    monkeypatch.setattr(settings, "watch_require_merged_pr", True, raising=False)
+    with _Harness(
+        payload=_payload(
+            pull_requests=[
+                {"url": "pr/1", "status": "DECLINED"},
+                {"url": "pr/2", "status": "merged"},  # case-insensitive
+            ]
+        )
+    ) as h:
+        await queue_watcher.sweep_once(projects=["SK"])
+    assert h.generated == ["SK-1"]
 
 
 @pytest.mark.asyncio
 async def test_pr_gate_can_be_turned_off(monkeypatch):
-    monkeypatch.setattr(settings, "watch_require_linked_pr", False, raising=False)
+    monkeypatch.setattr(settings, "watch_require_merged_pr", False, raising=False)
     with _Harness(payload=_payload(pull_requests=[])) as h:
         await queue_watcher.sweep_once(projects=["SK"])
     assert h.generated == ["SK-1"]
+
+
+@pytest.mark.asyncio
+async def test_skips_a_ticket_a_qa_put_on_hold():
+    """A hold means a human parked the ticket. `code-review` means the PR is
+    still in review, so a plan written now describes code that will change —
+    and never-regenerate would make it permanent."""
+    with _Harness(screen={"SK-1": queue_watcher.SKIP_ON_HOLD}) as h:
+        result = await queue_watcher.sweep_once(projects=["SK"])
+    assert h.generated == []
+    assert _reasons(result) == {"SK-1": queue_watcher.SKIP_ON_HOLD}
 
 
 @pytest.mark.asyncio
@@ -260,7 +315,7 @@ async def test_one_unreadable_project_does_not_block_the_others():
 @pytest.mark.asyncio
 async def test_bug_tickets_also_get_bug_lens():
     with _Harness(
-        payload=_payload(pull_requests=[{"url": "pr/1"}], issue_type="Bug")
+        payload=_payload(pull_requests=[_merged_pr()], issue_type="Bug")
     ) as h:
         await queue_watcher.sweep_once(projects=["SK"])
     assert h.generated == ["SK-1"]
@@ -277,7 +332,7 @@ async def test_non_bug_tickets_do_not_get_bug_lens():
 @pytest.mark.asyncio
 async def test_dry_run_does_not_dispatch_bug_lens():
     with _Harness(
-        payload=_payload(pull_requests=[{"url": "pr/1"}], issue_type="Bug")
+        payload=_payload(pull_requests=[_merged_pr()], issue_type="Bug")
     ) as h:
         await queue_watcher.sweep_once(projects=["SK"], dry_run=True)
     assert h.bug_lens_calls == []
@@ -315,14 +370,19 @@ class _FakeSession:
         return False
 
 
-def _patch_screen_db(*, has_plan: bool, last_attempt):
-    """Patch the two repository reads _screen makes, plus the sessionmaker."""
+def _patch_screen_db(*, has_plan: bool, last_attempt, hold=None):
+    """Patch the three repository reads _screen makes, plus the sessionmaker."""
     return [
         patch.object(queue_watcher, "get_sessionmaker", lambda: (lambda: _FakeSession())),
         patch.object(
             queue_watcher.plan_repository,
             "has_successful_test_plan",
             AsyncMock(return_value=has_plan),
+        ),
+        patch.object(
+            queue_watcher.ticket_hold_repository,
+            "get_hold",
+            AsyncMock(return_value=hold),
         ),
         patch.object(
             queue_watcher.plan_repository,
@@ -408,5 +468,32 @@ async def test_screen_cooldown_can_be_disabled(monkeypatch):
         p.start()
     try:
         assert await queue_watcher._screen("SK-1") is None
+    finally:
+        patch.stopall()
+
+
+@pytest.mark.asyncio
+async def test_screen_blocks_a_held_ticket():
+    """The interaction that motivated this guard: a ticket held for
+    `code-review` is in the QA queue but its PR is still changing, and the
+    never-regenerate rule would freeze whatever plan got written now."""
+    for p in _patch_screen_db(
+        has_plan=False, last_attempt=None, hold=object()
+    ):
+        p.start()
+    try:
+        assert await queue_watcher._screen("SK-1") == queue_watcher.SKIP_ON_HOLD
+    finally:
+        patch.stopall()
+
+
+@pytest.mark.asyncio
+async def test_screen_checks_the_hold_before_spending_a_jira_fetch():
+    """_screen is the free DB pass; a held ticket must not cost a round-trip."""
+    for p in _patch_screen_db(has_plan=False, last_attempt=None, hold=object()):
+        p.start()
+    try:
+        # Reached a verdict without the cooldown lookup mattering either way.
+        assert await queue_watcher._screen("SK-1") is not None
     finally:
         patch.stopall()

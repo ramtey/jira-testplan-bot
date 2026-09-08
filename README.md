@@ -572,7 +572,7 @@ separately configurable (all via env):
 | `WATCH_STATUS` | `Ready to Test` | The status that means "in the QA queue" |
 | `WATCH_INTERVAL_SECONDS` | `300` | Seconds between sweeps |
 | `WATCH_MAX_PER_CYCLE` | `5` | Cap on plans per sweep — bounds a surprise when a sprint's worth of tickets moves at once |
-| `WATCH_REQUIRE_LINKED_PR` | `true` | Skip tickets with no PR; a plan with no diff to ground it is the thin plan QA would rather write by hand |
+| `WATCH_REQUIRE_MERGED_PR` | `true` | Require at least one **merged** PR. Merge state, not just existence — a plan written against an open PR describes code that is still changing, and the watcher never regenerates, so that plan would outlive the code it came from |
 | `WATCH_RETRY_COOLDOWN_HOURS` | `6` | Don't re-attempt a ticket attempted this recently, so one that fails every cycle doesn't burn a call every interval |
 
 **What the tester sees.** Opening a watcher-prepared ticket loads the stored
@@ -581,6 +581,13 @@ still auto-generates only when no run exists, so it correctly reuses the
 watcher's plan rather than paying twice — and now *shows* it, instead of
 leaving a collapsed history banner where the plan used to appear. The banner
 keeps its real job: older versions.
+
+**Held tickets are always skipped**, whatever the hold reason. A hold is a
+human saying the ticket isn't ready to be worked on, and `code-review`
+literally means the PR is still in review — a plan written then describes
+code that will change, and never-regenerate would make it permanent.
+Skipping costs nothing: the ticket stays in the watch status, so the sweep
+after the hold clears still writes the plan before the tester opens it.
 
 A ticket that already has a stored plan is never regenerated — regeneration
 stays a human decision. Checks run cheapest-first: the DB dedupe is free,

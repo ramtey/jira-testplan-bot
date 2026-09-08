@@ -27,7 +27,8 @@ _ACTION_STYLE = {
 _REASON_LABEL = {
     queue_watcher.SKIP_ALREADY_PLANNED: "already has a plan",
     queue_watcher.SKIP_COOLDOWN: f"attempted in the last {settings.watch_retry_cooldown_hours}h",
-    queue_watcher.SKIP_NO_LINKED_PR: "no linked PR to ground the plan in",
+    queue_watcher.SKIP_NO_MERGED_PR: "no merged PR — the diff is still moving",
+    queue_watcher.SKIP_ON_HOLD: "on hold — QA parked this ticket",
     queue_watcher.SKIP_CAP_REACHED: "per-sweep cap reached",
     queue_watcher.SKIP_NON_TESTABLE: "issue type isn't planned for",
     "dry_run": "would generate",
@@ -149,9 +150,9 @@ def watch(
     analysis waiting, instead of starting a multi-minute Opus run by hand.
 
     Each sweep generates real Opus calls with nobody watching, so tickets
-    are skipped when they already have a plan, have no linked PR, were
-    attempted recently, or when the per-sweep cap is hit. Start with
-    --dry-run to see what a real sweep would pick up.
+    are skipped when they already have a plan, have no merged PR, are on
+    hold, were attempted recently, or when the per-sweep cap is hit. Start
+    with --dry-run to see what a real sweep would pick up.
 
     Examples:
         testplan watch --dry-run --once

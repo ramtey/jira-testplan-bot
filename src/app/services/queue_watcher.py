@@ -21,8 +21,13 @@ Spending money unattended
 Every generated plan is a real Opus call, so the sweep is deliberately
 conservative and each guard is separately configurable:
 
-* ``watch_require_linked_pr`` — no PR means no diff to ground the plan in,
-  which is the thin plan QA would rather write by hand.
+* ``watch_require_merged_pr`` — no merged PR means either no diff to ground
+  the plan in, or a diff that is still moving. Combined with
+  never-regenerate, a plan written against an open PR would outlive the code
+  it describes.
+* **Not on hold** — a hold is a human parking the ticket, and ``code-review``
+  means the PR is still in review. Deferring is free (the next sweep after
+  the hold clears still beats the tester to it), so every hold reason skips.
 * ``has_successful_test_plan`` — never regenerate. A ticket gets one
   unattended plan; regeneration stays a human decision.
 * ``watch_retry_cooldown_hours`` — a ticket that fails every cycle (a
@@ -50,7 +55,7 @@ from ..config import settings
 from ..db.session import get_sessionmaker
 from ..jira_client import JiraAuthError, JiraClient, JiraConnectionError
 from ..models import GenerateTestPlanRequest
-from ..repositories import plan_repository
+from ..repositories import plan_repository, ticket_hold_repository
 from . import plan_service
 
 logger = logging.getLogger(__name__)
@@ -61,7 +66,8 @@ logger = logging.getLogger(__name__)
 SKIP_NON_TESTABLE = "non_testable_issue_type"
 SKIP_ALREADY_PLANNED = "already_has_plan"
 SKIP_COOLDOWN = "recent_attempt"
-SKIP_NO_LINKED_PR = "no_linked_pr"
+SKIP_NO_MERGED_PR = "no_merged_pr"
+SKIP_ON_HOLD = "on_hold"
 SKIP_CAP_REACHED = "cycle_cap_reached"
 
 
@@ -106,9 +112,21 @@ def watched_projects() -> list[str]:
     return [p.upper() for p in (settings.watch_projects or settings.workflow_project_prefixes)]
 
 
-def _has_linked_pr(payload: dict) -> bool:
+def _has_merged_pr(payload: dict) -> bool:
+    """Whether the ticket has at least one PR that actually landed.
+
+    Merge state, not mere existence. A plan generated against an open PR is
+    written from code that is still changing, and the never-regenerate rule
+    then makes that plan permanent — so the tester inherits a plan describing
+    code that moved after it was written, with no signal that it did.
+    A DECLINED PR is worse: it describes code that will never ship.
+    """
     dev_info = payload.get("development_info") or {}
-    return bool(dev_info.get("pull_requests"))
+    return any(
+        (pr.get("status") or "").strip().lower() == "merged"
+        for pr in dev_info.get("pull_requests") or []
+        if isinstance(pr, dict)
+    )
 
 
 async def _find_queue(
@@ -129,6 +147,18 @@ async def _screen(ticket_key: str) -> str | None:
     async with sessionmaker() as session:
         if await plan_repository.has_successful_test_plan(session, ticket_key=ticket_key):
             return SKIP_ALREADY_PLANNED
+        # A hold is a human saying "this isn't ready to be worked on" —
+        # `code-review` literally means the PR is still in review, so any plan
+        # written now is written against code that will change, and
+        # never-regenerate would make it permanent.
+        #
+        # Skipping every hold reason rather than only the code-churn ones,
+        # because deferring costs nothing: the ticket stays in the watch
+        # status, so the next sweep after the hold clears still gets the plan
+        # written before the tester opens it. The worst case is falling back
+        # to the pre-watcher behaviour of generating on Pull-to-Testing.
+        if await ticket_hold_repository.get_hold(session, ticket_key=ticket_key):
+            return SKIP_ON_HOLD
         last_attempt = await plan_repository.find_last_test_plan_attempt_at(
             session, ticket_key=ticket_key
         )
@@ -258,9 +288,9 @@ async def sweep_once(
         serialized = plan_service.serialize_issue(issue)
         payload = plan_service.prompt_payload(serialized)
 
-        if settings.watch_require_linked_pr and not _has_linked_pr(payload):
+        if settings.watch_require_merged_pr and not _has_merged_pr(payload):
             result.outcomes.append(
-                TicketOutcome(ticket_key, "skipped", SKIP_NO_LINKED_PR)
+                TicketOutcome(ticket_key, "skipped", SKIP_NO_MERGED_PR)
             )
             continue
 

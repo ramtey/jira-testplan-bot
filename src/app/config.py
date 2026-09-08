@@ -81,10 +81,12 @@ class Settings(BaseSettings):
     # with no human in the loop; this bounds a surprise (a sprint's worth of
     # tickets moved to Ready to Test at once) to a known cost.
     watch_max_per_cycle: int = 5
-    # Skip tickets with no linked PR. A plan built with no diff to ground it
-    # is the thin plan QA would rather write by hand, so it isn't worth an
-    # unattended Opus call.
-    watch_require_linked_pr: bool = True
+    # Require at least one MERGED pull request. Merge state, not mere
+    # existence: a plan written against an open PR describes code that is
+    # still changing, and because the watcher never regenerates, that plan
+    # would outlive the code it was written from. A ticket with no diff at
+    # all is separately the thin plan QA would rather write by hand.
+    watch_require_merged_pr: bool = True
     # Don't re-attempt a ticket whose last attempt (success OR failure) was
     # within this window. Stops a ticket that fails every cycle — a timeout,
     # a malformed description — from burning a call every interval.
