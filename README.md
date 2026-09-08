@@ -29,6 +29,8 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - Web UI for browser-based workflows
 - CLI tool for terminal-native workflows
 - MCP server for Claude desktop integration
+- **QA-queue watcher** (`testplan watch`) that pre-generates plans for tickets entering the queue, so the plan is waiting before the tester opens the ticket
+- **One pipeline for every caller** — UI, CLI, MCP and watcher all run the same critics and AC coverage, so the same ticket produces the same plan whichever door it came in through
 - Multiple export formats (Markdown, Jira, JSON)
 - Token health monitoring and validation
 - Post test plans directly to Jira comments
@@ -382,8 +384,16 @@ recoverable and comparable.
 
 ## Project Structure
 
-- `src/app/` - Backend (FastAPI, Jira/GitHub/Figma clients, LLM integration)
+- `src/app/` - Backend (FastAPI routes, Jira/GitHub/Figma clients, LLM integration)
+- `src/app/services/plan_service.py` - **The test-plan pipeline.** Every caller
+  goes through here — web UI, CLI, MCP server, queue watcher — so the same
+  ticket produces the same plan regardless of entry point. Also owns the
+  Jira-issue → prompt-payload assembly
+- `src/app/services/test_plan_generator.py` - The pipeline's stages: AC coverage,
+  warning normalization, and the four post-generation critics
+- `src/app/services/queue_watcher.py` - Sweeps the QA queue and pre-generates plans
 - `src/cli/` - CLI tool (Typer, configuration management)
+- `src/mcp_server/` - MCP server for Claude Desktop
 - `frontend/` - React web UI with Vite
 - `tests/` - Unit and integration tests
 
@@ -462,7 +472,9 @@ Frontend runs on: `http://localhost:5173`
 
 ## CLI Usage (Alternative to Web UI)
 
-The CLI provides a fast, terminal-native way to generate test plans without running the web server.
+The CLI provides a fast, terminal-native way to generate test plans without
+running the web server — and hosts `testplan watch`, the background sweep that
+pre-generates plans for the QA queue.
 
 ### Installation
 
@@ -590,7 +602,7 @@ The CLI supports environment variables for automation. Example GitHub Actions wo
 
 ## MCP Server - Claude Skill Integration
 
-Use the test plan generator directly within Claude desktop app using natural language. The MCP path now feeds the LLM the same context as the REST API and CLI (parent ticket, comments, linked issues, image attachments), so sub-tasks generated through Claude Desktop pick up parent Epic/Story Figma designs and descriptions automatically.
+Use the test plan generator directly within Claude desktop app using natural language. The MCP path runs the **same pipeline** as the web UI — it calls `plan_service.generate_for_ticket`, so a plan generated from Claude Desktop gets the deliverable classifier, all four post-generation critics, AC coverage and a persisted run, and the output surfaces grounding warnings and uncovered ACs. Before that it assembled its own context and called the LLM directly, so MCP plans silently carried none of those.
 
 ### Quick Setup
 
@@ -688,13 +700,67 @@ uv run python tests/run_tests.py
 # LLM integration
 uv run python tests/test_llm.py
 
-# Full test suite (optional)
-uv run pytest tests/ -v
+# Full test suite
+uv run pytest tests/ -q
+
+# Entry-point parity — every caller runs the same pipeline, and the server-side
+# payload assembly stays field-for-field identical to the frontend's builder
+uv run pytest tests/test_plan_service.py -q
+
+# Queue-watcher guards — the refusals that keep unattended sweeps from
+# overspending (no-PR skip, never-regenerate, retry cooldown, per-sweep cap)
+uv run pytest tests/test_queue_watcher.py -q
 ```
 
 ## Status
 
-**Current:** The QA hand-off keeps compressing. Pass-to-UAT now pulls Loom URLs **and** screenshots off merged PR descriptions (with a `/issue/pr-image-proxy` shim so private-repo previews render), each ticked video-step bullet can be paired to a specific uploaded screenshot in the posted comment, Loom URLs are validated on both client and server before they can reach Jira, and the workflow endpoint fans its Jira calls out across three `asyncio.gather` phases so the transition returns in seconds instead of leaving testers refreshing mid-submit. Bug Lens now auto-runs (at most once) after a Bug ticket's first Pull-to-Testing plan lands, and the report renders collapsed by default so it doesn't unfold underneath the plan. The Jira sidebar picked up an assignee-avatar column, right-click "open / copy key / open in Jira" on rows, a 30-day activity filter that hides dormant projects, and a sole-pinned auto-open. Test-plan quality gained a shared-component per-role fanout that catches the "field renders when data exists" trap that let a misplaced role-specific field ship to production, and a verification-surface anchor pass so tickets whose deliverable lives outside the running app (App Store uploads, LaunchDarkly flips, doc rewrites) stop getting plans that tell QA to "launch the app and compare". Notify / Assign-to pickers grew a debounced Jira user-search typeahead so people outside the ticket history can be looped in without leaving the form. All shipped on top of the per-test `grounded_in` / Confluence-specs / walkthrough-gated / three-critic baseline; prompt quality hardening ongoing
+**Current:** The loop is being pulled out from under the UI. Test-plan
+generation no longer lives in a route handler: `services/plan_service.py`
+owns the whole pipeline (deliverable classifier → generation → four critics
+→ AC coverage → persistence) plus the Jira-issue → payload assembly, and the
+web UI, CLI, MCP server and a new queue watcher all go through it — so the
+same ticket stops producing a different plan depending on which door you came
+in through, and `POST /tickets/{key}/plan` generates from a ticket key alone.
+On top of that, `testplan watch` sweeps the QA queue and pre-generates plans
+(plus Bug Lens for Bugs) before anyone opens the ticket, which takes the
+multi-minute Opus run off the tester's critical path; its unattended spend is
+fenced by a linked-PR gate, a never-regenerate rule, a retry cooldown and a
+per-sweep cap.
+
+Before that, the QA hand-off itself kept compressing: Pass-to-UAT pulls Loom
+URLs **and** screenshots off merged PR descriptions (with a
+`/issue/pr-image-proxy` shim so private-repo previews render), each ticked
+video-step bullet can be paired to a specific uploaded screenshot in the
+posted comment, Loom URLs are validated on both client and server, and the
+workflow endpoint fans its Jira calls across three `asyncio.gather` phases so
+transitions return in seconds. Bug Lens auto-runs (at most once) after a Bug
+ticket's first Pull-to-Testing plan lands, collapsed by default. The Jira
+sidebar picked up assignee avatars, row right-click actions, a 30-day activity
+filter and a sole-pinned auto-open. Plan quality gained the shared-component
+per-role fanout and the verification-surface anchor pass, on top of the
+per-test `grounded_in` / Confluence-specs / walkthrough-gated / three-critic
+baseline; prompt quality hardening ongoing.
+
+**Known gaps.** Two things degrade silently rather than failing loudly, so
+they're written down rather than left to be rediscovered:
+
+- **Code-grounding critic loses its evidence to rate limits.** GitHub's
+  code-search endpoint allows 10 requests/minute (with a stricter secondary
+  limit on bursts), and one generation can spend most of that budget —
+  `_find_test_files` searches once per repo during the ticket fetch, then the
+  critic searches once per recheckable warning per repo.
+  [`search_relevant_files`](src/app/github_client.py) treats **any** non-200 as
+  "no hits", so a rate-limited search is indistinguishable from "the code
+  doesn't implement this": the critic concludes it found no evidence and
+  leaves the warning at WARN with no indication the pass didn't actually run.
+  Needs the client to detect 403/429 + `x-ratelimit-remaining`/`retry-after`,
+  back off once, and report "recheck unavailable" distinctly from "not found".
+- **Multi-ticket plans never see bounce history.** `TicketInput` carries
+  `bounce_history`, but `plan_service.generate_multi` doesn't copy it into
+  `tickets_data`, `generate_multi_ticket_test_plan` takes no such parameter,
+  and `_build_multi_ticket_prompt` renders no bounce block. So the
+  "PRIOR QA / UAT BOUNCE-BACK HISTORY" section that makes single-ticket plans
+  cover prior failure modes is simply absent from every multi-ticket plan.
 
 ## Roadmap
 
@@ -723,7 +789,7 @@ uv run pytest tests/ -v
 - ✅ **Jira browser side rail**: Collapsible Projects → Status → Issues drill-down with status-category grouping, type badges, pinned + recent project shortcuts, and silent refresh on tab focus
 - ✅ **QA workflow buttons**: One-click *Pull to Testing* / *Pass to UAT* / *Fail back to To Do* for the SK project, with automatic reassignment (current user on pull, prior assignee on pass/fail)
 - ✅ **Sub-task test plans**: Sub-tasks are now a testable issue type and flow through the same generation path as Story/Task/Bug, while still inheriting parent Epic/Story design context
-- ✅ **MCP context parity**: MCP `generate_test_plan` mirrors CLI/REST context assembly (parent, comments, linked issues, images), so Claude Desktop sub-task plans no longer miss parent design resources
+- ✅ **MCP context parity**: MCP `generate_test_plan` mirrors CLI/REST context assembly (parent, comments, linked issues, images), so Claude Desktop sub-task plans no longer miss parent design resources. _(Superseded — the three paths each kept their own assembly and drifted; all of them now share `plan_service`, see **One pipeline for every caller** below.)_
 - ✅ **Workflow assignee fallback**: Pass to UAT / Fail back to To Do fall back from changelog prior-assignee → top PR contributor → unassigned, skipping the bot's own account in the changelog
 - ✅ **Hotfix-aware prompt filter**: Open hotfix PRs (title/branch contains `hotfix`) stay in the LLM prompt while other open PRs are excluded
 - ✅ **QA/UAT bounce-back awareness**: Changelog walker detects prior QA/UAT failures, pairs each with the nearest Jira comment, and feeds them into the LLM prompt so regenerated plans cover the prior failure modes
@@ -808,7 +874,20 @@ uv run pytest tests/ -v
 - ✅ **Ticket-key copy from header**: A hover-revealed copy button on the ticket-key badge yanks the key to clipboard in one click, so grabbing an SK-key to paste into Slack no longer needs a URL edit or a double-click drag-select
 - ✅ **Fail-back header names the actual target column**: The Jira comment marker line now reads "back to In Progress" when the tester used *Fail back to In Progress*; it was hardcoded to "back to To Do" before, so devs saw the wrong destination on any In-Progress bounce
 
+- ✅ **One pipeline for every caller**: the deliverable classifier, four critics, AC coverage and run persistence moved out of the route handler into `services/plan_service.py`, and the web UI, CLI, MCP server and queue watcher all call it. Previously each non-browser caller hand-assembled its context and called `llm_client.generate_test_plan` directly, so MCP- and CLI-generated plans had no critic badges, no AC coverage and no run history — the same ticket produced a different plan depending on which door you came in through. `POST /tickets/{key}/plan` generates from a ticket key alone, and the `GET /issue/{key}` serializer moved into the service so a key-only generate rebuilds the exact payload the browser posts (a test pins that shape field-for-field against the frontend's `buildTicketPayload`)
+- ✅ **QA-queue watcher**: `testplan watch` sweeps the configured projects for tickets in the queue status (default *Ready to Test*) and pre-generates a plan — plus Bug Lens for Bugs — so the tester opens a ticket whose plan and critic verdicts are already waiting instead of starting a multi-minute Opus run by hand. Runs as its own process, never off API startup. Guards are individually configurable and each has a test: skip tickets with no linked PR, never regenerate an existing plan, cooldown so a reliably-failing ticket can't burn a call every interval, and a per-sweep cap. Checks run cheapest-first (free DB dedupe → Jira fetch → LLM), and `--dry-run` runs every guard while stopping short of generating
+
 ### Future Enhancements
+
+**Next on the automation track** (in order — each one shortens the QA loop or makes the review checkpoint reviewable):
+- **Jobs table**: generation is currently a minutes-long synchronous HTTP call, so a browser refresh loses it and the watcher can't survive a restart mid-generation. `POST /jobs` / `GET /jobs/{id}` makes it resumable and lets the UI, CLI, MCP and watcher watch the same run
+- **Per-case results with evidence**: `test_plan_progress.checked_ids` is a bare set of `"happy_path:0"` strings — no pass/fail, no actor, no timestamp, no evidence link. So when an automated runner marks 14 cases, the reviewing QA can't tell machine-verified checks from hand-ticked ones or see the screenshot behind any of them. Per-case `{result, actor, evidence_urls, observed_at, note}` is what makes the human checkpoint a review rather than a re-do — and lets the Pass-to-UAT comment be assembled from the records instead of retyped
+- **Capture the runner's "Not Run" reasons**: the UAT runner already emits structured reasons (SKIPPED with the missing fixture named, BLOCKED, DEFERRED TO CI, NOT INDEPENDENTLY VERIFIED). Nothing stores them. Persisted per case category, they show which case *shapes* are never automatable here — so the generator can stop emitting them as UAT cases
+- **Risk-ranked checkpoint**: every signal needed to triage already exists (`needs_manual_verification` from four critics, grounding-warning severity, `uat_complexity`, bounce history, AC gaps). Turn them into a per-case confidence: auto-sign-off high-confidence agent passes with evidence, mandate human review for the rest, instead of asking the tester to read all 39 cases with equal care
+- **Promote stable cases into repo tests**: a case that passes cleanly several runs running should be emitted as a durable Playwright/detox spec and dropped from the UAT plan for good. The only item here where the manual queue shrinks permanently rather than just running faster
+- **Plan-quality eval harness**: `tests/` covers the deterministic helpers well but nothing scores plan quality against real tickets, so a prompt edit can degrade plans silently. The ground truth already exists — replay archived tickets whose bounce/no-bounce outcome is known and score whether the plan would have caught the actual bounce reason. Worth treating as a prerequisite before widening unattended generation
+
+**Other**
 - **Screenshot Analysis**: Claude vision API for UI mockup testing
 - **Bug Lens history**: Persist and surface prior Bug Lens analyses the same way test plans are surfaced
 - **Quality Feedback**: Thumbs up/down to improve prompts
