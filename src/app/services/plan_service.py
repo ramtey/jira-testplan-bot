@@ -431,6 +431,7 @@ async def generate_single(
             "integration_tests": test_plan.integration_tests or [],
             "ac_coverage": ac_coverage,
             "grounding_warnings": normalize_grounding_warnings(test_plan),
+            "risks_and_gaps": test_plan.risks_and_gaps or [],
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
         }
@@ -616,6 +617,7 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             "ac_coverage": ac_coverage,
             "superseded_acs": ac_coverage.get("superseded_acs", []),
             "grounding_warnings": grounding_warnings,
+            "risks_and_gaps": test_plan.risks_and_gaps or [],
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
         }

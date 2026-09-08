@@ -65,6 +65,63 @@ const formatNeedsVerification = (test) => {
   return '> ⚠️ **Needs manual verification** — the AC element referenced here could not be verified in the PR diff or testID reference. See UI Grounding Warnings above for details.\n\n'
 }
 
+const SURFACE_LABELS = {
+  backend_http: 'Backend / HTTP',
+  web_ui: 'Web UI',
+  mobile: 'Mobile',
+  cli: 'CLI',
+  manual_only: 'Manual only',
+}
+
+// What a runner needs to execute the case: surface, as whom, and where.
+const formatSurface = (test) => {
+  const bits = []
+  if (typeof test.surface === 'string' && test.surface.trim()) {
+    bits.push(SURFACE_LABELS[test.surface] || test.surface)
+  }
+  if (typeof test.credentials === 'string' && test.credentials.trim()) {
+    bits.push(`credentials: ${test.credentials.trim()}`)
+  }
+  if (typeof test.environment === 'string' && test.environment.trim()) {
+    bits.push(`environment: ${test.environment.trim()}`)
+  }
+  return bits.length > 0 ? `**Runs on:** ${bits.join(' · ')}\n\n` : ''
+}
+
+// Whether the expected result was read out of the implementation or assumed.
+// A reviewer needs to know which assertions carry weight.
+const formatExpectedVerification = (test) => {
+  if (test.expected_verified === true) {
+    const src = typeof test.expected_source === 'string' && test.expected_source.trim()
+      ? `\`${test.expected_source.trim()}\``
+      : '_source not cited_'
+    return `**Expected verified against:** ${src}\n\n`
+  }
+  if (test.expected_verified === false) {
+    return '> ⚠️ **Unverified — assumption.** This expected result was not read from the implementation. Confirm it against the code before treating a failure as a defect.\n\n'
+  }
+  return ''
+}
+
+// Rule-8 output: gaps that would break the ticket's goal but that no case
+// covers. Deliberately not a checklist — these are not pass/fail items.
+const formatRisksAndGaps = (plan) => {
+  const gaps = Array.isArray(plan?.risks_and_gaps) ? plan.risks_and_gaps.filter(Boolean) : []
+  if (gaps.length === 0) return ''
+  let md = '## ⚠️ Risks / Gaps Observed\n\n'
+  md += '_Not test cases — these are gaps in the ticket itself that no case can mark pass or fail._\n\n'
+  gaps.forEach((g) => {
+    if (typeof g === 'string') {
+      md += `- ${g}\n`
+      return
+    }
+    md += `- **${g.gap || 'Unnamed gap'}**\n`
+    if (g.impact) md += `  - Impact: ${g.impact}\n`
+    if (g.evidence) md += `  - Evidence: \`${g.evidence}\`\n`
+  })
+  return md + '\n'
+}
+
 const formatAcCoverageSummary = (coverage) => {
   if (!coverage || !coverage.tickets) return ''
   const entries = Object.entries(coverage.tickets).filter(
@@ -227,6 +284,8 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatSurface(test)
+      markdown += formatExpectedVerification(test)
       markdown += formatCoversAcs(test)
       markdown += formatGroundedIn(test, hasAcs)
     })
@@ -262,6 +321,8 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatSurface(test)
+      markdown += formatExpectedVerification(test)
       markdown += formatCoversAcs(test)
       markdown += formatGroundedIn(test, hasAcs)
     })
@@ -302,6 +363,8 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatSurface(test)
+      markdown += formatExpectedVerification(test)
       markdown += formatCoversAcs(test)
       markdown += formatGroundedIn(test, hasAcs)
     })
@@ -314,6 +377,8 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
     })
     markdown += '\n'
   }
+
+  markdown += formatRisksAndGaps(plan)
 
   const coveredCases = collectCoveredCases(plan)
   if (coveredCases.length > 0) {
@@ -475,6 +540,33 @@ export const formatBugAnalysisAsMarkdown = (analysis) => {
   return md
 }
 
+const formatSurfaceJira = (test) => {
+  const bits = []
+  if (typeof test.surface === 'string' && test.surface.trim()) {
+    bits.push(SURFACE_LABELS[test.surface] || test.surface)
+  }
+  if (typeof test.credentials === 'string' && test.credentials.trim()) {
+    bits.push(`credentials: ${test.credentials.trim()}`)
+  }
+  if (typeof test.environment === 'string' && test.environment.trim()) {
+    bits.push(`environment: ${test.environment.trim()}`)
+  }
+  return bits.length > 0 ? `Runs on: ${bits.join(' · ')}\n\n` : ''
+}
+
+const formatExpectedVerificationJira = (test) => {
+  if (test.expected_verified === true) {
+    const src = typeof test.expected_source === 'string' && test.expected_source.trim()
+      ? test.expected_source.trim()
+      : 'source not cited'
+    return `Expected verified against: ${src}\n\n`
+  }
+  if (test.expected_verified === false) {
+    return '⚠️ Unverified — assumption. This expected result was not read from the implementation; confirm against the code before treating a failure as a defect.\n\n'
+  }
+  return ''
+}
+
 export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => {
   const { includeCovered = false } = options
   let jira = ''
@@ -511,6 +603,8 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.test_data) {
         jira += `Test Data: ${test.test_data}\n\n`
       }
+      jira += formatSurfaceJira(test)
+      jira += formatExpectedVerificationJira(test)
       jira += '────────────────────────────────────────────\n\n'
     })
   }
@@ -548,6 +642,8 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.test_data) {
         jira += `Test Data: ${test.test_data}\n\n`
       }
+      jira += formatSurfaceJira(test)
+      jira += formatExpectedVerificationJira(test)
       jira += '────────────────────────────────────────────\n\n'
     })
   }
@@ -582,6 +678,8 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.test_data) {
         jira += `Test Data: ${test.test_data}\n\n`
       }
+      jira += formatSurfaceJira(test)
+      jira += formatExpectedVerificationJira(test)
       jira += '────────────────────────────────────────────\n\n'
     })
   }
@@ -590,6 +688,22 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
     jira += '🔄 REGRESSION CHECKLIST\n\n'
     plan.regression_checklist.forEach(item => {
       jira += `  • ${item}\n`
+    })
+    jira += '\n'
+  }
+
+  const jiraGaps = Array.isArray(plan.risks_and_gaps) ? plan.risks_and_gaps.filter(Boolean) : []
+  if (jiraGaps.length > 0) {
+    jira += '⚠️ RISKS / GAPS OBSERVED\n\n'
+    jira += 'Not test cases — gaps in the ticket itself that no case can mark pass or fail.\n\n'
+    jiraGaps.forEach((g) => {
+      if (typeof g === 'string') {
+        jira += `  • ${g}\n`
+        return
+      }
+      jira += `  • ${g.gap || 'Unnamed gap'}\n`
+      if (g.impact) jira += `    Impact: ${g.impact}\n`
+      if (g.evidence) jira += `    Evidence: ${g.evidence}\n`
     })
     jira += '\n'
   }

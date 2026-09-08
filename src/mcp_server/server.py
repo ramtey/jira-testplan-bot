@@ -198,6 +198,43 @@ async def _fetch_jira_ticket(ticket_key: str) -> list[TextContent]:
         )]
 
 
+_SURFACE_LABELS = {
+    "backend_http": "Backend / HTTP",
+    "web_ui": "Web UI",
+    "mobile": "Mobile",
+    "cli": "CLI",
+    "manual_only": "Manual only",
+}
+
+
+def _case_grounding_text(test: dict) -> str:
+    """Surface/credentials/environment + verified-vs-assumption, as plain text.
+
+    Mirrors the UI's formatSurfaceJira/formatExpectedVerificationJira so an
+    MCP-posted comment carries the same execution and provenance metadata.
+    """
+    out = ""
+    runs_on = []
+    if test.get("surface"):
+        runs_on.append(_SURFACE_LABELS.get(test["surface"], test["surface"]))
+    if test.get("credentials"):
+        runs_on.append(f"credentials: {test['credentials']}")
+    if test.get("environment"):
+        runs_on.append(f"environment: {test['environment']}")
+    if runs_on:
+        out += f"Runs on: {' · '.join(runs_on)}\n\n"
+
+    verified = test.get("expected_verified")
+    if verified is True:
+        out += f"Expected verified against: {test.get('expected_source') or 'source not cited'}\n\n"
+    elif verified is False:
+        out += (
+            "⚠️ Unverified — assumption. This expected result was not read from the "
+            "implementation; confirm against the code before treating a failure as a defect.\n\n"
+        )
+    return out
+
+
 def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
     """Format test plan identically to the UI's formatTestPlanAsJira() function."""
     jira = ""
@@ -223,6 +260,7 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
                 jira += f"Expected Result: {test['expected']}\n\n"
             if test.get("test_data"):
                 jira += f"Test Data: {test['test_data']}\n\n"
+            jira += _case_grounding_text(test)
             jira += "────────────────────────────────────────────\n\n"
 
     if test_plan_dict.get("edge_cases"):
@@ -248,6 +286,7 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
                 jira += f"Expected Result: {test['expected']}\n\n"
             if test.get("test_data"):
                 jira += f"Test Data: {test['test_data']}\n\n"
+            jira += _case_grounding_text(test)
             jira += "────────────────────────────────────────────\n\n"
 
     if test_plan_dict.get("integration_tests"):
@@ -271,12 +310,27 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
                 jira += f"Expected Result: {test['expected']}\n\n"
             if test.get("test_data"):
                 jira += f"Test Data: {test['test_data']}\n\n"
+            jira += _case_grounding_text(test)
             jira += "────────────────────────────────────────────\n\n"
 
     if test_plan_dict.get("regression_checklist"):
         jira += "🔄 REGRESSION CHECKLIST\n\n"
         for item in test_plan_dict["regression_checklist"]:
             jira += f"  • {item}\n"
+        jira += "\n"
+
+    if test_plan_dict.get("risks_and_gaps"):
+        jira += "⚠️ RISKS / GAPS OBSERVED\n\n"
+        jira += "Not test cases — gaps in the ticket itself that no case can mark pass or fail.\n\n"
+        for gap in test_plan_dict["risks_and_gaps"]:
+            if isinstance(gap, str):
+                jira += f"  • {gap}\n"
+                continue
+            jira += f"  • {gap.get('gap', 'Unnamed gap')}\n"
+            if gap.get("impact"):
+                jira += f"    Impact: {gap['impact']}\n"
+            if gap.get("evidence"):
+                jira += f"    Evidence: {gap['evidence']}\n"
         jira += "\n"
 
     return jira
@@ -322,6 +376,10 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
                 output.append("**Expected Result:**")
                 output.append(test.get("expected", ""))
                 output.append("")
+                grounding = _case_grounding_text(test).strip()
+                if grounding:
+                    output.append(grounding)
+                    output.append("")
 
         if test_plan_dict.get("happy_path"):
             _render_section("## Happy Path Test Cases", test_plan_dict["happy_path"])
@@ -342,6 +400,26 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         # Surface the critics' verdicts — the reason this path goes through
         # plan_service at all. A caller acting on the plan (e.g. a UAT
         # runner) needs to know which cases the pipeline couldn't ground.
+        gaps = test_plan_dict.get("risks_and_gaps") or []
+        if gaps:
+            output.append("## Risks / Gaps Observed")
+            output.append("")
+            output.append(
+                "_Not test cases — gaps in the ticket itself that no case can mark pass or fail._"
+            )
+            output.append("")
+            for gap in gaps:
+                if isinstance(gap, str):
+                    output.append(f"- {gap}")
+                    continue
+                line = f"- **{gap.get('gap', 'Unnamed gap')}**"
+                if gap.get("impact"):
+                    line += f" — {gap['impact']}"
+                if gap.get("evidence"):
+                    line += f" (`{gap['evidence']}`)"
+                output.append(line)
+            output.append("")
+
         warnings = test_plan_dict.get("grounding_warnings") or []
         if warnings:
             output.append("## Grounding Warnings")

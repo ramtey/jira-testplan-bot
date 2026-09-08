@@ -251,6 +251,55 @@ def generate(
         console.print(f"\n[green]✓ Processed {len(ticket_keys)} tickets successfully![/green]")
 
 
+_SURFACE_LABELS = {
+    "backend_http": "Backend / HTTP",
+    "web_ui": "Web UI",
+    "mobile": "Mobile",
+    "cli": "CLI",
+    "manual_only": "Manual only",
+}
+
+
+def _case_grounding_lines(test: dict, format: str) -> list[str]:
+    """Surface/credentials/environment + the verified-vs-assumption marker.
+
+    Emitted for every case so a runner knows what it takes to execute it and a
+    reviewer knows which assertions were read from the implementation.
+    """
+    lines: list[str] = []
+
+    runs_on = []
+    if test.get("surface"):
+        runs_on.append(_SURFACE_LABELS.get(test["surface"], test["surface"]))
+    if test.get("credentials"):
+        runs_on.append(f"credentials: {test['credentials']}")
+    if test.get("environment"):
+        runs_on.append(f"environment: {test['environment']}")
+    if runs_on:
+        lines.append("**Runs on:**" if format == "markdown" else "Runs on:")
+        lines.append(" · ".join(runs_on))
+        lines.append("")
+
+    verified = test.get("expected_verified")
+    if verified is True:
+        source = test.get("expected_source") or "source not cited"
+        lines.append(
+            f"**Expected verified against:** `{source}`"
+            if format == "markdown"
+            else f"Expected verified against: {source}"
+        )
+        lines.append("")
+    elif verified is False:
+        lines.append(
+            "> ⚠️ **Unverified — assumption.** This expected result was not read from the implementation; confirm it against the code before treating a failure as a defect."
+            if format == "markdown"
+            else "⚠ Unverified — assumption. Not read from the implementation; confirm against the code before treating a failure as a defect."
+        )
+        lines.append("")
+
+    return lines
+
+
 def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
     """Format test plan based on output format."""
     if format == "json":
@@ -300,6 +349,7 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
                 lines.append("**Test Data:**" if format == "markdown" else "Test Data:")
                 lines.append(test["test_data"])
                 lines.append("")
+            lines.extend(_case_grounding_lines(test, format))
 
     # Edge Cases
     if test_plan.get("edge_cases"):
@@ -336,6 +386,7 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
                 lines.append("**Test Data:**" if format == "markdown" else "Test Data:")
                 lines.append(test["test_data"])
                 lines.append("")
+            lines.extend(_case_grounding_lines(test, format))
 
     # Regression Checklist
     if test_plan.get("regression_checklist"):
@@ -350,6 +401,33 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
         for item in test_plan["regression_checklist"]:
             lines.append(f"- {item}")
 
+        lines.append("")
+
+    # Gaps that would break the ticket's goal but that no case covers. Kept
+    # out of the checklist deliberately — they aren't pass/fail items.
+    if test_plan.get("risks_and_gaps"):
+        if format == "markdown":
+            lines.append("## ⚠️ Risks / Gaps Observed\n")
+        else:
+            lines.append("")
+            lines.append("RISKS / GAPS OBSERVED")
+            lines.append("-" * 60)
+            lines.append("")
+        lines.append(
+            "_Not test cases — gaps in the ticket itself that no case can mark pass or fail._"
+            if format == "markdown"
+            else "Not test cases — gaps in the ticket itself that no case can mark pass or fail."
+        )
+        lines.append("")
+        for gap in test_plan["risks_and_gaps"]:
+            if isinstance(gap, str):
+                lines.append(f"- {gap}")
+                continue
+            lines.append(f"- {gap.get('gap', 'Unnamed gap')}")
+            if gap.get("impact"):
+                lines.append(f"  - Impact: {gap['impact']}")
+            if gap.get("evidence"):
+                lines.append(f"  - Evidence: {gap['evidence']}")
         lines.append("")
 
     return "\n".join(lines)

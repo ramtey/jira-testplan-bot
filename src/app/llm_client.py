@@ -782,6 +782,160 @@ reporter's speculation rather than a scope-limiting-change in the PR,
 that's the pattern this rule catches.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CRITICAL: GROUNDING RULES — READ THE IMPLEMENTATION, NOT THE CONVENTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The rules above stop you inventing things the ticket never mentioned. These
+rules stop the opposite failure: writing a case about something the ticket DID
+mention, but asserting what that thing *conventionally* does instead of what
+this codebase actually does. A plan whose assertions come from convention is
+worse than no plan — it sends QA to verify the wrong thing while looking
+authoritative.
+
+**1. ASSERT EXACT OBSERVABLE VALUES, FROM THE CODE.**
+Never infer a status code, error body, or message from what is conventional for
+that kind of failure. Open the handler or middleware in the PR diff / repository
+context and quote what it actually returns.
+
+- Auth is the most common trap: "invalid credentials" is frequently NOT 401. A
+  well-formed token that isn't allowlisted is usually 403; 401 is typically
+  reserved for credentials that are absent or unparseable.
+- Write a SEPARATE case per distinct failure path the code has. Absent,
+  malformed, well-formed-but-unauthorized, and wrong-scope commonly return
+  different codes and different bodies. Collapsing them into one "invalid
+  credentials" case hides whichever one is broken.
+- If you cannot locate the implementation, write "expected response unverified —
+  implementation not located" in `expected` and set `expected_verified: false`.
+  Never substitute a guess.
+
+❌ BAD (convention): expected: "Request with an invalid API key returns 401 Unauthorized"
+✅ GOOD (read from code): expected: "Request with a well-formed but non-allowlisted key returns 403 with body {'error':'forbidden_client'} (verified against src/middleware/auth.ts:64). A separate case covers the absent-header path, which returns 401."
+
+**2. STATE THE AUTH MODEL EXPLICITLY; DON'T INVENT ONE.**
+API key, OAuth2 client_credentials, user session cookie, and signed webhook are
+NOT interchangeable, and a case written against the wrong one is unrunnable.
+Read how the route actually authenticates, then name — in `credentials` — the
+grant type, the token URL, the scope, the audience, and whether the principal
+must be a service or a user.
+
+- If the route rejects user tokens, say so loudly. It means no browser login can
+  exercise it, which changes WHO can run the plan.
+- Do not write "log in and call the endpoint" for a route that only accepts a
+  service credential.
+
+❌ BAD: credentials: "A logged-in test account"
+✅ GOOD: credentials: "OAuth2 client_credentials only — service principal, not a user. Token URL https://auth.example.com/oauth2/token, scope `orders:read`, audience `api://orders`. User session tokens are rejected (verified against src/middleware/auth.ts:31), so this case cannot be run from a browser login."
+
+**3. SEPARATE PRECONDITIONS FROM THE TICKET'S OWN DELIVERABLES.**
+If the ticket's job is to PRODUCE an artifact — provision credentials, mint a
+key, stand up an environment, publish a doc — that artifact is NOT available to
+you as a test fixture. Do not write cases that presuppose it.
+
+For every case, ask: "does this precondition already exist, or is it the thing
+this ticket is chartered to create?" If it's the latter, either
+
+  (a) mark the case `blocked until <deliverable> exists, owner: <who>` at the
+      START of `preconditions`, or
+  (b) replace it with something observable today.
+
+A plan whose happy path can't run until the ticket ships has no happy path. If
+EVERY happy-path case you drafted depends on the ticket's own deliverable, that
+is a signal to re-scope toward what is observable now (the route exists and
+rejects unauthenticated calls; the config key is read at boot; the doc renders),
+not a reason to ship unrunnable cases.
+
+❌ BAD (presupposes the deliverable): "Preconditions: Partner API credentials have been issued. Steps: authenticate as the partner and fetch /v1/orders."
+✅ GOOD (blocked, honestly labelled): "Preconditions: blocked until partner client_id/secret are provisioned, owner: Platform team. Steps: ..."
+✅ GOOD (observable today): "Steps: call GET /v1/orders with no Authorization header. Expected: 401 (verified against src/middleware/auth.ts:22) — proves the route is deployed and the guard is wired, without needing the credentials this ticket will mint."
+
+**4. CHECK EXISTING AUTOMATED COVERAGE FIRST.**
+Before authoring a manual case, search the "Existing Unit Tests" context and the
+PR diff for a unit or integration test that already asserts the behaviour. If CI
+asserts it, do NOT duplicate it as manual UAT — set `covered_by_unit_test: true`
+and cite the file (and line, when known) in `unit_test_ref`. Manual UAT exists
+for what CI cannot reach.
+
+Parameterized tests are the easy miss: an `it.each` / `test.each` / table-driven
+test that walks every rejection path already covers ALL of those paths, not just
+the first row. Read the table before writing an edge case that re-walks it.
+
+❌ BAD: an edge case "rejects malformed token" when `auth.test.ts` has an `it.each` row for exactly that input.
+✅ GOOD: covered_by_unit_test: true, unit_test_ref: "src/middleware/auth.test.ts:40 › rejects malformed token (it.each row 2 of 4)".
+
+**5. DROP UNOBSERVABLE AND VACUOUS CASES.**
+Every case needs a concrete way to tell pass from fail. Reject cases of the form
+"X remains unaffected" / "no regressions in Y" / "existing behaviour is
+preserved" UNLESS you can name the specific signal to check AND confirm the
+thing being compared against actually exists.
+
+- If there is only ONE integration, "other integrations are unaffected" is
+  unverifiable — cut it rather than shipping a case nobody can mark.
+- "No regressions" is not an assertion. Name the endpoint, the field, the screen,
+  and the value that must be identical.
+
+❌ BAD: "Verify other partner integrations continue to work as before"
+✅ GOOD: "Verify GET /v1/legacy/orders still returns 200 with the `items[].sku` field present — this is the only other consumer of the changed serializer (src/serializers/order.ts:12)."
+
+**6. USE THE NAMES THE CODE USES.**
+The ticket title is not the system's name. Resolve the subject to its real
+identifier in the repo — module, package, route prefix, service name — and use
+that identifier throughout the plan. Note the ticket's alias ONCE if it differs,
+then drop it. Wrong names send the runner searching for code that doesn't exist.
+
+❌ BAD: 'Verify the "Partner Portal Gateway" rejects the request' (a phrase that appears only in the ticket title)
+✅ GOOD: 'Verify `services/partner-api` (the ticket calls this the "Partner Portal Gateway") rejects the request on route prefix `/v1/partner`'
+
+**7. CLASSIFY THE SURFACE, PER CASE.**
+Label EVERY case with what is needed to execute it, using the `surface`,
+`credentials`, and `environment` fields:
+
+- `surface`: one of `backend_http`, `web_ui`, `mobile`, `cli`, `manual_only`.
+- `credentials`: the principal and secrets required (see rule 2). Write "none"
+  when the case is deliberately unauthenticated.
+- `environment`: the environment name AND the base URL the case runs against.
+
+Rules that follow from this:
+- A backend-only ticket ships NO UI. If you catch yourself writing a step that
+  implies a screenshot, a click, or a screen name on a `backend_http` case, the
+  case is wrong — rewrite it as an HTTP request/response assertion.
+- If a change is deployed to ONE environment only, say which, and make the
+  environment part of the assertion ("against staging only — production still
+  returns the old shape until the next release").
+- Do not leave `environment` as a bare env name when a base URL is knowable from
+  the ticket, diff, or config; the runner needs the URL.
+
+❌ BAD: surface: "web_ui" on a ticket whose entire diff is an Express router, with a step reading "Screenshot the partner dashboard".
+✅ GOOD: surface: "backend_http", credentials: "none (deliberately unauthenticated)", environment: "staging — https://api-staging.example.com"
+
+**8. FLAG WHAT THE TICKET APPEARS TO HAVE MISSED — SEPARATELY.**
+While reading the code you will notice gaps that would break the ticket's stated
+goal even though no test case covers them: config a consumer needs but nobody
+added, docs that publish the wrong endpoint, an env var added in one repo but
+not its mirror, a route registered but never exported.
+
+Put these in the top-level `risks_and_gaps` array. Do NOT disguise them as test
+cases — a gap is not something QA can mark pass or fail, and burying it in the
+checklist means it gets ticked and forgotten.
+
+✅ GOOD risks_and_gaps entry: {"gap": "PARTNER_API_AUDIENCE is added to services/partner-api/.env.example but not to the deploy manifest in infra/staging/partner-api.yaml", "impact": "Token validation will reject every request in staging even after the ticket merges", "evidence": "infra/staging/partner-api.yaml:18 — env block has no PARTNER_API_AUDIENCE key"}
+
+**OUTPUT DISCIPLINE — MARK EVERY EXPECTED RESULT AS VERIFIED OR ASSUMED.**
+A reviewer needs to know which assertions carry weight. For EVERY case:
+
+- If you read the behaviour out of the implementation, set
+  `expected_verified: true` and put the exact `<file>:<line>` in
+  `expected_source`. One location is enough — the primary one the assertion
+  rests on.
+- If you did not — because the code wasn't in your context, or you're reasoning
+  from the AC text alone — set `expected_verified: false`, omit
+  `expected_source`, and phrase `expected` so the assumption is visible
+  ("unverified — assumption: ...").
+
+Never present an unverified expectation as a verified one. `expected_verified:
+true` with a file path you did not actually read is the single most damaging
+thing you can emit here: it tells the reviewer to stop checking.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ CRITICAL: SOURCE-OF-VALUE COVERAGE FOR DERIVED / CONVERTED / AUTOPOPULATED FIELDS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1357,6 +1511,11 @@ Return ONLY valid JSON (no markdown, no code blocks):
       ],
       "expected": "Complete expected outcome covering UI behavior, API correctness, and data validation",
       "test_data": "All specific data needed for this comprehensive test",
+      "surface": "backend_http|web_ui|mobile|cli|manual_only",
+      "credentials": "Principal + secrets needed to run this, or 'none'. Name grant type / token URL / scope / audience for token auth, and say so if user tokens are rejected.",
+      "environment": "Environment name AND base URL, e.g. 'staging — https://api-staging.example.com'",
+      "expected_verified": true,
+      "expected_source": "REQUIRED when expected_verified is true — the <file>:<line> the expected result was read from, e.g. 'src/middleware/auth.ts:64'. Omit when expected_verified is false.",
       "covered_by_unit_test": false,
       "unit_test_ref": "OPTIONAL: only when covered_by_unit_test is true — the test file path (+ test name if known) that already covers this, e.g. 'src/netSheet.test.ts › computes buyer total'"
     }
@@ -1371,8 +1530,13 @@ Return ONLY valid JSON (no markdown, no code blocks):
         "Action that triggers edge case",
         "Verification step"
       ],
-      "expected": "Expected behavior (include error messages if applicable)",
-      "test_data": "Specific edge case data (e.g., 'empty string', 'max+1 value: 101')"
+      "expected": "Expected behavior (include error messages if applicable) — quote the exact status code and body from the handler, not the conventional one",
+      "test_data": "Specific edge case data (e.g., 'empty string', 'max+1 value: 101')",
+      "surface": "backend_http|web_ui|mobile|cli|manual_only",
+      "credentials": "Principal + secrets needed to run this, or 'none'",
+      "environment": "Environment name AND base URL",
+      "expected_verified": false,
+      "expected_source": "OMIT when expected_verified is false"
     }
   ],
   "integration_tests": [
@@ -1385,15 +1549,40 @@ Return ONLY valid JSON (no markdown, no code blocks):
         "Verify interaction"
       ],
       "expected": "Expected interaction result",
-      "test_data": "Data needed for integration test"
+      "test_data": "Data needed for integration test",
+      "surface": "backend_http|web_ui|mobile|cli|manual_only",
+      "credentials": "Principal + secrets needed to run this, or 'none'",
+      "environment": "Environment name AND base URL",
+      "expected_verified": true,
+      "expected_source": "<file>:<line>"
     }
   ],
   "regression_checklist": [
     "🔴 Critical feature that must still work (be specific)",
     "🟡 Important related feature",
     "🟢 Additional validation item"
+  ],
+  "risks_and_gaps": [
+    {
+      "gap": "What is missing or wrong, naming the artifact (file, key, endpoint, manifest)",
+      "impact": "How this breaks the ticket's stated goal if it ships unaddressed",
+      "evidence": "<file>:<line> where you saw it"
+    }
   ]
 }
+
+**`surface` / `credentials` / `expected_verified` (REQUIRED on every case in
+happy_path, edge_cases, and integration_tests; `environment` and
+`expected_source` alongside them):** these are the machine-readable half of the
+GROUNDING RULES section above — a case without them cannot be routed to a runner
+or weighed by a reviewer. `surface` says what it takes to execute the case,
+`credentials` says as whom, `environment` says where (name + base URL).
+`expected_verified` says whether the expected result was read out of the
+implementation (`true`, and then `expected_source` MUST carry the
+`<file>:<line>`) or reasoned from AC text and convention (`false`, and then
+`expected` must say "unverified — assumption"). Do not default `expected_verified`
+to true to look thorough; an unverified expectation labelled verified is worse
+than one labelled honestly.
 
 **`covered_by_unit_test` / `unit_test_ref` (optional, applies to happy_path,
 edge_cases, and integration_tests):** Only set these when an "Existing Unit
@@ -1422,6 +1611,22 @@ The regression checklist must contain ONLY runtime behaviors that can be manuall
 - "API endpoints return expected data"
 
 **Why?** Build-time checks fail automatically if broken. Regression checklists are for manually verifying existing features still work.
+
+❌ DO NOT INCLUDE vacuous "unaffected" items — the DROP UNOBSERVABLE AND VACUOUS
+CASES rule applies to checklist lines too, and this is where it leaks most often.
+A checklist line is only useful if a tester can name the signal and confirm the
+thing being compared against exists:
+- ❌ "Other partner integrations are unaffected by the new deployment" — if there
+  is only one integration, there is nothing to check; cut the line.
+- ❌ "Existing endpoints (if any) continue to function normally" — "(if any)"
+  is an admission you don't know they exist. Cut it or name the endpoint.
+- ❌ "Authentication mechanisms for other APIs remain functional"
+- ✅ "🔴 GET /v1/legacy/orders still returns 200 with `items[].sku` present — the
+  only other consumer of the changed serializer (src/serializers/order.ts:12)"
+
+Before writing each line, ask: which specific endpoint, screen, or field, and how
+would the tester know it regressed? If you can't answer both, drop the line
+rather than padding the checklist.
 
 **PLATFORM SCOPE — DO NOT INVENT PLATFORMS:**
 Only add platform-launch or platform-smoke items for platforms that are
@@ -1481,6 +1686,13 @@ Before generating each section, mentally sort your tests:
 ✅ No tests for features that "should" exist but aren't actually mentioned
 ✅ No assumptions based on domain knowledge about what the application typically includes
 ✅ Tests are sorted by priority: critical → high → medium
+✅ Every status code, error body, and message was READ from the handler/middleware — not inferred from convention (401 vs 403 especially)
+✅ Each distinct auth failure path (absent / malformed / well-formed-but-unauthorized / wrong-scope) has its own case, not one merged "invalid credentials" case
+✅ No case presupposes an artifact THIS ticket exists to create; any that does is marked "blocked until <deliverable> exists, owner: <who>" — and at least one happy-path case is runnable today
+✅ Nothing duplicates existing CI coverage (parameterized `it.each` tables count — read the whole table)
+✅ No vacuous "X remains unaffected" cases without a named signal and a confirmed comparison target
+✅ Every case carries `surface`, `credentials`, and `expected_verified`; every `expected_verified: true` carries a real `expected_source`
+✅ Gaps the ticket missed are in `risks_and_gaps`, NOT disguised as test cases
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
 
@@ -3097,6 +3309,7 @@ class OllamaClient(LLMClient):
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                    risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -3164,6 +3377,7 @@ class OllamaClient(LLMClient):
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                    risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -3445,6 +3659,27 @@ TEST_CASE_SCHEMA = {
             "type": "boolean",
             "description": "Set true when this test was written from AC text but the named UI element / API surface could NOT be verified in the PR diff or testID reference (see 'UI GROUNDING' instructions). When true, a matching entry MUST also appear in the top-level `grounding_warnings` array whose `ac_id` matches one of this case's `covers_acs`. Default false / omitted means the test is fully grounded.",
         },
+        "surface": {
+            "type": "string",
+            "enum": ["backend_http", "web_ui", "mobile", "cli", "manual_only"],
+            "description": "What a runner needs to execute this case (see 'CLASSIFY THE SURFACE, PER CASE'). 'backend_http': an HTTP request/response assertion, no UI. 'web_ui': a browser. 'mobile': the iOS/Android app. 'cli': a terminal command. 'manual_only': human inspection with no automatable surface. A backend-only ticket ships no UI — never label its cases 'web_ui', and never write a step implying a screenshot or a click on a 'backend_http' case.",
+        },
+        "credentials": {
+            "type": "string",
+            "description": "The principal and secrets required to run this case (see 'STATE THE AUTH MODEL EXPLICITLY'). Name the grant type, token URL, scope, audience, and whether the principal must be a service or a user — API key, OAuth2 client_credentials, user session, and signed webhook are NOT interchangeable. If the route rejects user tokens, say so here: it means no browser login can exercise the case. Write 'none' when the case is deliberately unauthenticated.",
+        },
+        "environment": {
+            "type": "string",
+            "description": "Environment name AND base URL this case runs against, e.g. 'staging — https://api-staging.example.com'. When a change is deployed to one environment only, say which, and make the environment part of the `expected` assertion. Omit only when no environment is knowable from the ticket, diff, or config.",
+        },
+        "expected_verified": {
+            "type": "boolean",
+            "description": "Output discipline (REQUIRED, see 'MARK EVERY EXPECTED RESULT AS VERIFIED OR ASSUMED'). True ONLY when you read this case's expected result out of the implementation — a handler, middleware, serializer, or config you actually had in context — in which case `expected_source` MUST give the `<file>:<line>`. False when you reasoned from AC text, convention, or anything you could not open; then phrase `expected` so the assumption is visible ('unverified — assumption: ...'). Setting true with a file path you did not read is the most damaging thing you can emit: it tells the reviewer to stop checking.",
+        },
+        "expected_source": {
+            "type": "string",
+            "description": "Required when `expected_verified` is true. The single primary `<file>:<line>` the expected result rests on, e.g. 'src/middleware/auth.ts:64'. Omit entirely when `expected_verified` is false.",
+        },
         "covered_by_unit_test": {
             "type": "boolean",
             "description": "Set true ONLY when an existing test from the 'Existing Unit Tests' context already asserts this exact behaviour AT THE SAME LEVEL. Moves the case into a separate 'already covered by unit tests' list QA can skip. A unit test on a function in isolation does NOT cover an end-to-end / integration / manual-UI case for the same feature — leave those unflagged. When true, populate `unit_test_ref`. Default false / omitted.",
@@ -3485,7 +3720,7 @@ TEST_CASE_SCHEMA = {
             "required": ["kind", "identifier", "verified"],
         },
     },
-    "required": ["title", "priority", "steps", "expected"],
+    "required": ["title", "priority", "steps", "expected", "surface", "credentials", "expected_verified"],
 }
 
 SUBMIT_TEST_PLAN_TOOL = {
@@ -3572,6 +3807,28 @@ SUBMIT_TEST_PLAN_TOOL = {
                             "required": ["kind", "identifier"],
                         },
                     },
+                },
+            },
+            "risks_and_gaps": {
+                "type": "array",
+                "description": "Gaps you noticed while reading the code that would break the ticket's STATED GOAL even though no test case covers them (see 'FLAG WHAT THE TICKET APPEARS TO HAVE MISSED'). Examples: config a consumer needs but nobody added, docs publishing the wrong endpoint, an env var added in one repo but not its mirror, a route registered but never exported. These are NOT test cases — a gap is not something QA can mark pass or fail — so never disguise one as a case or bury it in the regression checklist. Leave empty when you found none.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "gap": {
+                            "type": "string",
+                            "description": "What is missing or wrong, in one concrete sentence naming the artifact (file, key, endpoint, manifest).",
+                        },
+                        "impact": {
+                            "type": "string",
+                            "description": "One sentence: how this breaks the ticket's stated goal if it ships unaddressed.",
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": "Where you saw it — `<file>:<line>` where possible, e.g. 'infra/staging/partner-api.yaml:18 — env block has no PARTNER_API_AUDIENCE key'.",
+                        },
+                    },
+                    "required": ["gap", "impact", "evidence"],
                 },
             },
             "grounding_warnings": {
@@ -3770,6 +4027,7 @@ class ClaudeClient(LLMClient):
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                    risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -3894,6 +4152,7 @@ class ClaudeClient(LLMClient):
                     integration_tests=test_plan_data.get("integration_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                    risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,

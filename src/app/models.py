@@ -336,6 +336,13 @@ class TestPlan:
     # prominent "needs a walkthrough" banner and nudges the planner to attach a
     # Loom/screenshot before posting. Grounded in cross-project seams, grounding
     # warnings, linked-issue count, and manual-verification flags.
+    # Gaps found while reading the code that would break the ticket's stated
+    # goal even though no test case covers them (missing config a consumer
+    # needs, docs publishing the wrong endpoint, an env var added in one repo
+    # but not its mirror). Kept OUT of the case lists on purpose: a gap is not
+    # something QA can mark pass or fail. Each entry:
+    # {"gap": "...", "impact": "...", "evidence": "infra/staging/x.yaml:18"}
+    risks_and_gaps: list[dict] | None = None
     uat_complexity: str | None = None
     # One short, non-technical sentence (or two) for a UAT tester who skims and
     # won't read the full plan: what observably changed + where to click to see

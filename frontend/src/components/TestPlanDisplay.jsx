@@ -101,6 +101,14 @@ function SectionChip({ checked, total }) {
   )
 }
 
+const SURFACE_LABELS = {
+  backend_http: 'Backend / HTTP',
+  web_ui: 'Web UI',
+  mobile: 'Mobile',
+  cli: 'CLI',
+  manual_only: 'Manual only',
+}
+
 function formatSingleTestForClipboard(test) {
   const lines = []
   if (test.title) lines.push(typeof test.title === 'string' ? test.title : JSON.stringify(test.title))
@@ -110,7 +118,18 @@ function formatSingleTestForClipboard(test) {
     test.steps.forEach((s, i) => lines.push(`${i + 1}. ${s}`))
   }
   if (test.expected) lines.push('', 'Expected:', String(test.expected))
+  if (test.expected_verified === true) {
+    lines.push('', `Expected verified against: ${test.expected_source || 'source not cited'}`)
+  } else if (test.expected_verified === false) {
+    lines.push('', 'Expected: UNVERIFIED — assumption, not read from the implementation.')
+  }
   if (test.test_data) lines.push('', 'Test data:', String(test.test_data))
+  const runsOn = [
+    test.surface ? (SURFACE_LABELS[test.surface] || test.surface) : null,
+    test.credentials ? `credentials: ${test.credentials}` : null,
+    test.environment ? `environment: ${test.environment}` : null,
+  ].filter(Boolean)
+  if (runsOn.length > 0) lines.push('', 'Runs on:', runsOn.join(' · '))
   return lines.join('\n')
 }
 
@@ -181,6 +200,23 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
             {showCategory && test.category && (
               <span style={{ height: 18, padding: '0 6px', background: 'rgba(255,255,255,.04)', color: 'var(--fg-muted)', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center' }}>
                 {test.category}
+              </span>
+            )}
+            {test.surface && (
+              <span
+                title={`Surface: what it takes to run this case.${test.credentials ? ` Credentials: ${test.credentials}.` : ''}${test.environment ? ` Environment: ${test.environment}.` : ''}`}
+                style={{ height: 18, padding: '0 6px', background: 'rgba(99,102,241,.10)', border: '1px solid rgba(99,102,241,.35)', color: '#a5b4fc', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              >
+                {SURFACE_LABELS[test.surface] || test.surface}
+              </span>
+            )}
+            {test.expected_verified === false && (
+              <span
+                title="The expected result here was not read from the implementation — it is an assumption from the AC text or convention. Confirm it against the code before treating a failure as a defect."
+                style={{ height: 18, padding: '0 6px', background: 'rgba(245,158,11,.10)', border: '1px solid rgba(245,158,11,.35)', color: '#fcd34d', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              >
+                <Icon name="scan" size={10} />
+                Unverified expectation
               </span>
             )}
             {test.needs_manual_verification && (
@@ -330,6 +366,26 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Test data</span>
             <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{renderInline(test.test_data)}</div>
+          </>
+        )}
+        {test.expected_verified === true && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Verified against</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+              {test.expected_source
+                ? <code style={{ fontSize: 11 }}>{test.expected_source}</code>
+                : <span style={{ color: '#fcd34d' }}>marked verified but no source cited</span>}
+            </div>
+          </>
+        )}
+        {(test.credentials || test.environment) && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Runs on</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+              {[test.credentials && `credentials: ${test.credentials}`, test.environment && `environment: ${test.environment}`]
+                .filter(Boolean)
+                .join(' · ')}
+            </div>
           </>
         )}
         {groundedIn.length > 0 && (
@@ -581,6 +637,55 @@ function GroundingWarningsPanel({ warnings, ticketKeys }) {
           ticketKeys={ticketKeys}
         />
       )}
+    </div>
+  )
+}
+
+// Rule-8 output: gaps the planner noticed while reading the code that would
+// break the ticket's stated goal, but that no test case covers. Rendered apart
+// from the case lists on purpose — a gap is not something QA can mark pass or
+// fail, and putting it in the checklist means it gets ticked and forgotten.
+function RisksAndGapsPanel({ gaps }) {
+  const items = Array.isArray(gaps) ? gaps.filter(Boolean) : []
+  if (items.length === 0) return null
+  return (
+    <div
+      className="card"
+      style={{
+        marginBottom: 'var(--s-5)',
+        padding: 'var(--s-5) var(--s-6)',
+        borderColor: 'rgba(245,158,11,.35)',
+        background: 'rgba(245,158,11,.05)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', marginBottom: 'var(--s-3)' }}>
+        <Icon name="scan" size={12} />
+        <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: '#fcd34d' }}>
+          {items.length} risk{items.length === 1 ? '' : 's'} / gap{items.length === 1 ? '' : 's'} observed
+        </span>
+      </div>
+      <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', marginBottom: 'var(--s-4)' }}>
+        Not test cases — gaps in the ticket itself that no case can mark pass or fail.
+      </div>
+      <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+        {items.map((g, i) => (
+          <li key={i} style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>
+            {typeof g === 'string' ? g : (
+              <>
+                <div>{g.gap}</div>
+                {g.impact && (
+                  <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>Impact: {g.impact}</div>
+                )}
+                {g.evidence && (
+                  <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>
+                    Evidence: <code style={{ fontSize: 11 }}>{g.evidence}</code>
+                  </div>
+                )}
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -1728,6 +1833,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         warnings={testPlan.grounding_warnings}
         ticketKeys={ticketKeys}
       />
+
+      <RisksAndGapsPanel gaps={testPlan.risks_and_gaps} />
 
       {SECTIONS.map((section) => {
         const items = displayPlan[section.key]
