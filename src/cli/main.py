@@ -54,6 +54,7 @@ app.command(name="setup")(commands.setup)
 app.command(name="health")(commands.health)
 app.command(name="fetch")(commands.fetch)
 app.command(name="generate")(commands.generate)
+app.command(name="watch")(commands.watch)
 
 
 if __name__ == "__main__":

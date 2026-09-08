@@ -84,6 +84,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 
 ### Test Plan Generation
 - **Claude Opus**: Defaults to `claude-opus-4-5-20251101`; Opus 4.7 is supported (the `temperature` parameter is dropped automatically for 4.7 since the API rejects it). Read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents with many subtasks survive Opus's 16k-token output cap. Transient `529` overload errors from the plain-summary path are retried with exponential backoff so a brief Anthropic capacity blip no longer drops the ticket summary
+- **One pipeline for every caller**: the deliverable classifier, the four post-generation critics, AC coverage and run persistence live in `src/app/services/plan_service.py`, and the web UI, CLI, MCP server and queue watcher all go through it. Previously each non-browser caller assembled its own context and called the LLM directly, so an MCP- or CLI-generated plan silently carried no critic badges, no AC coverage and no run history — the same ticket produced a different plan depending on which door you came in through
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
 - **Multiple export formats**: Markdown, Jira-formatted text, or JSON. The markdown export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
 - **Issue type validation**: Generates plans for Story, Bug, Task, and Sub-task; skips Epics and Spikes (Epics open the children view instead)
@@ -530,7 +531,48 @@ testplan generate PROJ-123 PROJ-124 PROJ-125
 
 # Output formats: markdown (default), jira, json
 testplan generate PROJ-123 --format json
+
+# Pre-generate plans for everything sitting in the QA queue
+testplan watch --dry-run --once   # show what a sweep would pick up
+testplan watch --once             # one sweep, then exit
+testplan watch                    # loop on the configured interval
 ```
+
+### QA-queue watcher
+
+`testplan watch` sweeps the configured Jira projects for tickets in the
+queue status (default `Ready to Test`) and pre-generates a test plan for
+any that don't have one — plus Bug Lens for Bug tickets. The point is lead
+time: the tester opens a ticket whose plan, critic verdicts and analysis
+are already waiting, instead of starting a multi-minute Opus run at the
+moment they wanted to start testing. Pull-to-Testing already auto-generates,
+but only *after* the click, which puts the whole latency on the critical path.
+
+It runs as its own process, never from the API — so it can be restarted
+independently and never spends money just because the backend is up.
+
+Every sweep makes real Opus calls with nobody watching, so each guard is
+separately configurable (all via env):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `WATCH_PROJECTS` | falls back to `WORKFLOW_PROJECT_PREFIXES` | Projects to sweep |
+| `WATCH_STATUS` | `Ready to Test` | The status that means "in the QA queue" |
+| `WATCH_INTERVAL_SECONDS` | `300` | Seconds between sweeps |
+| `WATCH_MAX_PER_CYCLE` | `5` | Cap on plans per sweep — bounds a surprise when a sprint's worth of tickets moves at once |
+| `WATCH_REQUIRE_LINKED_PR` | `true` | Skip tickets with no PR; a plan with no diff to ground it is the thin plan QA would rather write by hand |
+| `WATCH_RETRY_COOLDOWN_HOURS` | `6` | Don't re-attempt a ticket attempted this recently, so one that fails every cycle doesn't burn a call every interval |
+
+A ticket that already has a stored plan is never regenerated — regeneration
+stays a human decision. Checks run cheapest-first: the DB dedupe is free,
+the Jira fetch costs a few hundred ms, and only what survives both reaches
+the LLM. `--dry-run` runs every guard and stops short of generating, so the
+skips it reports are the ones a real sweep would produce.
+
+One watcher process is assumed; the dedupe is a read rather than a claim, so
+two would race. A claim column (following
+`jira_tickets.auto_bug_analysis_dispatched_at`) is the fix before this is
+deployed anywhere shared.
 
 ### CI/CD Integration
 
@@ -592,7 +634,8 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshoot
 - **Token health**: `GET /health/tokens` - Validates all API tokens
 - **Fetch issue**: `GET /issue/{issue_key}` - Returns ticket with development info
 - **List Epic children**: `GET /issue/{epic_key}/children` - Lightweight list (key, summary, issue_type, status) of tickets directly under an Epic; powers the Epic launcher view
-- **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON
+- **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON. Takes an already-assembled ticket payload, which is what the browser posts back from its `GET /issue/{key}` fetch
+- **Generate plan from a key**: `POST /tickets/{ticket_key}/plan` - Fetches the ticket's context server-side and runs the identical pipeline. Comma-separate keys for a unified multi-ticket plan. This is the door for anything without a browser — CLI, MCP, the queue watcher, CI
 - **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets. Switches between *single_repo* mode (shared repo / overlapping files) and *cross_project* mode (tickets span repos — seams extracted from the PR diffs drive integration-test generation)
 - **Analyze bug**: `POST /bug-lens/analyze` - Root cause, fix explanation, and regression tests for a bug ticket
 - **Summarize bounce reason**: `POST /bounce/summarize` - Takes `{from_status, to_status, reason}` and returns a one-sentence plain-English headline for the bounce card, or `{headline: null}` when the picked comment doesn't actually explain the bounce (UI then falls back to the raw comment)

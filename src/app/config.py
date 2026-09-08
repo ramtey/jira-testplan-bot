@@ -63,6 +63,33 @@ class Settings(BaseSettings):
     # WORKFLOW_PROJECT_PREFIXES='["SK","SL"]'.
     workflow_project_prefixes: list[str] = ["SK"]
 
+    # ---- Queue watcher -------------------------------------------------
+    # Pre-generates a test plan the moment a ticket lands in the QA queue,
+    # so the tester opens a ticket that already has a plan, critics run and
+    # all. Runs as a separate process (`testplan watch`), never on its own
+    # from the API.
+    #
+    # Projects to sweep. Empty falls back to workflow_project_prefixes so
+    # there's one place to name the team's projects.
+    watch_projects: list[str] = []
+    # The status that means "landed in the QA queue" — the trigger moment.
+    watch_status: str = "Ready to Test"
+    # Seconds between sweeps. Jira's own board moves on human timescales,
+    # so polling faster than this buys nothing but API calls.
+    watch_interval_seconds: int = 300
+    # Hard cap on plans generated per sweep. The watcher spends real money
+    # with no human in the loop; this bounds a surprise (a sprint's worth of
+    # tickets moved to Ready to Test at once) to a known cost.
+    watch_max_per_cycle: int = 5
+    # Skip tickets with no linked PR. A plan built with no diff to ground it
+    # is the thin plan QA would rather write by hand, so it isn't worth an
+    # unattended Opus call.
+    watch_require_linked_pr: bool = True
+    # Don't re-attempt a ticket whose last attempt (success OR failure) was
+    # within this window. Stops a ticket that fails every cycle — a timeout,
+    # a malformed description — from burning a call every interval.
+    watch_retry_cooldown_hours: int = 6
+
     # Database (Neon Postgres)
     database_url: str | None = None
 

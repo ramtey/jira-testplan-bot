@@ -161,3 +161,43 @@ async def get_plan_with_cases(
     )
     cases = (await session.exec(cases_stmt)).all()
     return plan, list(cases)
+
+
+async def find_last_test_plan_attempt_at(
+    session: AsyncSession,
+    *,
+    ticket_key: str,
+) -> datetime | None:
+    """When a test plan was last *attempted* for `ticket_key`, success or not.
+
+    Distinct from ``list_runs_with_plans_by_ticket``, which inner-joins
+    GeneratedPlan and so only ever sees runs that produced a plan. The
+    queue watcher needs failed attempts too: a ticket whose generation
+    times out every cycle would otherwise be retried forever, and each
+    retry costs a full Opus call.
+    """
+    stmt = (
+        select(Run.created_at)
+        .where(Run.ticket_keys.contains([ticket_key]))
+        .where(Run.run_type.in_(_TEST_PLAN_RUN_TYPES))
+        .order_by(desc(Run.created_at))
+        .limit(1)
+    )
+    return (await session.exec(stmt)).first()
+
+
+async def has_successful_test_plan(
+    session: AsyncSession,
+    *,
+    ticket_key: str,
+) -> bool:
+    """Whether `ticket_key` already has a stored plan from a successful run."""
+    stmt = (
+        select(GeneratedPlan.id)
+        .join(Run, GeneratedPlan.run_id == Run.id)
+        .where(Run.ticket_keys.contains([ticket_key]))
+        .where(Run.status == RunStatus.ok)
+        .where(Run.run_type.in_(_TEST_PLAN_RUN_TYPES))
+        .limit(1)
+    )
+    return (await session.exec(stmt)).first() is not None
