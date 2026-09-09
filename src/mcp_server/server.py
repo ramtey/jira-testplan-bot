@@ -560,11 +560,10 @@ def _validate_environment():
         "ANTHROPIC_API_KEY": "Anthropic/Claude API key",
     }
 
-    # Set default LLM provider and model if not set
-    if not os.getenv("LLM_PROVIDER"):
-        os.environ["LLM_PROVIDER"] = "claude"
-    if not os.getenv("LLM_MODEL"):
-        os.environ["LLM_MODEL"] = "claude-opus-4-5-20251101"
+    # No LLM_PROVIDER/LLM_MODEL defaults are written here on purpose. Settings
+    # already defaults them, and an env var written at startup outranks the
+    # user's .env in pydantic-settings — so "helpfully" filling one in is how
+    # a configured LLM_MODEL silently stopped taking effect.
 
     missing = []
     for var, description in required_vars.items():

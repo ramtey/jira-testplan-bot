@@ -1,5 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .model_capabilities import DEFAULT_CLAUDE_MODEL
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
@@ -15,7 +17,10 @@ class Settings(BaseSettings):
 
     # LLM configuration
     llm_provider: str = "claude"  # "claude" (recommended) or "ollama"
-    llm_model: str = "claude-opus-4-5-20251101"  # For Claude: claude-opus-4-5-20251101, claude-sonnet-4-5-20250929; For Ollama: llama3.1, qwen2.5, etc.
+    # Claude default lives in model_capabilities.py alongside the per-model
+    # request quirks it has to move with. Override for Ollama (llama3.1,
+    # qwen2.5, ...) or to pin an older Claude.
+    llm_model: str = DEFAULT_CLAUDE_MODEL
     anthropic_api_key: str | None = None  # For Claude API (required when using Claude)
     ollama_base_url: str = "http://localhost:11434"  # Ollama server URL (only needed if using Ollama)
     # Read timeout (seconds) for Claude test-plan generation. Large parents

@@ -78,7 +78,7 @@ uv sync
         "GITHUB_TOKEN": "ghp_your-github-token",
         "FIGMA_TOKEN": "figd_your-figma-token",
         "LLM_PROVIDER": "claude",
-        "LLM_MODEL": "claude-opus-4-5-20251101"
+        "LLM_MODEL": "claude-opus-5"
       }
     }
   }
@@ -192,7 +192,7 @@ Get-Content -Path "$env:APPDATA\Claude\logs\mcp*.log" -Wait
 - `GITHUB_TOKEN`: GitHub Personal Access Token (enables PR code diffs and docs)
 - `FIGMA_TOKEN`: Figma Personal Access Token (enables design context)
 - `LLM_PROVIDER`: Default is "claude" (can also use "ollama")
-- `LLM_MODEL`: Default is "claude-opus-4-5-20251101"
+- `LLM_MODEL`: Optional. Defaults to the app default in `src/app/model_capabilities.py` (currently `claude-opus-5`)
 
 ## Security Notes
 

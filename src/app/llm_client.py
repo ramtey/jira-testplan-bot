@@ -19,6 +19,12 @@ import httpx
 from .config import settings
 from .confluence_client import ConfluenceClient, ConfluencePage
 from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
+from .model_capabilities import (
+    DEFAULT_CLAUDE_MODEL,
+    output_budget,
+    supports_effort,
+    supports_temperature,
+)
 from .models import BugAnalysis, TestPlan
 from .shared_component_fanout import detect_fanout, render_fanout_guidance
 
@@ -3908,17 +3914,44 @@ class ClaudeClient(LLMClient):
             )
 
         self.api_key = settings.anthropic_api_key
-        self.model = settings.llm_model or "claude-opus-4-6"
+        self.model = settings.llm_model or DEFAULT_CLAUDE_MODEL
+
+    # ---- request shaping ------------------------------------------------
+    # Each of these drops or resizes a field the configured model may not
+    # accept. The rules themselves live in model_capabilities.py so a model
+    # bump touches one file; see that module for why each one exists.
 
     def _temperature_kwargs(self, value: float) -> dict:
-        # Opus 4.7 (and likely later reasoning-class models) returns a hard
-        # 400 — "temperature is deprecated for this model" — when the param
-        # is sent at all. Detect those models by name and drop the field
-        # rather than letting the whole request fail.
-        model = (self.model or "").lower()
-        if "opus-4-7" in model:
-            return {}
-        return {"temperature": value}
+        """`temperature`, or nothing on models that 400 when it is sent."""
+        if supports_temperature(self.model):
+            return {"temperature": value}
+        return {}
+
+    def _effort_kwargs(self, level: str) -> dict:
+        """`output_config.effort`, or nothing on models that reject it."""
+        if supports_effort(self.model):
+            return {"output_config": {"effort": level}}
+        return {}
+
+    def _budget(self, visible: int, *, thinking: int) -> int:
+        """A `max_tokens` that leaves room for thinking as well as the answer."""
+        return output_budget(self.model, visible, thinking)
+
+    @staticmethod
+    def _first_text(result: dict) -> str:
+        """The first text block, skipping any thinking blocks ahead of it.
+
+        Not `content[0]`: on a thinking-by-default model the first block is a
+        `thinking` block (empty text unless display is opted in), so indexing
+        position zero raises KeyError on a response that is perfectly fine.
+        """
+        for block in result.get("content") or []:
+            if block.get("type") == "text":
+                return (block.get("text") or "").strip()
+        raise LLMError(
+            "Claude returned no text block. Unexpected response format.",
+            error_type="service_unavailable",
+        )
 
     async def generate_test_plan(
         self,
@@ -3978,8 +4011,9 @@ class ClaudeClient(LLMClient):
                         # 8192 wasn't enough once the prompt grew (UI grounding,
                         # AC conflict resolution) — happy_path consumed the whole
                         # budget and edge_cases/integration_tests/regression got
-                        # silently truncated. Opus 4.x supports 16k output.
-                        "max_tokens": 16384,
+                        # silently truncated. 16k of that is the plan itself; the
+                        # rest is thinking, which shares the same cap.
+                        "max_tokens": self._budget(16384, thinking=16384),
                         "system": [
                             {
                                 "type": "text",
@@ -4103,8 +4137,9 @@ class ClaudeClient(LLMClient):
                         # 8192 wasn't enough once the prompt grew (UI grounding,
                         # AC conflict resolution) — happy_path consumed the whole
                         # budget and edge_cases/integration_tests/regression got
-                        # silently truncated. Opus 4.x supports 16k output.
-                        "max_tokens": 16384,
+                        # silently truncated. 16k of that is the plan itself; the
+                        # rest is thinking, which shares the same cap.
+                        "max_tokens": self._budget(16384, thinking=16384),
                         "system": [
                             {
                                 "type": "text",
@@ -4247,14 +4282,15 @@ class ClaudeClient(LLMClient):
                         },
                         json={
                             "model": self.model,
-                            "max_tokens": 256,
+                            "max_tokens": self._budget(256, thinking=4096),
                             "messages": [{"role": "user", "content": prompt}],
                             **self._temperature_kwargs(0.3),
+                            **self._effort_kwargs("low"),
                         },
                     )
                     response.raise_for_status()
                     result = response.json()
-                    return result["content"][0]["text"].strip()
+                    return self._first_text(result)
             except httpx.HTTPStatusError as e:
                 last_status = e.response.status_code
                 if last_status in retryable_statuses and attempt < max_attempts - 1:
@@ -4308,14 +4344,15 @@ class ClaudeClient(LLMClient):
                         },
                         json={
                             "model": self.model,
-                            "max_tokens": 128,
+                            "max_tokens": self._budget(128, thinking=4096),
                             "messages": [{"role": "user", "content": prompt}],
                             **self._temperature_kwargs(0.2),
+                            **self._effort_kwargs("low"),
                         },
                     )
                     response.raise_for_status()
                     result = response.json()
-                    return result["content"][0]["text"].strip()
+                    return self._first_text(result)
             except httpx.HTTPStatusError as e:
                 last_status = e.response.status_code
                 if last_status in retryable_statuses and attempt < max_attempts - 1:
@@ -4368,14 +4405,15 @@ class ClaudeClient(LLMClient):
                         },
                         json={
                             "model": self.model,
-                            "max_tokens": 160,
+                            "max_tokens": self._budget(160, thinking=4096),
                             "messages": [{"role": "user", "content": prompt}],
                             **self._temperature_kwargs(0.2),
+                            **self._effort_kwargs("low"),
                         },
                     )
                     response.raise_for_status()
                     result = response.json()
-                    return result["content"][0]["text"].strip()
+                    return self._first_text(result)
             except httpx.HTTPStatusError as e:
                 last_status = e.response.status_code
                 if last_status in retryable_statuses and attempt < max_attempts - 1:
@@ -4427,14 +4465,15 @@ class ClaudeClient(LLMClient):
                         },
                         json={
                             "model": self.model,
-                            "max_tokens": 1024,
+                            "max_tokens": self._budget(1024, thinking=4096),
                             "messages": [{"role": "user", "content": prompt}],
                             **self._temperature_kwargs(0.3),
+                            **self._effort_kwargs("low"),
                         },
                     )
                     response.raise_for_status()
                     result = response.json()
-                    raw = result["content"][0]["text"].strip()
+                    raw = self._first_text(result)
                     return _parse_batch_summary_json(raw, tickets)
             except httpx.HTTPStatusError as e:
                 last_status = e.response.status_code
@@ -4495,7 +4534,7 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 4096,
+                        "max_tokens": self._budget(4096, thinking=8192),
                         "system": [
                             {
                                 "type": "text",
@@ -4563,7 +4602,7 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 4096,
+                        "max_tokens": self._budget(4096, thinking=8192),
                         "system": [
                             {
                                 "type": "text",
@@ -4628,7 +4667,7 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 4096,
+                        "max_tokens": self._budget(4096, thinking=8192),
                         "system": [
                             {
                                 "type": "text",
@@ -4704,7 +4743,7 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 1024,
+                        "max_tokens": self._budget(1024, thinking=4096),
                         "system": [
                             {
                                 "type": "text",
@@ -4770,7 +4809,7 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 4096,
+                        "max_tokens": self._budget(4096, thinking=8192),
                         "system": [
                             {
                                 "type": "text",
@@ -4816,7 +4855,7 @@ class ClaudeClient(LLMClient):
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 4096,
+                        "max_tokens": self._budget(4096, thinking=8192),
                         "system": [
                             {
                                 "type": "text",

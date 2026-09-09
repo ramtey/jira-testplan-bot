@@ -14,7 +14,7 @@ import pytest
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.app.llm_client import get_llm_client, LLMError, _is_observability_ticket
+from src.app.llm_client import ClaudeClient, get_llm_client, LLMError, _is_observability_ticket
 
 
 class TestObservabilityDetector:
@@ -160,3 +160,31 @@ Acceptance Criteria:
 if __name__ == "__main__":
     success = asyncio.run(test_llm_generation())
     sys.exit(0 if success else 1)
+
+
+class TestFirstText:
+    """Pulling the answer out of a response that may lead with thinking."""
+
+    def test_plain_text_response(self):
+        result = {"content": [{"type": "text", "text": "  hello  "}]}
+        assert ClaudeClient._first_text(result) == "hello"
+
+    def test_skips_leading_thinking_block(self):
+        # Thinking-by-default models put this first, with empty text unless
+        # display is opted in. content[0]["text"] used to raise KeyError here.
+        result = {
+            "content": [
+                {"type": "thinking", "thinking": ""},
+                {"type": "text", "text": "the answer"},
+            ]
+        }
+        assert ClaudeClient._first_text(result) == "the answer"
+
+    def test_no_text_block_raises_a_clear_error(self):
+        result = {"content": [{"type": "thinking", "thinking": ""}]}
+        try:
+            ClaudeClient._first_text(result)
+        except LLMError as e:
+            assert "no text block" in str(e)
+        else:
+            raise AssertionError("expected LLMError")

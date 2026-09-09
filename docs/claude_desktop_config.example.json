@@ -16,7 +16,7 @@
         "GITHUB_TOKEN": "ghp_your-github-token",
         "FIGMA_TOKEN": "figd_your-figma-token",
         "LLM_PROVIDER": "claude",
-        "LLM_MODEL": "claude-opus-4-5-20251101"
+        "LLM_MODEL": "claude-opus-5"
       }
     }
   }

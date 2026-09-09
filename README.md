@@ -85,7 +85,7 @@ Generate structured QA test plans from Jira tickets by automatically analyzing:
 - **Token health monitoring**: Real-time validation with expiration warnings
 
 ### Test Plan Generation
-- **Claude Opus**: Defaults to `claude-opus-4-5-20251101`; Opus 4.7 is supported (the `temperature` parameter is dropped automatically for 4.7 since the API rejects it). Read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents with many subtasks survive Opus's 16k-token output cap. Transient `529` overload errors from the plain-summary path are retried with exponential backoff so a brief Anthropic capacity blip no longer drops the ticket summary
+- **Claude Opus**: Defaults to `claude-opus-5`. The default and the per-model request quirks live together in [`model_capabilities.py`](src/app/model_capabilities.py), so `LLM_MODEL` is the only knob to turn: `temperature` is dropped on models that reject it (Opus 4.7+), `output_config.effort` is sent only where it's accepted, and `max_tokens` reserves headroom for thinking on models that think by default (Opus 5+) — an unrecognised model id falls back to the conservative shape rather than a 400. Read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents with many subtasks survive Opus's 16k-token output cap. Transient `529` overload errors from the plain-summary path are retried with exponential backoff so a brief Anthropic capacity blip no longer drops the ticket summary
 - **One pipeline for every caller**: the deliverable classifier, the four post-generation critics, AC coverage and run persistence live in `src/app/services/plan_service.py`, and the web UI, CLI, MCP server and queue watcher all go through it. Previously each non-browser caller assembled its own context and called the LLM directly, so an MCP- or CLI-generated plan silently carried no critic badges, no AC coverage and no run history — the same ticket produced a different plan depending on which door you came in through
 - **Smart comment management**: Updates existing Jira comments instead of creating duplicates
 - **Multiple export formats**: Markdown, Jira-formatted text, or JSON. The markdown export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
@@ -430,7 +430,7 @@ npm install
 2. Add to `.env`:
    ```
    LLM_PROVIDER=claude
-   LLM_MODEL=claude-opus-4-5-20251101
+   # LLM_MODEL=claude-opus-5   # optional — this is the default
    ANTHROPIC_API_KEY=sk-ant-api03-...
    # Optional: raise from the 600s default when generating plans for
    # parents with many subtasks (Opus can spend several minutes at the

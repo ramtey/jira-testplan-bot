@@ -20,6 +20,7 @@ from enum import Enum
 import httpx
 
 from .config import settings
+from .model_capabilities import TOKEN_VALIDATION_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -373,7 +374,7 @@ class TokenHealthService:
                         "content-type": "application/json",
                     },
                     json={
-                        "model": "claude-haiku-4-5-20251001",  # Cheapest current model for validation
+                        "model": TOKEN_VALIDATION_MODEL,
                         "max_tokens": 10,
                         "messages": [{"role": "user", "content": "Hi"}],
                     },

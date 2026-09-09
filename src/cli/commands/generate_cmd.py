@@ -124,7 +124,9 @@ def generate(
     os.environ["GITHUB_TOKEN"] = config.github_token or ""
     os.environ["FIGMA_TOKEN"] = config.figma_token or ""
     os.environ["LLM_PROVIDER"] = "claude"
-    os.environ["LLM_MODEL"] = "claude-opus-4-5-20251101"
+    # LLM_MODEL is deliberately not set: Settings resolves env > .env >
+    # DEFAULT_CLAUDE_MODEL, and writing it here pinned the CLI to one model
+    # while the API and watcher followed .env.
 
     # Process each ticket
     for ticket_key in ticket_keys:
