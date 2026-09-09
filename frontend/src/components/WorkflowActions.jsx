@@ -6,6 +6,7 @@ import {
   OPEN_PASS_TO_UAT_EVENT,
 } from '../config'
 import Icon from './Icon'
+import { holdReasonLabel } from '../hooks/useTicketHold'
 import { Btn, Cbx, Alert, Modal } from './ui'
 
 // Match the CSS exit duration so the feedback element stays in the DOM long enough.
@@ -741,6 +742,8 @@ function WorkflowActions({
   childIssues,
   onActionComplete,
   videoChecklistSteps,
+  held = false,
+  holdReason = null,
 }) {
   const [pendingAction, setPendingAction] = useState(null)
   const [feedback, setFeedback] = useState(null)
@@ -901,6 +904,7 @@ function WorkflowActions({
   // in the header without a scroll would look like the button did nothing.
   useEffect(() => {
     if (normalize(currentStatus) !== TESTING_STATUS) return
+    if (held) return
     const handler = () => {
       const passAction = ACTIONS.find((a) => a.id === 'pass-to-uat')
       if (!passAction) return
@@ -917,7 +921,7 @@ function WorkflowActions({
     }
     window.addEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
     return () => window.removeEventListener(OPEN_PASS_TO_UAT_EVENT, handler)
-  }, [currentStatus, description, comments, defaultPassToUatAssignee])
+  }, [currentStatus, description, comments, defaultPassToUatAssignee, held])
 
   // Prefetch PR-hosted Loom URLs the moment the Pass-to-UAT modal opens so
   // the discovery panel can render as soon as it's known — the tester sees
@@ -1103,6 +1107,17 @@ function WorkflowActions({
     normalize(currentStatus) === TESTING_STATUS &&
     isWalkthroughCardCtaEnabled()
 
+  // A QA hold means testing is parked, and every action on this row moves the
+  // ticket in Jira and reassigns it — exactly what "parked" rules out. The
+  // buttons stay visible but inert: hiding them would read as "this ticket has
+  // no workflow", which is a different (and wrong) statement. Disabled buttons
+  // swallow their own tooltips in most browsers, so the reason is spelled out
+  // in the hint beside them rather than only in `title`.
+  const heldTitle = held
+    ? `On hold: ${holdReasonLabel(holdReason)} — resume the ticket to move it`
+    : null
+  const actionsBlocked = held || pendingAction !== null
+
   const closeNoteForm = () => {
     // Explicit close (Cancel/X or post-submit teardown) discards the draft —
     // only accidental navigation should resurrect text. The refresh path
@@ -1190,6 +1205,17 @@ function WorkflowActions({
   }
 
   const runAction = async (action, body, files = [], overrideWalkthrough = false) => {
+    // Last line of defence for the hold. The buttons are already disabled, but
+    // the walkthrough-card bridge and the override retry both reach this
+    // function without going through them, and a hold can land while a form is
+    // open — so refuse here rather than trusting every caller.
+    if (held) {
+      setFeedback({
+        kind: 'error',
+        text: `${ticketKey} is on hold — resume it before moving the ticket.`,
+      })
+      return
+    }
     setPendingAction(action.id)
     setFeedback(null)
     setIsLeaving(false)
@@ -1424,8 +1450,8 @@ function WorkflowActions({
                 key={action.id}
                 variant={action.variant}
                 icon={action.icon}
-                title={action.title}
-                disabled={pendingAction !== null}
+                title={heldTitle || action.title}
+                disabled={actionsBlocked}
                 loading={pendingAction === action.id}
                 onClick={() => onActionClick(action)}
               >
@@ -1436,7 +1462,8 @@ function WorkflowActions({
             <button
               type="button"
               className="handoff-chip"
-              title="Pass-to-UAT lives on the walkthrough card below"
+              title={heldTitle || 'Pass-to-UAT lives on the walkthrough card below'}
+              disabled={held}
               onClick={() => {
                 const target = document.getElementById('uat-guide-card')
                 if (target) {
@@ -1463,14 +1490,15 @@ function WorkflowActions({
               <div
                 ref={failBackRef}
                 className="fail-back"
+                data-disabled={actionsBlocked ? 'true' : undefined}
                 role="group"
                 aria-label="Fail back to development"
               >
                 <button
                   type="button"
                   className="fb-trigger"
-                  title={selected.title}
-                  disabled={pendingAction !== null}
+                  title={heldTitle || selected.title}
+                  disabled={actionsBlocked}
                   onClick={() => onActionClick(selected)}
                 >
                   <Icon name="arrow-left" size={14} />
@@ -1482,10 +1510,10 @@ function WorkflowActions({
                     <button
                       type="button"
                       className="fb-more"
-                      title="Choose a different destination"
+                      title={heldTitle || 'Choose a different destination'}
                       aria-haspopup="menu"
                       aria-expanded={failMenuOpen}
-                      disabled={pendingAction !== null}
+                      disabled={actionsBlocked}
                       onClick={() => setFailMenuOpen((v) => !v)}
                     >
                       <Icon name="chevron-down" size={14} stroke={2} />
@@ -1514,6 +1542,20 @@ function WorkflowActions({
               </div>
             )
           })()}
+          {held && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 'var(--s-2)',
+                fontSize: 'var(--t-xs)',
+                color: 'var(--fg-muted)',
+              }}
+            >
+              <Icon name="flag" size={12} />
+              On hold — resume the ticket to move it
+            </span>
+          )}
           <span style={{ flex: 1 }} />
           {hasSubtasks && (
             <Cbx
@@ -1551,6 +1593,18 @@ function WorkflowActions({
               <Icon name="x" size={13} />
             </button>
           </div>
+
+          {/* A hold can land while this form is open (the hold button sits on
+              the same row). Say so here, or the greyed-out submit reads as a
+              bug rather than as the hold doing its job. */}
+          {held && (
+            <div style={{ marginBottom: 'var(--s-5)' }}>
+              <Alert tone="warning">
+                {ticketKey} is on hold ({holdReasonLabel(holdReason)}). Resume
+                the ticket to submit this.
+              </Alert>
+            </div>
+          )}
 
           {isFail && (
             <div style={{ marginBottom: 'var(--s-5)' }}>
@@ -1806,7 +1860,8 @@ function WorkflowActions({
               type="submit"
               variant={isFail ? 'danger' : 'primary'}
               icon={isFail ? 'arrow-left' : 'check'}
-              disabled={pendingAction !== null}
+              title={heldTitle || undefined}
+              disabled={actionsBlocked}
               loading={pendingAction === noteForAction.id}
             >
               {noteForAction.label}

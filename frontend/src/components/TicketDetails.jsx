@@ -604,6 +604,8 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
               childIssues={ticketData.children}
               onActionComplete={onActionComplete}
               videoChecklistSteps={videoChecklistSteps}
+              held={hold?.held ?? false}
+              holdReason={hold?.reason ?? null}
             />
           </div>
           {hold && <HoldControl hold={hold} />}

@@ -35,6 +35,9 @@
 }
 .btn[data-variant="secondary"]:hover:not(:disabled) { background: var(--bg-raised); border-color: var(--fg-faint); }
 .btn[data-variant="secondary"]:active:not(:disabled) { background: var(--bg-input); }
+.btn[data-variant="secondary"]:disabled, .btn[data-variant="secondary"][aria-disabled="true"] {
+  color: var(--fg-disabled); border-color: var(--line);
+}
 
 .btn[data-variant="ghost"] {
   color: var(--fg-muted);
@@ -47,18 +50,30 @@
   border-color: var(--danger);
 }
 .btn[data-variant="danger"]:hover:not(:disabled) { background: var(--danger-hover); border-color: var(--danger-hover); }
+.btn[data-variant="danger"]:disabled, .btn[data-variant="danger"][aria-disabled="true"] {
+  background: var(--bg-raised); color: var(--fg-disabled); border-color: var(--line);
+}
 
 .btn[data-variant="danger-soft"] {
   background: var(--danger-soft); color: var(--danger);
   border-color: rgba(239,68,68,.3);
 }
 .btn[data-variant="danger-soft"]:hover:not(:disabled) { background: rgba(239,68,68,.18); border-color: rgba(239,68,68,.5); }
+/* The soft variants set their own colour, which out-ranks the shared
+   `.btn:disabled` rule — so they need their own disabled state or a blocked
+   button still reads as clickable. */
+.btn[data-variant="danger-soft"]:disabled, .btn[data-variant="danger-soft"][aria-disabled="true"] {
+  background: var(--bg-raised); color: var(--fg-disabled); border-color: var(--line);
+}
 
 .btn[data-variant="success-soft"] {
   background: var(--success-soft); color: var(--success);
   border-color: rgba(34,197,94,.3);
 }
 .btn[data-variant="success-soft"]:hover:not(:disabled) { background: rgba(34,197,94,.18); border-color: rgba(34,197,94,.5); }
+.btn[data-variant="success-soft"]:disabled, .btn[data-variant="success-soft"][aria-disabled="true"] {
+  background: var(--bg-raised); color: var(--fg-disabled); border-color: var(--line);
+}
 
 /* "Fail back" bounce-back — split button. Neutral at rest and on hover; red
    only on the leading icon and on the chevron half while the menu is open.
@@ -76,6 +91,9 @@
   background: transparent; cursor: pointer;
 }
 .fail-back button:disabled { cursor: not-allowed; opacity: .5; }
+/* Dimming only the inner buttons leaves the group's border at full strength,
+   which still reads as live — fade it with them. */
+.fail-back[data-disabled="true"] { border-color: var(--line); }
 .fail-back .fb-trigger {
   display: inline-flex; align-items: center; gap: var(--s-3);
   height: 100%; padding: 0 11px 0 12px;
