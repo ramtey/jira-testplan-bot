@@ -105,13 +105,31 @@ function App() {
   // is still loading, the older fetch's response is dropped — last selection wins.
   const fetchSeqRef = useRef(0)
 
-  // Run history (single-ticket only)
-  const [runHistory, setRunHistory] = useState(() => loadStored(STORAGE_KEYS.runHistory, []))
+  // Run history (single-ticket only).
+  //
+  // Persisted with the ticket it belongs to. A bare array was restored under
+  // whatever ticket loaded next and rendered straight into the version banner,
+  // so the first paint after a reload could show one ticket's versions under
+  // another — and kept showing versions that had since been deleted server-side
+  // until the refetch landed. Anything that doesn't match the ticket being
+  // restored is dropped rather than displayed.
+  const [runHistory, setRunHistory] = useState(() => {
+    const stored = loadStored(STORAGE_KEYS.runHistory, null)
+    if (!stored || !Array.isArray(stored.runs)) return []
+    const restoring = (initialUrlKey || loadStored(STORAGE_KEYS.issueKey, '')).toUpperCase()
+    return stored.ticketKey === restoring ? stored.runs : []
+  })
   const [historyPreview, setHistoryPreview] = useState(null)
 
   useEffect(() => saveStored(STORAGE_KEYS.issueKey, issueKey), [issueKey])
   useEffect(() => saveStored(STORAGE_KEYS.ticketsData, ticketsData), [ticketsData])
-  useEffect(() => saveStored(STORAGE_KEYS.runHistory, runHistory), [runHistory])
+  useEffect(() => {
+    const key = ticketsData.length === 1 ? ticketsData[0].key : null
+    saveStored(
+      STORAGE_KEYS.runHistory,
+      key && runHistory.length > 0 ? { ticketKey: key.toUpperCase(), runs: runHistory } : null
+    )
+  }, [runHistory, ticketsData])
   useEffect(() => saveStored(STORAGE_KEYS.railCollapsed, railCollapsed), [railCollapsed])
 
   // Fetch config on mount to get Jira base URL
