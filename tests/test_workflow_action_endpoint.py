@@ -13,7 +13,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from src.app import workflow_routes
 from src.app.main import app
+
+from .conftest import noop_get_sessionmaker
 
 client = TestClient(app)
 
@@ -150,7 +153,12 @@ def test_pass_to_uat_gates_high_complexity_ticket_without_walkthrough():
     endpoint must 409 with the walkthrough_required error code — the
     transition never runs."""
     jira = _jira_stub()
+    # The readiness lookup is stubbed, but the gate still opens a session to
+    # reach it — stub that too, or the route connects to the real database.
     with patch("src.app.workflow_routes.JiraClient", return_value=jira), \
+            patch.object(
+                workflow_routes, "get_sessionmaker", noop_get_sessionmaker
+            ), \
             patch("src.app.workflow_routes.uat_readiness") as uat_mod:
         uat_mod.fetch_readiness = AsyncMock(
             return_value={"needs_walkthrough": True, "uat_complexity": "high"}

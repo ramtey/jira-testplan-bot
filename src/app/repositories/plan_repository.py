@@ -191,13 +191,26 @@ async def has_successful_test_plan(
     *,
     ticket_key: str,
 ) -> bool:
-    """Whether `ticket_key` already has a stored plan from a successful run."""
+    """Whether `ticket_key` already has a stored plan worth reusing.
+
+    A plan with no cases does not count. The row's existence is what the
+    watcher's never-regenerate guard keys off, so an empty plan would retire
+    the ticket from unattended generation forever while giving the tester
+    nothing to test — the plan they'd inherit is a header and no cases.
+
+    Empty plans are real: the pipeline quarantines ungrounded cases out of
+    the graded sections (``quarantine_ungrounded_cases``), and a plan whose
+    every case was quarantined persists as zero cases. Test runs that
+    reached this database before ``tests/conftest.py`` blocked them left
+    zero-case plans on live tickets too.
+    """
     stmt = (
         select(GeneratedPlan.id)
         .join(Run, GeneratedPlan.run_id == Run.id)
         .where(Run.ticket_keys.contains([ticket_key]))
         .where(Run.status == RunStatus.ok)
         .where(Run.run_type.in_(_TEST_PLAN_RUN_TYPES))
+        .where(GeneratedPlan.case_count > 0)
         .limit(1)
     )
     return (await session.exec(stmt)).first() is not None

@@ -13,13 +13,17 @@ can be read back:
   and the tester paid again by clicking Analyze. That's what
   `GET /bug-lens/by-ticket/{key}` fixes, and what these tests cover.
 """
+from contextlib import ExitStack, contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.app import bug_lens_routes
 from src.app.main import app
 from src.app.repositories import bug_analysis_repository
+
+from .conftest import noop_get_sessionmaker
 
 client = TestClient(app)
 
@@ -52,11 +56,34 @@ STORED = {
 
 
 def _patch_lookup(return_value):
-    return patch.object(
-        bug_analysis_repository,
-        "find_latest_for_ticket",
-        AsyncMock(return_value=return_value),
+    """Stub the store lookup *and* the session that reaches it.
+
+    Without the second patch the route opens a real connection to whatever
+    DATABASE_URL names — which, until tests/conftest.py started blocking it,
+    was production.
+    """
+    return _both(
+        patch.object(
+            bug_analysis_repository,
+            "find_latest_for_ticket",
+            AsyncMock(return_value=return_value),
+        ),
+        patch.object(bug_lens_routes, "get_sessionmaker", noop_get_sessionmaker),
     )
+
+
+@contextmanager
+def _both(primary, *others):
+    """Enter several patches, yielding the first one's mock.
+
+    Callers assert against the lookup mock (`with _patch_lookup(...) as
+    mocked`), so the session patch has to ride along without displacing it.
+    """
+    with primary as mocked:
+        with ExitStack() as stack:
+            for cm in others:
+                stack.enter_context(cm)
+            yield mocked
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +153,13 @@ def test_a_store_failure_is_a_503_not_a_silent_null():
     """Degrading to "no analysis" on a DB error would send the tester off to
     re-run an analysis that already exists — the exact waste this endpoint
     was added to stop."""
-    with patch.object(
-        bug_analysis_repository,
-        "find_latest_for_ticket",
-        AsyncMock(side_effect=RuntimeError("connection reset")),
+    with (
+        patch.object(
+            bug_analysis_repository,
+            "find_latest_for_ticket",
+            AsyncMock(side_effect=RuntimeError("connection reset")),
+        ),
+        patch.object(bug_lens_routes, "get_sessionmaker", noop_get_sessionmaker),
     ):
         response = client.get("/bug-lens/by-ticket/SK-1")
     assert response.status_code == 503
