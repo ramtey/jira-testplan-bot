@@ -451,6 +451,29 @@ Enables PR code diffs, review comments, and repository documentation for better 
 
 Without GitHub token, test plans use only Jira data (basic PR titles and commits).
 
+### Tell it about your team (Optional)
+
+Four settings describe whoever is running the bot. They are config rather than
+code on purpose: a clone that inherited another team's Jira projects,
+coworkers and repos could only ever be wrong for everyone else, and none of it
+belongs in a public repo. All four are JSON, all four are optional, and
+`.env.example` carries a worked example of each.
+
+| Setting | What it does | Without it |
+|---|---|---|
+| `WORKFLOW_PROJECT_PREFIXES` | Which Jira projects get the QA workflow buttons (Pull to Testing, Pass to UAT, Fail back) | No workflow buttons anywhere — the hand-off UI stays hidden |
+| `TEAM_GITHUB_LOGIN_TO_JIRA` | GitHub login → `[Jira accountId, display name]`, for choosing who a fail-back returns to | Falls back to searching Jira by commit email → profile name → login; misses anyone whose GitHub name differs from their Jira name, or who commits via a GitHub noreply address. Logged once at startup of the first lookup |
+| `BOT_DISPLAY_NAMES` | Jira display names of service accounts that must never be left holding a ticket | Only the accountId-based check guards the hand-off |
+| `BUG_LENS_REPO_HINTS` | Product keyword regex → repos to code-search when a bug ticket has no linked PR | Bug Lens searches only repos the ticket actually links |
+
+Finding a Jira accountId: it appears in any user object the Jira API returns,
+or query `/rest/api/3/user/search?query=<email>` on your instance.
+
+Note that `.env` is read at process start and uvicorn's `--reload` does not
+watch it, so restart the backend after changing any of these — a stale process
+will serve the old values (including an empty `WORKFLOW_PROJECT_PREFIXES`,
+which reads as "the buttons disappeared").
+
 ## Run the Application
 
 ### Start Backend (Terminal 1)

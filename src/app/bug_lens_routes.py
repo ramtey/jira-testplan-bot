@@ -28,16 +28,6 @@ _COMMIT_PATTERN = re.compile(
     r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/commit/[0-9a-f]{7,40}"
 )
 
-# Built-in product keyword → repo mapping. Each entry maps a regex (case-insensitive)
-# to one or more "owner/repo" strings. Keywords are matched against the ticket's
-# summary + description + comments, and every matching entry contributes its repos
-# (deduplicated). Users can extend this without code changes via the
-# BUG_LENS_REPO_HINTS env var (see config.py).
-_TITLE_REPO_MAP: list[tuple[re.Pattern, list[str]]] = [
-    (re.compile(r"agent.?cal(culator)?", re.IGNORECASE), ["skyslope/agent-calculator"]),
-    (re.compile(r"\bayce\b", re.IGNORECASE), ["skyslope/agent-coach"]),
-]
-
 # How many matched repos to actually search per ticket, as a cost/noise cap.
 _MAX_REPOS_TO_SEARCH = 3
 
@@ -54,10 +44,11 @@ def _infer_repos_from_text(*texts: str | None) -> list[str]:
     """
     Return all owner/repo strings whose keyword patterns match any of the given texts.
 
-    Scans the concatenation of the provided texts (summary, description, comments)
-    against both the built-in _TITLE_REPO_MAP and user-provided hints from
-    settings.bug_lens_repo_hints. Returns a deduplicated list preserving the order
-    in which repos first appeared.
+    Scans the concatenation of the provided texts (summary, description,
+    comments) against the keyword → repo hints in settings.bug_lens_repo_hints.
+    Returns a deduplicated list preserving the order in which repos first
+    appeared. There are no built-in hints: product keywords and repo names are
+    specific to whoever runs the bot, so they come from BUG_LENS_REPO_HINTS.
     """
     combined = "\n".join(t for t in texts if t)
     if not combined:
@@ -71,10 +62,6 @@ def _infer_repos_from_text(*texts: str | None) -> list[str]:
             if r and r not in seen:
                 seen.add(r)
                 result.append(r)
-
-    for pattern, repos in _TITLE_REPO_MAP:
-        if pattern.search(combined):
-            _add(repos)
 
     for pattern_str, repos in (settings.bug_lens_repo_hints or {}).items():
         try:
@@ -325,7 +312,7 @@ async def _fetch_github_context(
 
     First scans ticket description and comments for explicit GitHub blob/commit URLs
     and fetches their content. If nothing is found, falls back to inferring the repo
-    from the ticket summary (via _TITLE_REPO_MAP) and running a code search.
+    from the ticket summary (via BUG_LENS_REPO_HINTS) and running a code search.
 
     Only runs when a GitHub token is configured.
     """

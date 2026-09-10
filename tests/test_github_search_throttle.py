@@ -317,8 +317,8 @@ async def test_critic_marks_warnings_when_search_is_throttled():
                         "title": "Ship the thing",
                         "status": "merged",
                         # extract_repos reads `repository`, not the URL.
-                        "repository": "skyslope/agent-calculator",
-                        "url": "https://github.com/skyslope/agent-calculator/pull/1",
+                        "repository": "acme/agent-calculator",
+                        "url": "https://github.com/acme/agent-calculator/pull/1",
                     }
                 ],
                 "commits": [],

@@ -16,30 +16,46 @@ from .models import Attachment, BounceEvent, ChildIssue, Commit, DevelopmentInfo
 logger = logging.getLogger(__name__)
 
 
-# Source of truth: skyslope/agent-calculator -> agent-calculator-docs/Team Members.md
-# (introduced in PR #532). GitHub display names are free-text and don't match
-# Jira display names, and several team members route commits through GitHub
-# noreply emails — login-based mapping is the only reliable signal. Keep this
-# in sync with the upstream doc when the team changes.
-TEAM_GITHUB_LOGIN_TO_JIRA: dict[str, tuple[str, str]] = {
-    "steviecs": ("5b15aed34d941a51f0da4491", "Steven Sullivan"),
-    "piradukunda": ("712020:0fac97f2-6ad3-4c72-9cf8-a73d1ee9ba83", "Patrick Iradukunda"),
-    "ramtey": ("557058:37d141e3-d541-42c5-9b2a-79278da6598e", "Ramtin Teymouri"),
-    "kszombathy-skyslope": ("633b1ba7409249995eeb9578", "Kyle Szombathy"),
-    "ssteuteville": ("712020:79959462-f899-4f82-9a2d-522c45cefaa0", "Shane Steuteville"),
-}
+# Who works these tickets, and which accounts are bots, both come from config
+# (TEAM_GITHUB_LOGIN_TO_JIRA / BOT_DISPLAY_NAMES — see config.py). They used
+# to be literals here, which meant a clone of this repo inherited one team's
+# coworkers: dead weight for everyone else, and the kind of thing that has no
+# business in a public repo.
+_warned_empty_team_map = False
 
-# Bot accounts that must never be the final assignee on pass-to-UAT or
-# either fail-back action, regardless of which lookup surfaced them. Compared
-# case-insensitively against Jira display names. Belt-and-suspenders for
-# the accountId-based safety net: catches stale credentials, additional
-# bot accounts, or any path that returns a name we recognize as a bot.
-BOT_DISPLAY_NAME_BLOCKLIST: frozenset[str] = frozenset({"testing skyslope"})
+
+def team_jira_user_for_github_login(login: str) -> tuple[str, str] | None:
+    """Resolve a GitHub login to (Jira accountId, display name), or None.
+
+    Logs once when the map is empty, because "no mapping configured" and
+    "this author isn't on the team" produce the same miss here and only one
+    of them is worth acting on.
+    """
+    global _warned_empty_team_map
+    mapping = settings.team_github_login_to_jira or {}
+    if not mapping:
+        if not _warned_empty_team_map:
+            _warned_empty_team_map = True
+            logger.warning(
+                "TEAM_GITHUB_LOGIN_TO_JIRA is not configured — falling back to "
+                "searching Jira by commit email, profile name and login. That "
+                "misses anyone whose GitHub name differs from their Jira name "
+                "or who commits via a GitHub noreply address."
+            )
+        return None
+    found = mapping.get(login)
+    if not found:
+        return None
+    account_id, display_name = found
+    return account_id, display_name
 
 
 def is_blocked_bot_display_name(name: str | None) -> bool:
-    """Return True if `name` matches a known bot account (case-insensitive)."""
-    return bool(name) and name.strip().lower() in BOT_DISPLAY_NAME_BLOCKLIST
+    """Return True if `name` matches a configured bot account (case-insensitive)."""
+    if not name:
+        return False
+    blocked = {n.strip().lower() for n in (settings.bot_display_names or []) if n}
+    return name.strip().lower() in blocked
 
 
 # URLs pasted into freeform comment fields (UAT summary, fail reason,
@@ -3755,12 +3771,11 @@ class JiraClient:
             author_stats.items(), key=lambda item: item[1]["changes"]
         )
 
-        # Hand-curated mapping is the most reliable signal: GitHub display
-        # names diverge from Jira (e.g. `kszombathy-skyslope` vs "Kyle
-        # Szombathy") and some commit emails are GitHub noreply addresses
-        # that no Jira search can resolve. Use it before falling through to
-        # the loose email/name search.
-        mapped = TEAM_GITHUB_LOGIN_TO_JIRA.get(top_login)
+        # The configured team mapping is the most reliable signal: GitHub
+        # display names diverge from Jira ones, and some commit emails are
+        # GitHub noreply addresses that no Jira search can resolve. Use it
+        # before falling through to the loose email/name search.
+        mapped = team_jira_user_for_github_login(top_login)
         if mapped:
             account_id, display_name = mapped
             if not exclude_account_id or account_id != exclude_account_id:

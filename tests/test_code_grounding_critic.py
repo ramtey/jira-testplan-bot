@@ -75,8 +75,8 @@ def _sk2241_dev_infos() -> list[dict]:
                     {
                         "title": "Ship walkthrough audio caching",
                         "status": "merged",
-                        "repository": "skyslope/agent-calculator",
-                        "url": "https://github.com/skyslope/agent-calculator/pull/999",
+                        "repository": "acme/agent-calculator",
+                        "url": "https://github.com/acme/agent-calculator/pull/999",
                     }
                 ],
                 "commits": [],
@@ -466,7 +466,7 @@ async def test_run_code_grounding_critic_downgrades_sk2241_warning(monkeypatch):
     assert plan.grounding_warnings[0]["severity"] == "info"
     assert plan.edge_cases[0]["needs_manual_verification"] is False
     # We hit the linked repo, not some other guess.
-    assert fake_client.calls and fake_client.calls[0][0] == "skyslope/agent-calculator"
+    assert fake_client.calls and fake_client.calls[0][0] == "acme/agent-calculator"
 
 
 @pytest.mark.asyncio

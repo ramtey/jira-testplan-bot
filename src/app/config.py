@@ -10,9 +10,9 @@ class Settings(BaseSettings):
     jira_url: str = ""
     jira_username: str = ""
     jira_api_token: str = ""
-    # Story Points custom field id. Skyslope's Jira exposes it as
-    # customfield_10004; other instances (esp. newer Jira Cloud) may use
-    # customfield_10016. Override via env if you're on a different instance.
+    # Story Points custom field id. Many Jira instances expose it as
+    # customfield_10004; others (esp. newer Jira Cloud) use customfield_10016.
+    # Check /rest/api/3/field on your instance and override via env.
     jira_story_points_field: str = "customfield_10004"
 
     # LLM configuration
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # Bug Lens repo hints: maps a regex pattern (matched against summary + description + comments)
     # to one or more "owner/repo" strings to search when the ticket has no explicit GitHub links.
-    # Set via env as JSON, e.g. BUG_LENS_REPO_HINTS='{"title.?rep|folders": ["skyslope/mobile-app"]}'
+    # Set via env as JSON, e.g. BUG_LENS_REPO_HINTS='{"title.?rep|folders": ["acme/mobile-app"]}'
     bug_lens_repo_hints: dict[str, list[str]] = {}
 
     # Figma (for design context - Phase 5)
@@ -62,11 +62,35 @@ class Settings(BaseSettings):
     # App
     app_env: str = "local"
 
+    # ---- Your team -----------------------------------------------------
+    # Everything in this block is specific to whoever is running the bot, so
+    # it lives in config rather than in code: a clone that inherited one
+    # team's Jira projects and coworkers could only ever be wrong for
+    # everyone else.
+
     # QA workflow buttons (Pull-to-Testing / Pass-to-UAT / Fail-back) only show
     # for tickets whose key starts with one of these prefixes. Empty list
     # disables the workflow UI entirely. Set via env as JSON, e.g.
     # WORKFLOW_PROJECT_PREFIXES='["SK","SL"]'.
-    workflow_project_prefixes: list[str] = ["SK"]
+    workflow_project_prefixes: list[str] = []
+
+    # GitHub login -> [Jira accountId, display name], for picking who a
+    # fail-back goes back to. The bot finds the PR author with the most
+    # changed lines and has to turn that GitHub login into a Jira user; this
+    # map is tried first because the fallback search has two holes — GitHub
+    # display names diverge from Jira ones, and commits routed through GitHub
+    # noreply addresses resolve to nobody. Optional: without it the fallback
+    # chain (commit email -> profile email -> profile name -> login) still
+    # runs, it just misses more often. Set via env as JSON, e.g.
+    # TEAM_GITHUB_LOGIN_TO_JIRA='{"octocat": ["557058:1234", "Octo Cat"]}'.
+    team_github_login_to_jira: dict[str, tuple[str, str]] = {}
+
+    # Jira display names of service/bot accounts that must never be left as
+    # the assignee on a pass-to-UAT or a fail-back. Compared
+    # case-insensitively. Belt-and-braces for the accountId-based check, which
+    # a stale credential or an unfamiliar bot account can slip past. Set via
+    # env as JSON, e.g. BOT_DISPLAY_NAMES='["testing acme","ci bot"]'.
+    bot_display_names: list[str] = []
 
     # ---- Queue watcher -------------------------------------------------
     # Pre-generates a test plan the moment a ticket lands in the QA queue,

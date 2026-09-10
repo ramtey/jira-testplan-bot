@@ -1643,7 +1643,7 @@ it supports.
 - ❌ Ticket says "React Native" → DO NOT auto-add both iOS and Android smoke items. Use only the platform(s) the team is actually shipping.
 - ❌ Ticket says "web app" → DO NOT add mobile-browser smoke unless mobile web is called out.
 - ✅ If the ticket, PR, or a linked doc explicitly names a platform (e.g. "test on iOS 17", "Android release blocker", "Chrome + Safari"), add a smoke item for that platform.
-- ✅ If unsure which platform(s) apply, write the item platform-neutrally (e.g. "App launches with default SkySlope theme") instead of guessing.
+- ✅ If unsure which platform(s) apply, write the item platform-neutrally (e.g. "App launches with the default theme") instead of guessing.
 
 **FEATURE-FLAG-OFF LEGACY REGRESSION — REQUIRED WHEN APPLICABLE:**
 If the change is gated by one or more feature flags (LaunchDarkly toggles,

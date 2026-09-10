@@ -340,7 +340,7 @@ class GitHubClient:
         of the top matching files.
 
         Args:
-            repo: Full "owner/repo" string (e.g. "skyslope/agent-calculator")
+            repo: Full "owner/repo" string (e.g. "acme/agent-calculator")
             query: Search terms derived from the ticket summary
             max_files: Maximum number of files to fetch content for
 

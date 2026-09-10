@@ -9,10 +9,12 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:80
 
 // Fetch config from backend (including Jira base URL).
 // `workflowProjectPrefixes` decides which Jira projects expose the QA
-// workflow buttons. Default matches the backend default so the gate works
-// before the network call completes; backend value wins once it arrives.
+// workflow buttons, and comes from the backend's WORKFLOW_PROJECT_PREFIXES.
+// It starts empty — matching the backend default — so an unconfigured install
+// shows no workflow buttons rather than offering them on projects they don't
+// belong to; the backend value wins as soon as the config call lands.
 let jiraBaseUrl = null
-let workflowProjectPrefixes = ['SK']
+let workflowProjectPrefixes = []
 const configListeners = new Set()
 
 const notifyConfigChange = () => {
