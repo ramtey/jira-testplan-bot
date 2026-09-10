@@ -37,6 +37,20 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      # The committed package-lock.json was generated on macOS and carries only
+      # the darwin rollup/esbuild native binaries, so `npm ci` on Linux installs
+      # none and `vite build` dies with "Cannot find module
+      # @rollup/rollup-linux-x64-gnu" (npm/cli#4828). Fetch the Linux binaries at
+      # exactly the versions the lockfile pinned — read from the installed tree
+      # rather than hardcoded, so a dependency bump can't silently desync this.
+      # --no-save keeps the lockfile untouched. The durable fix is a
+      # platform-complete lockfile, which means regenerating it (and taking the
+      # minor version bumps that come with it) on a deliberate dependency update.
+      - name: Install Linux native binaries the lockfile omits
+        run: |
+          npm i --no-save --no-audit --no-fund \
+            "@rollup/rollup-linux-x64-gnu@$(node -p "require('./node_modules/rollup/package.json').version")" \
+            "@esbuild/linux-x64@$(node -p "require('./node_modules/esbuild/package.json').version")"
       - run: npm run lint
       # Build too: eslint won't catch a broken import or a bad JSX edit.
       - run: npm run build
