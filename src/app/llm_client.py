@@ -258,6 +258,20 @@ def _parse_batch_summary_json(raw: str, tickets: list[dict]) -> dict:
     return {"overview": overview, "per_ticket": per_ticket}
 
 
+def _pr_has_landed(pr: dict) -> bool:
+    """Whether a PR dict describes code that actually merged.
+
+    Mirrors ``source_grounding.classify_pr_state`` for the one question
+    the prompt cares about. Kept local rather than imported so the prompt
+    builder stays free of the grounding module's policy — this is only
+    about how to *describe* a PR, not whether to use it.
+    """
+    merged_at = pr.get("merged_at")
+    if isinstance(merged_at, str) and merged_at.strip():
+        return True
+    return (pr.get("status") or "").strip().lower() == "merged"
+
+
 def _is_voice_ticket(summary: str | None, description: str | None) -> bool:
     """Return True if the ticket involves voice I/O or screen-reader behavior.
 
@@ -2733,8 +2747,25 @@ TICKET INFORMATION
             pull_requests = development_info.get("pull_requests", [])
             if pull_requests:
                 prompt += f"\n**Pull Requests ({len(pull_requests)}):**\n"
+                # Pull requests closed without merging are filtered out
+                # upstream (src/app/source_grounding.py) and never reach
+                # this prompt. What survives is merged (authoritative) or
+                # open (real, but still moving) — and the model has to be
+                # told which, because a case written against an open PR
+                # can go stale between generation and execution.
+                unmerged = [
+                    pr for pr in pull_requests
+                    if not _pr_has_landed(pr)
+                ]
                 for pr in pull_requests:
-                    prompt += f"- **{pr.get('title', 'Untitled PR')}** (Status: {pr.get('status', 'UNKNOWN')})\n"
+                    landed = _pr_has_landed(pr)
+                    state_label = (
+                        "MERGED — this code shipped; treat it as authoritative"
+                        if landed
+                        else "NOT YET MERGED — this code is proposed and can still change "
+                             "before it lands"
+                    )
+                    prompt += f"- **{pr.get('title', 'Untitled PR')}** ({state_label})\n"
                     if pr.get('source_branch'):
                         prompt += f"  Branch: {pr.get('source_branch')}\n"
 
@@ -2845,6 +2876,16 @@ TICKET INFORMATION
                 prompt += f"\n**Branches:**\n"
                 for branch in branches:
                     prompt += f"- {branch}\n"
+
+            if pull_requests and unmerged:
+                prompt += (
+                    "\n⚠️ GROUNDED IN UNMERGED CODE: "
+                    f"{len(unmerged)} of the {len(pull_requests)} pull request(s) above "
+                    "have not merged. Test cases derived from them describe proposed "
+                    "behaviour, not shipped behaviour. Set `grounded_in_unmerged: true` "
+                    "on every such case, so a tester who runs the plan after the PR "
+                    "changes reads a mismatch as drift rather than as a defect.\n"
+                )
 
             prompt += "\n**Use this development context to:**\n"
             prompt += "- Understand the project structure and architecture from the README documentation\n"
@@ -3057,7 +3098,15 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
 
                 pull_requests = dev_info.get("pull_requests", [])
                 for pr in pull_requests:
-                    prompt += f"- PR: **{pr.get('title', 'Untitled')}** ({pr.get('status', 'UNKNOWN')})\n"
+                    # Closed-unmerged PRs never reach this prompt (they are
+                    # filtered in source_grounding); what is left is merged
+                    # or still open, and the model must be able to tell.
+                    state_label = (
+                        "MERGED — authoritative"
+                        if _pr_has_landed(pr)
+                        else "NOT YET MERGED — proposed, can still change"
+                    )
+                    prompt += f"- PR: **{pr.get('title', 'Untitled')}** ({state_label})\n"
                     if pr.get("source_branch"):
                         prompt += f"  Branch: {pr['source_branch']}\n"
                     if pr.get("github_description"):
@@ -3685,6 +3734,10 @@ TEST_CASE_SCHEMA = {
         "expected_source": {
             "type": "string",
             "description": "Required when `expected_verified` is true. The single primary `<file>:<line>` the expected result rests on, e.g. 'src/middleware/auth.ts:64'. Omit entirely when `expected_verified` is false.",
+        },
+        "grounded_in_unmerged": {
+            "type": "boolean",
+            "description": "Set true when this case was written from a pull request that has NOT merged (the PR list marks each one). The behaviour is proposed, not shipped, so the code can move before a tester runs the case; the plan labels these so a mismatch reads as drift rather than as a defect. Default false / omitted means the case rests on merged code.",
         },
         "covered_by_unit_test": {
             "type": "boolean",

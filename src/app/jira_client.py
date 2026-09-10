@@ -926,6 +926,20 @@ def _extract_repo_from_url(url: str | None) -> str | None:
     return None
 
 
+def _github_pr_status(gh_details) -> str:
+    """Map a GitHub PR payload to the status vocabulary this codebase uses.
+
+    ``DECLINED`` is the term for closed-without-merging — inherited from
+    Jira's dev-status API, which is the other producer of this field.
+    ``src.app.source_grounding`` reads both vocabularies.
+    """
+    if gh_details.merged:
+        return "MERGED"
+    if (gh_details.state or "").lower() == "open":
+        return "OPEN"
+    return "DECLINED"
+
+
 def _is_patchable_file(filename: str) -> bool:
     """Return True for runtime source files worth including diff patches for.
 
@@ -1397,6 +1411,14 @@ class JiraClient:
                         gh_details = await github_client.fetch_pr_details(pr_url, include_patch=True, include_comments=True)
                         if gh_details:
                             pr_obj.github_description = gh_details.description
+                            # GitHub is the authority on state; Jira's
+                            # dev-status mirror can lag by hours, and a stale
+                            # "OPEN" on a PR that was closed unmerged is
+                            # exactly what let SK-2563 be planned from an
+                            # abandoned branch. Overwrite, don't merge.
+                            pr_obj.status = _github_pr_status(gh_details)
+                            pr_obj.number = gh_details.number
+                            pr_obj.head_sha = gh_details.head_sha
                             if gh_details.author:
                                 pr_obj.author = gh_details.author
                             pr_obj.files_changed = [
@@ -1500,12 +1522,9 @@ class JiraClient:
                     )
                     if gh_details:
                         pr_obj.title = gh_details.title or pr_url
-                        if gh_details.merged:
-                            pr_obj.status = "MERGED"
-                        elif gh_details.state == "open":
-                            pr_obj.status = "OPEN"
-                        else:
-                            pr_obj.status = "DECLINED"
+                        pr_obj.status = _github_pr_status(gh_details)
+                        pr_obj.number = gh_details.number
+                        pr_obj.head_sha = gh_details.head_sha
                         if gh_details.author:
                             pr_obj.author = gh_details.author
                         pr_obj.github_description = gh_details.description
@@ -1630,6 +1649,36 @@ class JiraClient:
             'test cases —',
         ]
 
+        # Phrases that mark a comment as a decision about SCOPE — the work
+        # was abandoned, descoped, deferred, or replaced by another approach.
+        # Ranked above ordinary testing chatter because such a comment
+        # invalidates everything else in the ticket: SK-2563's author said in
+        # a Jira comment, a day before the plan was generated, that the
+        # defaults migration would not be shipped, and the keyword filter had
+        # no reason to prefer that comment over five discussions of edge
+        # cases for the migration that was being abandoned.
+        SCOPE_DECISION_MARKERS = [
+            'closing this pr',
+            'closed this pr',
+            'not going to ship',
+            'no longer needed',
+            'no longer shipping',
+            'abandon',
+            'descope',
+            'de-scope',
+            'out of scope',
+            'instead of',
+            'reverted',
+            'rolling back',
+            'rolled back',
+            'wont fix',
+            "won't fix",
+            'superseded by',
+            'replaced by',
+            'moved to a separate ticket',
+            'split out into',
+        ]
+
         # Testing-related keywords to search for
         TESTING_KEYWORDS = [
             'test', 'testing', 'qa', 'quality', 'verify', 'validation', 'validate',
@@ -1643,6 +1692,7 @@ class JiraClient:
 
         parsed_comments = []
         formal_test_plans = []
+        scope_decisions = []
         testing_related = []
 
         for comment_data in recent_comments:
@@ -1681,11 +1731,21 @@ class JiraClient:
             # Check for formal test plan first (highest priority)
             if any(marker in body_lower for marker in FORMAL_TEST_PLAN_MARKERS):
                 formal_test_plans.append(jira_comment)
+            elif any(marker in body_lower for marker in SCOPE_DECISION_MARKERS):
+                scope_decisions.append(jira_comment)
             elif any(keyword in body_lower for keyword in TESTING_KEYWORDS):
                 testing_related.append(jira_comment)
 
-        # Build result: formal plans first, then other testing comments, then latest
+        # Build result: formal plans, then scope decisions, then other
+        # testing comments, then the latest. Scope decisions outrank
+        # testing chatter because they change what is being built; testing
+        # notes only describe how to check it.
         result = list(formal_test_plans)
+        for c in scope_decisions:
+            if len(result) >= LIMIT:
+                break
+            if c not in result:
+                result.append(c)
         for c in testing_related:
             if len(result) >= LIMIT:
                 break

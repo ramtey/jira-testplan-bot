@@ -809,6 +809,185 @@ function CoveredByUnitTestsSection({ cases }) {
   )
 }
 
+const PR_STATE_LABELS = {
+  merged: 'merged',
+  open: 'open — not yet merged',
+  closed_unmerged: 'closed without merging — not used',
+  unknown: 'state unconfirmed',
+}
+
+/**
+ * What the plan was derived from. Every case in the plan is only as strong as
+ * the PR behind it: merged code shipped, an open PR is a proposal, and a
+ * closed-unmerged PR is listed here purely so a reader can see it was found
+ * and deliberately skipped rather than missed.
+ */
+function SourceProvenancePanel({ provenance }) {
+  const entries = Array.isArray(provenance?.pull_requests) ? provenance.pull_requests : []
+  if (entries.length === 0) return null
+  const unmerged = !!provenance.grounded_on_unmerged
+  return (
+    <div
+      className="card"
+      style={{
+        marginBottom: 'var(--s-5)',
+        padding: 'var(--s-5) var(--s-6)',
+        borderColor: unmerged ? 'rgba(245,158,11,.35)' : undefined,
+        background: unmerged ? 'rgba(245,158,11,.05)' : undefined,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', marginBottom: 'var(--s-3)' }}>
+        <Icon name="link" size={12} />
+        <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)' }}>
+          Grounded in
+        </span>
+      </div>
+      {unmerged && (
+        <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', marginBottom: 'var(--s-3)' }}>
+          Part of this plan rests on code that has not merged — those cases describe
+          proposed behaviour and can drift as the PR changes.
+        </div>
+      )}
+      <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {entries.map((e, i) => {
+          const name = e.repository && e.number
+            ? `${e.repository}#${e.number}`
+            : (e.number ? `PR #${e.number}` : (e.url || e.title || 'unidentified PR'))
+          const sha = typeof e.head_sha === 'string' && e.head_sha.length >= 7
+            ? e.head_sha.slice(0, 7)
+            : null
+          return (
+            <li
+              key={i}
+              style={{
+                fontSize: 'var(--t-sm)',
+                color: e.used_as_grounding ? 'var(--fg)' : 'var(--fg-subtle)',
+              }}
+            >
+              {e.url ? (
+                <a href={e.url} target="_blank" rel="noreferrer">{name}</a>
+              ) : name}
+              {' — '}
+              {PR_STATE_LABELS[e.state] || e.state || 'unknown'}
+              {sha && (
+                <code style={{ fontSize: 11, marginLeft: 6, color: 'var(--fg-subtle)' }}>{sha}</code>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      {entries.some((e) => !e.used_as_grounding) && (
+        <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', marginTop: 'var(--s-3)' }}>
+          Closed-unmerged pull requests were deliberately not used as source.
+          Code that was abandoned cannot be tested.
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Cases the pipeline could not trace to any source. They are shown — nothing
+ * is silently dropped — but deliberately outside the numbered sections and
+ * without checkboxes: the whole point is that they are not gradeable. Before
+ * this section existed they sat among the verified cases and testers marked
+ * them pass/fail like everything else.
+ */
+function NeedsSpecSection({ cases }) {
+  const [open, setOpen] = useState(false)
+  if (!cases || cases.length === 0) return null
+  return (
+    <section id="sect-needs-spec" style={{ marginTop: 'var(--s-8)' }}>
+      <header
+        onClick={() => setOpen((v) => !v)}
+        style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: open ? 'var(--s-4)' : 0, cursor: 'pointer' }}
+      >
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} style={{ color: 'var(--fg-muted)' }} />
+        <Icon name="scan" size={16} style={{ color: '#fcd34d' }} />
+        <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-muted)' }}>
+          Needs spec — not verifiable from source
+        </h2>
+        <Chip size="sm">{cases.length}</Chip>
+        <span style={{ flex: 1 }} />
+        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Not gradeable</span>
+      </header>
+      {open && (
+        <div className="card" style={{ padding: 'var(--s-5) var(--s-6)' }}>
+          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', marginBottom: 'var(--s-4)' }}>
+            Neither the UI these describe nor their expected results could be traced to
+            the linked code, so they cannot be marked pass or fail. Confirm the intended
+            behaviour, then regenerate.
+          </div>
+          {cases.map((test, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2,
+                padding: '8px 0',
+                borderBottom: i < cases.length - 1 ? '1px solid var(--divider)' : 'none',
+              }}
+            >
+              <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+                {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
+              </span>
+              {test.needs_spec_reason && (
+                <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+                  {test.needs_spec_reason}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/**
+ * What replaces the plan when nothing grounded it. Names where the bot looked,
+ * so a reader can tell a missing PR from a broken Jira-GitHub integration.
+ */
+function NoSourcePanel({ plan }) {
+  const searched = Array.isArray(plan.searched) ? plan.searched : []
+  return (
+    <div style={{ marginTop: 'var(--s-6)' }}>
+      <div
+        className="card"
+        style={{
+          padding: 'var(--s-6)',
+          borderColor: 'rgba(245,158,11,.35)',
+          background: 'rgba(245,158,11,.05)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', marginBottom: 'var(--s-3)' }}>
+          <Icon name="alert" size={14} />
+          <span style={{ fontSize: 'var(--t-md)', fontWeight: 600, color: '#fcd34d' }}>
+            No implementation found — no plan generated
+          </span>
+        </div>
+        <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', marginBottom: 'var(--s-4)' }}>
+          {plan.no_source_message}
+        </div>
+        {searched.length > 0 && (
+          <>
+            <div style={{ fontSize: 'var(--t-xs)', fontWeight: 600, color: 'var(--fg-muted)', marginBottom: 4 }}>
+              Searched
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {searched.map((item, i) => (
+                <li key={i} style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{item}</li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+      <SourceProvenancePanel provenance={plan.source_provenance} />
+    </div>
+  )
+}
+
 function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const isMulti = !!(ticketsData && ticketsData.length > 1)
 
@@ -1144,6 +1323,14 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   )
   const pctAll = totalAll === 0 ? 0 : Math.round((checkedAll / totalAll) * 100)
 
+  // No source, no plan. Rendering the usual empty scaffolding here would read
+  // as "the bot produced nothing", which is the wrong story: it found no
+  // implementation and declined to guess. Placed after every hook so the
+  // early return doesn't change hook order.
+  if (testPlan?.no_source) {
+    return <NoSourcePanel plan={testPlan} />
+  }
+
   return (
     <div style={{ marginTop: 'var(--s-7)' }}>
       {/* Sticky progress */}
@@ -1343,6 +1530,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         </div>
       )}
 
+      <SourceProvenancePanel provenance={testPlan.source_provenance} />
+
       {testPlan.ac_coverage && (
         <AcCoveragePanel coverage={testPlan.ac_coverage} />
       )}
@@ -1380,6 +1569,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           />
         )
       })}
+
+      <NeedsSpecSection cases={testPlan.needs_spec_cases} />
 
       <CoveredByUnitTestsSection cases={coveredCases} />
 

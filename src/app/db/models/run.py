@@ -4,7 +4,7 @@ from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import CheckConstraint, Column, Index, String
-from sqlalchemy.dialects.postgresql import ARRAY, ENUM as PgEnum
+from sqlalchemy.dialects.postgresql import ARRAY, ENUM as PgEnum, JSONB
 from sqlmodel import Field
 
 from src.app.db.base import TimestampedBase
@@ -76,3 +76,12 @@ class Run(TimestampedBase, table=True):
     linked_ticket_count: int = Field(nullable=False, default=0)
     pr_count: int = Field(nullable=False, default=0)
     comment_count: int = Field(nullable=False, default=0)
+
+    # What the plan was actually derived from: every PR the run saw, its
+    # state at generation time, its head SHA, and whether that state let it
+    # ground a case. Without this a reader of an old plan cannot tell
+    # whether a case came from code that shipped, code still in review, or
+    # code that was abandoned before the plan was written.
+    source_provenance: dict | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )

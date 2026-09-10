@@ -35,6 +35,7 @@ from src.app.models import (
     LinkedIssue,
     LinkedIssues,
     ParentIssue,
+    PullRequest,
     TestPlan,
 )
 from src.app.services import plan_service
@@ -67,7 +68,24 @@ def _issue(**overrides) -> JiraIssue:
         assignee_history_account_ids=["acct-qa", "acct-dev"],
         development_info=DevelopmentInfo(
             commits=[Commit(message="SK-1 add assessed value", author="dev")],
-            pull_requests=[],
+            # A merged PR, because that is the only state that grounds a
+            # full plan. These tests are about which pipeline stages run;
+            # a ticket with no PR at all now short-circuits to the
+            # no-implementation result before any stage does (see
+            # tests/test_source_grounding.py), which would make every
+            # assertion below vacuous.
+            pull_requests=[
+                PullRequest(
+                    title="Show assessed value in the results modal",
+                    status="MERGED",
+                    url="https://github.com/acme/agent-calculator/pull/1200",
+                    source_branch="feat/SK-1",
+                    repository="acme/agent-calculator",
+                    number=1200,
+                    head_sha="a" * 40,
+                    merged_at="2026-09-01T10:00:00Z",
+                )
+            ],
             branches=["feat/SK-1"],
         ),
         attachments=[

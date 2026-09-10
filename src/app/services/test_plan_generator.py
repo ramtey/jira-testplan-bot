@@ -643,6 +643,81 @@ async def run_fix_scope_critic(
         )
 
 
+# Sections whose cases can be quarantined. `regression_checklist` is plain
+# strings with no grounding metadata, so it is never a candidate.
+_QUARANTINABLE_SECTIONS = ("happy_path", "edge_cases", "integration_tests")
+
+
+def _is_ungrounded(case: dict) -> bool:
+    """Whether a case is speculation rather than a reading of the source.
+
+    Two independent flags have to both be set:
+
+    * ``needs_manual_verification`` — the UI element the case drives
+      couldn't be found in the PR diff or the testID reference.
+    * ``expected_verified is False`` — the assertion wasn't read out of
+      the implementation either.
+
+    Requiring both is deliberate. A case that names a real control but
+    guesses at the outcome is still worth running, and so is one that
+    asserts verified behaviour through an element we couldn't confirm.
+    It's the intersection — nothing about the case traceable to code —
+    that produced SK-2609's ten ungradeable cases. Note that the
+    code-grounding critic clears ``needs_manual_verification`` when it
+    finds the behaviour in the repo, so quarantining must run after the
+    critics or it would strand cases the recheck already rescued.
+    """
+    if not isinstance(case, dict):
+        return False
+    return (
+        bool(case.get("needs_manual_verification"))
+        and case.get("expected_verified") is False
+    )
+
+
+def quarantine_ungrounded_cases(test_plan) -> list[dict]:
+    """Pull ungrounded cases out of the numbered sections, in place.
+
+    Before this existed the pipeline already *detected* these cases — it
+    badged them and wrote a grounding warning — and then emitted them
+    into the same numbered sections as verified cases, where they were
+    counted, graded and marked like everything else. The warning changed
+    the prose and nothing else, which is why testers kept spending cycles
+    on cases that could never pass.
+
+    Each quarantined case is tagged ``needs_spec=True`` (with a short
+    ``needs_spec_reason``) and returned. Callers put them in the plan's
+    ``needs_spec_cases`` list, which every renderer shows as a separate,
+    explicitly non-gradeable section.
+    """
+    quarantined: list[dict] = []
+    for section in _QUARANTINABLE_SECTIONS:
+        items = getattr(test_plan, section, None)
+        if not isinstance(items, list):
+            continue
+        keep = []
+        for case in items:
+            if _is_ungrounded(case):
+                case["needs_spec"] = True
+                case["needs_spec_reason"] = (
+                    "Neither the UI element this case drives nor its expected "
+                    "result could be traced to the linked source. Not gradeable "
+                    "until a spec or PR confirms the intended behaviour."
+                )
+                case["origin_section"] = section
+                quarantined.append(case)
+            else:
+                keep.append(case)
+        setattr(test_plan, section, keep)
+    if quarantined:
+        logger.info(
+            "quarantine: moved %d ungrounded case(s) to needs-spec: %s",
+            len(quarantined),
+            [c.get("title") for c in quarantined],
+        )
+    return quarantined
+
+
 def flatten_cases_for_persistence(test_plan) -> list[tuple[str, str, str | None]]:
     cases: list[tuple[str, str, str | None]] = []
 

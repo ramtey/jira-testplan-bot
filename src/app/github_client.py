@@ -96,6 +96,12 @@ class PRDetails:
     comments: list[PRComment]
     author: str | None = None  # GitHub login of the PR author
     merged_at: str | None = None  # ISO 8601 timestamp; only set when merged=True
+    # Tip commit of the PR branch. Recorded per run as provenance so a reader
+    # can tell exactly which revision a plan's cases were written against —
+    # a PR number alone keeps moving after the plan is posted.
+    head_sha: str | None = None
+    # Commit the merge produced on the base branch; None for unmerged PRs.
+    merge_commit_sha: str | None = None
 
 
 @dataclass
@@ -754,6 +760,8 @@ class GitHubClient:
                     comments=comments,
                     author=pr_data.get("user", {}).get("login"),
                     merged_at=pr_data.get("merged_at"),
+                    head_sha=(pr_data.get("head") or {}).get("sha"),
+                    merge_commit_sha=pr_data.get("merge_commit_sha"),
                 )
 
         except httpx.HTTPStatusError as e:

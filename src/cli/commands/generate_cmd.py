@@ -302,10 +302,119 @@ def _case_grounding_lines(test: dict, format: str) -> list[str]:
     return lines
 
 
+_PR_STATE_LABELS = {
+    "merged": "merged",
+    "open": "open — not yet merged",
+    "closed_unmerged": "closed without merging — not used",
+    "unknown": "state unconfirmed",
+}
+
+
+def _provenance_lines(test_plan: dict, format: str) -> list[str]:
+    """What the plan was derived from — PR, state at generation time, SHA.
+
+    Without it a reader cannot tell whether a case rests on code that
+    shipped, code still in review, or (as in SK-2563) code that was
+    abandoned before the plan was written.
+    """
+    prov = test_plan.get("source_provenance") or {}
+    entries = prov.get("pull_requests") or []
+    if not entries:
+        return []
+    lines: list[str] = []
+    if format == "markdown":
+        lines.append("## 🔗 Grounded in\n")
+    else:
+        lines.append("GROUNDED IN")
+        lines.append("-" * 60)
+        lines.append("")
+    if prov.get("grounded_on_unmerged"):
+        lines.append(
+            "> ⚠️ Part of this plan rests on code that has not merged."
+            if format == "markdown"
+            else "⚠ Part of this plan rests on code that has not merged."
+        )
+        lines.append("")
+    for entry in entries:
+        repo, number = entry.get("repository"), entry.get("number")
+        name = f"{repo}#{number}" if repo and number else (
+            entry.get("url") or entry.get("title") or "unidentified PR"
+        )
+        state = _PR_STATE_LABELS.get(entry.get("state"), entry.get("state") or "unknown")
+        sha = entry.get("head_sha") or ""
+        suffix = f" @ {sha[:7]}" if len(sha) >= 7 else ""
+        excluded = "" if entry.get("used_as_grounding") else " (excluded)"
+        lines.append(f"- {name} — {state}{suffix}{excluded}")
+    if any(not e.get("used_as_grounding") for e in entries):
+        lines.append("")
+        lines.append(
+            "Closed-unmerged pull requests were deliberately not used as source."
+        )
+    lines.append("")
+    return lines
+
+
+def _no_source_lines(test_plan: dict, format: str, ticket_key: str) -> list[str]:
+    """The short result that replaces a plan when nothing grounded it."""
+    lines: list[str] = []
+    if format == "markdown":
+        lines.append(f"# Test Plan: {ticket_key}\n")
+        lines.append("## 🚫 No implementation found — no plan generated\n")
+    else:
+        lines.append("=" * 60)
+        lines.append("")
+        lines.append("NO IMPLEMENTATION FOUND — NO PLAN GENERATED")
+        lines.append("-" * 60)
+        lines.append("")
+    lines.append(test_plan.get("no_source_message", ""))
+    lines.append("")
+    searched = test_plan.get("searched") or []
+    if searched:
+        lines.append("**Searched:**\n" if format == "markdown" else "Searched:")
+        for item in searched:
+            lines.append(f"- {item}")
+        lines.append("")
+    lines.extend(_provenance_lines(test_plan, format))
+    return lines
+
+
+def _needs_spec_lines(test_plan: dict, format: str) -> list[str]:
+    """Ungrounded cases, held outside the numbered sections and marked
+    explicitly non-gradeable so nobody spends a cycle on them."""
+    cases = test_plan.get("needs_spec_cases") or []
+    if not cases:
+        return []
+    lines: list[str] = []
+    if format == "markdown":
+        lines.append(f"## 🚧 Needs spec — not verifiable from source ({len(cases)})\n")
+    else:
+        lines.append("")
+        lines.append(f"NEEDS SPEC — NOT VERIFIABLE FROM SOURCE ({len(cases)})")
+        lines.append("-" * 60)
+        lines.append("")
+    lines.append(
+        "_Not test cases. Neither the UI these describe nor their expected results "
+        "could be traced to the linked code, so they cannot be marked pass or fail._"
+        if format == "markdown"
+        else "Not test cases. Neither the UI these describe nor their expected results "
+        "could be traced to the linked code, so they cannot be marked pass or fail."
+    )
+    lines.append("")
+    for i, case in enumerate(cases, 1):
+        lines.append(f"{i}. {case.get('title', 'Untitled case')}")
+        if case.get("needs_spec_reason"):
+            lines.append(f"   - {case['needs_spec_reason']}")
+    lines.append("")
+    return lines
+
+
 def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
     """Format test plan based on output format."""
     if format == "json":
         return json.dumps(test_plan, indent=2)
+
+    if test_plan.get("no_source"):
+        return "\n".join(_no_source_lines(test_plan, format, ticket_key))
 
     # Markdown or Jira format
     lines = []
@@ -316,6 +425,8 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
         # For Jira format, don't add marker here - jira_client.post_comment() adds it
         lines.append("=" * 60)
         lines.append("")
+
+    lines.extend(_provenance_lines(test_plan, format))
 
     # Happy Path
     if test_plan.get("happy_path"):
@@ -431,6 +542,8 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
             if gap.get("evidence"):
                 lines.append(f"  - Evidence: {gap['evidence']}")
         lines.append("")
+
+    lines.extend(_needs_spec_lines(test_plan, format))
 
     return "\n".join(lines)
 

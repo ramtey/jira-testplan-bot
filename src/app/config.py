@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     # the extra GitHub search + LLM round-trip (~2s + ~1s per flagged case).
     code_grounding_recheck_enabled: bool = True
 
+    # Refuse to write a plan for a ticket with no merged and no open pull
+    # request. A ten-case plan of speculation is worse than no plan, because
+    # it looks authoritative: SK-2609 shipped ten cases against a
+    # three-option control the product never had, and four of them could not
+    # pass as written. Turn this off only if your tickets routinely carry
+    # implementation the bot cannot see (no Jira-GitHub integration, no PR
+    # links in the text) — the result is the pre-2026-09 behaviour.
+    require_source_grounding: bool = True
+
     # Pre-plan deliverable classifier + post-plan surface-mismatch critic.
     # Adds one LLM round-trip BEFORE plan generation to name what the ticket
     # actually changes and where a tester observes that change, then a second

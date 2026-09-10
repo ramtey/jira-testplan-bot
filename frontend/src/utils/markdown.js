@@ -246,13 +246,176 @@ const formatUatGuideJira = (plan, walkthrough) => {
   return jira
 }
 
+// ─── source provenance ──────────────────────────────────────────────────────
+// What the plan was derived from. A reader needs this to weigh every case in
+// it: cases written from a merged PR describe shipped behaviour, cases written
+// from an open one describe a proposal, and a PR that was closed unmerged
+// describes nothing at all. Plans generated before the pipeline recorded
+// provenance carry none, and render nothing here.
+
+const PR_STATE_LABELS = {
+  merged: 'merged',
+  open: 'open — not yet merged',
+  closed_unmerged: 'closed without merging — NOT used',
+  unknown: 'state unconfirmed',
+}
+
+const prLabel = (entry) => {
+  const repo = entry.repository || ''
+  const num = entry.number
+  if (repo && num) return `${repo}#${num}`
+  if (num) return `PR #${num}`
+  return entry.url || entry.title || 'unidentified PR'
+}
+
+const shortSha = (sha) =>
+  typeof sha === 'string' && sha.length >= 7 ? sha.slice(0, 7) : null
+
+const provenanceEntries = (plan) => {
+  const entries = plan?.source_provenance?.pull_requests
+  return Array.isArray(entries) ? entries : []
+}
+
+const formatProvenanceMarkdown = (plan) => {
+  const entries = provenanceEntries(plan)
+  if (entries.length === 0) return ''
+  let md = '## 🔗 Grounded in\n\n'
+  if (plan.source_provenance.grounded_on_unmerged) {
+    md += '> ⚠️ Part of this plan rests on code that has not merged. Those cases describe proposed behaviour and can drift as the PR changes.\n\n'
+  }
+  entries.forEach((e) => {
+    const state = PR_STATE_LABELS[e.state] || e.state || 'unknown'
+    const sha = shortSha(e.head_sha)
+    md += `- ${e.url ? `[${prLabel(e)}](${e.url})` : prLabel(e)} — ${state}`
+    if (sha) md += ` @ \`${sha}\``
+    if (!e.used_as_grounding) md += ' — **excluded**'
+    md += '\n'
+  })
+  if (entries.some((e) => !e.used_as_grounding)) {
+    md += '\n_Closed-unmerged pull requests were deliberately not used as source. Code that was abandoned cannot be tested._\n'
+  }
+  md += '\n'
+  return md
+}
+
+const formatProvenanceJira = (plan) => {
+  const entries = provenanceEntries(plan)
+  if (entries.length === 0) return ''
+  let jira = '🔗 GROUNDED IN\n\n'
+  if (plan.source_provenance.grounded_on_unmerged) {
+    jira += '⚠️ Part of this plan rests on code that has not merged. Those cases describe proposed behaviour and can drift as the PR changes.\n\n'
+  }
+  entries.forEach((e) => {
+    const state = PR_STATE_LABELS[e.state] || e.state || 'unknown'
+    const sha = shortSha(e.head_sha)
+    jira += `  • ${prLabel(e)} — ${state}`
+    if (sha) jira += ` @ ${sha}`
+    if (!e.used_as_grounding) jira += ' (excluded)'
+    if (e.url) jira += `\n    ${e.url}`
+    jira += '\n'
+  })
+  if (entries.some((e) => !e.used_as_grounding)) {
+    jira += '\nClosed-unmerged pull requests were deliberately not used as source. Code that was abandoned cannot be tested.\n'
+  }
+  jira += '\n════════════════════════════════════════════\n\n'
+  return jira
+}
+
+// ─── no implementation found ────────────────────────────────────────────────
+// Replaces the plan entirely when nothing grounds it. Names where we looked,
+// because "no plan" on its own reads as a bot failure rather than as a
+// missing PR.
+
+const formatNoSourceMarkdown = (plan, ticketData) => {
+  let md = `# Test Plan: ${ticketData?.key || plan.ticket_key || ''}\n\n`
+  if (ticketData?.summary) md += `## ${ticketData.summary}\n\n`
+  md += '## 🚫 No implementation found — no plan generated\n\n'
+  md += `${plan.no_source_message || ''}\n\n`
+  const searched = Array.isArray(plan.searched) ? plan.searched : []
+  if (searched.length > 0) {
+    md += '**Searched:**\n\n'
+    searched.forEach((item) => { md += `- ${item}\n` })
+    md += '\n'
+  }
+  md += formatProvenanceMarkdown(plan)
+  return md
+}
+
+const formatNoSourceJira = (plan) => {
+  let jira = '🚫 NO IMPLEMENTATION FOUND — NO PLAN GENERATED\n\n'
+  jira += `${plan.no_source_message || ''}\n\n`
+  const searched = Array.isArray(plan.searched) ? plan.searched : []
+  if (searched.length > 0) {
+    jira += 'Searched:\n'
+    searched.forEach((item) => { jira += `  • ${item}\n` })
+    jira += '\n'
+  }
+  jira += formatProvenanceJira(plan)
+  return jira
+}
+
+// ─── needs-spec quarantine ──────────────────────────────────────────────────
+// Cases the pipeline could not trace to any source. Kept visible so nothing is
+// silently dropped, but held outside the numbered sections and marked
+// explicitly non-gradeable: before this section existed they were numbered
+// alongside verified cases and testers graded them like everything else.
+
+const needsSpecCases = (plan) =>
+  Array.isArray(plan?.needs_spec_cases) ? plan.needs_spec_cases : []
+
+const NEEDS_SPEC_BLURB =
+  'Not test cases. Neither the UI these describe nor their expected results could be traced to the linked code, so they cannot be marked pass or fail. Confirm the intended behaviour, then regenerate.'
+
+const formatNeedsSpecMarkdown = (plan) => {
+  const cases = needsSpecCases(plan)
+  if (cases.length === 0) return ''
+  let md = `## 🚧 Needs spec — not verifiable from source (${cases.length})\n\n`
+  md += `_${NEEDS_SPEC_BLURB}_\n\n`
+  cases.forEach((test, index) => {
+    md += `${index + 1}. **${typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}**\n`
+    if (test.needs_spec_reason) md += `   - ${test.needs_spec_reason}\n`
+  })
+  md += '\n'
+  return md
+}
+
+const formatNeedsSpecJira = (plan) => {
+  const cases = needsSpecCases(plan)
+  if (cases.length === 0) return ''
+  let jira = `🚧 NEEDS SPEC — NOT VERIFIABLE FROM SOURCE (${cases.length})\n\n`
+  jira += `${NEEDS_SPEC_BLURB}\n\n`
+  cases.forEach((test, index) => {
+    jira += `${index + 1}. ${typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}\n`
+    if (test.needs_spec_reason) jira += `   ${test.needs_spec_reason}\n`
+  })
+  jira += '\n'
+  return jira
+}
+
+// Cases written against a PR that has not merged, flagged inline so a tester
+// who hits a mismatch knows the code may simply have moved on.
+const formatUnmergedGrounding = (test) => {
+  if (!test.grounded_in_unmerged) return ''
+  return '> ⚠️ **Grounded in unmerged code** — the PR behind this case has not landed. Confirm it is still current before treating a failure as a defect.\n\n'
+}
+
+const formatUnmergedGroundingJira = (test) => {
+  if (!test.grounded_in_unmerged) return ''
+  return '⚠️ Grounded in unmerged code — the PR behind this case has not landed; confirm it is still current before treating a failure as a defect.\n\n'
+}
+
 export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) => {
+  // Nothing grounded this ticket, so there is no plan to render — only the
+  // report of what was searched for.
+  if (plan?.no_source) return formatNoSourceMarkdown(plan, ticketData)
+
   let markdown = `# Test Plan: ${ticketData.key}\n\n`
   markdown += `## ${ticketData.summary}\n\n`
 
   const hasAcs = planHasAnyAcs(plan)
 
   markdown += formatUatGuideMarkdown(plan, walkthrough)
+  markdown += formatProvenanceMarkdown(plan)
   markdown += formatAcCoverageSummary(plan.ac_coverage)
   markdown += formatSupersededAcs(plan)
   markdown += formatGroundingWarnings(plan)
@@ -268,6 +431,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       }
       markdown += '\n\n'
       markdown += formatNeedsVerification(test)
+      markdown += formatUnmergedGrounding(test)
       if (test.preconditions) {
         markdown += `**Preconditions:** ${test.preconditions}\n\n`
       }
@@ -305,6 +469,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       }
       markdown += '\n\n'
       markdown += formatNeedsVerification(test)
+      markdown += formatUnmergedGrounding(test)
       if (test.preconditions) {
         markdown += `**Preconditions:** ${test.preconditions}\n\n`
       }
@@ -340,6 +505,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       }
       markdown += '\n\n'
       markdown += formatNeedsVerification(test)
+      markdown += formatUnmergedGrounding(test)
       if (test.cross_project && test.seam) {
         const producer = test.seam.producer_repo || '?'
         const consumer = test.seam.consumer_repo || '?'
@@ -379,6 +545,8 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
   }
 
   markdown += formatRisksAndGaps(plan)
+
+  markdown += formatNeedsSpecMarkdown(plan)
 
   const coveredCases = collectCoveredCases(plan)
   if (coveredCases.length > 0) {
@@ -569,9 +737,12 @@ const formatExpectedVerificationJira = (test) => {
 
 export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => {
   const { includeCovered = false } = options
+  if (plan?.no_source) return formatNoSourceJira(plan)
+
   let jira = ''
 
   jira += formatUatGuideJira(plan, walkthrough)
+  jira += formatProvenanceJira(plan)
 
   const happyPathCases = uncovered(plan.happy_path)
   if (happyPathCases.length > 0) {
@@ -587,6 +758,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.needs_manual_verification) {
         jira += '⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n'
       }
+      jira += formatUnmergedGroundingJira(test)
       if (test.preconditions) {
         jira += `Preconditions: ${test.preconditions}\n\n`
       }
@@ -626,6 +798,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.needs_manual_verification) {
         jira += '⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n'
       }
+      jira += formatUnmergedGroundingJira(test)
       if (test.preconditions) {
         jira += `Preconditions: ${test.preconditions}\n\n`
       }
@@ -662,6 +835,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.needs_manual_verification) {
         jira += '⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n'
       }
+      jira += formatUnmergedGroundingJira(test)
       if (test.preconditions) {
         jira += `Preconditions: ${test.preconditions}\n\n`
       }
@@ -707,6 +881,8 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
     })
     jira += '\n'
   }
+
+  jira += formatNeedsSpecJira(plan)
 
   if (includeCovered) {
     const coveredCases = collectCoveredCases(plan)

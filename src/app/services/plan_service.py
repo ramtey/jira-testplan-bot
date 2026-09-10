@@ -54,6 +54,12 @@ from ..models import GenerateTestPlanRequest, TicketInput
 from ..repositories import bug_analysis_repository
 from ..seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from ..slack_client import resolve_slack_messages_in_text
+from ..source_grounding import (
+    filter_development_info,
+    has_grounding_source,
+    merge_provenance,
+    no_source_result,
+)
 from . import run_tracker
 from .test_plan_generator import (
     classify_deliverable,
@@ -61,6 +67,7 @@ from .test_plan_generator import (
     derive_context_flags,
     flatten_cases_for_persistence,
     normalize_grounding_warnings,
+    quarantine_ungrounded_cases,
     run_code_grounding_critic,
     run_fix_scope_critic,
     run_grounding_critic,
@@ -314,6 +321,15 @@ async def generate_single(
     if request.issue_type in NON_TESTABLE_ISSUE_TYPES:
         raise NonTestableIssueError(request.issue_type)
 
+    # Resolve what this run is allowed to ground cases in, BEFORE anything
+    # reads development_info. Closed-unmerged PRs are dropped here and never
+    # reach the prompt or the critics; provenance keeps a record of them so
+    # the plan can say what was skipped and why.
+    filtered_dev_info, provenance = filter_development_info(
+        request.development_info
+    )
+    request = request.model_copy(update={"development_info": filtered_dev_info})
+
     flags = derive_context_flags(request)
     parent_key = (request.parent_info or {}).get("key")
     parent_key_clean = (
@@ -327,8 +343,23 @@ async def generate_single(
         ticket_title=request.summary,
         ticket_issue_type=request.issue_type,
         ticket_parent_key=parent_key_clean,
+        source_provenance=provenance,
         **flags,
     )
+
+    # No merged and no open PR means there is nothing to write cases
+    # against. Emitting a plan anyway is the SK-2609 failure: ten cases of
+    # speculation that read as authoritative and cost a tester a cycle
+    # each. Say what was searched instead, and ask for a PR or a spec.
+    if settings.require_source_grounding and not has_grounding_source(provenance):
+        logger.info(
+            "no_source: %s has no merged or open PR (%d closed-unmerged skipped); "
+            "returning a no-implementation result instead of a plan",
+            request.ticket_key,
+            provenance.get("excluded_pr_count", 0),
+        )
+        await run_tracker.complete(run_ctx)
+        return no_source_result(request.ticket_key, provenance)
 
     seed_regressions: list[dict] = []
     if parent_key_clean:
@@ -421,6 +452,10 @@ async def generate_single(
         # badge cases whose steps target the app anyway. Skipped for
         # code_behavior / unknown / classifier-off (see should_run).
         await run_surface_mismatch_critic(llm, test_plan, deliverable)
+        # Quarantine last: the code-grounding critic un-badges cases whose
+        # behaviour it found in the repo, and those rescues have to land
+        # before we decide what is ungrounded.
+        needs_spec_cases = quarantine_ungrounded_cases(test_plan)
         ac_coverage = compute_ac_coverage(test_plan, single_ticket_data)
 
         response = {
@@ -429,11 +464,13 @@ async def generate_single(
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
+            "needs_spec_cases": needs_spec_cases,
             "ac_coverage": ac_coverage,
             "grounding_warnings": normalize_grounding_warnings(test_plan),
             "risks_and_gaps": test_plan.risks_and_gaps or [],
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
+            "source_provenance": provenance,
         }
 
         saved = await run_tracker.complete_with_plan(
@@ -468,6 +505,19 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         if ticket.issue_type in NON_TESTABLE_ISSUE_TYPES:
             raise NonTestableIssueError(ticket.issue_type, ticket.ticket_key)
 
+    # Same state filter the single-ticket path applies, per ticket, before
+    # anything downstream reads development_info.
+    per_ticket_provenance: list[tuple[str, dict]] = []
+    filtered_tickets: list[TicketInput] = []
+    for ticket in tickets:
+        filtered_dev_info, prov = filter_development_info(ticket.development_info)
+        per_ticket_provenance.append((ticket.ticket_key, prov))
+        filtered_tickets.append(
+            ticket.model_copy(update={"development_info": filtered_dev_info})
+        )
+    tickets = filtered_tickets
+    provenance = merge_provenance(per_ticket_provenance)
+
     aggregated_flags = {
         "had_pr_diff": False,
         "had_figma": False,
@@ -494,8 +544,23 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         ticket_keys=[t.ticket_key for t in tickets],
         model=settings.llm_model,
         llm_provider=settings.llm_provider,
+        source_provenance=provenance,
         **aggregated_flags,
     )
+
+    # Nothing in the batch is grounded in code that exists. A unified plan
+    # across several unimplemented tickets is the same speculation as a
+    # single-ticket one, multiplied.
+    if settings.require_source_grounding and not has_grounding_source(provenance):
+        logger.info(
+            "no_source: none of %s has a merged or open PR; "
+            "returning a no-implementation result instead of a plan",
+            [t.ticket_key for t in tickets],
+        )
+        await run_tracker.complete(run_ctx)
+        result = no_source_result(tickets[0].ticket_key, provenance)
+        result["ticket_keys"] = [t.ticket_key for t in tickets]
+        return result
 
     try:
         # Images are pooled across tickets and capped in total, not per
@@ -600,6 +665,9 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         # non-code work (see aggregate_deliverables_for_critique). This
         # matches the single-ticket path so the two behave symmetrically.
         await run_surface_mismatch_critic(llm, test_plan, aggregated_deliverable)
+        # See generate_single: quarantining runs after every critic so the
+        # code-grounding recheck's rescues are respected.
+        needs_spec_cases = quarantine_ungrounded_cases(test_plan)
         ac_coverage = compute_ac_coverage(test_plan, tickets_data)
         valid_ac_ids = {
             f"{t['ticket_key']}-AC{i}"
@@ -614,12 +682,14 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
+            "needs_spec_cases": needs_spec_cases,
             "ac_coverage": ac_coverage,
             "superseded_acs": ac_coverage.get("superseded_acs", []),
             "grounding_warnings": grounding_warnings,
             "risks_and_gaps": test_plan.risks_and_gaps or [],
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
+            "source_provenance": provenance,
         }
         if cross_project_payload is not None:
             response["cross_project_summary"] = (

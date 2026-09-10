@@ -22,6 +22,7 @@ async def create(
     linked_ticket_count: int = 0,
     pr_count: int = 0,
     comment_count: int = 0,
+    source_provenance: dict | None = None,
 ) -> Run:
     run = Run(
         user_id=user_id,
@@ -36,6 +37,7 @@ async def create(
         linked_ticket_count=linked_ticket_count,
         pr_count=pr_count,
         comment_count=comment_count,
+        source_provenance=source_provenance,
     )
     session.add(run)
     await session.flush()

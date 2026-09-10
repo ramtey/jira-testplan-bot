@@ -235,9 +235,91 @@ def _case_grounding_text(test: dict) -> str:
     return out
 
 
+_PR_STATE_LABELS = {
+    "merged": "merged",
+    "open": "open — not yet merged",
+    "closed_unmerged": "closed without merging — not used",
+    "unknown": "state unconfirmed",
+}
+
+
+def _provenance_text(test_plan_dict: dict) -> str:
+    """What the plan was derived from: PR, its state at generation time, SHA.
+
+    Mirrors the UI's "Grounded in" block. A caller acting on the plan
+    (a UAT runner, say) needs to know whether a case rests on merged code
+    or on a proposal that can still move.
+    """
+    prov = test_plan_dict.get("source_provenance") or {}
+    entries = prov.get("pull_requests") or []
+    if not entries:
+        return ""
+    text = "🔗 GROUNDED IN\n\n"
+    if prov.get("grounded_on_unmerged"):
+        text += (
+            "⚠️ Part of this plan rests on code that has not merged — those cases "
+            "describe proposed behaviour and can drift as the PR changes.\n\n"
+        )
+    for entry in entries:
+        repo, number = entry.get("repository"), entry.get("number")
+        name = f"{repo}#{number}" if repo and number else (
+            entry.get("url") or entry.get("title") or "unidentified PR"
+        )
+        state = _PR_STATE_LABELS.get(entry.get("state"), entry.get("state") or "unknown")
+        sha = entry.get("head_sha") or ""
+        text += f"  • {name} — {state}"
+        if len(sha) >= 7:
+            text += f" @ {sha[:7]}"
+        if not entry.get("used_as_grounding"):
+            text += " (excluded)"
+        text += "\n"
+    if any(not e.get("used_as_grounding") for e in entries):
+        text += (
+            "\nClosed-unmerged pull requests were deliberately not used as source.\n"
+        )
+    text += "\n════════════════════════════════════════════\n\n"
+    return text
+
+
+def _needs_spec_text(test_plan_dict: dict) -> str:
+    """Ungrounded cases, held out of the numbered sections and marked
+    non-gradeable so nobody spends a cycle trying to run them."""
+    cases = test_plan_dict.get("needs_spec_cases") or []
+    if not cases:
+        return ""
+    text = f"🚧 NEEDS SPEC — NOT VERIFIABLE FROM SOURCE ({len(cases)})\n\n"
+    text += (
+        "Not test cases. Neither the UI these describe nor their expected results "
+        "could be traced to the linked code, so they cannot be marked pass or fail.\n\n"
+    )
+    for i, case in enumerate(cases, 1):
+        text += f"{i}. {case.get('title', 'Untitled case')}\n"
+        if case.get("needs_spec_reason"):
+            text += f"   {case['needs_spec_reason']}\n"
+    text += "\n"
+    return text
+
+
+def _no_source_text(test_plan_dict: dict) -> str:
+    """Replaces the plan body when nothing grounded it."""
+    text = "🚫 NO IMPLEMENTATION FOUND — NO PLAN GENERATED\n\n"
+    text += f"{test_plan_dict.get('no_source_message', '')}\n\n"
+    searched = test_plan_dict.get("searched") or []
+    if searched:
+        text += "Searched:\n"
+        for item in searched:
+            text += f"  • {item}\n"
+        text += "\n"
+    text += _provenance_text(test_plan_dict)
+    return text
+
+
 def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
     """Format test plan identically to the UI's formatTestPlanAsJira() function."""
-    jira = ""
+    if test_plan_dict.get("no_source"):
+        return _no_source_text(test_plan_dict)
+
+    jira = _provenance_text(test_plan_dict)
 
     if test_plan_dict.get("happy_path"):
         jira += "✅ HAPPY PATH TEST CASES\n\n"
@@ -333,6 +415,8 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
                 jira += f"    Evidence: {gap['evidence']}\n"
         jira += "\n"
 
+    jira += _needs_spec_text(test_plan_dict)
+
     return jira
 
 
@@ -352,11 +436,29 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         # Build Jira-formatted block (same as UI's formatTestPlanAsJira)
         jira_text = _format_test_plan_for_jira(test_plan_dict)
 
+        # Nothing grounded this ticket, so there is no plan to display —
+        # only the report of what was searched for and not found.
+        if test_plan_dict.get("no_source"):
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"🚫 **No implementation found for {ticket_key}** — "
+                        "no test plan generated.\n\n"
+                        + _no_source_text(test_plan_dict)
+                    ),
+                )
+            ]
+
         # Build markdown display for Claude Desktop
         output = [
             "📋 **COMPLETE TEST PLAN** - Display this entire document without summarizing",
             "",
         ]
+        provenance = _provenance_text(test_plan_dict).strip()
+        if provenance:
+            output.append(provenance)
+            output.append("")
 
         def _render_section(heading: str, cases: list[dict]) -> None:
             output.append(heading)
@@ -418,6 +520,11 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
                 if gap.get("evidence"):
                     line += f" (`{gap['evidence']}`)"
                 output.append(line)
+            output.append("")
+
+        needs_spec = _needs_spec_text(test_plan_dict).strip()
+        if needs_spec:
+            output.append(needs_spec)
             output.append("")
 
         warnings = test_plan_dict.get("grounding_warnings") or []

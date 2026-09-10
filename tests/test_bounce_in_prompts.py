@@ -212,12 +212,31 @@ async def test_generate_multi_passes_bounce_history_to_the_llm():
         async def verify_surface_alignment(self, *a, **k):
             return []
 
+    # Both tickets carry a merged PR: a batch with no grounded PR anywhere
+    # short-circuits to the no-implementation result before the prompt is
+    # built, and this test is about what reaches the prompt.
+    def _merged_pr(number: int) -> dict:
+        return {
+            "pull_requests": [
+                {
+                    "title": f"PR {number}",
+                    "status": "MERGED",
+                    "url": f"https://github.com/acme/app/pull/{number}",
+                    "repository": "acme/app",
+                    "merged_at": "2026-09-01T10:00:00Z",
+                }
+            ],
+            "commits": [],
+            "branches": [],
+        }
+
     tickets = [
         TicketInput(
             ticket_key="SK-1",
             summary="One",
             description="body",
             issue_type="Story",
+            development_info=_merged_pr(1),
             bounce_history=[BOUNCE],
         ),
         TicketInput(
@@ -225,6 +244,7 @@ async def test_generate_multi_passes_bounce_history_to_the_llm():
             summary="Two",
             description="body",
             issue_type="Story",
+            development_info=_merged_pr(2),
         ),
     ]
 

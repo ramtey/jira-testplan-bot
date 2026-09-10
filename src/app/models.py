@@ -85,6 +85,10 @@ class PullRequest:
     total_deletions: int | None = None
     comments: list[PRComment] | None = None
     merged_at: str | None = None  # ISO 8601 timestamp from GitHub, populated only for merged PRs
+    # Tip commit of the PR branch, from GitHub. Recorded as run provenance so a
+    # reader can tell which revision the plan's cases were written against.
+    head_sha: str | None = None
+    number: int | None = None  # GitHub PR number
 
 
 @dataclass

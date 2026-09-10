@@ -60,6 +60,7 @@ async def start_run(
     ticket_title: str | None = None,
     ticket_issue_type: str | None = None,
     ticket_parent_key: str | None = None,
+    source_provenance: dict | None = None,
 ) -> RunContext:
     started = perf_counter()
     ticket_keys_list = list(ticket_keys)
@@ -92,6 +93,7 @@ async def start_run(
                 linked_ticket_count=linked_ticket_count,
                 pr_count=pr_count,
                 comment_count=comment_count,
+                source_provenance=source_provenance,
             )
             await session.commit()
             return RunContext(run_id=run.id, started_at=started)

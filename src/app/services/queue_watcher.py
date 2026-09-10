@@ -67,6 +67,10 @@ SKIP_NON_TESTABLE = "non_testable_issue_type"
 SKIP_ALREADY_PLANNED = "already_has_plan"
 SKIP_COOLDOWN = "recent_attempt"
 SKIP_NO_MERGED_PR = "no_merged_pr"
+# The generator itself refused: no merged or open PR to write cases against.
+# Distinct from SKIP_NO_MERGED_PR, which is this module declining earlier and
+# on a stricter rule (merged only).
+SKIP_NO_SOURCE = "no_source"
 SKIP_ON_HOLD = "on_hold"
 SKIP_CAP_REACHED = "cycle_cap_reached"
 
@@ -315,6 +319,16 @@ async def sweep_once(
                 TicketOutcome(ticket_key, "failed", "generate_failed", str(e))
             )
             logger.exception("watcher: generation failed for %s", ticket_key)
+            continue
+
+        # The generator found no merged or open PR and declined to write a
+        # plan. Reporting that as "generated, 0 cases" would read as a
+        # degraded plan; it is a deliberate refusal, and the sweep summary
+        # should say so.
+        if plan.get("no_source"):
+            result.outcomes.append(
+                TicketOutcome(ticket_key, "skipped", SKIP_NO_SOURCE)
+            )
             continue
 
         case_count = sum(

@@ -213,6 +213,22 @@ async def test_pr_gate_can_be_turned_off(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_generator_refusal_is_reported_as_skipped(monkeypatch):
+    """With the merged-PR gate off, the generator can still refuse a ticket
+    it finds no source for. Recording that as "generated, 0 cases" would
+    read as a degraded plan rather than as a deliberate refusal."""
+    monkeypatch.setattr(settings, "watch_require_merged_pr", False, raising=False)
+    with _Harness(
+        payload=_payload(pull_requests=[]),
+        plan={"no_source": True, "happy_path": [], "searched": ["PRs", "branches"]},
+    ) as h:
+        result = await queue_watcher.sweep_once(projects=["SK"])
+    assert h.generated == ["SK-1"], "the generator was called and declined"
+    assert _reasons(result) == {"SK-1": queue_watcher.SKIP_NO_SOURCE}
+    assert result.generated == []
+
+
+@pytest.mark.asyncio
 async def test_skips_a_ticket_a_qa_put_on_hold():
     """A hold means a human parked the ticket. `code-review` means the PR is
     still in review, so a plan written now describes code that will change —
