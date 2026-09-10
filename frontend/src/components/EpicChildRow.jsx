@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL, useJiraTicketUrl } from '../config'
+import { formatRelativeTime } from '../utils/time'
 import TestPlanDisplay from './TestPlanDisplay'
 import BugAnalysisDisplay from './BugAnalysisDisplay'
 import Icon from './Icon'
@@ -26,6 +27,11 @@ function EpicChildRow({ child }) {
   const [testPlan, setTestPlan] = useState(null)
   const [bugAnalysis, setBugAnalysis] = useState(null)
   const [collapsed, setCollapsed] = useState(false)
+  // Set when the plan on screen came from storage rather than this click, so
+  // the row can say how old it is. The full predates-the-merge check lives on
+  // the ticket view, which already has the PR merge times loaded; buying them
+  // here would mean the very ticket fetch this change removes.
+  const [storedAt, setStoredAt] = useState(null)
   const resultRef = useRef(null)
 
   const isTestable = !NON_TESTABLE_ISSUE_TYPES.has(child.issue_type)
@@ -47,21 +53,6 @@ function EpicChildRow({ child }) {
     return res.json()
   }
 
-  const buildTestPlanPayload = (td) => ({
-    ticket_key: td.key,
-    summary: td.summary,
-    description: td.description,
-    issue_type: td.issue_type,
-    testing_context: {},
-    development_info: td.development_info,
-    image_urls: td.attachments ? td.attachments.map((a) => a.url) : null,
-    comments: td.comments || null,
-    parent_info: td.parent || null,
-    child_info: td.children || null,
-    linked_info: td.linked_issues || null,
-    bounce_history: td.bounce_history || null,
-  })
-
   const buildBugLensPayload = (td) => ({
     ticket_key: td.key,
     summary: td.summary,
@@ -75,18 +66,55 @@ function EpicChildRow({ child }) {
     status_category: td.status_category || null,
   })
 
-  const handleGenerate = async () => {
+  // A plan already on disk — the watcher's, or one from an earlier session —
+  // is *the* plan, not history. This row used to regenerate on every click and
+  // re-pay for it.
+  const loadStoredPlan = async () => {
+    const res = await fetch(`${API_BASE_URL}/runs/by-ticket/${child.key}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    const runs = Array.isArray(data.runs) ? data.runs : []
+    // Newest first, and Bug Lens runs share the table without a plan_id.
+    const latest = runs.find((r) => r.plan_id)
+    if (!latest) return null
+    const planRes = await fetch(`${API_BASE_URL}/plans/${latest.plan_id}`)
+    if (!planRes.ok) return null
+    const stored = await planRes.json()
+    try {
+      return {
+        ...JSON.parse(stored.body),
+        plan_id: latest.plan_id,
+        version: latest.version,
+        created_at: latest.created_at,
+      }
+    } catch {
+      // Unparseable stored body — fall through and generate rather than
+      // leaving the row with nothing and no explanation.
+      return null
+    }
+  }
+
+  const handleGenerate = async ({ force = false } = {}) => {
     setBusy('generate')
     setError(null)
     setTestPlan(null)
     setBugAnalysis(null)
     setCollapsed(false)
+    setStoredAt(null)
     try {
-      const td = await fetchTicketDetail()
-      const res = await fetch(`${API_BASE_URL}/generate-test-plan`, {
+      if (!force) {
+        const stored = await loadStoredPlan()
+        if (stored) {
+          setTestPlan(stored)
+          setStoredAt(stored.created_at || '')
+          return
+        }
+      }
+      // The key-only endpoint assembles the payload server-side through
+      // plan_service, so this row can't drift from what the ticket view sends
+      // — the hand-maintained copy that used to live here already had.
+      const res = await fetch(`${API_BASE_URL}/tickets/${child.key}/plan`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildTestPlanPayload(td)),
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
@@ -145,7 +173,7 @@ function EpicChildRow({ child }) {
         {child.status && <StatPill cat={cat}>{child.status}</StatPill>}
         <span style={{ display: 'flex', gap: 4 }}>
           {isTestable && (
-            <Btn variant="ghost" size="sm" icon="beaker" onClick={handleGenerate} disabled={busy !== null} loading={busy === 'generate'}>
+            <Btn variant="ghost" size="sm" icon="beaker" onClick={() => handleGenerate()} disabled={busy !== null} loading={busy === 'generate'}>
               Generate
             </Btn>
           )}
@@ -174,10 +202,43 @@ function EpicChildRow({ child }) {
           style={{ marginTop: 'var(--s-3)', marginLeft: 24, paddingLeft: 'var(--s-5)', borderLeft: '2px solid var(--line-strong)' }}
         >
           {testPlan && (
-            <TestPlanDisplay
-              testPlan={testPlan}
-              ticketData={{ key: child.key, summary: child.summary }}
-            />
+            <>
+              {storedAt !== null && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 'var(--s-3)',
+                    marginBottom: 'var(--s-3)',
+                    fontSize: 'var(--t-xs)',
+                    color: 'var(--fg-subtle)',
+                  }}
+                >
+                  <Icon name="clock" size={12} />
+                  <span>
+                    Existing plan
+                    {testPlan.version ? ` v${testPlan.version}` : ''}
+                    {storedAt ? `, written ${formatRelativeTime(storedAt)}` : ''} — reused
+                    rather than regenerated
+                  </span>
+                  <Btn
+                    variant="ghost"
+                    size="sm"
+                    icon="refresh"
+                    onClick={() => handleGenerate({ force: true })}
+                    disabled={busy !== null}
+                    loading={busy === 'generate'}
+                    title="Ignore the stored plan and generate a new one"
+                  >
+                    Regenerate
+                  </Btn>
+                </div>
+              )}
+              <TestPlanDisplay
+                testPlan={testPlan}
+                ticketData={{ key: child.key, summary: child.summary }}
+              />
+            </>
           )}
           {bugAnalysis && <BugAnalysisDisplay analysis={bugAnalysis} />}
         </div>

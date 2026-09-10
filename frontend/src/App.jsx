@@ -18,6 +18,7 @@ import BugAnalysisDisplay from './components/BugAnalysisDisplay'
 import TokenStatus from './components/TokenStatus'
 import RunHistoryBanner from './components/RunHistoryBanner'
 import HistoricalPlanPreview from './components/HistoricalPlanPreview'
+import StalePlanNotice from './components/StalePlanNotice'
 import EpicChildrenList from './components/EpicChildrenList'
 import BatchSummary from './components/BatchSummary'
 import JiraBrowser from './components/JiraBrowser'
@@ -229,7 +230,15 @@ function App() {
           const data = await res.json()
           const parsed = JSON.parse(data.body)
           testPlan.setPlan((prev) =>
-            prev ?? { ...parsed, plan_id: latest.plan_id, version: latest.version }
+            prev ?? {
+              ...parsed,
+              plan_id: latest.plan_id,
+              version: latest.version,
+              // When it was written, so StalePlanNotice can compare it against
+              // PR merge times. Absent on a plan generated in this session —
+              // that one is new by definition.
+              created_at: latest.created_at,
+            }
           )
         }
       } catch {
@@ -659,6 +668,15 @@ function App() {
                     <div style={{ marginTop: 'var(--s-4)' }}>
                       <Alert tone="danger" title="Error">{bugLens.error}</Alert>
                     </div>
+                  )}
+
+                  {testPlan.plan && !isMultiTicket && (
+                    <StalePlanNotice
+                      planCreatedAt={testPlan.plan.created_at}
+                      pullRequests={ticketData?.development_info?.pull_requests}
+                      onRegenerate={() => handleGenerateTestPlan()}
+                      regenerating={testPlan.generating}
+                    />
                   )}
 
                   {testPlan.plan && (
