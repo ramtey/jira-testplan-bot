@@ -41,3 +41,12 @@ dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
 ]
+
+[tool.pytest.ini_options]
+# Collect only tests/. Without this, a bare `pytest` walks src/ too and tries to
+# import domain modules whose names start with "test_" — `test_plan_progress`,
+# `test_plan_generator` — as test modules. Re-importing the SQLModel classes
+# under a second module name raises InvalidRequestError and aborts collection
+# before a single test runs. Those names describe test *plans*, not tests, so
+# scoping the collector is the right fix rather than renaming them.
+testpaths = ["tests"]

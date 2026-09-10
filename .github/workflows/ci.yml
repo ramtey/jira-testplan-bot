@@ -1,0 +1,42 @@
+name: CI
+
+# The suite is hermetic — no network, no real credentials. DATABASE_URL is the
+# one thing it insists on: `init_engine` refuses to guess, so six tests fail
+# without it even though every query is mocked. A throwaway URL satisfies that
+# check without a database, which is why this workflow needs no repository
+# secrets at all. Keep it that way: this repo is public.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql+asyncpg://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      # Build too: eslint won't catch a broken import or a bad JSX edit.
+      - run: npm run build

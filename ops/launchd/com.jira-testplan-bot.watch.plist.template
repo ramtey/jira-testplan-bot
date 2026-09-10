@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jira-testplan-bot.watch</string>
+
+  <!-- One sweep per launch rather than the CLI's own loop: launchd restarts a
+       crashed sweep for free, and nothing stays resident between runs. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO__/ops/launchd/watch-sweep.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+
+  <!-- Every 15 minutes. The watcher never regenerates an existing plan and
+       honours a retry cooldown, so a shorter interval buys nothing: the cost
+       is driven by tickets entering the queue, not by how often we look.
+       StartInterval does not fire while the Mac is asleep; launchd runs one
+       catch-up sweep on wake. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/jira-testplan-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/jira-testplan-watch.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

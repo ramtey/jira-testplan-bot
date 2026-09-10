@@ -600,7 +600,48 @@ two would race. A claim column (following
 `jira_tickets.auto_bug_analysis_dispatched_at`) is the fix before this is
 deployed anywhere shared.
 
-### CI/CD Integration
+#### Running it unattended (macOS)
+
+A sweep is only useful if it happens without you. `ops/launchd/` installs the
+watcher as a user LaunchAgent that runs one sweep every 15 minutes:
+
+```bash
+./ops/launchd/install.sh     # load it (idempotent — re-run after editing the template)
+./ops/launchd/uninstall.sh   # stop and remove it
+tail -f ~/Library/Logs/jira-testplan-watch.log
+```
+
+Each launch runs `testplan watch --once --quiet` rather than the CLI's own
+loop, so nothing stays resident and launchd restarts a crashed sweep for free.
+A shorter interval buys nothing: plans are never regenerated and a retry
+cooldown applies, so cost tracks tickets entering the queue, not how often we
+look.
+
+Two limits worth knowing. `StartInterval` does not fire while the Mac is
+asleep — launchd runs a single catch-up sweep on wake — so this is a
+convenience, not infrastructure. And the sweep needs `DATABASE_URL`, which
+settings read from `.env` relative to the working directory; that is why the
+runner `cd`s into the repo before anything else.
+
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
+`main` and every pull request: `pytest` for the backend, `npm run lint` plus
+`npm run build` for the frontend.
+
+It needs **no repository secrets**. The suite is hermetic — no network, no real
+credentials — with one wrinkle: `init_engine` refuses to guess a database, so
+six tests fail without `DATABASE_URL` even though every query is mocked. CI
+sets a throwaway URL, which satisfies the check without a database. Keep it
+that way; this repo is public.
+
+`pyproject.toml` pins `testpaths = ["tests"]`. Without it a bare `pytest`
+walks `src/` and tries to import `test_plan_progress` and
+`test_plan_generator` — domain modules about test *plans*, not tests — as test
+modules, and re-registering those SQLModel classes aborts collection before a
+single test runs.
+
+### CLI in CI/CD
 
 The CLI supports environment variables for automation. Example GitHub Actions workflow:
 
