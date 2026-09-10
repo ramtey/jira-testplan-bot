@@ -719,7 +719,6 @@ function App() {
                       version={historyPreview.version}
                       createdAt={historyPreview.createdAt}
                       ticketData={ticketData}
-                      showActions={!testPlan.plan}
                       onClose={() => setHistoryPreview(null)}
                     />
                   )}
