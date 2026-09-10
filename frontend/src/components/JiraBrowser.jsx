@@ -482,6 +482,11 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
   // jump straight into it on first load. Guard with a ref so navigating back
   // to the project list doesn't immediately snap forward again.
   const didAutoSelectPinnedRef = useRef(false)
+  // Reached through a ref for the same reason as refreshActiveRef below:
+  // selectProject is re-created every render, so listing it as a dependency
+  // would re-run this effect constantly.
+  const selectProjectRef = useRef(() => {})
+  selectProjectRef.current = selectProject
   useEffect(() => {
     if (didAutoSelectPinnedRef.current) return
     if (!Array.isArray(projects)) return
@@ -490,7 +495,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
     const project = projects.find((p) => p.key === pinnedKeys[0])
     if (!project) return
     didAutoSelectPinnedRef.current = true
-    selectProject(project)
+    selectProjectRef.current(project)
   }, [projects, pinnedKeys, activeProject])
 
   useEffect(() => {

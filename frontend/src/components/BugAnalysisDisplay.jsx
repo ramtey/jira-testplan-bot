@@ -38,7 +38,7 @@ function NumberedList({ items }) {
   )
 }
 
-function FixStatusCard({ analysis, fixStatus }) {
+function FixStatusCard({ fixStatus }) {
   const tone = {
     fixed: { color: 'var(--success)', bg: 'rgba(34,197,94,.14)', icon: 'check-circle', label: 'Fixed' },
     in_testing: { color: 'var(--info)', bg: 'rgba(59,130,246,.14)', icon: 'beaker', label: 'In testing — awaiting QA' },
@@ -168,7 +168,7 @@ function BugAnalysisDisplay({ analysis }) {
         <>
       {/* Status row */}
       <div style={{ display: 'grid', gridTemplateColumns: analysis.is_regression != null ? '1fr 1fr' : '1fr', gap: 'var(--s-4)', marginBottom: 'var(--s-6)' }}>
-        <FixStatusCard analysis={analysis} fixStatus={fixStatus} />
+        <FixStatusCard fixStatus={fixStatus} />
         <OriginCard analysis={analysis} />
       </div>
 

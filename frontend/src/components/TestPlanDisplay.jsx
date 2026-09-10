@@ -1008,13 +1008,20 @@ function WalkthroughSection({ walkthrough, prMedia, editing, onEditingChange, on
   ) : null
 
   // Re-seed the form whenever the saved values change or we (re)enter edit mode,
-  // so opening the editor always starts from the persisted state.
-  useEffect(() => {
+  // so opening the editor always starts from the persisted state. Two details
+  // matter: the comparison is on screenshot *content*, not array identity, so a
+  // refetch that returns an equal list can't wipe files the tester has already
+  // picked; and the re-seed happens during render rather than in an effect, so
+  // the editor never paints one frame of stale values.
+  const seedKey = JSON.stringify([wt.loom_url || '', wt.notes || '', savedScreenshots, editing])
+  const [seededFrom, setSeededFrom] = useState(seedKey)
+  if (seededFrom !== seedKey) {
+    setSeededFrom(seedKey)
     setLoom(wt.loom_url || '')
     setNotes(wt.notes || '')
-    setExistingScreenshots(Array.isArray(wt.screenshots) ? wt.screenshots : [])
+    setExistingScreenshots(savedScreenshots)
     setNewFiles([])
-  }, [wt.loom_url, wt.screenshots, wt.notes, editing])
+  }
 
   const divider = { marginTop: 'var(--s-4)', paddingTop: 'var(--s-4)', borderTop: '1px solid var(--divider)' }
 
