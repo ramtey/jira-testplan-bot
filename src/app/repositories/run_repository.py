@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlmodel.ext.asyncio.session import AsyncSession
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from src.app.db import crud
 from src.app.db.models.run import Run, RunStatus, RunType
 
 
 async def create(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     user_id: int,
     run_type: RunType,
@@ -39,13 +40,11 @@ async def create(
         comment_count=comment_count,
         source_provenance=source_provenance,
     )
-    session.add(run)
-    await session.flush()
-    return run
+    return await crud.insert(db, run)
 
 
 async def mark_completed(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     run: Run,
     latency_ms: int,
@@ -58,13 +57,11 @@ async def mark_completed(
     run.prompt_tokens = prompt_tokens
     run.output_tokens = output_tokens
     run.cost_usd = Decimal(str(cost_usd))
-    session.add(run)
-    await session.flush()
-    return run
+    return await crud.save(db, run)
 
 
 async def mark_failed(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     run: Run,
     error_code: str,
@@ -73,6 +70,4 @@ async def mark_failed(
     run.status = RunStatus.error
     run.error_code = error_code[:128]
     run.latency_ms = latency_ms
-    session.add(run)
-    await session.flush()
-    return run
+    return await crud.save(db, run)

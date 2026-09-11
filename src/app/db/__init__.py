@@ -1,4 +1,12 @@
-from src.app.db.session import engine, get_session, get_sessionmaker, init_engine
-from src.app.db.base import TimestampedBase
+from src.app.db.base import DocumentBase, utcnow
+from src.app.db.mongo import ensure_indexes, get_client, get_db, init_client, reset_client
 
-__all__ = ["engine", "get_session", "get_sessionmaker", "init_engine", "TimestampedBase"]
+__all__ = [
+    "DocumentBase",
+    "utcnow",
+    "ensure_indexes",
+    "get_client",
+    "get_db",
+    "init_client",
+    "reset_client",
+]

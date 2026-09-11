@@ -1,33 +1,29 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
-from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from src.app.db import crud
 from src.app.db.models.ticket_walkthrough import TicketWalkthrough
 
 
 async def get_walkthrough(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     ticket_key: str,
 ) -> TicketWalkthrough | None:
-    """Return the walkthrough row for `ticket_key`, or None if none exists."""
-    stmt = select(TicketWalkthrough).where(
-        TicketWalkthrough.ticket_key == ticket_key.upper()
-    )
-    return (await session.exec(stmt)).first()
+    """Return the walkthrough document for `ticket_key`, or None if none exists."""
+    return await crud.find_one(db, TicketWalkthrough, {"ticket_key": ticket_key.upper()})
 
 
 def decode_screenshots(row: TicketWalkthrough | None) -> list[dict]:
-    """Decode a walkthrough row's ``screenshots`` JSON blob into a list.
+    """Decode a walkthrough document's ``screenshots`` JSON blob into a list.
 
-    Returns [] when the row is missing, the column is empty, or the stored
+    Returns [] when the document is missing, the field is empty, or the stored
     value fails to parse into a list of ``{filename, url, media_id?}``
     objects — the walkthrough is optional metadata, so a bad blob should
-    never break the ticket page. ``media_id`` is optional (legacy rows
+    never break the ticket page. ``media_id`` is optional (legacy documents
     saved before inline rendering shipped won't have one; the workflow
     route re-resolves those from the URL at comment time).
     """
@@ -68,7 +64,7 @@ def derive_readiness(
     and lets the Pass-to-UAT route (future) enforce the same rule server-side.
 
     ``sources`` names which fields carry material — useful for UI hints like
-    "Notes and screenshots attached" without the caller re-inspecting the row.
+    "Notes and screenshots attached" without the caller re-inspecting it.
     """
     sources: list[str] = []
     if walkthrough.get("loom_url"):
@@ -88,14 +84,14 @@ def derive_readiness(
 
 
 async def upsert_walkthrough(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     ticket_key: str,
     loom_url: str | None,
     notes: str | None,
     screenshots: list[dict],
 ) -> TicketWalkthrough:
-    """Create or update the single walkthrough row for ``ticket_key``.
+    """Create or update the single walkthrough document for ``ticket_key``.
 
     ``screenshots`` is the desired final list — pass ``[]`` to clear all
     attached screenshots. Each entry must have ``url`` (required) and
@@ -106,10 +102,9 @@ async def upsert_walkthrough(
     comment is built.
     """
     key = ticket_key.upper()
-    row = await get_walkthrough(session, ticket_key=key)
+    row = await get_walkthrough(db, ticket_key=key)
     if row is None:
         row = TicketWalkthrough(ticket_key=key)
-        session.add(row)
     row.loom_url = loom_url or None
     row.notes = notes or None
     normalized: list[dict] = []
@@ -130,7 +125,6 @@ async def upsert_walkthrough(
             record["media_id"] = media_id
         normalized.append(record)
     row.screenshots = json.dumps(normalized) if normalized else None
-    row.updated_at = datetime.now(timezone.utc)
-    await session.commit()
-    await session.refresh(row)
-    return row
+    if row.id is None:
+        return await crud.insert(db, row)
+    return await crud.save(db, row)

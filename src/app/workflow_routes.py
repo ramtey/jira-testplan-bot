@@ -19,7 +19,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from .config import settings
-from .db.session import get_sessionmaker
+from .db.mongo import get_db
 from .github_client import GitHubClient
 from .jira_client import (
     ImageAttachment,
@@ -284,8 +284,8 @@ async def _enforce_pass_to_uat_walkthrough_gate(
     if override or form_looms or form_images or pr_images:
         return
 
-    async with get_sessionmaker()() as session:
-        readiness = await uat_readiness.fetch_readiness(session, ticket_key=issue_key)
+    db = get_db()
+    readiness = await uat_readiness.fetch_readiness(db, ticket_key=issue_key)
     if not readiness.get("needs_walkthrough"):
         return
 
@@ -478,10 +478,10 @@ async def _fold_walkthrough_into_pass_data(
     mentions = parsed_payload.mention_account_ids if parsed_payload else None
 
     try:
-        async with get_sessionmaker()() as session:
-            walkthrough = await walkthrough_repository.get_walkthrough(
-                session, ticket_key=issue_key
-            )
+        db = get_db()
+        walkthrough = await walkthrough_repository.get_walkthrough(
+            db, ticket_key=issue_key
+        )
     except Exception:
         walkthrough = None
 

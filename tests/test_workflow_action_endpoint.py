@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from src.app import workflow_routes
 from src.app.main import app
 
-from .conftest import noop_get_sessionmaker
+from .conftest import noop_get_db
 
 client = TestClient(app)
 
@@ -157,7 +157,7 @@ def test_pass_to_uat_gates_high_complexity_ticket_without_walkthrough():
     # reach it — stub that too, or the route connects to the real database.
     with patch("src.app.workflow_routes.JiraClient", return_value=jira), \
             patch.object(
-                workflow_routes, "get_sessionmaker", noop_get_sessionmaker
+                workflow_routes, "get_db", noop_get_db
             ), \
             patch("src.app.workflow_routes.uat_readiness") as uat_mod:
         uat_mod.fetch_readiness = AsyncMock(

@@ -42,7 +42,7 @@ from dataclasses import asdict
 from ..config import NON_TESTABLE_ISSUE_TYPES, settings
 from ..db.models.plan import PlanFormat
 from ..db.models.run import RunType
-from ..db.session import get_sessionmaker
+from ..db.mongo import get_db
 from ..deliverable_classifier import (
     aggregate_deliverables_for_critique,
     format_deliverable_hint,
@@ -312,14 +312,13 @@ async def _load_seed_regressions(ticket_key: str, parent_key: str) -> list[dict]
     Best-effort: a DB hiccup here degrades the plan's seeding, not the plan.
     """
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            seeds = await bug_analysis_repository.find_seed_regression_tests(
-                session,
-                ticket_key=ticket_key,
-                parent_key=parent_key,
-                limit=5,
-            )
+        db = get_db()
+        seeds = await bug_analysis_repository.find_seed_regression_tests(
+            db,
+            ticket_key=ticket_key,
+            parent_key=parent_key,
+            limit=5,
+        )
         seed_count = sum(len(s.get("regression_tests") or []) for s in seeds)
         logger.info(
             "seed_regressions: ticket=%s parent=%s sources=%d total_tests=%d",

@@ -10,7 +10,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from .db.session import get_sessionmaker
+from .db.mongo import get_db
 from .repositories import jira_ticket_repository, plan_repository
 
 logger = logging.getLogger(__name__)
@@ -27,16 +27,15 @@ async def runs_by_ticket(ticket_key: str):
     """
     key = ticket_key.upper()
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            runs = await plan_repository.list_runs_with_plans_by_ticket(
-                session, ticket_key=key
+        db = get_db()
+        runs = await plan_repository.list_runs_with_plans_by_ticket(
+            db, ticket_key=key
+        )
+        auto_dispatched_at = (
+            await jira_ticket_repository.get_auto_bug_analysis_dispatched_at(
+                db, ticket_key=key
             )
-            auto_dispatched_at = (
-                await jira_ticket_repository.get_auto_bug_analysis_dispatched_at(
-                    session, ticket_key=key
-                )
-            )
+        )
     except Exception:
         logger.exception("runs_by_ticket failed for %s", key)
         raise HTTPException(status_code=503, detail="History unavailable")
@@ -54,11 +53,10 @@ async def get_plan(plan_id: int):
     """Return a stored plan with its body (JSON for test_plan format) and ordered
     test cases. Used by the View action and the diff modal."""
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            result = await plan_repository.get_plan_with_cases(
-                session, plan_id=plan_id
-            )
+        db = get_db()
+        result = await plan_repository.get_plan_with_cases(
+            db, plan_id=plan_id
+        )
     except Exception:
         logger.exception("get_plan failed for %s", plan_id)
         raise HTTPException(status_code=503, detail="Plan store unavailable")

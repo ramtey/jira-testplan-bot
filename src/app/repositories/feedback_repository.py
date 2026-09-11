@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from sqlmodel.ext.asyncio.session import AsyncSession
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from src.app.db import crud
 from src.app.db.models.feedback import FeedbackEvent, FeedbackSignal, FeedbackTarget
 
 
 async def record(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     user_id: int,
     target_type: FeedbackTarget,
@@ -21,6 +22,4 @@ async def record(
         signal=signal,
         note=note,
     )
-    session.add(event)
-    await session.flush()
-    return event
+    return await crud.insert(db, event)

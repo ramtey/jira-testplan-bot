@@ -1,10 +1,11 @@
 name: CI
 
-# The suite is hermetic — no network, no real credentials. DATABASE_URL is the
-# one thing it insists on: `init_engine` refuses to guess, so six tests fail
-# without it even though every query is mocked. A throwaway URL satisfies that
-# check without a database, which is why this workflow needs no repository
-# secrets at all. Keep it that way: this repo is public.
+# The suite is hermetic — no network, no real credentials. MONGODB_URI is the
+# one thing it insists on: `init_client` refuses to guess, so a handful of tests
+# fail without it even though every query is mocked. A throwaway URI satisfies
+# that check without a database — Motor connects lazily, so nothing dials out —
+# which is why this workflow needs no repository secrets at all. Keep it that
+# way: this repo is public.
 
 on:
   push:
@@ -15,7 +16,7 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: postgresql+asyncpg://ci:ci@localhost:5432/ci
+      MONGODB_URI: mongodb://ci:ci@localhost:27017/ci
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

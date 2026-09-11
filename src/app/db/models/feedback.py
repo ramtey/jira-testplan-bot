@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import ClassVar
 
-from sqlalchemy import Column, Index
-from sqlalchemy.dialects.postgresql import ENUM as PgEnum
-from sqlmodel import Field
-
-from src.app.db.base import TimestampedBase
+from src.app.db.base import DocumentBase
 
 
 class FeedbackSignal(str, Enum):
@@ -19,25 +16,11 @@ class FeedbackTarget(str, Enum):
     case = "case"
 
 
-class FeedbackEvent(TimestampedBase, table=True):
-    __tablename__ = "feedback_events"
-    __table_args__ = (
-        Index("ix_feedback_events_target", "target_type", "target_id"),
-        Index("ix_feedback_events_created_at", "created_at"),
-    )
+class FeedbackEvent(DocumentBase):
+    __collection__: ClassVar[str] = "feedback_events"
 
-    user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
-    target_type: FeedbackTarget = Field(
-        sa_column=Column(
-            PgEnum(FeedbackTarget, name="feedback_target", create_type=True),
-            nullable=False,
-        )
-    )
-    target_id: int = Field(nullable=False)
-    signal: FeedbackSignal = Field(
-        sa_column=Column(
-            PgEnum(FeedbackSignal, name="feedback_signal", create_type=True),
-            nullable=False,
-        )
-    )
-    note: str | None = Field(default=None)
+    user_id: int
+    target_type: FeedbackTarget
+    target_id: int
+    signal: FeedbackSignal
+    note: str | None = None

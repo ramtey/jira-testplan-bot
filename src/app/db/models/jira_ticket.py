@@ -1,33 +1,24 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import ClassVar
 
-from sqlalchemy import DateTime, UniqueConstraint
-from sqlmodel import Field
+from pydantic import Field
 
-from src.app.db.base import TimestampedBase, utcnow
+from src.app.db.base import DocumentBase, utcnow
 
 
-class JiraTicket(TimestampedBase, table=True):
-    __tablename__ = "jira_tickets"
-    __table_args__ = (UniqueConstraint("ticket_key", name="uq_jira_tickets_key"),)
+class JiraTicket(DocumentBase):
+    __collection__: ClassVar[str] = "jira_tickets"
 
-    ticket_key: str = Field(nullable=False, max_length=64, index=True)
-    project_key: str = Field(nullable=False, max_length=32, index=True)
-    issue_type: str | None = Field(default=None, max_length=32)
-    status: str | None = Field(default=None, max_length=64)
-    title: str | None = Field(default=None, max_length=512)
-    parent_key: str | None = Field(default=None, max_length=64, index=True)
-    last_seen_at: datetime = Field(
-        default_factory=utcnow,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"nullable": False},
-    )
+    ticket_key: str
+    project_key: str
+    issue_type: str | None = None
+    status: str | None = None
+    title: str | None = None
+    parent_key: str | None = None
+    last_seen_at: datetime = Field(default_factory=utcnow)
     # Set the first time the "pull to In Testing" workflow auto-dispatched a
     # Bug Lens run for this ticket. Persists across aborted plan generations so
     # we never auto-fire the analysis twice.
-    auto_bug_analysis_dispatched_at: datetime | None = Field(
-        default=None,
-        sa_type=DateTime(timezone=True),
-        sa_column_kwargs={"nullable": True},
-    )
+    auto_bug_analysis_dispatched_at: datetime | None = None

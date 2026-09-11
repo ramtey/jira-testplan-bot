@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -8,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .bug_lens_routes import router as bug_lens_router
 from .config import settings
 from .db.models.ticket_hold import HOLD_REASONS
-from .db.session import get_sessionmaker
+from .db.mongo import ensure_indexes, get_db
 from .jira_client import (
     JiraAuthError,
     JiraClient,
@@ -62,7 +64,30 @@ _run_surface_mismatch_critic = run_surface_mismatch_critic
 _flatten_cases_for_persistence = flatten_cases_for_persistence
 
 
-app = FastAPI(title="Jira Test Plan Bot", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Create the collection indexes on boot.
+
+    This is what replaces `alembic upgrade head`. Mongo creates collections
+    lazily on first write, so there is no schema to migrate — but the unique
+    indexes on ticket_key/progress_key are load-bearing: several repositories
+    upsert on the assumption that at most one document matches. Index creation
+    is idempotent, so re-running on every boot is free.
+    """
+    try:
+        await ensure_indexes()
+    except Exception:
+        # A bad URI or an unreachable cluster should surface on the first real
+        # request with a clear driver error, not abort startup — the frontend
+        # and the Jira-only routes still work without the database.
+        logger.exception("Mongo index setup failed; continuing without it")
+    yield
+
+
+app = FastAPI(title="Jira Test Plan Bot", version="0.1.0", lifespan=lifespan)
 app.include_router(bug_lens_router)
 app.include_router(runs_router)
 app.include_router(workflow_router)
@@ -582,19 +607,18 @@ async def post_comment(request: PostCommentRequest):
         posted_at_iso: str | None = None
         if request.plan_id is not None and comment_id:
             try:
-                sessionmaker = get_sessionmaker()
-                async with sessionmaker() as session:
-                    await plan_repository.mark_plan_posted_to_jira(
-                        session,
-                        plan_id=request.plan_id,
-                        ticket_key=request.issue_key.upper(),
-                        jira_comment_id=str(comment_id),
-                    )
-                    plan_with_cases = await plan_repository.get_plan_with_cases(
-                        session, plan_id=request.plan_id
-                    )
-                    if plan_with_cases and plan_with_cases[0].posted_at:
-                        posted_at_iso = plan_with_cases[0].posted_at.isoformat()
+                db = get_db()
+                await plan_repository.mark_plan_posted_to_jira(
+                    db,
+                    plan_id=request.plan_id,
+                    ticket_key=request.issue_key.upper(),
+                    jira_comment_id=str(comment_id),
+                )
+                plan_with_cases = await plan_repository.get_plan_with_cases(
+                    db, plan_id=request.plan_id
+                )
+                if plan_with_cases and plan_with_cases[0].posted_at:
+                    posted_at_iso = plan_with_cases[0].posted_at.isoformat()
             except Exception:
                 # Posting succeeded; failing to record the mark shouldn't fail
                 # the request. The next post attempt will re-record.
@@ -655,9 +679,8 @@ async def get_ticket_walkthrough(ticket_key: str):
     recent generated plan) so the workflow UI can decide whether to nudge for a
     walkthrough when the ticket is passed to UAT.
     """
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        return await uat_readiness.fetch_readiness(session, ticket_key=ticket_key)
+    db = get_db()
+    return await uat_readiness.fetch_readiness(db, ticket_key=ticket_key)
 
 
 @app.put("/tickets/{ticket_key}/walkthrough")
@@ -751,16 +774,15 @@ async def put_ticket_walkthrough(
         final_list.append(record)
     final_list.extend(uploaded_refs)
 
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        row = await walkthrough_repository.upsert_walkthrough(
-            session,
-            ticket_key=ticket_key,
-            loom_url=request.loom_url,
-            notes=request.notes,
-            screenshots=final_list,
-        )
-        return await uat_readiness.fetch_readiness(session, ticket_key=ticket_key)
+    db = get_db()
+    row = await walkthrough_repository.upsert_walkthrough(
+        db,
+        ticket_key=ticket_key,
+        loom_url=request.loom_url,
+        notes=request.notes,
+        screenshots=final_list,
+    )
+    return await uat_readiness.fetch_readiness(db, ticket_key=ticket_key)
 
 
 def _serialize_progress(row) -> dict:
@@ -785,12 +807,11 @@ async def get_test_plan_progress(progress_key: str):
     plus a fingerprint of the plan's section sizes; progress is shared across
     everyone testing the ticket and resets when a regenerated plan changes shape.
     """
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        row = await test_plan_progress_repository.get_progress(
-            session, progress_key=progress_key
-        )
-        return _serialize_progress(row)
+    db = get_db()
+    row = await test_plan_progress_repository.get_progress(
+        db, progress_key=progress_key
+    )
+    return _serialize_progress(row)
 
 
 @app.put("/test-plan-progress/{progress_key}")
@@ -799,14 +820,13 @@ async def put_test_plan_progress(
 ):
     """Create or replace the shared checked-case set for a plan. The client sends
     the full set each save, so an empty list clears all checks."""
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        row = await test_plan_progress_repository.upsert_progress(
-            session,
-            progress_key=progress_key,
-            checked_ids=request.checked_ids,
-        )
-        return _serialize_progress(row)
+    db = get_db()
+    row = await test_plan_progress_repository.upsert_progress(
+        db,
+        progress_key=progress_key,
+        checked_ids=request.checked_ids,
+    )
+    return _serialize_progress(row)
 
 
 def _serialize_hold(row) -> dict:
@@ -833,10 +853,9 @@ async def get_ticket_hold(ticket_key: str):
     A hold means "testing is parked and here's why" — separate from Jira status
     and from Jira's blocked-by links, and shared across everyone testing it.
     """
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        row = await ticket_hold_repository.get_hold(session, ticket_key=ticket_key)
-        return _serialize_hold(row)
+    db = get_db()
+    row = await ticket_hold_repository.get_hold(db, ticket_key=ticket_key)
+    return _serialize_hold(row)
 
 
 @app.put("/tickets/{ticket_key}/hold")
@@ -849,21 +868,19 @@ async def put_ticket_hold(ticket_key: str, request: TicketHoldRequest):
             detail=f"Unknown hold reason '{request.reason}'. Expected one of: "
             + ", ".join(sorted(HOLD_REASONS)),
         )
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        row = await ticket_hold_repository.upsert_hold(
-            session,
-            ticket_key=ticket_key,
-            reason=reason,
-            note=request.note,
-        )
-        return _serialize_hold(row)
+    db = get_db()
+    row = await ticket_hold_repository.upsert_hold(
+        db,
+        ticket_key=ticket_key,
+        reason=reason,
+        note=request.note,
+    )
+    return _serialize_hold(row)
 
 
 @app.delete("/tickets/{ticket_key}/hold")
 async def delete_ticket_hold(ticket_key: str):
     """Resume the ticket. Idempotent — clearing a ticket that isn't held is fine."""
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        await ticket_hold_repository.clear_hold(session, ticket_key=ticket_key)
-        return _serialize_hold(None)
+    db = get_db()
+    await ticket_hold_repository.clear_hold(db, ticket_key=ticket_key)
+    return _serialize_hold(None)

@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 
 from .config import settings
 from .db.models.run import RunType
-from .db.session import get_sessionmaker
+from .db.mongo import get_db
 from .github_client import GitHubClient
 from .llm_client import LLMError, get_llm_client
 from .models import BugAnalysisRequest, MultiBugAnalysisRequest
@@ -539,15 +539,13 @@ async def claim_auto_dispatch(ticket_key: str):
     """
     key = ticket_key.upper()
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            existing = await jira_ticket_repository.get_auto_bug_analysis_dispatched_at(
-                session, ticket_key=key
-            )
-            dispatched_at = await jira_ticket_repository.mark_auto_bug_analysis_dispatched(
-                session, ticket_key=key
-            )
-            await session.commit()
+        db = get_db()
+        existing = await jira_ticket_repository.get_auto_bug_analysis_dispatched_at(
+            db, ticket_key=key
+        )
+        dispatched_at = await jira_ticket_repository.mark_auto_bug_analysis_dispatched(
+            db, ticket_key=key
+        )
     except Exception:
         logger.exception("auto-dispatch claim failed for %s", key)
         raise HTTPException(status_code=503, detail="Auto-dispatch store unavailable")
@@ -576,11 +574,10 @@ async def bug_analysis_by_ticket(ticket_key: str):
     """
     key = ticket_key.upper()
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            stored = await bug_analysis_repository.find_latest_for_ticket(
-                session, ticket_key=key
-            )
+        db = get_db()
+        stored = await bug_analysis_repository.find_latest_for_ticket(
+            db, ticket_key=key
+        )
     except Exception:
         logger.exception("bug_analysis_by_ticket failed for %s", key)
         raise HTTPException(status_code=503, detail="Analysis store unavailable")

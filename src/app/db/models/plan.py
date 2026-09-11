@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import ClassVar
 
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Index
-from sqlalchemy.dialects.postgresql import ENUM as PgEnum
-from sqlmodel import Field
-
-from src.app.db.base import TimestampedBase
+from src.app.db.base import DocumentBase
 
 
 class PlanFormat(str, Enum):
@@ -16,60 +13,30 @@ class PlanFormat(str, Enum):
     json = "json"
 
 
-class GeneratedPlan(TimestampedBase, table=True):
-    __tablename__ = "generated_plans"
-    __table_args__ = (
-        CheckConstraint("version >= 1", name="ck_generated_plans_version_positive"),
-        CheckConstraint("case_count >= 0", name="ck_generated_plans_case_count_nonneg"),
-        Index("ix_generated_plans_run", "run_id"),
-    )
+class GeneratedPlan(DocumentBase):
+    __collection__: ClassVar[str] = "generated_plans"
 
-    run_id: int = Field(foreign_key="runs.id", nullable=False, index=True)
+    run_id: int
 
-    format: PlanFormat = Field(
-        sa_column=Column(
-            PgEnum(PlanFormat, name="plan_format", create_type=True),
-            nullable=False,
-        )
-    )
-    body: str = Field(nullable=False)
-    case_count: int = Field(nullable=False, default=0)
-    version: int = Field(nullable=False, default=1)
-    previous_plan_id: int | None = Field(
-        default=None,
-        sa_column=Column(
-            ForeignKey("generated_plans.id", ondelete="SET NULL"),
-            nullable=True,
-            index=True,
-        ),
-    )
+    format: PlanFormat
+    body: str
+    case_count: int = 0
+    version: int = 1
+    previous_plan_id: int | None = None
 
     # Set when this version is the one currently live on the Jira ticket.
     # Because posting is update-in-place, at most one plan per ticket has
     # these populated at a time — posting a newer version nulls them on
     # superseded rows.
-    jira_comment_id: str | None = Field(default=None, max_length=64, nullable=True)
-    posted_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-    )
+    jira_comment_id: str | None = None
+    posted_at: datetime | None = None
 
 
-class PlanTestCase(TimestampedBase, table=True):
-    __tablename__ = "plan_test_cases"
-    __table_args__ = (
-        CheckConstraint("position >= 0", name="ck_plan_test_cases_position_nonneg"),
-        Index("ix_plan_test_cases_plan_position", "plan_id", "position"),
-    )
+class PlanTestCase(DocumentBase):
+    __collection__: ClassVar[str] = "plan_test_cases"
 
-    plan_id: int = Field(
-        sa_column=Column(
-            ForeignKey("generated_plans.id", ondelete="CASCADE"),
-            nullable=False,
-            index=True,
-        )
-    )
-    position: int = Field(nullable=False, default=0)
-    title: str = Field(nullable=False, max_length=512)
-    body: str = Field(nullable=False)
-    category: str | None = Field(default=None, max_length=64, index=True)
+    plan_id: int
+    position: int = 0
+    title: str
+    body: str
+    category: str | None = None

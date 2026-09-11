@@ -2,9 +2,9 @@
 # One watcher sweep, timestamped for the log. Run by launchd on an interval;
 # safe to run by hand.
 #
-# The `cd` is not cosmetic: settings read DATABASE_URL from `.env`, and
+# The `cd` is not cosmetic: settings read MONGODB_URI from `.env`, and
 # pydantic-settings resolves that path relative to the working directory.
-# Without it the sweep dies with "DATABASE_URL is not set".
+# Without it the sweep dies with "MONGODB_URI is not set".
 set -eu
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"

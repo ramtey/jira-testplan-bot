@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from ..config import settings
-from ..db.session import get_sessionmaker
+from ..db.mongo import get_db
 from ..jira_client import JiraAuthError, JiraClient, JiraConnectionError
 from ..models import GenerateTestPlanRequest
 from ..repositories import plan_repository, ticket_hold_repository
@@ -153,25 +153,24 @@ async def _screen(ticket_key: str) -> str | None:
     Runs before the Jira fetch because it's free and rejects the common
     case — a ticket that already has a plan.
     """
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        if await plan_repository.has_successful_test_plan(session, ticket_key=ticket_key):
-            return SKIP_ALREADY_PLANNED
-        # A hold is a human saying "this isn't ready to be worked on" —
-        # `code-review` literally means the PR is still in review, so any plan
-        # written now is written against code that will change, and
-        # never-regenerate would make it permanent.
-        #
-        # Skipping every hold reason rather than only the code-churn ones,
-        # because deferring costs nothing: the ticket stays in the watch
-        # status, so the next sweep after the hold clears still gets the plan
-        # written before the tester opens it. The worst case is falling back
-        # to the pre-watcher behaviour of generating on Pull-to-Testing.
-        if await ticket_hold_repository.get_hold(session, ticket_key=ticket_key):
-            return SKIP_ON_HOLD
-        last_attempt = await plan_repository.find_last_test_plan_attempt_at(
-            session, ticket_key=ticket_key
-        )
+    db = get_db()
+    if await plan_repository.has_successful_test_plan(db, ticket_key=ticket_key):
+        return SKIP_ALREADY_PLANNED
+    # A hold is a human saying "this isn't ready to be worked on" —
+    # `code-review` literally means the PR is still in review, so any plan
+    # written now is written against code that will change, and
+    # never-regenerate would make it permanent.
+    #
+    # Skipping every hold reason rather than only the code-churn ones,
+    # because deferring costs nothing: the ticket stays in the watch
+    # status, so the next sweep after the hold clears still gets the plan
+    # written before the tester opens it. The worst case is falling back
+    # to the pre-watcher behaviour of generating on Pull-to-Testing.
+    if await ticket_hold_repository.get_hold(db, ticket_key=ticket_key):
+        return SKIP_ON_HOLD
+    last_attempt = await plan_repository.find_last_test_plan_attempt_at(
+        db, ticket_key=ticket_key
+    )
     if last_attempt is not None and settings.watch_retry_cooldown_hours > 0:
         # created_at may come back naive depending on the driver; treat a
         # naive timestamp as UTC rather than crashing the whole sweep.
@@ -204,12 +203,10 @@ async def _dispatch_bug_lens(payload: dict, serialized: dict) -> None:
     # this the watcher's analysis is invisible to that check, so the two
     # auto-fire paths disagree about whether a ticket has been analysed.
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            await jira_ticket_repository.mark_auto_bug_analysis_dispatched(
-                session, ticket_key=payload["ticket_key"]
-            )
-            await session.commit()
+        db = get_db()
+        await jira_ticket_repository.mark_auto_bug_analysis_dispatched(
+            db, ticket_key=payload["ticket_key"]
+        )
     except Exception:
         logger.exception(
             "watcher: could not claim auto-bug-analysis for %s; analysing anyway",

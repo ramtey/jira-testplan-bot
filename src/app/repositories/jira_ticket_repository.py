@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from src.app.db import crud
 from src.app.db.base import utcnow
 from src.app.db.models.jira_ticket import JiraTicket
 
@@ -14,27 +14,32 @@ def _project_key_from_ticket(ticket_key: str) -> str:
 
 
 async def get_auto_bug_analysis_dispatched_at(
-    session: AsyncSession, *, ticket_key: str
+    db: AsyncIOMotorDatabase, *, ticket_key: str
 ) -> datetime | None:
-    result = await session.exec(
-        select(JiraTicket.auto_bug_analysis_dispatched_at).where(
-            JiraTicket.ticket_key == ticket_key
-        )
+    doc = await db[JiraTicket.__collection__].find_one(
+        {"ticket_key": ticket_key},
+        {"auto_bug_analysis_dispatched_at": 1},
     )
-    return result.first()
+    if doc is None:
+        return None
+    value = doc.get("auto_bug_analysis_dispatched_at")
+    if value is not None and value.tzinfo is None:
+        from datetime import timezone
+
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 async def mark_auto_bug_analysis_dispatched(
-    session: AsyncSession, *, ticket_key: str
+    db: AsyncIOMotorDatabase, *, ticket_key: str
 ) -> datetime:
     """Stamp the auto-dispatch timestamp on the ticket if not already set.
 
-    Upserts the row (so the first-ever fetch for a brand-new ticket can still
+    Upserts the document (so the first-ever fetch for a brand-new ticket can still
     claim it) and returns the effective dispatched_at — the existing value if
     one was already stored, or the freshly written `now()`.
     """
-    result = await session.exec(select(JiraTicket).where(JiraTicket.ticket_key == ticket_key))
-    ticket = result.first()
+    ticket = await crud.find_one(db, JiraTicket, {"ticket_key": ticket_key})
     now = utcnow()
 
     if ticket is None:
@@ -43,21 +48,19 @@ async def mark_auto_bug_analysis_dispatched(
             project_key=_project_key_from_ticket(ticket_key),
             auto_bug_analysis_dispatched_at=now,
         )
-        session.add(ticket)
-        await session.flush()
+        await crud.insert(db, ticket)
         return now
 
     if ticket.auto_bug_analysis_dispatched_at is None:
         ticket.auto_bug_analysis_dispatched_at = now
-        session.add(ticket)
-        await session.flush()
+        await crud.save(db, ticket)
         return now
 
     return ticket.auto_bug_analysis_dispatched_at
 
 
 async def upsert_snapshot(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     ticket_key: str,
     issue_type: str | None = None,
@@ -65,8 +68,7 @@ async def upsert_snapshot(
     title: str | None = None,
     parent_key: str | None = None,
 ) -> JiraTicket:
-    result = await session.exec(select(JiraTicket).where(JiraTicket.ticket_key == ticket_key))
-    ticket = result.first()
+    ticket = await crud.find_one(db, JiraTicket, {"ticket_key": ticket_key})
     project_key = _project_key_from_ticket(ticket_key)
 
     if ticket is None:
@@ -78,9 +80,7 @@ async def upsert_snapshot(
             title=title,
             parent_key=parent_key,
         )
-        session.add(ticket)
-        await session.flush()
-        return ticket
+        return await crud.insert(db, ticket)
 
     if issue_type:
         ticket.issue_type = issue_type
@@ -91,6 +91,4 @@ async def upsert_snapshot(
     if parent_key:
         ticket.parent_key = parent_key
     ticket.last_seen_at = utcnow()
-    session.add(ticket)
-    await session.flush()
-    return ticket
+    return await crud.save(db, ticket)

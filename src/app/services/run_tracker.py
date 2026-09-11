@@ -9,7 +9,8 @@ from time import perf_counter
 
 from src.app.db.models.plan import PlanFormat
 from src.app.db.models.run import RunStatus, RunType
-from src.app.db.session import get_sessionmaker
+from src.app.db import crud
+from src.app.db.mongo import get_db
 from src.app.models import BugAnalysis
 from src.app.repositories import (
     bug_analysis_repository,
@@ -66,37 +67,35 @@ async def start_run(
     ticket_keys_list = list(ticket_keys)
     is_single_ticket = len(ticket_keys_list) == 1
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            user = await user_repository.get_or_create_by_email(
-                session, email=_actor_email()
+        db = get_db()
+        user = await user_repository.get_or_create_by_email(
+            db, email=_actor_email()
+        )
+        for key in ticket_keys_list:
+            await jira_ticket_repository.upsert_snapshot(
+                db,
+                ticket_key=key,
+                issue_type=ticket_issue_type,
+                title=ticket_title if is_single_ticket else None,
+                parent_key=ticket_parent_key if is_single_ticket else None,
             )
-            for key in ticket_keys_list:
-                await jira_ticket_repository.upsert_snapshot(
-                    session,
-                    ticket_key=key,
-                    issue_type=ticket_issue_type,
-                    title=ticket_title if is_single_ticket else None,
-                    parent_key=ticket_parent_key if is_single_ticket else None,
-                )
-            run = await run_repository.create(
-                session,
-                user_id=user.id,
-                run_type=run_type,
-                ticket_keys=ticket_keys_list,
-                model=model,
-                llm_provider=llm_provider,
-                status=RunStatus.ok,
-                had_pr_diff=had_pr_diff,
-                had_figma=had_figma,
-                had_parent=had_parent,
-                linked_ticket_count=linked_ticket_count,
-                pr_count=pr_count,
-                comment_count=comment_count,
-                source_provenance=source_provenance,
-            )
-            await session.commit()
-            return RunContext(run_id=run.id, started_at=started)
+        run = await run_repository.create(
+            db,
+            user_id=user.id,
+            run_type=run_type,
+            ticket_keys=ticket_keys_list,
+            model=model,
+            llm_provider=llm_provider,
+            status=RunStatus.ok,
+            had_pr_diff=had_pr_diff,
+            had_figma=had_figma,
+            had_parent=had_parent,
+            linked_ticket_count=linked_ticket_count,
+            pr_count=pr_count,
+            comment_count=comment_count,
+            source_provenance=source_provenance,
+        )
+        return RunContext(run_id=run.id, started_at=started)
     except Exception:
         logger.exception("run_tracker.start_run failed; continuing without DB recording")
         return RunContext(run_id=None, started_at=started)
@@ -118,47 +117,45 @@ async def complete_with_plan(
     if ctx.run_id is None:
         return None
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            run = await session.get(_run_type(), ctx.run_id)
-            if run is None:
-                logger.warning("run_tracker.complete_with_plan: run_id=%s vanished", ctx.run_id)
-                return None
-            await run_repository.mark_completed(
-                session,
-                run=run,
-                latency_ms=ctx.elapsed_ms(),
-                prompt_tokens=prompt_tokens,
-                output_tokens=output_tokens,
-                cost_usd=cost_usd,
-            )
+        db = get_db()
+        run = await crud.get_by_id(db, _run_type(), ctx.run_id)
+        if run is None:
+            logger.warning("run_tracker.complete_with_plan: run_id=%s vanished", ctx.run_id)
+            return None
+        await run_repository.mark_completed(
+            db,
+            run=run,
+            latency_ms=ctx.elapsed_ms(),
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+        )
 
-            # Chain regenerations on single-ticket runs: link to the prior plan
-            # and bump version. Multi-ticket runs are intentionally left flat —
-            # "previous" is ambiguous when several tickets fan in.
-            previous_plan_id: int | None = None
-            version = 1
-            if run.ticket_keys and len(run.ticket_keys) == 1:
-                prior = await plan_repository.find_latest_plan_for_ticket(
-                    session,
-                    ticket_key=run.ticket_keys[0],
-                    exclude_run_id=ctx.run_id,
-                )
-                if prior is not None:
-                    previous_plan_id = prior.id
-                    version = (prior.version or 1) + 1
-
-            plan = await plan_repository.save_with_cases(
-                session,
-                run_id=ctx.run_id,
-                format=plan_format,
-                body=plan_body,
-                cases=cases,
-                previous_plan_id=previous_plan_id,
-                version=version,
+        # Chain regenerations on single-ticket runs: link to the prior plan
+        # and bump version. Multi-ticket runs are intentionally left flat —
+        # "previous" is ambiguous when several tickets fan in.
+        previous_plan_id: int | None = None
+        version = 1
+        if run.ticket_keys and len(run.ticket_keys) == 1:
+            prior = await plan_repository.find_latest_plan_for_ticket(
+                db,
+                ticket_key=run.ticket_keys[0],
+                exclude_run_id=ctx.run_id,
             )
-            await session.commit()
-            return {"plan_id": plan.id, "version": plan.version}
+            if prior is not None:
+                previous_plan_id = prior.id
+                version = (prior.version or 1) + 1
+
+        plan = await plan_repository.save_with_cases(
+            db,
+            run_id=ctx.run_id,
+            format=plan_format,
+            body=plan_body,
+            cases=cases,
+            previous_plan_id=previous_plan_id,
+            version=version,
+        )
+        return {"plan_id": plan.id, "version": plan.version}
     except Exception:
         logger.exception("run_tracker.complete_with_plan failed")
         return None
@@ -178,21 +175,19 @@ async def complete(
     if ctx.run_id is None:
         return
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            run = await session.get(_run_type(), ctx.run_id)
-            if run is None:
-                logger.warning("run_tracker.complete: run_id=%s vanished", ctx.run_id)
-                return
-            await run_repository.mark_completed(
-                session,
-                run=run,
-                latency_ms=ctx.elapsed_ms(),
-                prompt_tokens=prompt_tokens,
-                output_tokens=output_tokens,
-                cost_usd=cost_usd,
-            )
-            await session.commit()
+        db = get_db()
+        run = await crud.get_by_id(db, _run_type(), ctx.run_id)
+        if run is None:
+            logger.warning("run_tracker.complete: run_id=%s vanished", ctx.run_id)
+            return
+        await run_repository.mark_completed(
+            db,
+            run=run,
+            latency_ms=ctx.elapsed_ms(),
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+        )
     except Exception:
         logger.exception("run_tracker.complete failed")
 
@@ -209,29 +204,27 @@ async def complete_with_bug_analysis(
     if ctx.run_id is None:
         return
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            run = await session.get(_run_type(), ctx.run_id)
-            if run is None:
-                logger.warning(
-                    "run_tracker.complete_with_bug_analysis: run_id=%s vanished",
-                    ctx.run_id,
-                )
-                return
-            await run_repository.mark_completed(
-                session,
-                run=run,
-                latency_ms=ctx.elapsed_ms(),
-                prompt_tokens=prompt_tokens,
-                output_tokens=output_tokens,
-                cost_usd=cost_usd,
+        db = get_db()
+        run = await crud.get_by_id(db, _run_type(), ctx.run_id)
+        if run is None:
+            logger.warning(
+                "run_tracker.complete_with_bug_analysis: run_id=%s vanished",
+                ctx.run_id,
             )
-            await bug_analysis_repository.save(
-                session,
-                run_id=ctx.run_id,
-                analysis=analysis,
-            )
-            await session.commit()
+            return
+        await run_repository.mark_completed(
+            db,
+            run=run,
+            latency_ms=ctx.elapsed_ms(),
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+        )
+        await bug_analysis_repository.save(
+            db,
+            run_id=ctx.run_id,
+            analysis=analysis,
+        )
     except Exception:
         logger.exception("run_tracker.complete_with_bug_analysis failed")
 
@@ -240,18 +233,16 @@ async def fail(ctx: RunContext, *, error_code: str) -> None:
     if ctx.run_id is None:
         return
     try:
-        sessionmaker = get_sessionmaker()
-        async with sessionmaker() as session:
-            run = await session.get(_run_type(), ctx.run_id)
-            if run is None:
-                return
-            await run_repository.mark_failed(
-                session,
-                run=run,
-                error_code=error_code,
-                latency_ms=ctx.elapsed_ms(),
-            )
-            await session.commit()
+        db = get_db()
+        run = await crud.get_by_id(db, _run_type(), ctx.run_id)
+        if run is None:
+            return
+        await run_repository.mark_failed(
+            db,
+            run=run,
+            error_code=error_code,
+            latency_ms=ctx.elapsed_ms(),
+        )
     except Exception:
         logger.exception("run_tracker.fail failed")
 

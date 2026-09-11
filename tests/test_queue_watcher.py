@@ -14,6 +14,8 @@ from src.app.config import settings
 from src.app.models import EpicChildSummary
 from src.app.services import queue_watcher
 
+from .conftest import noop_get_db
+
 
 def _rows(*keys) -> list[EpicChildSummary]:
     return [
@@ -378,18 +380,10 @@ def test_explicit_watch_projects_win(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class _FakeSession:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-
 def _patch_screen_db(*, has_plan: bool, last_attempt, hold=None):
-    """Patch the three repository reads _screen makes, plus the sessionmaker."""
+    """Patch the three repository reads _screen makes, plus the db handle."""
     return [
-        patch.object(queue_watcher, "get_sessionmaker", lambda: (lambda: _FakeSession())),
+        patch.object(queue_watcher, "get_db", noop_get_db),
         patch.object(
             queue_watcher.plan_repository,
             "has_successful_test_plan",

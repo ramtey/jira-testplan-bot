@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import json
 
-from sqlmodel.ext.asyncio.session import AsyncSession
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.app.repositories import plan_repository, walkthrough_repository
 
 
 async def fetch_readiness(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     ticket_key: str,
 ) -> dict:
@@ -33,10 +33,10 @@ async def fetch_readiness(
     surface and the enforcement rule from drifting apart.
     """
     row = await walkthrough_repository.get_walkthrough(
-        session, ticket_key=ticket_key
+        db, ticket_key=ticket_key
     )
     data = _serialize_walkthrough(row)
-    complexity = await _fetch_complexity(session, ticket_key)
+    complexity = await _fetch_complexity(db, ticket_key)
     data["uat_complexity"] = complexity
     data.update(walkthrough_repository.derive_readiness(data, complexity))
     return data
@@ -58,9 +58,9 @@ def _serialize_walkthrough(row) -> dict:
     }
 
 
-async def _fetch_complexity(session: AsyncSession, ticket_key: str) -> str | None:
+async def _fetch_complexity(db: AsyncIOMotorDatabase, ticket_key: str) -> str | None:
     latest = await plan_repository.find_latest_plan_for_ticket(
-        session, ticket_key=ticket_key.upper()
+        db, ticket_key=ticket_key.upper()
     )
     if not latest or not latest.body:
         return None

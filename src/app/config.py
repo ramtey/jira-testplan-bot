@@ -130,7 +130,16 @@ class Settings(BaseSettings):
     # a malformed description — from burning a call every interval.
     watch_retry_cooldown_hours: int = 6
 
-    # Database (Neon Postgres)
+    # Database (MongoDB)
+    # Connection string for the QA bot's Mongo database. Point this at the NPE
+    # Atlas cluster — never the prod one; this app writes on every ticket fetch.
+    mongodb_uri: str | None = None
+    # Optional override when the URI carries no database name in its path.
+    mongodb_db: str | None = None
+
+    # The retired Neon connection string. Kept only so scripts/backfill_mongo.py
+    # can read the old database during the cutover, and so an .env that still
+    # carries it does not fail validation. Remove both once the backfill is done.
     database_url: str | None = None
 
 

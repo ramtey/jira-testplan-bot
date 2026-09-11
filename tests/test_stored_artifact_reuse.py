@@ -23,7 +23,7 @@ from src.app import bug_lens_routes
 from src.app.main import app
 from src.app.repositories import bug_analysis_repository
 
-from .conftest import noop_get_sessionmaker
+from .conftest import noop_get_db
 
 client = TestClient(app)
 
@@ -68,7 +68,7 @@ def _patch_lookup(return_value):
             "find_latest_for_ticket",
             AsyncMock(return_value=return_value),
         ),
-        patch.object(bug_lens_routes, "get_sessionmaker", noop_get_sessionmaker),
+        patch.object(bug_lens_routes, "get_db", noop_get_db),
     )
 
 
@@ -159,7 +159,7 @@ def test_a_store_failure_is_a_503_not_a_silent_null():
             "find_latest_for_ticket",
             AsyncMock(side_effect=RuntimeError("connection reset")),
         ),
-        patch.object(bug_lens_routes, "get_sessionmaker", noop_get_sessionmaker),
+        patch.object(bug_lens_routes, "get_db", noop_get_db),
     ):
         response = client.get("/bug-lens/by-ticket/SK-1")
     assert response.status_code == 503
@@ -179,17 +179,7 @@ async def test_watcher_claims_the_auto_dispatch_flag():
 
     claimed: list[str] = []
 
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def commit(self):
-            pass
-
-    async def _mark(session, *, ticket_key):
+    async def _mark(db, *, ticket_key):
         claimed.append(ticket_key)
 
     payload = {
@@ -205,7 +195,7 @@ async def test_watcher_claims_the_auto_dispatch_flag():
 
     with (
         patch.object(
-            queue_watcher, "get_sessionmaker", lambda: (lambda: _FakeSession())
+            queue_watcher, "get_db", noop_get_db
         ),
         patch(
             "src.app.repositories.jira_ticket_repository.mark_auto_bug_analysis_dispatched",
@@ -229,7 +219,7 @@ async def test_watcher_still_analyses_when_the_claim_fails():
     with (
         patch.object(
             queue_watcher,
-            "get_sessionmaker",
+            "get_db",
             lambda: (_ for _ in ()).throw(RuntimeError("no db")),
         ),
         patch("src.app.bug_lens_routes.analyze_bug", analyzed),
@@ -253,19 +243,9 @@ async def test_a_failed_analysis_does_not_cost_the_plan():
     analysis failure must stay contained."""
     from src.app.services import queue_watcher
 
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def commit(self):
-            pass
-
     with (
         patch.object(
-            queue_watcher, "get_sessionmaker", lambda: (lambda: _FakeSession())
+            queue_watcher, "get_db", noop_get_db
         ),
         patch(
             "src.app.repositories.jira_ticket_repository.mark_auto_bug_analysis_dispatched",
@@ -300,11 +280,11 @@ def test_every_analysis_field_is_read_back():
     import dataclasses
 
     from src.app.models import BugAnalysis
-    from src.app.repositories.bug_analysis_repository import _ANALYSIS_COLUMNS
+    from src.app.repositories.bug_analysis_repository import _ANALYSIS_FIELDS
 
     fields = {f.name for f in dataclasses.fields(BugAnalysis)}
-    assert fields == set(_ANALYSIS_COLUMNS), (
+    assert fields == set(_ANALYSIS_FIELDS), (
         "BugAnalysis and the stored-analysis read query have diverged: "
-        f"missing from query {sorted(fields - set(_ANALYSIS_COLUMNS))}, "
-        f"unknown in query {sorted(set(_ANALYSIS_COLUMNS) - fields)}"
+        f"missing from query {sorted(fields - set(_ANALYSIS_FIELDS))}, "
+        f"unknown in query {sorted(set(_ANALYSIS_FIELDS) - fields)}"
     )

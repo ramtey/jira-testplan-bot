@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from sqlalchemy import text
-from sqlmodel.ext.asyncio.session import AsyncSession
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import DESCENDING
 
+from src.app.db import crud
 from src.app.db.models.bug_analysis import BugAnalysisRecord
+from src.app.db.models.jira_ticket import JiraTicket
+from src.app.db.models.run import Run, RunStatus
 from src.app.models import BugAnalysis
 
 
 async def save(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     run_id: int,
     analysis: BugAnalysis,
@@ -36,13 +39,20 @@ async def save(
         suspect_locations=list(analysis.suspect_locations) if analysis.suspect_locations else None,
         blame_evidence=list(analysis.blame_evidence) if analysis.blame_evidence else None,
     )
-    session.add(record)
-    await session.flush()
-    return record
+    return await crud.insert(db, record)
+
+
+async def _ticket_keys_by_run(
+    db: AsyncIOMotorDatabase, run_ids: list[int]
+) -> dict[int, list[str]]:
+    cursor = db[Run.__collection__].find(
+        {"_id": {"$in": run_ids}}, {"_id": 1, "ticket_keys": 1}
+    )
+    return {d["_id"]: list(d.get("ticket_keys") or []) for d in await cursor.to_list(length=None)}
 
 
 async def find_seed_regression_tests(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     ticket_key: str,
     parent_key: str,
@@ -53,46 +63,53 @@ async def find_seed_regression_tests(
     Returns a list of dicts with shape:
         {"source_ticket_keys": list[str], "regression_tests": list[str], "created_at": datetime}
 
-    Excludes the current ticket. Ordered by recency. Only rows whose
-    `regression_tests` is a non-empty JSONB array are returned.
+    Excludes the current ticket. Ordered by recency. Only documents whose
+    `regression_tests` is a non-empty array are returned.
+
+    The Postgres version was one raw statement leaning on `jsonb_array_length`,
+    `ANY(...)` and a correlated EXISTS. Mongo has no join, so the same question is
+    asked in three indexed steps: sibling tickets, then their runs, then those
+    runs' analyses. The `regression_tests.0` test is how Mongo spells "array with
+    at least one element" — it uses the index, where `$size: {$gt: 0}` would not.
     """
-    sql = text(
-        """
-        SELECT r.ticket_keys, ba.regression_tests, ba.created_at
-        FROM bug_analyses ba
-        JOIN runs r ON r.id = ba.run_id
-        WHERE jsonb_typeof(ba.regression_tests) = 'array'
-          AND jsonb_array_length(ba.regression_tests) > 0
-          AND EXISTS (
-            SELECT 1 FROM jira_tickets jt
-            WHERE jt.ticket_key = ANY(r.ticket_keys)
-              AND jt.parent_key = :parent_key
-              AND jt.ticket_key <> :ticket_key
-          )
-        ORDER BY ba.created_at DESC
-        LIMIT :limit
-        """
+    sibling_cursor = db[JiraTicket.__collection__].find(
+        {"parent_key": parent_key, "ticket_key": {"$ne": ticket_key}},
+        {"ticket_key": 1},
     )
-    result = await session.execute(
-        sql,
-        {"parent_key": parent_key, "ticket_key": ticket_key, "limit": limit},
+    siblings = [d["ticket_key"] for d in await sibling_cursor.to_list(length=None)]
+    if not siblings:
+        return []
+
+    run_cursor = db[Run.__collection__].find({"ticket_keys": {"$in": siblings}}, {"_id": 1})
+    run_ids = [d["_id"] for d in await run_cursor.to_list(length=None)]
+    if not run_ids:
+        return []
+
+    records = await crud.find_many(
+        db,
+        BugAnalysisRecord,
+        {"run_id": {"$in": run_ids}, "regression_tests.0": {"$exists": True}},
+        sort=[("created_at", DESCENDING)],
+        limit=limit,
     )
-    rows: list[dict] = []
-    for ticket_keys, regression_tests, created_at in result.all():
-        rows.append(
-            {
-                "source_ticket_keys": list(ticket_keys or []),
-                "regression_tests": list(regression_tests or []),
-                "created_at": created_at,
-            }
-        )
-    return rows
+    if not records:
+        return []
+
+    keys_by_run = await _ticket_keys_by_run(db, [r.run_id for r in records])
+    return [
+        {
+            "source_ticket_keys": keys_by_run.get(record.run_id, []),
+            "regression_tests": list(record.regression_tests or []),
+            "created_at": record.created_at,
+        }
+        for record in records
+    ]
 
 
-# Columns returned by `find_latest_for_ticket`. Ordered to match the
+# Fields returned by `find_latest_for_ticket`. Ordered to match the
 # BugAnalysis dataclass so the route can rebuild the same response shape
 # `/bug-lens/analyze` returns — the UI renders one component for both.
-_ANALYSIS_COLUMNS = (
+_ANALYSIS_FIELDS = (
     "bug_summary",
     "root_cause",
     "fix_status",
@@ -117,7 +134,7 @@ _ANALYSIS_COLUMNS = (
 
 
 async def find_latest_for_ticket(
-    session: AsyncSession,
+    db: AsyncIOMotorDatabase,
     *,
     ticket_key: str,
 ) -> dict | None:
@@ -129,35 +146,36 @@ async def find_latest_for_ticket(
     had no read path, so the watcher was paying for an analysis nobody could
     see and the tester paid again by clicking Analyze.
 
-    Includes multi-ticket analyses, since those rows apply to every key in
+    Includes multi-ticket analyses, since those documents apply to every key in
     the run's `ticket_keys`.
     """
-    sql = text(
-        f"""
-        SELECT r.ticket_keys, ba.created_at, ba.run_id,
-               {", ".join(f"ba.{c}" for c in _ANALYSIS_COLUMNS)}
-        FROM bug_analyses ba
-        JOIN runs r ON r.id = ba.run_id
-        WHERE :ticket_key = ANY(r.ticket_keys)
-          AND r.status = 'ok'
-        ORDER BY ba.created_at DESC
-        LIMIT 1
-        """
+    key = ticket_key.upper()
+    run_cursor = db[Run.__collection__].find(
+        {"ticket_keys": key, "status": RunStatus.ok.value}, {"_id": 1}
     )
-    result = await session.execute(sql, {"ticket_key": ticket_key.upper()})
-    row = result.first()
-    if row is None:
+    run_ids = [d["_id"] for d in await run_cursor.to_list(length=None)]
+    if not run_ids:
         return None
 
-    ticket_keys, created_at, run_id = row[0], row[1], row[2]
-    analysis = dict(zip(_ANALYSIS_COLUMNS, row[3:]))
-    # JSONB list columns come back as None when empty; the dataclass-derived
+    record = await crud.find_one(
+        db,
+        BugAnalysisRecord,
+        {"run_id": {"$in": run_ids}},
+        sort=[("created_at", DESCENDING)],
+    )
+    if record is None:
+        return None
+
+    analysis = {field: getattr(record, field) for field in _ANALYSIS_FIELDS}
+    # These list fields are stored as None when empty; the dataclass-derived
     # response uses [] for regression_tests / similar_patterns, so match it.
-    for key in ("regression_tests", "similar_patterns"):
-        analysis[key] = list(analysis[key] or [])
+    for field in ("regression_tests", "similar_patterns"):
+        analysis[field] = list(analysis[field] or [])
+
+    keys_by_run = await _ticket_keys_by_run(db, [record.run_id])
     return {
         **analysis,
-        "run_id": run_id,
-        "ticket_keys": list(ticket_keys or []),
-        "created_at": created_at.isoformat() if created_at else None,
+        "run_id": record.run_id,
+        "ticket_keys": keys_by_run.get(record.run_id, []),
+        "created_at": record.created_at.isoformat() if record.created_at else None,
     }

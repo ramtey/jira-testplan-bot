@@ -1,72 +1,43 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
-from sqlalchemy import Column, ForeignKey, Index
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Field
-
-from src.app.db.base import TimestampedBase
+from src.app.db.base import DocumentBase
 
 
-class BugAnalysisRecord(TimestampedBase, table=True):
+class BugAnalysisRecord(DocumentBase):
     """Persisted Bug Lens analysis output for a run.
 
-    One row per Bug Lens run. Multi-ticket runs share a single row that
-    applies to all tickets in `runs.ticket_keys`.
+    One document per Bug Lens run. Multi-ticket runs share a single document that
+    applies to all tickets in ``runs.ticket_keys``.
+
+    Every list field below was a Postgres JSONB column and is now a native BSON
+    array, so these are queryable directly (``{"suspect_symbols": "foo"}``) instead
+    of needing a JSONB containment operator.
     """
 
-    __tablename__ = "bug_analyses"
-    __table_args__ = (
-        Index("ix_bug_analyses_run", "run_id"),
-    )
+    __collection__: ClassVar[str] = "bug_analyses"
 
-    run_id: int = Field(
-        sa_column=Column(
-            ForeignKey("runs.id", ondelete="CASCADE"),
-            nullable=False,
-            index=True,
-        )
-    )
+    run_id: int
 
-    bug_summary: str = Field(nullable=False)
-    root_cause: str | None = Field(default=None)
-    fix_status: str = Field(nullable=False, max_length=32)
-    fix_explanation: str | None = Field(default=None)
-    fix_complexity: str | None = Field(default=None, max_length=32)
-    fix_effort_estimate: str | None = Field(default=None, max_length=64)
-    fix_complexity_reasoning: str | None = Field(default=None)
-    why_tests_miss: str | None = Field(default=None)
-    is_regression: bool | None = Field(default=None)
-    regression_introduced_by: str | None = Field(default=None, max_length=512)
+    bug_summary: str
+    root_cause: str | None = None
+    fix_status: str
+    fix_explanation: str | None = None
+    fix_complexity: str | None = None
+    fix_effort_estimate: str | None = None
+    fix_complexity_reasoning: str | None = None
+    why_tests_miss: str | None = None
+    is_regression: bool | None = None
+    regression_introduced_by: str | None = None
 
-    regression_tests: list[str] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    similar_patterns: list[str] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    affected_flow: list[str] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    scope_of_impact: list[str] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    assumptions: list[str] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    open_questions: list[str] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    suspect_symbols: list[str] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    code_evidence: list[dict[str, Any]] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    suspect_locations: list[dict[str, Any]] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
-    blame_evidence: list[dict[str, Any]] | None = Field(
-        default=None, sa_column=Column(JSONB, nullable=True)
-    )
+    regression_tests: list[str] | None = None
+    similar_patterns: list[str] | None = None
+    affected_flow: list[str] | None = None
+    scope_of_impact: list[str] | None = None
+    assumptions: list[str] | None = None
+    open_questions: list[str] | None = None
+    suspect_symbols: list[str] | None = None
+    code_evidence: list[dict[str, Any]] | None = None
+    suspect_locations: list[dict[str, Any]] | None = None
+    blame_evidence: list[dict[str, Any]] | None = None
