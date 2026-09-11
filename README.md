@@ -346,7 +346,7 @@ Analyze bug tickets to go beyond the ticket description and into the code:
 
 ### Test Plan History
 
-Every successful test plan run is persisted to Postgres so prior versions stay
+Every successful test plan run is persisted to MongoDB so prior versions stay
 recoverable and comparable.
 
 - **Prior-runs banner**: When a ticket has prior successful test-plan runs, a
@@ -642,7 +642,7 @@ look.
 
 Two limits worth knowing. `StartInterval` does not fire while the Mac is
 asleep — launchd runs a single catch-up sweep on wake — so this is a
-convenience, not infrastructure. And the sweep needs `DATABASE_URL`, which
+convenience, not infrastructure. And the sweep needs `MONGODB_URI`, which
 settings read from `.env` relative to the working directory; that is why the
 runner `cd`s into the repo before anything else.
 
@@ -653,16 +653,17 @@ runner `cd`s into the repo before anything else.
 `npm run build` for the frontend.
 
 It needs **no repository secrets**. The suite is hermetic — no network, no real
-credentials — with one wrinkle: `init_engine` refuses to guess a database, so
-six tests fail without `DATABASE_URL` even though every query is mocked. CI
-sets a throwaway URL, which satisfies the check without a database. Keep it
-that way; this repo is public.
+credentials — with one wrinkle: `init_client` refuses to guess a database, so a
+handful of tests fail without `MONGODB_URI` even though every query is mocked.
+CI sets a throwaway URI, which satisfies the check without a database — Motor
+connects lazily, so nothing dials out. The repository tests go further and run
+against an in-memory Mongo (`mongomock-motor`), so the query layer is exercised
+for real without CI needing a server. Keep it that way; this repo is public.
 
 `pyproject.toml` pins `testpaths = ["tests"]`. Without it a bare `pytest`
 walks `src/` and tries to import `test_plan_progress` and
 `test_plan_generator` — domain modules about test *plans*, not tests — as test
-modules, and re-registering those SQLModel classes aborts collection before a
-single test runs.
+modules, which aborts collection before a single test runs.
 
 ### CLI in CI/CD
 
@@ -884,7 +885,7 @@ pinning the *refusal* rather than the happy path:
 - ✅ **Structured tool-use output**: Claude tool use enforces JSON schema on test plan output (replaces regex parsing)
 - ✅ **Formatted Jira comments**: Test plans posted as rich ADF (Atlassian Document Format) instead of plain text
 - ✅ **UX polish**: Auto-scroll to results, inline button-state feedback, red ticket badge in Bug Lens
-- ✅ **Test plan history**: Persist every test-plan run to Postgres; surface prior versions in a banner with side-by-side view and diff against the previous version; regenerations auto-chain via `previous_plan_id`
+- ✅ **Test plan history**: Persist every test-plan run to the database; surface prior versions in a banner with side-by-side view and diff against the previous version; regenerations auto-chain via `previous_plan_id`
 - ✅ **Jira browser side rail**: Collapsible Projects → Status → Issues drill-down with status-category grouping, type badges, pinned + recent project shortcuts, and silent refresh on tab focus
 - ✅ **QA workflow buttons**: One-click *Pull to Testing* / *Pass to UAT* / *Fail back to To Do* for the SK project, with automatic reassignment (current user on pull, prior assignee on pass/fail)
 - ✅ **Sub-task test plans**: Sub-tasks are now a testable issue type and flow through the same generation path as Story/Task/Bug, while still inheriting parent Epic/Story design context
@@ -983,8 +984,10 @@ pinning the *refusal* rather than the happy path:
 
 - ✅ **A plan that says when it's older than the code**: the watcher writes plans early and never regenerates them, and its two write-side guards (skip held tickets, require a merged PR) can't help once a plan exists — a PR reopened and re-merged, or a second PR landing later, moves the diff out from under a plan that still reads as authoritative. Opening a ticket now compares the stored plan's `created_at` against each PR's `merged_at` and warns above the plan when anything merged since, naming the PR and offering Regenerate. Merge time only, deliberately: an open PR is code in flight and says nothing about the plan. A plan generated in the current session carries no timestamp and so can never warn about itself
 - ✅ **The epic view reuses plans instead of re-buying them**: clicking Generate on an epic child checks `runs/by-ticket` + `plans/{id}` first and shows "Existing plan v1, written 2 days ago — reused rather than regenerated" with an explicit Regenerate, where it used to pay for a fresh generation every time. That row also stopped carrying its own copy of the generate payload — a third hand-maintained builder the parity test never covered — in favour of `POST /tickets/{key}/plan`, which also removed the separate `GET /issue/{key}` fetch it needed
-- ✅ **Every check runs on its own**: `.github/workflows/ci.yml` runs pytest plus frontend lint and build on every push and PR, with no repository secrets — the suite proved hermetic apart from `init_engine` refusing to guess a database, which a throwaway `DATABASE_URL` satisfies. `pyproject.toml` pins `testpaths` so a bare `pytest` stops trying to import `test_plan_*` domain modules as test modules and aborting collection. `ops/launchd/` installs the watcher as a LaunchAgent sweeping every 5 minutes, one `--once` sweep per launch so nothing stays resident
+- ✅ **Every check runs on its own**: `.github/workflows/ci.yml` runs pytest plus frontend lint and build on every push and PR, with no repository secrets — the suite proved hermetic apart from `init_client` refusing to guess a database, which a throwaway `MONGODB_URI` satisfies. `pyproject.toml` pins `testpaths` so a bare `pytest` stops trying to import `test_plan_*` domain modules as test modules and aborting collection. `ops/launchd/` installs the watcher as a LaunchAgent sweeping every 5 minutes, one `--once` sweep per launch so nothing stays resident
 - ✅ **This team's specifics moved out of the code**: the repo is public so other QA teams can run it, and a clone used to inherit five hardcoded coworkers, two repo names and one project prefix. `TEAM_GITHUB_LOGIN_TO_JIRA`, `BOT_DISPLAY_NAMES`, `BUG_LENS_REPO_HINTS` and `WORKFLOW_PROJECT_PREFIXES` now carry all of it from `.env`, each with a worked example in `.env.example`. The login map warns once when unset, because an unconfigured install and "this PR author isn't on the team" otherwise produce the same silent miss
+- ✅ **Persistence moved from Neon Postgres to MongoDB**: the nine repositories, their models and every query behind them now run on Motor, and Alembic is gone — Mongo creates collections on first write, so idempotent index creation at startup replaces `alembic upgrade head`. Ids stayed integers rather than becoming ObjectIds, because the API routes, the frontend's URLs and the `previous_plan_id` version chains all pass them as ints; a counters collection reproduces SERIAL with an atomic `$inc`, which also let the data migration keep every original key. Test cases stayed their own collection rather than embedding into the plan — the idiomatic Mongo shape — because `feedback_events.target_id` addresses individual cases and that reference has nowhere to point inside a subdocument. The joins became two-step lookups (resolve run ids, then filter by them) since Mongo has no join, and the two raw-SQL queries leaning on `jsonb_array_length`/`ANY()` became three indexed steps each; array membership is the one thing that got simpler, `{"ticket_keys": key}` replacing the `@>` operator. Timestamps are now truncated to milliseconds when created, because BSON stores datetimes at that precision and a microsecond value silently stopped comparing equal to its own reloaded copy. `tests/test_mongo_repositories.py` runs every repository against an in-memory Mongo, which matters more here than it did on Postgres: a mistranslated filter matches nothing rather than erroring the way bad SQL would, and `has_successful_test_plan` quietly returning False would turn the watcher's never-regenerate guard into "regenerate forever"
+
 - ✅ **Dead walkthrough UI removed**: folding walkthrough authoring into the Pass-to-UAT hand-off (July) removed the only render site for the plan-view walkthrough card and left ~490 lines behind, including four helpers the lint config's capitalised-name exemption hid. Rollup emitted a byte-identical bundle before and after, confirming none of it was reachable
 
 ### Future Enhancements
