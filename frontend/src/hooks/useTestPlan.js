@@ -14,6 +14,10 @@ function buildTicketPayload(td) {
     issue_type: td.issue_type,
     testing_context: {},
     development_info: td.development_info,
+    // Jira's dev-status endpoint didn't answer for this ticket, so an absent
+    // development_info means "unknown", not "no PR". The server needs that
+    // distinction before it can refuse a plan for lack of an implementation.
+    dev_status_unavailable: !!td.dev_status_unavailable,
     image_urls: td.attachments ? td.attachments.map((a) => a.url) : null,
     comments: td.comments || null,
     parent_info: td.parent || null,

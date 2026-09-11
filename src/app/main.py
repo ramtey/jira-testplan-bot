@@ -33,7 +33,7 @@ from .repositories import (
 )
 from .runs_routes import router as runs_router
 from .services import plan_service
-from .services.plan_service import NonTestableIssueError
+from .services.plan_service import NonTestableIssueError, SourceLookupUnavailableError
 from .services.test_plan_generator import (
     classify_deliverable,
     compute_ac_coverage,
@@ -511,6 +511,8 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         return await plan_service.generate_single(request)
     except NonTestableIssueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SourceLookupUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -531,6 +533,8 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
         return await plan_service.generate_multi(request.tickets)
     except NonTestableIssueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SourceLookupUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -551,6 +555,8 @@ async def generate_plan_for_ticket(ticket_key: str):
         return await plan_service.generate_for_tickets(keys)
     except NonTestableIssueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SourceLookupUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except JiraAuthError as e:

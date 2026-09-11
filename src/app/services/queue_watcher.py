@@ -56,6 +56,7 @@ from ..db.session import get_sessionmaker
 from ..jira_client import JiraAuthError, JiraClient, JiraConnectionError
 from ..models import GenerateTestPlanRequest
 from ..repositories import plan_repository, ticket_hold_repository
+from ..source_grounding import PR_STATE_MERGED, classify_pr_state
 from . import plan_service
 
 logger = logging.getLogger(__name__)
@@ -124,10 +125,15 @@ def _has_merged_pr(payload: dict) -> bool:
     then makes that plan permanent — so the tester inherits a plan describing
     code that moved after it was written, with no signal that it did.
     A DECLINED PR is worse: it describes code that will never ship.
+
+    Asks `classify_pr_state`, not `pr["status"]`: Jira's dev-status mirror
+    lags GitHub, so a PR that has actually landed can still be reported as
+    OPEN. Reading the status string alone made this skip such a ticket on
+    every sweep, silently, for as long as the mirror stayed behind.
     """
     dev_info = payload.get("development_info") or {}
     return any(
-        (pr.get("status") or "").strip().lower() == "merged"
+        classify_pr_state(pr) == PR_STATE_MERGED
         for pr in dev_info.get("pull_requests") or []
         if isinstance(pr, dict)
     )

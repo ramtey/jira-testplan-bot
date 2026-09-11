@@ -290,6 +290,10 @@ class JiraIssue:
     # changelog item didn't carry an accountId (e.g. anonymized older changes).
     assignee_history_account_ids: list[str | None] | None = None
     development_info: DevelopmentInfo | None = None
+    # True when Jira's dev-status endpoint never answered, so a None
+    # `development_info` means "we couldn't look", not "there is nothing".
+    # Only the second of those may be reported as "no implementation found".
+    dev_status_unavailable: bool = False
     attachments: list[Attachment] | None = None
     comments: list[JiraComment] | None = None  # Filtered testing-related comments
     parent: ParentIssue | None = None  # Parent ticket context with design resources
@@ -407,6 +411,9 @@ class GenerateTestPlanRequest(BaseModel):
     child_info: list[dict] | None = None
     linked_info: dict | None = None  # Linked issues (blocks, blocked_by, causes, caused_by)
     bounce_history: list[dict] | None = None  # Prior QA/UAT bounce-back events with reasons
+    # See JiraIssue.dev_status_unavailable — carried on the request so a
+    # server-side generate and a browser generate make the same call.
+    dev_status_unavailable: bool = False
 
 
 class TicketInput(BaseModel):
@@ -424,6 +431,7 @@ class TicketInput(BaseModel):
     child_info: list[dict] | None = None
     linked_info: dict | None = None
     bounce_history: list[dict] | None = None
+    dev_status_unavailable: bool = False
 
 
 class MultiTicketGenerateRequest(BaseModel):

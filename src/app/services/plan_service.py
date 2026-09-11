@@ -81,6 +81,28 @@ logger = logging.getLogger(__name__)
 MAX_PROMPT_IMAGES = 3
 
 
+class SourceLookupUnavailableError(Exception):
+    """Raised when we can't tell whether a ticket has an implementation.
+
+    `require_source_grounding` refuses to write a plan with no PR behind it,
+    and says so in words — "No implementation was found for this ticket …
+    link a pull request". That sentence is only true if the lookup actually
+    ran. When Jira's dev-status endpoint times out or rate-limits, the honest
+    answer is that we don't know, so this fails the run as the transient
+    error it is instead of publishing a confident falsehood about someone's
+    ticket. The watcher retries on its next sweep; the UI says to try again.
+    """
+
+    def __init__(self, ticket_key: str):
+        self.ticket_key = ticket_key
+        super().__init__(
+            f"Could not reach Jira's dev-status API for {ticket_key}, so whether "
+            "it has a linked pull request is unknown. No plan was generated — "
+            "this is a temporary Jira failure, not a missing implementation. "
+            "Try again in a moment."
+        )
+
+
 class NonTestableIssueError(Exception):
     """Raised for issue types the bot deliberately won't plan for (Epic, Spike).
 
@@ -210,6 +232,7 @@ def serialize_issue(issue) -> dict:
             "word_count": issue.description_analysis.word_count,
         },
         "development_info": development_info_dict,
+        "dev_status_unavailable": getattr(issue, "dev_status_unavailable", False),
         "attachments": attachments_list,
         "comments": comments_list,
         "parent": parent_info_dict,
@@ -237,6 +260,7 @@ def prompt_payload(serialized: dict) -> dict:
         "issue_type": serialized["issue_type"],
         "testing_context": {},
         "development_info": serialized.get("development_info"),
+        "dev_status_unavailable": bool(serialized.get("dev_status_unavailable")),
         "image_urls": [a["url"] for a in attachments if a.get("url")] or None,
         "comments": serialized.get("comments") or None,
         "parent_info": serialized.get("parent") or None,
@@ -352,6 +376,15 @@ async def generate_single(
     # speculation that read as authoritative and cost a tester a cycle
     # each. Say what was searched instead, and ask for a PR or a spec.
     if settings.require_source_grounding and not has_grounding_source(provenance):
+        if request.dev_status_unavailable:
+            provenance["dev_status_unavailable"] = True
+            logger.warning(
+                "source lookup unavailable for %s; refusing to report it as "
+                "having no implementation",
+                request.ticket_key,
+            )
+            await run_tracker.fail(run_ctx, error_code="dev_status_unavailable")
+            raise SourceLookupUnavailableError(request.ticket_key)
         logger.info(
             "no_source: %s has no merged or open PR (%d closed-unmerged skipped); "
             "returning a no-implementation result instead of a plan",
@@ -552,6 +585,18 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
     # across several unimplemented tickets is the same speculation as a
     # single-ticket one, multiplied.
     if settings.require_source_grounding and not has_grounding_source(provenance):
+        unknown = [t.ticket_key for t in tickets if t.dev_status_unavailable]
+        if unknown:
+            # One unchecked ticket is enough: the batch can't be called
+            # unimplemented when we never found out about part of it.
+            provenance["dev_status_unavailable"] = True
+            logger.warning(
+                "source lookup unavailable for %s; refusing to report the batch "
+                "as having no implementation",
+                unknown,
+            )
+            await run_tracker.fail(run_ctx, error_code="dev_status_unavailable")
+            raise SourceLookupUnavailableError(", ".join(unknown))
         logger.info(
             "no_source: none of %s has a merged or open PR; "
             "returning a no-implementation result instead of a plan",

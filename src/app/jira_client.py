@@ -1226,12 +1226,21 @@ class JiraClient:
 
     async def _get_development_info(
         self, issue_id: str, issue_key: str
-    ) -> DevelopmentInfo | None:
+    ) -> tuple[DevelopmentInfo | None, bool]:
         """
         Fetch development information (commits, PRs, branches) for a Jira issue.
 
         This uses the internal dev-status API which is unofficial and may change.
-        Returns None if the endpoint is unavailable or returns errors.
+
+        Returns ``(info, unavailable)``. ``info`` is None when the ticket has no
+        linked development work; ``unavailable`` says the endpoint never
+        answered, so None means "we don't know" rather than "there is none".
+
+        The two used to be the same None, and `require_source_grounding` then
+        turned a Jira blip into "No implementation was found for this ticket —
+        link a pull request", a confident claim about a ticket that may well
+        have a merged PR. Only a 404 is evidence of absence; a 429, a 5xx or a
+        timeout is evidence of nothing.
 
         Note: This works with GitHub, Bitbucket, and other integrations.
         For Bitbucket, use applicationType='stash' (legacy naming).
@@ -1239,6 +1248,7 @@ class JiraClient:
         commits: list[Commit] = []
         pull_requests: list[PullRequest] = []
         branches: list[str] = []
+        unavailable = False
 
         # Try to fetch development summary first to check what's available
         summary_url = (
@@ -1251,9 +1261,11 @@ class JiraClient:
                     summary_url, headers=self._headers()
                 )
 
-                # If summary endpoint fails or returns 404, development info may not be available
+                # 404 means Jira has no dev-status record for the issue —
+                # genuine absence. Anything else (429, 5xx) means we were not
+                # told, which is not the same answer.
                 if summary_response.status_code != 200:
-                    return None
+                    return None, summary_response.status_code != 404
 
                 summary_data = summary_response.json()
 
@@ -1290,6 +1302,15 @@ class JiraClient:
                         extracted_branches = self._extract_branches(repo_data)
                         commits.extend(extracted_commits)
                         branches.extend(extracted_branches)
+                    else:
+                        # The summary said this application type had data and
+                        # the detail call wouldn't say what. Partial silence is
+                        # still silence.
+                        unavailable = True
+                        logger.warning(
+                            "Dev-status repository detail for %s returned %s",
+                            issue_key, repo_response.status_code,
+                        )
 
                     # Fetch pull request info
                     pr_url = f"{self.base_url}/rest/dev-status/latest/issue/detail"
@@ -1307,16 +1328,22 @@ class JiraClient:
                         pr_data = pr_response.json()
                         extracted_prs = await self._extract_pull_requests(pr_data)
                         pull_requests.extend(extracted_prs)
+                    else:
+                        unavailable = True
+                        logger.warning(
+                            "Dev-status pull-request detail for %s returned %s",
+                            issue_key, pr_response.status_code,
+                        )
 
-        except (httpx.ConnectError, httpx.TimeoutException, Exception) as e:
-            # If dev-status API is unavailable, just return None
-            # This is a non-critical feature, don't block the main flow
+        except Exception as e:
+            # Never block the main flow on dev-status — but say that we were
+            # blocked, so nobody downstream reads this as "no PRs exist".
             logger.warning(f"Dev-status API error for {issue_key}: {type(e).__name__}: {e}")
-            return None
+            return None, True
 
         # Return None if no development info was found
         if not commits and not pull_requests and not branches:
-            return None
+            return None, unavailable
 
         # Fetch repository context from the first GitHub PR (Phase 4)
         repository_context = None
@@ -1337,7 +1364,7 @@ class JiraClient:
             pull_requests=pull_requests,
             branches=branches,
             repository_context=repository_context,
-        )
+        ), unavailable
 
     def _extract_commits(self, repo_data: dict) -> list[Commit]:
         """Extract commit information from repository data."""
@@ -2780,7 +2807,7 @@ class JiraClient:
             return await self._get_parent_issue(parent_key)
 
         (
-            development_info,
+            dev_status,
             comments_data,
             figma_context,
             parent_issue,
@@ -2792,6 +2819,7 @@ class JiraClient:
             _fetch_parent(),
             self._get_children(issue_key),
         )
+        development_info, dev_status_unavailable = dev_status
 
         # Merge Figma context into development_info (matches the pre-parallel
         # ordering: enrich if dev_info exists, otherwise wrap it in a fresh
@@ -2904,6 +2932,7 @@ class JiraClient:
                 assignee_history_account_ids if assignee_history_account_ids else None
             ),
             development_info=development_info,
+            dev_status_unavailable=dev_status_unavailable,
             attachments=attachments if attachments else None,
             comments=filtered_comments if filtered_comments else None,
             parent=parent_issue,
