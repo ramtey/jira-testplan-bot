@@ -8,7 +8,9 @@ import asyncio
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
+from unittest.mock import AsyncMock
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -188,3 +190,162 @@ class TestFirstText:
             assert "no text block" in str(e)
         else:
             raise AssertionError("expected LLMError")
+
+
+class TestOverloadRetry:
+    """529 "Overloaded" is transient — it must be retried, not surfaced.
+
+    QA hit a raw `Claude API returned error status 529: {"type":"error",...}`
+    on "Generate test plan" for what was a one-second blip on Anthropic's
+    side. Every Claude call now goes through `_post_messages`, which backs
+    off and retries the transient statuses, and reports whatever survives
+    through `_status_error` in words a tester can act on.
+    """
+
+    @staticmethod
+    def _client(monkeypatch):
+        from src.app import llm_client as mod
+
+        monkeypatch.setattr(mod.settings, "anthropic_api_key", "sk-test", raising=False)
+        client = ClaudeClient()
+        # Backoff without the wall-clock wait.
+        monkeypatch.setattr(mod.asyncio, "sleep", AsyncMock())
+        return client
+
+    @staticmethod
+    def _responses(monkeypatch, statuses):
+        """Stub the transport; return the list that records each attempt."""
+        from src.app import llm_client as mod
+
+        attempts = []
+
+        class _StubClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, **kwargs):
+                attempts.append(kwargs.get("json"))
+                status = statuses[len(attempts) - 1]
+                request = httpx.Request("POST", url)
+                if status == 200:
+                    return httpx.Response(
+                        200,
+                        request=request,
+                        json={"content": [{"type": "text", "text": "ok"}]},
+                    )
+                return httpx.Response(status, request=request, text="Overloaded")
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _StubClient)
+        return attempts
+
+    @pytest.mark.asyncio
+    async def test_529_is_retried_until_it_succeeds(self, monkeypatch):
+        client = self._client(monkeypatch)
+        attempts = self._responses(monkeypatch, [529, 529, 200])
+
+        assert await client.summarize_ticket("A ticket", None) == "ok"
+        assert len(attempts) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_non_retryable_status_stops_the_loop(self, monkeypatch):
+        client = self._client(monkeypatch)
+        attempts = self._responses(monkeypatch, [529, 500, 200])
+
+        with pytest.raises(LLMError):
+            await client.summarize_batch([{"ticket_key": "SK-1", "summary": "x"}])
+        assert len(attempts) == 2, "a 500 is not transient — don't burn attempts on it"
+
+    @pytest.mark.asyncio
+    async def test_plan_generation_goes_through_the_retrying_transport(self, monkeypatch):
+        # The path QA actually hit. It used to make exactly one attempt and
+        # surface the raw 529 body; assert against the transport it now uses
+        # rather than standing up the whole prompt-building pipeline.
+        client = self._client(monkeypatch)
+        attempts = self._responses(monkeypatch, [529, 529, 200])
+
+        data = await client._post_messages({"model": "m"}, timeout=600.0)
+        assert data["content"][0]["text"] == "ok"
+        assert len(attempts) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_long_generation_does_not_re_run_on_timeout(self, monkeypatch):
+        # Retrying a read timeout on a 10-minute plan call just burns minutes;
+        # the short helpers opt in, this path doesn't.
+        client = self._client(monkeypatch)
+        calls = []
+
+        class _Timeout:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, *a, **kw):
+                calls.append(1)
+                raise httpx.ReadTimeout("too slow")
+
+        from src.app import llm_client as mod
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _Timeout)
+
+        with pytest.raises(httpx.ReadTimeout):
+            await client._post_messages({"model": "m"}, timeout=600.0)
+        assert len(calls) == 1
+
+        calls.clear()
+        with pytest.raises(httpx.ReadTimeout):
+            await client._post_messages({"model": "m"}, timeout=60.0, retry_timeouts=True)
+        assert len(calls) == 4
+
+    @pytest.mark.asyncio
+    async def test_persistent_overload_reports_in_plain_words(self, monkeypatch):
+        client = self._client(monkeypatch)
+        self._responses(monkeypatch, [529, 529, 529, 529])
+
+        with pytest.raises(LLMError) as excinfo:
+            await client.summarize_ticket("A ticket", None)
+        assert "temporarily overloaded" in str(excinfo.value)
+        assert "529" not in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_a_best_effort_critic_retries_before_giving_up(self, monkeypatch):
+        # These degrade to {} on error, so a throttled critic is invisible —
+        # all the more reason for the retry to happen underneath it.
+        client = self._client(monkeypatch)
+        attempts = self._responses(monkeypatch, [529, 529, 529, 529])
+
+        assert await client.verify_case_grounding([{"case_id": "hp-1", "title": "Save a listing"}]) == {}
+        assert len(attempts) == 4
+
+    def test_retry_after_header_wins_over_backoff(self):
+        response = httpx.Response(529, headers={"retry-after": "7"})
+        assert ClaudeClient._retry_delay(0, response) == 7.0
+
+    def test_retry_after_is_capped(self):
+        response = httpx.Response(529, headers={"retry-after": "9000"})
+        assert ClaudeClient._retry_delay(0, response) == 30.0
+
+    def test_backoff_grows_and_is_jittered(self):
+        delays = [ClaudeClient._retry_delay(n, None) for n in range(3)]
+        assert 1.0 <= delays[0] < 1.25
+        assert 2.0 <= delays[1] < 2.5
+        assert 4.0 <= delays[2] < 5.0
+
+    def test_401_still_names_the_key_not_an_overload(self):
+        e = httpx.HTTPStatusError(
+            "401",
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+            response=httpx.Response(401, json={"error": {"message": "invalid x-api-key"}}),
+        )
+        err = ClaudeClient._status_error(e)
+        assert err.error_type == "invalid"
+        assert "ANTHROPIC_API_KEY" in str(err)

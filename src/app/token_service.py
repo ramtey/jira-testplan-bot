@@ -424,6 +424,19 @@ class TokenHealthService:
                         error_message="Anthropic API rate limit exceeded. Wait and try again.",
                         last_checked=last_checked,
                     )
+                elif response.status_code == 529:
+                    # "Overloaded" — a transient state on Anthropic's side, not
+                    # a bad key. Falling through to the generic branch reported
+                    # is_valid=False, so the token banner cried wolf about
+                    # ANTHROPIC_API_KEY during what was a few-second blip.
+                    return TokenStatus(
+                        service_name=service_name,
+                        is_valid=True,
+                        is_required=True,
+                        error_type=TokenErrorType.SERVICE_UNAVAILABLE,
+                        error_message="Claude is temporarily overloaded. Try again in a moment.",
+                        last_checked=last_checked,
+                    )
                 else:
                     error_data = response.json() if response.text else {}
                     return TokenStatus(

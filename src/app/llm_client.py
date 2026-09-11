@@ -8,7 +8,9 @@ Supports multiple LLM providers with a unified interface:
 Switch providers by changing LLM_PROVIDER in .env
 """
 
+import asyncio
 import json
+import random
 import re
 from abc import ABC, abstractmethod
 from dataclasses import is_dataclass
@@ -4006,6 +4008,130 @@ class ClaudeClient(LLMClient):
             error_type="service_unavailable",
         )
 
+    # ---- transport ------------------------------------------------------
+
+    # 529 is Anthropic's "Overloaded" — documented as transient, and the next
+    # attempt a second later usually succeeds. It used to surface raw to QA as
+    # a failed "Generate test plan". 502/503/504 are upstream-gateway hiccups
+    # that behave the same way.
+    _RETRYABLE_STATUSES = frozenset({502, 503, 504, 529})
+    _MAX_ATTEMPTS = 4
+    _BACKOFF_SECONDS = 1.0
+
+    @staticmethod
+    def _retry_delay(attempt: int, response: "httpx.Response | None") -> float:
+        """Seconds to wait before the next attempt.
+
+        Honours `retry-after` when Anthropic sends one, otherwise exponential
+        with jitter — the fan-out passes fire several of these calls at once,
+        and an un-jittered backoff just re-collides them on the same
+        overloaded window.
+        """
+        if response is not None:
+            retry_after = response.headers.get("retry-after")
+            if retry_after:
+                try:
+                    return min(float(retry_after), 30.0)
+                except ValueError:
+                    pass
+        base = ClaudeClient._BACKOFF_SECONDS * (2 ** attempt)
+        return base * (1 + random.random() * 0.25)
+
+    @staticmethod
+    def _status_error(e: httpx.HTTPStatusError) -> LLMError:
+        """The LLMError for a Claude status that retrying can't fix.
+
+        One place so every caller reports an overload, a bad key or a rate
+        limit the same way — a 529 that survives _post_messages' retries is a
+        "try again in a moment", not a raw status dump in the UI.
+        """
+        status = e.response.status_code
+        if status == 401:
+            message = ""
+            try:
+                message = ((e.response.json().get("error") or {}).get("message") or "")
+            except Exception:
+                pass
+            if "invalid" in message.lower():
+                return LLMError(
+                    "Anthropic API key is invalid. Please check your ANTHROPIC_API_KEY "
+                    "in .env or generate a new key at "
+                    "https://console.anthropic.com/settings/keys",
+                    error_type="invalid",
+                )
+            return LLMError(
+                "Anthropic API authentication failed. Your API key may be expired or "
+                "revoked. Get a new key at https://console.anthropic.com/settings/keys",
+                error_type="expired",
+            )
+        if status == 429:
+            return LLMError(
+                "Anthropic API rate limit exceeded. Please wait and try again.",
+                error_type="rate_limited",
+            )
+        if status == 529:
+            return LLMError(
+                "Claude is temporarily overloaded. Please try again in a moment.",
+                error_type="service_unavailable",
+            )
+        return LLMError(
+            f"Claude API returned error status {status}: {e.response.text}",
+            error_type="service_unavailable",
+        )
+
+    async def _post_messages(
+        self,
+        payload: dict,
+        *,
+        timeout: float,
+        retry_timeouts: bool = False,
+    ) -> dict:
+        """POST /v1/messages, retrying transient failures, and return the JSON.
+
+        Every Claude call in this class goes through here so an overloaded API
+        is a pause rather than a failed test plan. Only the retryable statuses
+        are absorbed: any other status — and the last attempt, whatever it
+        failed with — raises the original httpx error, so each caller keeps its
+        own 401/429 handling and its own degrade-to-empty behaviour.
+
+        `retry_timeouts` is off by default: on the long plan-generation calls a
+        read timeout means the generation itself ran long, and re-running it
+        only burns minutes. The short helpers that already retried timeouts
+        pass True.
+        """
+        for attempt in range(self._MAX_ATTEMPTS):
+            is_last = attempt == self._MAX_ATTEMPTS - 1
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "anthropic-version": "2023-06-01",
+                            "x-api-key": self.api_key,
+                            "content-type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.HTTPStatusError as e:
+                if is_last or e.response.status_code not in self._RETRYABLE_STATUSES:
+                    raise
+                delay = self._retry_delay(attempt, e.response)
+            except httpx.TimeoutException:
+                if is_last or not retry_timeouts:
+                    raise
+                delay = self._retry_delay(attempt, None)
+
+            await asyncio.sleep(delay)
+
+        # The last attempt always returns or raises; this only guards a future
+        # edit that makes _MAX_ATTEMPTS zero or negative.
+        raise LLMError(
+            "Claude API request was never attempted.",
+            error_type="service_unavailable",
+        )
+
     async def generate_test_plan(
         self,
         ticket_key: str,
@@ -4051,104 +4177,68 @@ class ClaudeClient(LLMClient):
         })
 
         try:
-            async with httpx.AsyncClient(timeout=settings.claude_api_timeout_seconds) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        # 8192 wasn't enough once the prompt grew (UI grounding,
-                        # AC conflict resolution) — happy_path consumed the whole
-                        # budget and edge_cases/integration_tests/regression got
-                        # silently truncated. 16k of that is the plan itself; the
-                        # rest is thinking, which shares the same cap.
-                        "max_tokens": self._budget(16384, thinking=16384),
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                        "messages": [{"role": "user", "content": content}],
-                        **self._temperature_kwargs(0.1),
-                        "tools": [SUBMIT_TEST_PLAN_TOOL],
-                        "tool_choice": {"type": "tool", "name": "submit_test_plan"},
-                    },
-                )
-                response.raise_for_status()
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    # 8192 wasn't enough once the prompt grew (UI grounding,
+                    # AC conflict resolution) — happy_path consumed the whole
+                    # budget and edge_cases/integration_tests/regression got
+                    # silently truncated. 16k of that is the plan itself; the
+                    # rest is thinking, which shares the same cap.
+                    "max_tokens": self._budget(16384, thinking=16384),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": content}],
+                    **self._temperature_kwargs(0.1),
+                    "tools": [SUBMIT_TEST_PLAN_TOOL],
+                    "tool_choice": {"type": "tool", "name": "submit_test_plan"},
+                },
+                timeout=settings.claude_api_timeout_seconds,
+            )
 
-                data = response.json()
-                # When Anthropic hits the output cap, the JSON inside the
-                # tool_use block is silently truncated — usually `happy_path`
-                # is full but `edge_cases`/`integration_tests`/`regression`
-                # are missing. Fail loudly so the caller can retry with a
-                # smaller batch instead of shipping a half-empty plan.
-                if data.get("stop_reason") == "max_tokens":
-                    out_toks = (data.get("usage") or {}).get("output_tokens")
-                    raise LLMError(
-                        "Claude truncated the test plan at the output-token cap"
-                        + (f" ({out_toks} tokens)" if out_toks else "")
-                        + ". Try fewer tickets per batch or split high-AC tickets.",
-                        error_type="service_unavailable",
-                    )
-                tool_block = next(
-                    (b for b in data["content"] if b.get("type") == "tool_use"),
-                    None,
-                )
-                if tool_block is None:
-                    raise LLMError(
-                        "Claude did not return a tool_use block. Unexpected response format.",
-                        error_type="service_unavailable",
-                    )
-                test_plan_data = _scrub_test_plan_data(tool_block["input"])
-
-                return TestPlan(
-                    happy_path=test_plan_data.get("happy_path", []),
-                    edge_cases=test_plan_data.get("edge_cases", []),
-                    regression_checklist=test_plan_data.get("regression_checklist", []),
-                    integration_tests=test_plan_data.get("integration_tests", []),
-                    superseded_acs=test_plan_data.get("superseded_acs") or None,
-                    grounding_warnings=test_plan_data.get("grounding_warnings") or None,
-                    risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
-                    cross_project_summary=test_plan_data.get("cross_project_summary") or None,
-                    uat_complexity=test_plan_data.get("uat_complexity") or None,
-                    how_to_see_it=test_plan_data.get("how_to_see_it") or None,
-                )
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                # Try to parse error message
-                error_msg = ""
-                try:
-                    error_data = e.response.json()
-                    error_msg = error_data.get("error", {}).get("message", "")
-                except Exception:
-                    pass
-
-                if "invalid" in error_msg.lower():
-                    raise LLMError(
-                        "Anthropic API key is invalid. Please check your ANTHROPIC_API_KEY in .env or generate a new key at https://console.anthropic.com/settings/keys",
-                        error_type="invalid"
-                    ) from e
-                else:
-                    raise LLMError(
-                        "Anthropic API authentication failed. Your API key may be expired or revoked. Get a new key at https://console.anthropic.com/settings/keys",
-                        error_type="expired"
-                    ) from e
-            elif e.response.status_code == 429:
+            # When Anthropic hits the output cap, the JSON inside the
+            # tool_use block is silently truncated — usually `happy_path`
+            # is full but `edge_cases`/`integration_tests`/`regression`
+            # are missing. Fail loudly so the caller can retry with a
+            # smaller batch instead of shipping a half-empty plan.
+            if data.get("stop_reason") == "max_tokens":
+                out_toks = (data.get("usage") or {}).get("output_tokens")
                 raise LLMError(
-                    "Anthropic API rate limit exceeded. Please wait and try again.",
-                    error_type="rate_limited"
-                ) from e
-            raise LLMError(
-                f"Claude API returned error status {e.response.status_code}: {e.response.text}",
-                error_type="service_unavailable"
-            ) from e
+                    "Claude truncated the test plan at the output-token cap"
+                    + (f" ({out_toks} tokens)" if out_toks else "")
+                    + ". Try fewer tickets per batch or split high-AC tickets.",
+                    error_type="service_unavailable",
+                )
+            tool_block = next(
+                (b for b in data["content"] if b.get("type") == "tool_use"),
+                None,
+            )
+            if tool_block is None:
+                raise LLMError(
+                    "Claude did not return a tool_use block. Unexpected response format.",
+                    error_type="service_unavailable",
+                )
+            test_plan_data = _scrub_test_plan_data(tool_block["input"])
+
+            return TestPlan(
+                happy_path=test_plan_data.get("happy_path", []),
+                edge_cases=test_plan_data.get("edge_cases", []),
+                regression_checklist=test_plan_data.get("regression_checklist", []),
+                integration_tests=test_plan_data.get("integration_tests", []),
+                superseded_acs=test_plan_data.get("superseded_acs") or None,
+                grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
+                cross_project_summary=test_plan_data.get("cross_project_summary") or None,
+                uat_complexity=test_plan_data.get("uat_complexity") or None,
+                how_to_see_it=test_plan_data.get("how_to_see_it") or None,
+            )
+        except httpx.HTTPStatusError as e:
+            raise self._status_error(e) from e
         except httpx.TimeoutException as e:
             raise LLMError(f"Claude API request timed out: {e}", error_type="service_unavailable") from e
 
@@ -4177,102 +4267,68 @@ class ClaudeClient(LLMClient):
         content.append({"type": "text", "text": prompt})
 
         try:
-            async with httpx.AsyncClient(timeout=settings.claude_api_timeout_seconds) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        # 8192 wasn't enough once the prompt grew (UI grounding,
-                        # AC conflict resolution) — happy_path consumed the whole
-                        # budget and edge_cases/integration_tests/regression got
-                        # silently truncated. 16k of that is the plan itself; the
-                        # rest is thinking, which shares the same cap.
-                        "max_tokens": self._budget(16384, thinking=16384),
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                        "messages": [{"role": "user", "content": content}],
-                        **self._temperature_kwargs(0.1),
-                        "tools": [SUBMIT_TEST_PLAN_TOOL],
-                        "tool_choice": {"type": "tool", "name": "submit_test_plan"},
-                    },
-                )
-                response.raise_for_status()
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    # 8192 wasn't enough once the prompt grew (UI grounding,
+                    # AC conflict resolution) — happy_path consumed the whole
+                    # budget and edge_cases/integration_tests/regression got
+                    # silently truncated. 16k of that is the plan itself; the
+                    # rest is thinking, which shares the same cap.
+                    "max_tokens": self._budget(16384, thinking=16384),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": content}],
+                    **self._temperature_kwargs(0.1),
+                    "tools": [SUBMIT_TEST_PLAN_TOOL],
+                    "tool_choice": {"type": "tool", "name": "submit_test_plan"},
+                },
+                timeout=settings.claude_api_timeout_seconds,
+            )
 
-                data = response.json()
-                # When Anthropic hits the output cap, the JSON inside the
-                # tool_use block is silently truncated — usually `happy_path`
-                # is full but `edge_cases`/`integration_tests`/`regression`
-                # are missing. Fail loudly so the caller can retry with a
-                # smaller batch instead of shipping a half-empty plan.
-                if data.get("stop_reason") == "max_tokens":
-                    out_toks = (data.get("usage") or {}).get("output_tokens")
-                    raise LLMError(
-                        "Claude truncated the test plan at the output-token cap"
-                        + (f" ({out_toks} tokens)" if out_toks else "")
-                        + ". Try fewer tickets per batch or split high-AC tickets.",
-                        error_type="service_unavailable",
-                    )
-                tool_block = next(
-                    (b for b in data["content"] if b.get("type") == "tool_use"),
-                    None,
-                )
-                if tool_block is None:
-                    raise LLMError(
-                        "Claude did not return a tool_use block. Unexpected response format.",
-                        error_type="service_unavailable",
-                    )
-                test_plan_data = _scrub_test_plan_data(tool_block["input"])
-
-                return TestPlan(
-                    happy_path=test_plan_data.get("happy_path", []),
-                    edge_cases=test_plan_data.get("edge_cases", []),
-                    regression_checklist=test_plan_data.get("regression_checklist", []),
-                    integration_tests=test_plan_data.get("integration_tests", []),
-                    superseded_acs=test_plan_data.get("superseded_acs") or None,
-                    grounding_warnings=test_plan_data.get("grounding_warnings") or None,
-                    risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
-                    cross_project_summary=test_plan_data.get("cross_project_summary") or None,
-                    uat_complexity=test_plan_data.get("uat_complexity") or None,
-                    how_to_see_it=test_plan_data.get("how_to_see_it") or None,
-                )
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                error_msg = ""
-                try:
-                    error_data = e.response.json()
-                    error_msg = error_data.get("error", {}).get("message", "")
-                except Exception:
-                    pass
-                if "invalid" in error_msg.lower():
-                    raise LLMError(
-                        "Anthropic API key is invalid.",
-                        error_type="invalid"
-                    ) from e
-                else:
-                    raise LLMError(
-                        "Anthropic API authentication failed.",
-                        error_type="expired"
-                    ) from e
-            elif e.response.status_code == 429:
+            # When Anthropic hits the output cap, the JSON inside the
+            # tool_use block is silently truncated — usually `happy_path`
+            # is full but `edge_cases`/`integration_tests`/`regression`
+            # are missing. Fail loudly so the caller can retry with a
+            # smaller batch instead of shipping a half-empty plan.
+            if data.get("stop_reason") == "max_tokens":
+                out_toks = (data.get("usage") or {}).get("output_tokens")
                 raise LLMError(
-                    "Anthropic API rate limit exceeded. Please wait and try again.",
-                    error_type="rate_limited"
-                ) from e
-            raise LLMError(
-                f"Claude API returned error status {e.response.status_code}: {e.response.text}",
-                error_type="service_unavailable"
-            ) from e
+                    "Claude truncated the test plan at the output-token cap"
+                    + (f" ({out_toks} tokens)" if out_toks else "")
+                    + ". Try fewer tickets per batch or split high-AC tickets.",
+                    error_type="service_unavailable",
+                )
+            tool_block = next(
+                (b for b in data["content"] if b.get("type") == "tool_use"),
+                None,
+            )
+            if tool_block is None:
+                raise LLMError(
+                    "Claude did not return a tool_use block. Unexpected response format.",
+                    error_type="service_unavailable",
+                )
+            test_plan_data = _scrub_test_plan_data(tool_block["input"])
+
+            return TestPlan(
+                happy_path=test_plan_data.get("happy_path", []),
+                edge_cases=test_plan_data.get("edge_cases", []),
+                regression_checklist=test_plan_data.get("regression_checklist", []),
+                integration_tests=test_plan_data.get("integration_tests", []),
+                superseded_acs=test_plan_data.get("superseded_acs") or None,
+                grounding_warnings=test_plan_data.get("grounding_warnings") or None,
+                risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
+                cross_project_summary=test_plan_data.get("cross_project_summary") or None,
+                uat_complexity=test_plan_data.get("uat_complexity") or None,
+                how_to_see_it=test_plan_data.get("how_to_see_it") or None,
+            )
+        except httpx.HTTPStatusError as e:
+            raise self._status_error(e) from e
         except httpx.TimeoutException as e:
             raise LLMError(f"Claude API request timed out: {e}", error_type="service_unavailable") from e
 
@@ -4307,8 +4363,6 @@ class ClaudeClient(LLMClient):
 
     async def summarize_ticket(self, summary: str, description: str | None) -> str:
         """Return a plain-language summary using Claude API."""
-        import asyncio
-
         desc_part = f"\n\nDescription:\n{description}" if description else ""
         prompt = (
             f"Summarize this Jira ticket in 2-3 plain sentences that a tester can quickly read. "
@@ -4316,58 +4370,23 @@ class ClaudeClient(LLMClient):
             f"No jargon, no bullet points. Reply with only the summary text.\n\nTitle: {summary}{desc_part}"
         )
 
-        # 529 = Anthropic "Overloaded" — documented as transient, retry with backoff.
-        # 503/502/504 are upstream-gateway hiccups that behave the same way.
-        retryable_statuses = {502, 503, 504, 529}
-        max_attempts = 4
-        backoff_seconds = 1.0
-
-        last_status: int | None = None
-        for attempt in range(max_attempts):
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "anthropic-version": "2023-06-01",
-                            "x-api-key": self.api_key,
-                            "content-type": "application/json",
-                        },
-                        json={
-                            "model": self.model,
-                            "max_tokens": self._budget(256, thinking=4096),
-                            "messages": [{"role": "user", "content": prompt}],
-                            **self._temperature_kwargs(0.3),
-                            **self._effort_kwargs("low"),
-                        },
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    return self._first_text(result)
-            except httpx.HTTPStatusError as e:
-                last_status = e.response.status_code
-                if last_status in retryable_statuses and attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                    continue
-                if last_status == 529:
-                    raise LLMError(
-                        "Claude is temporarily overloaded. Please try again in a moment.",
-                        error_type="service_unavailable",
-                    ) from e
-                raise LLMError(
-                    f"Claude API returned error status {last_status}",
-                    error_type="service_unavailable",
-                ) from e
-            except httpx.TimeoutException as e:
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                    continue
-                raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
-
-        raise LLMError(
-            f"Claude API returned error status {last_status} after {max_attempts} attempts",
-            error_type="service_unavailable",
-        )
+        try:
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(256, thinking=4096),
+                    "messages": [{"role": "user", "content": prompt}],
+                    **self._temperature_kwargs(0.3),
+                    **self._effort_kwargs("low"),
+                },
+                timeout=60.0,
+                retry_timeouts=True,
+            )
+            return self._first_text(data)
+        except httpx.HTTPStatusError as e:
+            raise self._status_error(e) from e
+        except httpx.TimeoutException as e:
+            raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
 
     async def summarize_bounce_reason(
         self,
@@ -4376,60 +4395,25 @@ class ClaudeClient(LLMClient):
         reason_text: str,
     ) -> str:
         """One-sentence bounce-reason headline via Claude API."""
-        import asyncio
-
         prompt = self._build_bounce_reason_prompt(from_status, to_status, reason_text)
 
-        retryable_statuses = {502, 503, 504, 529}
-        max_attempts = 4
-        backoff_seconds = 1.0
-
-        last_status: int | None = None
-        for attempt in range(max_attempts):
-            try:
-                async with httpx.AsyncClient(timeout=45.0) as client:
-                    response = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "anthropic-version": "2023-06-01",
-                            "x-api-key": self.api_key,
-                            "content-type": "application/json",
-                        },
-                        json={
-                            "model": self.model,
-                            "max_tokens": self._budget(128, thinking=4096),
-                            "messages": [{"role": "user", "content": prompt}],
-                            **self._temperature_kwargs(0.2),
-                            **self._effort_kwargs("low"),
-                        },
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    return self._first_text(result)
-            except httpx.HTTPStatusError as e:
-                last_status = e.response.status_code
-                if last_status in retryable_statuses and attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                    continue
-                if last_status == 529:
-                    raise LLMError(
-                        "Claude is temporarily overloaded. Please try again in a moment.",
-                        error_type="service_unavailable",
-                    ) from e
-                raise LLMError(
-                    f"Claude API returned error status {last_status}",
-                    error_type="service_unavailable",
-                ) from e
-            except httpx.TimeoutException as e:
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                    continue
-                raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
-
-        raise LLMError(
-            f"Claude API returned error status {last_status} after {max_attempts} attempts",
-            error_type="service_unavailable",
-        )
+        try:
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(128, thinking=4096),
+                    "messages": [{"role": "user", "content": prompt}],
+                    **self._temperature_kwargs(0.2),
+                    **self._effort_kwargs("low"),
+                },
+                timeout=45.0,
+                retry_timeouts=True,
+            )
+            return self._first_text(data)
+        except httpx.HTTPStatusError as e:
+            raise self._status_error(e) from e
+        except httpx.TimeoutException as e:
+            raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
 
     async def summarize_pr_changes(
         self,
@@ -4437,121 +4421,51 @@ class ClaudeClient(LLMClient):
         files_changed: list[dict],
     ) -> str:
         """One-sentence follow-up-PR change summary via Claude API."""
-        import asyncio
-
         prompt = self._build_pr_changes_prompt(pr_title, files_changed)
 
-        retryable_statuses = {502, 503, 504, 529}
-        max_attempts = 4
-        backoff_seconds = 1.0
-
-        last_status: int | None = None
-        for attempt in range(max_attempts):
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "anthropic-version": "2023-06-01",
-                            "x-api-key": self.api_key,
-                            "content-type": "application/json",
-                        },
-                        json={
-                            "model": self.model,
-                            "max_tokens": self._budget(160, thinking=4096),
-                            "messages": [{"role": "user", "content": prompt}],
-                            **self._temperature_kwargs(0.2),
-                            **self._effort_kwargs("low"),
-                        },
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    return self._first_text(result)
-            except httpx.HTTPStatusError as e:
-                last_status = e.response.status_code
-                if last_status in retryable_statuses and attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                    continue
-                if last_status == 529:
-                    raise LLMError(
-                        "Claude is temporarily overloaded. Please try again in a moment.",
-                        error_type="service_unavailable",
-                    ) from e
-                raise LLMError(
-                    f"Claude API returned error status {last_status}",
-                    error_type="service_unavailable",
-                ) from e
-            except httpx.TimeoutException as e:
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                    continue
-                raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
-
-        raise LLMError(
-            f"Claude API returned error status {last_status} after {max_attempts} attempts",
-            error_type="service_unavailable",
-        )
+        try:
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(160, thinking=4096),
+                    "messages": [{"role": "user", "content": prompt}],
+                    **self._temperature_kwargs(0.2),
+                    **self._effort_kwargs("low"),
+                },
+                timeout=60.0,
+                retry_timeouts=True,
+            )
+            return self._first_text(data)
+        except httpx.HTTPStatusError as e:
+            raise self._status_error(e) from e
+        except httpx.TimeoutException as e:
+            raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
 
     async def summarize_batch(self, tickets: list[dict]) -> dict:
         """Summarize a bundle of related tickets in one Claude call."""
-        import asyncio
-
         if not tickets:
             return {"overview": "", "per_ticket": []}
 
         prompt = self._build_batch_summary_prompt(tickets)
 
-        retryable_statuses = {502, 503, 504, 529}
-        max_attempts = 4
-        backoff_seconds = 1.0
-
-        last_status: int | None = None
-        for attempt in range(max_attempts):
-            try:
-                async with httpx.AsyncClient(timeout=90.0) as client:
-                    response = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "anthropic-version": "2023-06-01",
-                            "x-api-key": self.api_key,
-                            "content-type": "application/json",
-                        },
-                        json={
-                            "model": self.model,
-                            "max_tokens": self._budget(1024, thinking=4096),
-                            "messages": [{"role": "user", "content": prompt}],
-                            **self._temperature_kwargs(0.3),
-                            **self._effort_kwargs("low"),
-                        },
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    raw = self._first_text(result)
-                    return _parse_batch_summary_json(raw, tickets)
-            except httpx.HTTPStatusError as e:
-                last_status = e.response.status_code
-                if last_status in retryable_statuses and attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                    continue
-                if last_status == 529:
-                    raise LLMError(
-                        "Claude is temporarily overloaded. Please try again in a moment.",
-                        error_type="service_unavailable",
-                    ) from e
-                raise LLMError(
-                    f"Claude API returned error status {last_status}",
-                    error_type="service_unavailable",
-                ) from e
-            except httpx.TimeoutException as e:
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                    continue
-                raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
-
-        raise LLMError(
-            f"Claude API returned error status {last_status} after {max_attempts} attempts",
-            error_type="service_unavailable",
-        )
+        try:
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(1024, thinking=4096),
+                    "messages": [{"role": "user", "content": prompt}],
+                    **self._temperature_kwargs(0.3),
+                    **self._effort_kwargs("low"),
+                },
+                timeout=90.0,
+                retry_timeouts=True,
+            )
+            raw = self._first_text(data)
+            return _parse_batch_summary_json(raw, tickets)
+        except httpx.HTTPStatusError as e:
+            raise self._status_error(e) from e
+        except httpx.TimeoutException as e:
+            raise LLMError("Claude API request timed out", error_type="service_unavailable") from e
 
     async def verify_case_grounding(
         self,
@@ -4577,32 +4491,24 @@ class ClaudeClient(LLMClient):
         user_message = build_critic_user_message(cases)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": self._budget(4096, thinking=8192),
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": CRITIC_SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                        "messages": [{"role": "user", "content": user_message}],
-                        **self._temperature_kwargs(0.0),
-                        "tools": [REPORT_GROUNDING_TOOL],
-                        "tool_choice": {"type": "tool", "name": "report_grounding"},
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(4096, thinking=8192),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": CRITIC_SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": user_message}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [REPORT_GROUNDING_TOOL],
+                    "tool_choice": {"type": "tool", "name": "report_grounding"},
+                },
+                timeout=60.0,
+            )
         except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
             # Best-effort: don't fail the whole plan if the critic errors.
             import logging
@@ -4645,32 +4551,24 @@ class ClaudeClient(LLMClient):
         user_message = build_scope_critic_user_message(cases, fix_scope)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": self._budget(4096, thinking=8192),
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": SCOPE_CRITIC_SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                        "messages": [{"role": "user", "content": user_message}],
-                        **self._temperature_kwargs(0.0),
-                        "tools": [REPORT_SCOPE_TOOL],
-                        "tool_choice": {"type": "tool", "name": "report_scope"},
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(4096, thinking=8192),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": SCOPE_CRITIC_SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": user_message}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [REPORT_SCOPE_TOOL],
+                    "tool_choice": {"type": "tool", "name": "report_scope"},
+                },
+                timeout=60.0,
+            )
         except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
             import logging
             logging.getLogger(__name__).warning(
@@ -4710,32 +4608,24 @@ class ClaudeClient(LLMClient):
         user_message = build_code_critic_user_message(cases)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": self._budget(4096, thinking=8192),
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": CODE_CRITIC_SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                        "messages": [{"role": "user", "content": user_message}],
-                        **self._temperature_kwargs(0.0),
-                        "tools": [REPORT_CODE_GROUNDING_TOOL],
-                        "tool_choice": {"type": "tool", "name": "report_code_grounding"},
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(4096, thinking=8192),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": CODE_CRITIC_SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": user_message}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [REPORT_CODE_GROUNDING_TOOL],
+                    "tool_choice": {"type": "tool", "name": "report_code_grounding"},
+                },
+                timeout=60.0,
+            )
         except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
             import logging
             logging.getLogger(__name__).warning(
@@ -4786,32 +4676,24 @@ class ClaudeClient(LLMClient):
         )
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": self._budget(1024, thinking=4096),
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": CLASSIFY_DELIVERABLE_SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                        "messages": [{"role": "user", "content": user_message}],
-                        **self._temperature_kwargs(0.0),
-                        "tools": [REPORT_DELIVERABLE_TOOL],
-                        "tool_choice": {"type": "tool", "name": "report_deliverable"},
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(1024, thinking=4096),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": CLASSIFY_DELIVERABLE_SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": user_message}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [REPORT_DELIVERABLE_TOOL],
+                    "tool_choice": {"type": "tool", "name": "report_deliverable"},
+                },
+                timeout=60.0,
+            )
         except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
             import logging
             logging.getLogger(__name__).warning(
@@ -4852,32 +4734,24 @@ class ClaudeClient(LLMClient):
         user_message = build_surface_critic_user_message(cases, deliverable)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": self._budget(4096, thinking=8192),
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": SURFACE_CRITIC_SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                        "messages": [{"role": "user", "content": user_message}],
-                        **self._temperature_kwargs(0.0),
-                        "tools": [REPORT_SURFACE_TOOL],
-                        "tool_choice": {"type": "tool", "name": "report_surface"},
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(4096, thinking=8192),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": SURFACE_CRITIC_SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": user_message}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [REPORT_SURFACE_TOOL],
+                    "tool_choice": {"type": "tool", "name": "report_surface"},
+                },
+                timeout=60.0,
+            )
         except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
             import logging
             logging.getLogger(__name__).warning(
@@ -4898,81 +4772,68 @@ class ClaudeClient(LLMClient):
         prompt = self._build_bug_analysis_prompt(tickets)
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "anthropic-version": "2023-06-01",
-                        "x-api-key": self.api_key,
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "max_tokens": self._budget(4096, thinking=8192),
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": BUG_LENS_SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                        "messages": [{"role": "user", "content": prompt}],
-                        **self._temperature_kwargs(0.1),
-                        "tools": [SUBMIT_BUG_ANALYSIS_TOOL],
-                        "tool_choice": {"type": "tool", "name": "submit_bug_analysis"},
-                    },
-                )
-                response.raise_for_status()
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(4096, thinking=8192),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": BUG_LENS_SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": prompt}],
+                    **self._temperature_kwargs(0.1),
+                    "tools": [SUBMIT_BUG_ANALYSIS_TOOL],
+                    "tool_choice": {"type": "tool", "name": "submit_bug_analysis"},
+                },
+                timeout=120.0,
+            )
 
-                data = response.json()
-                # When Anthropic hits the output cap, the JSON inside the
-                # tool_use block is silently truncated — usually `happy_path`
-                # is full but `edge_cases`/`integration_tests`/`regression`
-                # are missing. Fail loudly so the caller can retry with a
-                # smaller batch instead of shipping a half-empty plan.
-                if data.get("stop_reason") == "max_tokens":
-                    out_toks = (data.get("usage") or {}).get("output_tokens")
-                    raise LLMError(
-                        "Claude truncated the test plan at the output-token cap"
-                        + (f" ({out_toks} tokens)" if out_toks else "")
-                        + ". Try fewer tickets per batch or split high-AC tickets.",
-                        error_type="service_unavailable",
-                    )
-                tool_block = next(
-                    (b for b in data["content"] if b.get("type") == "tool_use"),
-                    None,
+            # When Anthropic hits the output cap, the JSON inside the
+            # tool_use block is silently truncated — usually `happy_path`
+            # is full but `edge_cases`/`integration_tests`/`regression`
+            # are missing. Fail loudly so the caller can retry with a
+            # smaller batch instead of shipping a half-empty plan.
+            if data.get("stop_reason") == "max_tokens":
+                out_toks = (data.get("usage") or {}).get("output_tokens")
+                raise LLMError(
+                    "Claude truncated the test plan at the output-token cap"
+                    + (f" ({out_toks} tokens)" if out_toks else "")
+                    + ". Try fewer tickets per batch or split high-AC tickets.",
+                    error_type="service_unavailable",
                 )
-                if tool_block is None:
-                    raise LLMError("Claude did not return a tool_use block.", error_type="service_unavailable")
+            tool_block = next(
+                (b for b in data["content"] if b.get("type") == "tool_use"),
+                None,
+            )
+            if tool_block is None:
+                raise LLMError("Claude did not return a tool_use block.", error_type="service_unavailable")
 
-                parsed = tool_block["input"]
-                return BugAnalysis(
-                    bug_summary=parsed.get("bug_summary", ""),
-                    root_cause=parsed.get("root_cause"),
-                    fix_status=_normalize_fix_status(parsed.get("fix_status"), parsed.get("is_fixed")),
-                    fix_explanation=parsed.get("fix_explanation"),
-                    regression_tests=parsed.get("regression_tests", []),
-                    similar_patterns=parsed.get("similar_patterns", []),
-                    fix_complexity=parsed.get("fix_complexity"),
-                    fix_effort_estimate=parsed.get("fix_effort_estimate"),
-                    fix_complexity_reasoning=parsed.get("fix_complexity_reasoning"),
-                    affected_flow=parsed.get("affected_flow"),
-                    scope_of_impact=parsed.get("scope_of_impact"),
-                    why_tests_miss=parsed.get("why_tests_miss"),
-                    is_regression=parsed.get("is_regression"),
-                    regression_introduced_by=parsed.get("regression_introduced_by"),
-                    assumptions=parsed.get("assumptions"),
-                    open_questions=parsed.get("open_questions"),
-                    suspect_symbols=parsed.get("suspect_symbols") or None,
-                    suspect_locations=_normalize_suspect_locations(parsed.get("suspect_locations")),
-                )
-
+            parsed = tool_block["input"]
+            return BugAnalysis(
+                bug_summary=parsed.get("bug_summary", ""),
+                root_cause=parsed.get("root_cause"),
+                fix_status=_normalize_fix_status(parsed.get("fix_status"), parsed.get("is_fixed")),
+                fix_explanation=parsed.get("fix_explanation"),
+                regression_tests=parsed.get("regression_tests", []),
+                similar_patterns=parsed.get("similar_patterns", []),
+                fix_complexity=parsed.get("fix_complexity"),
+                fix_effort_estimate=parsed.get("fix_effort_estimate"),
+                fix_complexity_reasoning=parsed.get("fix_complexity_reasoning"),
+                affected_flow=parsed.get("affected_flow"),
+                scope_of_impact=parsed.get("scope_of_impact"),
+                why_tests_miss=parsed.get("why_tests_miss"),
+                is_regression=parsed.get("is_regression"),
+                regression_introduced_by=parsed.get("regression_introduced_by"),
+                assumptions=parsed.get("assumptions"),
+                open_questions=parsed.get("open_questions"),
+                suspect_symbols=parsed.get("suspect_symbols") or None,
+                suspect_locations=_normalize_suspect_locations(parsed.get("suspect_locations")),
+            )
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                raise LLMError("Anthropic API key is invalid or expired.", error_type="invalid") from e
-            elif e.response.status_code == 429:
-                raise LLMError("Anthropic API rate limit exceeded.", error_type="rate_limited") from e
-            raise LLMError(f"Claude API error {e.response.status_code}: {e.response.text}", error_type="service_unavailable") from e
+            raise self._status_error(e) from e
         except httpx.TimeoutException as e:
             raise LLMError(f"Claude API request timed out: {e}", error_type="service_unavailable") from e
 
