@@ -825,10 +825,15 @@ const PR_STATE_LABELS = {
 function SourceProvenancePanel({ provenance }) {
   const entries = Array.isArray(provenance?.pull_requests) ? provenance.pull_requests : []
   const figmaUnavailable = !!provenance?.figma_unavailable
+  const contextGaps = Array.isArray(provenance?.context_gaps) ? provenance.context_gaps : []
+  const criticsUnavailable = Array.isArray(provenance?.critics_unavailable)
+    ? provenance.critics_unavailable
+    : []
   // An unreadable design is worth saying even on a ticket with no PRs — it is
   // the difference between "no visual checks were needed" and "no visual
   // checks could be written".
-  if (entries.length === 0 && !figmaUnavailable) return null
+  if (entries.length === 0 && !figmaUnavailable && contextGaps.length === 0
+      && criticsUnavailable.length === 0) return null
   const unmerged = !!provenance.grounded_on_unmerged
   return (
     <div
@@ -850,6 +855,23 @@ function SourceProvenancePanel({ provenance }) {
         <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', marginBottom: 'var(--s-3)' }}>
           Part of this plan rests on code that has not merged — those cases describe
           proposed behaviour and can drift as the PR changes.
+        </div>
+      )}
+      {contextGaps.length > 0 && (
+        <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', marginBottom: 'var(--s-3)' }}>
+          This ticket links context that could not be read, so nothing here rests on it:
+          <ul style={{ margin: 'var(--s-2) 0 0', paddingLeft: 'var(--s-5)' }}>
+            {contextGaps.map((g) => <li key={g}>{g}</li>)}
+          </ul>
+        </div>
+      )}
+      {criticsUnavailable.length > 0 && (
+        <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', marginBottom: 'var(--s-3)' }}>
+          Some checks that normally run over this plan did not:
+          <ul style={{ margin: 'var(--s-2) 0 0', paddingLeft: 'var(--s-5)' }}>
+            {criticsUnavailable.map((c) => <li key={c}>{c}</li>)}
+          </ul>
+          Absence of warnings below does not mean the plan was checked and found clean.
         </div>
       )}
       {figmaUnavailable && (

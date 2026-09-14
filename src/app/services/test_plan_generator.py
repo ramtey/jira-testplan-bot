@@ -385,7 +385,7 @@ def compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
     }
 
 
-async def run_grounding_critic(llm, test_plan, tickets_data: list[dict]) -> None:
+async def run_grounding_critic(llm, test_plan, tickets_data: list[dict]) -> str | None:
     """Post-generation critic — check that each case's cited AC actually
     describes the behaviour the case tests.
 
@@ -408,7 +408,10 @@ async def run_grounding_critic(llm, test_plan, tickets_data: list[dict]) -> None
         verdicts = await llm.verify_case_grounding(cases)
     except Exception:
         logger.exception("verify_case_grounding raised; skipping grounding critic")
-        return
+        # A critic that could not run has checked nothing. Saying so is the
+        # difference between "checked, found nothing" and "never looked" —
+        # only the first is evidence.
+        return "AC-grounding critic could not run, so its checks were not applied"
     added = apply_verdicts(test_plan, verdicts)
     if added:
         logger.info(
@@ -557,7 +560,7 @@ async def run_surface_mismatch_critic(
     llm,
     test_plan,
     deliverable,
-) -> None:
+) -> str | None:
     """Post-generation critic — badge cases whose steps don't touch the
     classifier-named verification surface.
 
@@ -590,7 +593,10 @@ async def run_surface_mismatch_critic(
         verdicts = await llm.verify_surface(cases, deliverable)
     except Exception:
         logger.exception("verify_surface raised; skipping surface-mismatch critic")
-        return
+        # A critic that could not run has checked nothing. Saying so is the
+        # difference between "checked, found nothing" and "never looked" —
+        # only the first is evidence.
+        return "surface-mismatch critic could not run, so its checks were not applied"
 
     added = apply_surface_verdicts(test_plan, verdicts, deliverable)
     if added:
@@ -606,7 +612,7 @@ async def run_fix_scope_critic(
     llm,
     test_plan,
     dev_infos: list[dict],
-) -> None:
+) -> str | None:
     """Post-generation critic — check that each case exercises behaviour the
     merged PR actually changed.
 
@@ -633,7 +639,10 @@ async def run_fix_scope_critic(
         verdicts = await llm.verify_fix_scope(cases, fix_scope)
     except Exception:
         logger.exception("verify_fix_scope raised; skipping fix-scope critic")
-        return
+        # A critic that could not run has checked nothing. Saying so is the
+        # difference between "checked, found nothing" and "never looked" —
+        # only the first is evidence.
+        return "fix-scope critic could not run, so its checks were not applied"
     added = apply_scope_verdicts(test_plan, verdicts)
     if added:
         logger.info(

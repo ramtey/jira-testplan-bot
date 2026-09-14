@@ -488,7 +488,9 @@ async def generate_single(
         # date range" case tagged against an AC that only says "viewable").
         # Runs before compute_ac_coverage so any badges added here survive
         # the covers_acs cleanup pass.
-        await run_grounding_critic(llm, test_plan, single_ticket_data)
+        critic_gaps = [g for g in [
+            await run_grounding_critic(llm, test_plan, single_ticket_data)
+        ] if g]
         # Code-grounding recheck — for each just-added AC-critic warning,
         # look at the linked repo's source and downgrade the warning to
         # INFO when the behaviour under test is demonstrably implemented.
@@ -505,12 +507,22 @@ async def generate_single(
         # but test behaviour the merged PR explicitly did NOT change.
         # Ordered after the grounding critic so already-badged cases skip
         # the second LLM call.
-        await run_fix_scope_critic(llm, test_plan, single_ticket_dev_info)
+        critic_gaps += [g for g in [
+            await run_fix_scope_critic(llm, test_plan, single_ticket_dev_info)
+        ] if g]
         # Surface-mismatch critic — for tickets whose deliverable lives
         # OUTSIDE the running app (asset upload, config flip, doc edit),
         # badge cases whose steps target the app anyway. Skipped for
         # code_behavior / unknown / classifier-off (see should_run).
-        await run_surface_mismatch_critic(llm, test_plan, deliverable)
+        critic_gaps += [g for g in [
+            await run_surface_mismatch_critic(llm, test_plan, deliverable)
+        ] if g]
+        if critic_gaps:
+            # The plan is still worth shipping — but a tester reading it must
+            # know which safety nets were not in place when it was written.
+            provenance["critics_unavailable"] = critic_gaps
+            logger.warning("critics unavailable for %s: %s",
+                           request.ticket_key, "; ".join(critic_gaps))
         # Quarantine last: the code-grounding critic un-badges cases whose
         # behaviour it found in the repo, and those rescues have to land
         # before we decide what is ungrounded.
@@ -721,7 +733,9 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
 
         # Critics run in the same order as the single-ticket path; see
         # generate_single for what each one catches.
-        await run_grounding_critic(llm, test_plan, tickets_data)
+        multi_critic_gaps = [g for g in [
+            await run_grounding_critic(llm, test_plan, tickets_data)
+        ] if g]
         multi_ticket_dev_info = [
             {
                 "ticket_key": t.get("ticket_key"),
@@ -730,12 +744,19 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             for t in tickets_data
         ]
         await run_code_grounding_critic(llm, test_plan, multi_ticket_dev_info)
-        await run_fix_scope_critic(llm, test_plan, multi_ticket_dev_info)
+        multi_critic_gaps += [g for g in [
+            await run_fix_scope_critic(llm, test_plan, multi_ticket_dev_info)
+        ] if g]
         # Surface-mismatch critic — runs against the aggregated deliverable.
         # Skipped for pure-code batches or when the batch mixes code with
         # non-code work (see aggregate_deliverables_for_critique). This
         # matches the single-ticket path so the two behave symmetrically.
-        await run_surface_mismatch_critic(llm, test_plan, aggregated_deliverable)
+        multi_critic_gaps += [g for g in [
+            await run_surface_mismatch_critic(llm, test_plan, aggregated_deliverable)
+        ] if g]
+        if multi_critic_gaps:
+            provenance["critics_unavailable"] = multi_critic_gaps
+            logger.warning("critics unavailable: %s", "; ".join(multi_critic_gaps))
         # See generate_single: quarantining runs after every critic so the
         # code-grounding recheck's rescues are respected.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)
