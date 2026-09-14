@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import csv
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -54,8 +55,13 @@ JUDGE_MODEL = os.environ.get("EVAL_JUDGE_MODEL", "claude-opus-4-8")
 GRADE_TOOL = {
     "name": "report_coverage",
     "description": "Report, per reported problem, whether the test plan would have caught it.",
+    # strict makes the API enforce this schema instead of trusting the model to
+    # follow it. Without it the judge occasionally returned `problems` as a list
+    # of bare strings and grading died on p["covered"].
+    "strict": True,
     "input_schema": {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "problems": {
                 "type": "array",
@@ -65,6 +71,7 @@ GRADE_TOOL = {
                 ),
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "problem": {
                             "type": "string",
@@ -426,7 +433,20 @@ async def judge(client, reason, plan):
     block = next((b for b in data["content"] if b.get("type") == "tool_use"), None)
     if block is None:
         raise RuntimeError("judge returned no tool_use block")
-    return block["input"]["problems"]
+    problems = block["input"].get("problems")
+    if not isinstance(problems, list):
+        raise RuntimeError(f"judge returned {type(problems).__name__}, not a list")
+    # A malformed entry is dropped, never coerced. Guessing that an unreadable
+    # verdict meant "covered" would inflate the score; guessing "missed" would
+    # invent a failure. Neither belongs in a number someone acts on.
+    clean = [p for p in problems
+             if isinstance(p, dict) and isinstance(p.get("covered"), bool)]
+    if len(clean) != len(problems):
+        logging.warning("judge returned %d unusable verdicts for this ticket",
+                        len(problems) - len(clean))
+    if not clean:
+        raise RuntimeError("judge returned no usable verdicts")
+    return clean
 
 
 async def phase_grade(rows, limit):
@@ -473,7 +493,15 @@ def phase_score(rows):
         elif json.loads(plan_path(key).read_text()).get("error"):
             failed.append(key)
         elif grade_path(key).exists():
-            graded.append(json.loads(grade_path(key).read_text()))
+            g = json.loads(grade_path(key).read_text())
+            # Refuse to score a grade file we cannot read cleanly. Silently
+            # skipping malformed verdicts would quietly shrink the
+            # denominator and report a number that looks fine.
+            if any(not (isinstance(p, dict) and isinstance(p.get("covered"), bool))
+                   for p in (g.get("problems") or [])):
+                sys.exit(f"{key} has malformed verdicts. Delete "
+                         f"{grade_path(key)} and re-run grade.")
+            graded.append(g)
         else:
             ungraded.append(key)
 
