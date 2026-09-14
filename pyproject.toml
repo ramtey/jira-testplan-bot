@@ -18,6 +18,9 @@ dependencies = [
     "mcp>=1.1.2",
     "motor>=3.6.0",
     "pymongo>=4.9.0",
+    # Explicit rather than transitive: src/app/db/mongo.py hands its bundle to
+    # the Mongo client, because the python.org macOS build trusts nothing by default.
+    "certifi>=2024.8.30",
     # asyncpg is retained only so scripts/backfill_mongo.py can read the
     # retired Neon database during the cutover. Drop it once the backfill
     # has been run and verified.

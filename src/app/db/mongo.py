@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import certifi
 from motor.motor_asyncio import (
     AsyncIOMotorClient,
     AsyncIOMotorClientSession,
@@ -59,6 +60,14 @@ def init_client(
         maxPoolSize=15,
         serverSelectionTimeoutMS=10_000,
         tz_aware=True,
+        # Verify Atlas's certificate against certifi's bundle rather than the
+        # interpreter's default trust store. The python.org macOS build ships
+        # with no CA bundle at all (`ssl.get_default_verify_paths()` returns
+        # None/None), so TLS to Atlas fails with CERTIFICATE_VERIFY_FAILED.
+        # Pinning it here rather than exporting SSL_CERT_FILE is deliberate: the
+        # launchd watcher runs with a minimal environment, so a shell variable
+        # would work interactively and leave the unattended sweep broken.
+        tlsCAFile=certifi.where(),
     )
     _db = _client[_resolve_db_name(uri, db_name)]
     _supports_transactions = None
