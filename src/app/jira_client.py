@@ -1055,6 +1055,13 @@ def _find_bounce_reason(
         c_ts = _parse_jira_timestamp(c.get("created"))
         if not c_ts:
             continue
+        # Never quote ourselves back as the reason a ticket bounced. The bot
+        # posts its plan to the same ticket, often within the close window, so
+        # the nearest-comment heuristic would otherwise hand the generator its
+        # own plan as "why QA sent this back" — and that text goes straight
+        # into the next prompt via _render_bounce_entries.
+        if TEST_PLAN_MARKER in extract_text_from_adf(c.get("body")):
+            continue
         author = ((c.get("author") or {}).get("displayName")
                   or (c.get("author") or {}).get("emailAddress"))
         delta = c_ts - target

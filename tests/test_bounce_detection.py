@@ -364,3 +364,62 @@ def test_extract_bounce_history_leaves_reason_none_when_no_comment_matches():
     events = _extract_bounce_history(histories, [])
     assert len(events) == 1
     assert events[0].reason is None
+
+
+class TestBotCommentNeverBecomesBounceReason:
+    """The bot must not quote its own plan back as the reason QA bounced.
+
+    It posts to the same ticket, often inside the ±6h close window, so the
+    nearest-comment heuristic would pick it — and _render_bounce_entries then
+    feeds that text into the next generation as QA feedback.
+    """
+
+    def _changelog(self):
+        # A real bounce needs the forward move first — the ticket has to have
+        # reached In Testing before being sent back out of it.
+        return [
+            {
+                "created": "2026-03-09T09:00:00.000+0000",
+                "author": {"displayName": "Dev Person"},
+                "items": [{"field": "status", "fromString": "In Progress",
+                           "toString": "In Testing"}],
+            },
+            {
+                "created": "2026-03-10T12:00:00.000+0000",
+                "author": {"displayName": "QA Person"},
+                "items": [{"field": "status", "fromString": "In Testing",
+                           "toString": "To Do"}],
+            },
+        ]
+
+    def _comment(self, text, created, author="QA Person"):
+        return {
+            "created": created,
+            "author": {"displayName": author},
+            "body": {"type": "doc", "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+            ]},
+        }
+
+    def test_bot_plan_is_skipped_for_the_human_reason(self):
+        from src.app.jira_client import _extract_bounce_history
+        comments = [
+            # Bot posts closer to the transition than the human does.
+            self._comment("🤖 Generated Test Plan — HOW TO TEST THIS ...",
+                          "2026-03-10T11:55:00.000+0000", author="Test Plan Bot"),
+            self._comment("Website is missing from the PDF templates.",
+                          "2026-03-10T11:30:00.000+0000"),
+        ]
+        events = _extract_bounce_history(self._changelog(), comments)
+        assert len(events) == 1
+        assert "Website is missing" in events[0].reason
+        assert "Generated Test Plan" not in events[0].reason
+
+    def test_no_reason_beats_the_bots_own_plan(self):
+        from src.app.jira_client import _extract_bounce_history
+        comments = [self._comment("🤖 Generated Test Plan — HOW TO TEST THIS ...",
+                                  "2026-03-10T11:55:00.000+0000", author="Test Plan Bot")]
+        events = _extract_bounce_history(self._changelog(), comments)
+        assert len(events) == 1
+        # "we don't know why" is honest; the bot's own plan is a false answer.
+        assert events[0].reason is None
