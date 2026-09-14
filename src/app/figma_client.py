@@ -36,6 +36,43 @@ class FigmaAuthError(Exception):
         self.error_type = error_type
 
 
+# A token failure is not a per-file problem: it takes the design context out of
+# every plan generated until someone renews it. Logged once per process at
+# ERROR so it reads as an outage rather than twelve identical shrugs.
+_auth_failure_reported = False
+
+
+def _auth_error(response) -> FigmaAuthError:
+    """Turn Figma's own error body into a typed, accurate failure."""
+    global _auth_failure_reported
+    try:
+        err = (response.json() or {}).get("err") or ""
+    except Exception:
+        err = ""
+    text = err.lower()
+
+    if "expired" in text:
+        kind, advice = "expired", "The Figma token has expired — generate a new one."
+    elif "rate" in text or "limit" in text:
+        kind, advice = "rate_limited", "Figma is rate limiting requests."
+    elif response.status_code == 401 or "invalid" in text or "not valid" in text:
+        kind, advice = "invalid", "The Figma token is not valid — generate a new one."
+    else:
+        kind, advice = "insufficient_permissions", (
+            "The Figma token lacks access to this file."
+        )
+
+    if kind in ("expired", "invalid") and not _auth_failure_reported:
+        _auth_failure_reported = True
+        logger.error(
+            "Figma auth failed (%s: %r). %s Until then EVERY generated plan "
+            "silently loses its design context.",
+            response.status_code, err, advice,
+        )
+    return FigmaAuthError(f"{advice} (HTTP {response.status_code}: {err})",
+                          response.status_code, error_type=kind)
+
+
 class FigmaClient:
     """Client for interacting with Figma API."""
 
@@ -112,8 +149,18 @@ class FigmaClient:
                 if file_response.status_code == 404:
                     logger.warning(f"Figma file not found or no access: {figma_url}")
                     return None
-                elif file_response.status_code == 403:
-                    logger.warning(f"Figma API rate limit or insufficient permissions: {figma_url}")
+                elif file_response.status_code in (401, 403):
+                    # Figma says exactly what is wrong in the body; read it
+                    # instead of guessing. "rate limit or insufficient
+                    # permissions" was wrong in both halves for an expired
+                    # token, and sent the last reader hunting for a scope
+                    # problem that did not exist.
+                    raise _auth_error(file_response)
+                elif file_response.status_code == 429:
+                    logger.warning(
+                        "Figma rate limit (429) on %s — design context missing "
+                        "from this plan", figma_url,
+                    )
                     return None
                 elif file_response.status_code != 200:
                     logger.warning(f"Figma API returned status {file_response.status_code} for {figma_url}")
@@ -148,6 +195,11 @@ class FigmaClient:
                     version=version,
                 )
 
+        except FigmaAuthError:
+            # Already classified and reported. Let it out rather than let the
+            # generic handler below relabel a known auth failure as an
+            # "unexpected error" and return None like any other miss.
+            raise
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error fetching Figma file {figma_url}: {e}")
             return None

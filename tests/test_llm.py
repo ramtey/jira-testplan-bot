@@ -349,3 +349,46 @@ class TestOverloadRetry:
         err = ClaudeClient._status_error(e)
         assert err.error_type == "invalid"
         assert "ANTHROPIC_API_KEY" in str(err)
+
+
+class TestFigmaAuthClassification:
+    """Figma states the failure in its own error body — read it, don't guess.
+
+    The old message said "rate limit or insufficient permissions" for every
+    403. The token had simply expired, so both halves were wrong and the
+    design context vanished from every plan without anyone being told.
+    """
+
+    class _Resp:
+        def __init__(self, status, err):
+            self.status_code = status
+            self._err = err
+
+        def json(self):
+            return {"status": self.status_code, "err": self._err}
+
+    def test_expired_token_is_called_expired(self):
+        from src.app.figma_client import _auth_error
+        e = _auth_error(self._Resp(403, "Token expired"))
+        assert e.error_type == "expired"
+        assert "expired" in str(e).lower()
+
+    def test_invalid_token_is_not_called_a_rate_limit(self):
+        from src.app.figma_client import _auth_error
+        e = _auth_error(self._Resp(401, "Invalid token"))
+        assert e.error_type == "invalid"
+
+    def test_a_real_permission_problem_stays_a_permission_problem(self):
+        from src.app.figma_client import _auth_error
+        e = _auth_error(self._Resp(403, "Not allowed to access this file"))
+        assert e.error_type == "insufficient_permissions"
+
+    def test_an_unreadable_body_does_not_crash_the_classifier(self):
+        from src.app.figma_client import _auth_error
+
+        class Broken:
+            status_code = 403
+            def json(self):
+                raise ValueError("not json")
+
+        assert _auth_error(Broken()).error_type == "insufficient_permissions"
