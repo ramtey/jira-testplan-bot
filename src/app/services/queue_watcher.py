@@ -394,7 +394,7 @@ def _write_token_state(state: dict) -> None:
                        "sweep will re-check", TOKEN_STATE_PATH, exc_info=True)
 
 
-def notify(title: str, message: str) -> None:
+def notify(title: str, message: str, *, sound: bool = True) -> None:
     """Put a message where a person will actually see it.
 
     The watcher's log goes to ~/Library/Logs and nobody reads it — that is how
@@ -418,13 +418,20 @@ def notify(title: str, message: str) -> None:
     # first because it ships its own bundle, so it appears in Notification
     # Centre settings as a grantable app; osascript is attributed to whatever
     # happens to be running it, which under launchd is nothing at all.
+    # A silent banner in the corner is easy to miss on a busy screen, and the
+    # whole point is that this must not be missed. Both tools stay silent
+    # unless asked — the system-wide "play sound" setting only permits it.
     notifier = shutil.which("terminal-notifier")
-    cmd = (
-        [notifier, "-title", title, "-message", message]
-        if notifier
-        else ["osascript", "-e",
-              f'display notification {json.dumps(message)} with title {json.dumps(title)}']
-    )
+    if notifier:
+        cmd = [notifier, "-title", title, "-message", message]
+        if sound:
+            cmd += ["-sound", "default"]
+    else:
+        script = (f"display notification {json.dumps(message)} "
+                  f"with title {json.dumps(title)}")
+        if sound:
+            script += ' sound name "default"'
+        cmd = ["osascript", "-e", script]
     try:
         subprocess.run(cmd, capture_output=True, timeout=10, check=False)
     except Exception:
@@ -499,7 +506,7 @@ async def check_tokens_once() -> list:
     elif statuses:
         logger.info("watcher: all %d tokens healthy", len(statuses))
         if previous and not all(previous.get(st.service_name, True) for st in statuses):
-            notify("Test Plan Bot", "All tokens are working again.")
+            notify("Test Plan Bot", "All tokens are working again.", sound=False)
 
     _write_token_state({
         "last_checked_epoch": time.time(),
