@@ -419,9 +419,18 @@ async def generate_single(
     try:
         images = await _download_images(request.image_urls)
 
-        resolved_slack = await resolve_slack_messages_in_text(
+        resolved_slack, slack_gaps = await resolve_slack_messages_in_text(
             request.description, request.comments
         )
+        # Sources the ticket points at that we could not read. Recorded on the
+        # plan and handed to the generator so it writes around nothing in
+        # silence. Confluence gaps are added inside the client, which is where
+        # those pages are fetched.
+        context_gaps = list(slack_gaps)
+        if context_gaps:
+            provenance["context_gaps"] = context_gaps
+            logger.warning("context unavailable for %s: %s",
+                           request.ticket_key, "; ".join(context_gaps))
         slack_messages_for_prompt = (
             [asdict(m) for m in resolved_slack] if resolved_slack else None
         )
@@ -459,6 +468,7 @@ async def generate_single(
             slack_messages=slack_messages_for_prompt,
             seed_regressions=seed_regressions or None,
             bounce_history=request.bounce_history,
+            context_gaps=context_gaps or None,
         )
 
         # AC coverage for the single-ticket plan. Previously only the

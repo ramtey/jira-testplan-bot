@@ -1789,6 +1789,7 @@ class LLMClient(ABC):
         slack_messages: list[dict] | None = None,
         seed_regressions: list[dict] | None = None,
         bounce_history: list[dict] | None = None,
+        context_gaps: list[str] | None = None,
     ) -> TestPlan:
         """Generate a structured test plan from ticket data and context.
 
@@ -2238,8 +2239,8 @@ class LLMClient(ABC):
         self,
         description: str | None,
         comments: list[dict] | None,
-    ) -> list[ConfluencePage]:
-        """Pull Confluence pages referenced from the ticket text. Never raises."""
+    ) -> tuple[list[ConfluencePage], list[str]]:
+        """(pages, gaps). Never raises — a failure becomes a gap, not silence."""
         parts: list[str] = []
         if description:
             parts.append(description)
@@ -2249,13 +2250,14 @@ class LLMClient(ABC):
                 if body:
                     parts.append(body)
         if not parts:
-            return []
+            return [], []
         try:
             return await ConfluenceClient().fetch_pages_from_text("\n".join(parts))
         except Exception as exc:  # noqa: BLE001 — enrichment must never fail the plan
             import logging
             logging.getLogger(__name__).warning(f"Confluence enrichment failed: {exc}")
-            return []
+            return [], ["linked Confluence spec page(s) could not be read "
+                        f"({type(exc).__name__})"]
 
     def _build_prompt(
         self,
@@ -2273,6 +2275,7 @@ class LLMClient(ABC):
         seed_regressions: list[dict] | None = None,
         bounce_history: list[dict] | None = None,
         linked_specs: list[ConfluencePage] | None = None,
+        context_gaps: list[str] | None = None,
     ) -> str:
         """Build the prompt for test plan generation (shared across providers)."""
         prompt = f"""**Your Task:** Create a detailed test plan for the following Jira ticket{" (screenshots/mockups attached)" if has_images else ""}.
@@ -2738,6 +2741,22 @@ TICKET INFORMATION
                 prompt += "- If a flow requires screens not in the guide, describe them generically\n"
                 prompt += "- ⚠️ THE TESTID REFERENCE IS EXHAUSTIVE: every interactive element in the app has a testID listed above. If a form field or button does NOT appear in the reference, it does not exist in this app — do NOT invent steps for it, regardless of what domain knowledge suggests.\n"
                 prompt += "- ⚠️ FORM FIELD COMPLETENESS: when writing form-filling steps, cross-check EVERY field against the testID reference. If you cannot find a matching testID for a field you are about to include, omit that step entirely.\n"
+
+        # Context the ticket pointed at that we could not read. Naming it beats
+        # writing around it: a plan built on half the sources reads exactly as
+        # confident as one built on all of them.
+        if context_gaps:
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "CONTEXT THIS TICKET LINKS THAT COULD NOT BE READ\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            for gap in context_gaps:
+                prompt += f"- {gap}\n"
+            prompt += (
+                "Do NOT guess what these said. Where a case would have depended "
+                "on one of them, write the case and say in `expected` that the "
+                "source was unavailable and the tester must read it themselves. "
+                "Add a line to `risks_and_gaps` naming what could not be read.\n"
+            )
 
         # The ticket linked a design we could not read. Say so loudly: silence
         # here produces a plan with no visual checks, indistinguishable from a
@@ -3374,16 +3393,18 @@ class OllamaClient(LLMClient):
         slack_messages: list[dict] | None = None,
         seed_regressions: list[dict] | None = None,
         bounce_history: list[dict] | None = None,
+        context_gaps: list[str] | None = None,
     ) -> TestPlan:
         """Generate test plan using Ollama."""
         # Note: Ollama doesn't support vision yet, so images are ignored
         if images:
             print("Warning: Ollama does not support image analysis. Images will be ignored.")
 
-        linked_specs = await self._fetch_linked_specs(description, comments)
+        linked_specs, spec_gaps = await self._fetch_linked_specs(description, comments)
+        all_gaps = list(context_gaps or []) + spec_gaps
 
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history, linked_specs=linked_specs
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history, linked_specs=linked_specs, context_gaps=all_gaps
         )
 
         try:
@@ -4202,12 +4223,14 @@ class ClaudeClient(LLMClient):
         slack_messages: list[dict] | None = None,
         seed_regressions: list[dict] | None = None,
         bounce_history: list[dict] | None = None,
+        context_gaps: list[str] | None = None,
     ) -> TestPlan:
         """Generate test plan using Claude API with optional image support."""
-        linked_specs = await self._fetch_linked_specs(description, comments)
+        linked_specs, spec_gaps = await self._fetch_linked_specs(description, comments)
+        all_gaps = list(context_gaps or []) + spec_gaps
 
         prompt = self._build_prompt(
-            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history, linked_specs=linked_specs
+            ticket_key, summary, description, testing_context, development_info, has_images=bool(images), comments=comments, parent_info=parent_info, child_info=child_info, linked_info=linked_info, slack_messages=slack_messages, seed_regressions=seed_regressions, bounce_history=bounce_history, linked_specs=linked_specs, context_gaps=all_gaps
         )
 
         # Build message content (text + images if provided)

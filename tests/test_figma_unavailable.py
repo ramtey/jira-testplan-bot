@@ -59,3 +59,44 @@ class TestThePromptSaysSo:
     def test_a_ticket_with_no_design_gets_no_such_warning(self):
         # Silence is right here — there was nothing to read.
         assert "DESIGN SPECIFICATIONS — UNAVAILABLE" not in self._prompt({})
+
+
+class TestOtherSourcesReportGapsToo:
+    """Confluence and Slack, same rule: linked-and-unreadable != absent."""
+
+    def _prompt(self, gaps):
+        from src.app.llm_client import LLMClient
+        return LLMClient._build_prompt(
+            None, ticket_key="AB-1", summary="s", description="d",
+            testing_context={}, development_info=None, context_gaps=gaps,
+        )
+
+    def test_gaps_are_named_in_the_prompt(self):
+        p = self._prompt(["2 of 3 linked Slack message(s) could not be read"])
+        assert "CONTEXT THIS TICKET LINKS THAT COULD NOT BE READ" in p
+        assert "2 of 3 linked Slack message(s)" in p
+
+    def test_the_model_is_told_not_to_guess_their_contents(self):
+        p = self._prompt(["1 linked Confluence spec page(s) could not be read"])
+        assert "Do NOT guess what these said" in p
+
+    def test_no_gaps_means_no_block(self):
+        assert "CONTEXT THIS TICKET LINKS THAT COULD NOT BE READ" not in self._prompt([])
+
+
+class TestConfluenceGaps:
+    @pytest.mark.asyncio
+    async def test_a_ticket_with_no_spec_link_reports_nothing(self):
+        from src.app.confluence_client import ConfluenceClient
+        pages, gaps = await ConfluenceClient().fetch_pages_from_text("no links here")
+        assert (pages, gaps) == ([], [])
+
+    @pytest.mark.asyncio
+    async def test_a_linked_spec_with_no_credentials_is_a_gap(self, monkeypatch):
+        # Previously this returned [] — identical to "this ticket has no spec".
+        from src.app import confluence_client as cc
+        monkeypatch.setattr(cc.settings, "jira_url", "")
+        text = "spec: https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Title"
+        pages, gaps = await cc.ConfluenceClient().fetch_pages_from_text(text)
+        assert pages == []
+        assert gaps and "no Jira credentials" in gaps[0]

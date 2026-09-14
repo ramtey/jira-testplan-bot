@@ -29,16 +29,14 @@ SLACK_URL_PATTERN = re.compile(
 async def resolve_slack_messages_in_text(
     description: str | None,
     comments: list[dict] | None,
-) -> list[SlackMessage]:
-    """Scan ticket text for Slack permalinks and fetch each message.
+) -> tuple[list[SlackMessage], list[str]]:
+    """(messages, gaps) for the Slack permalinks found in the ticket text.
 
-    Returns [] when no token is configured or no permalinks are found; never
-    raises. Individual fetch failures are dropped so one broken link does not
-    block the rest.
+    Never raises. Individual fetch failures do not block the rest — but they
+    are now reported in `gaps` instead of vanishing, because a discussion the
+    ticket points at and we could not read is not the same as a ticket with no
+    discussion.
     """
-    if not settings.slack_user_token:
-        return []
-
     found_urls: set[str] = set()
 
     if description:
@@ -51,7 +49,13 @@ async def resolve_slack_messages_in_text(
             found_urls.add(match.group(0).rstrip(".,;)>]\"'"))
 
     if not found_urls:
-        return []
+        return [], []
+
+    # Links are present. From here, anything we fail to read is a gap the
+    # plan has to admit to rather than quietly write around.
+    if not settings.slack_user_token:
+        return [], [f"{len(found_urls)} linked Slack message(s) — no Slack token "
+                    f"configured to read them"]
 
     client = SlackClient()
     messages: list[SlackMessage] = []
@@ -62,7 +66,11 @@ async def resolve_slack_messages_in_text(
 
     if messages:
         logger.info(f"Resolved {len(messages)}/{len(found_urls)} Slack message(s) from ticket text")
-    return messages
+    gaps = []
+    if len(messages) < len(found_urls):
+        gaps.append(f"{len(found_urls) - len(messages)} of {len(found_urls)} linked "
+                    f"Slack message(s) could not be read")
+    return messages, gaps
 
 
 def parse_slack_url(url: str) -> dict | None:

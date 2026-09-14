@@ -112,13 +112,20 @@ class ConfluenceClient:
             body_text = body_text[:MAX_BODY_CHARS] + " …(truncated)"
         return ConfluencePage(page_id=page_id, url=url, title=title, body_text=body_text)
 
-    async def fetch_pages_from_text(self, text: str) -> list[ConfluencePage]:
-        """Find Confluence URLs in `text` and return the fetched page contents."""
-        if not settings.jira_url or not settings.jira_api_token:
-            return []
+    async def fetch_pages_from_text(self, text: str) -> tuple[list[ConfluencePage], list[str]]:
+        """(pages, gaps) for the Confluence URLs found in `text`.
+
+        `gaps` names spec pages the ticket linked and we could not read. A
+        ticket with no spec link and a ticket whose spec we failed to fetch
+        both used to return [], so a plan written without the spec looked
+        exactly like a plan for a ticket that had no spec.
+        """
         pairs = extract_confluence_page_ids(text)[:MAX_PAGES_PER_TICKET]
         if not pairs:
-            return []
+            return [], []
+        if not settings.jira_url or not settings.jira_api_token:
+            return [], [f"{len(pairs)} linked Confluence spec page(s) — no Jira "
+                        f"credentials configured to read them"]
         pages: list[ConfluencePage] = []
         async with httpx.AsyncClient(timeout=15) as client:
             for page_id, url in pairs:
@@ -127,4 +134,8 @@ class ConfluenceClient:
                     pages.append(page)
         if pages:
             logger.info(f"Fetched {len(pages)} Confluence spec page(s) for prompt enrichment")
-        return pages
+        gaps = []
+        if len(pages) < len(pairs):
+            gaps.append(f"{len(pairs) - len(pages)} of {len(pairs)} linked Confluence "
+                        f"spec page(s) could not be read")
+        return pages, gaps

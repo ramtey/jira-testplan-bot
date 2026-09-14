@@ -156,7 +156,10 @@ async def test_resolver_returns_empty_without_token(monkeypatch):
             "see https://acme.slack.com/archives/C1/p1700000000123456",
             [{"body": "also https://acme.slack.com/archives/C2/p1800000000999999"}],
         )
-    assert result == []
+    messages, gaps = result
+    assert messages == []
+    # Links were present and unreadable — that is a gap, not an absence.
+    assert gaps and "no Slack token" in gaps[0]
     # No client instantiation at all when token missing.
     mock_client_cls.assert_not_called()
 
@@ -183,10 +186,11 @@ async def test_resolver_dedups_and_fetches_across_description_and_comments(monke
 
     fake_client.fetch_message = AsyncMock(side_effect=fake_fetch)
     with patch("src.app.slack_client.SlackClient", return_value=fake_client):
-        result = await resolve_slack_messages_in_text(desc, comments)
+        result, gaps = await resolve_slack_messages_in_text(desc, comments)
 
     # Duplicate URL in description collapses to 1; plus the comment URL = 2 total.
     assert len(result) == 2
+    assert gaps == []          # both links read — nothing to report
     assert fake_client.fetch_message.await_count == 2
     called_urls = {call.args[0] for call in fake_client.fetch_message.await_args_list}
     assert called_urls == {
@@ -215,7 +219,9 @@ async def test_resolver_drops_individual_failures(monkeypatch):
     fake_client = MagicMock()
     fake_client.fetch_message = AsyncMock(side_effect=fake_fetch)
     with patch("src.app.slack_client.SlackClient", return_value=fake_client):
-        result = await resolve_slack_messages_in_text(desc, [])
+        result, gaps = await resolve_slack_messages_in_text(desc, [])
 
     assert len(result) == 1
     assert result[0].channel_id == "C1"
+    # The dropped one is reported rather than silently missing from the plan.
+    assert gaps and "1 of 2" in gaps[0]
