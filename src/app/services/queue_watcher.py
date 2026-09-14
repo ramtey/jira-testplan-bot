@@ -50,6 +50,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -410,12 +411,22 @@ def notify(title: str, message: str) -> None:
         return
     if sys.platform != "darwin":
         return
+
+    # Neither of these can confirm delivery — both exit 0 whether or not the
+    # notification is shown, because macOS drops them silently when the
+    # sending app has no notification permission. terminal-notifier is tried
+    # first because it ships its own bundle, so it appears in Notification
+    # Centre settings as a grantable app; osascript is attributed to whatever
+    # happens to be running it, which under launchd is nothing at all.
+    notifier = shutil.which("terminal-notifier")
+    cmd = (
+        [notifier, "-title", title, "-message", message]
+        if notifier
+        else ["osascript", "-e",
+              f'display notification {json.dumps(message)} with title {json.dumps(title)}']
+    )
     try:
-        subprocess.run(
-            ["osascript", "-e",
-             f'display notification {json.dumps(message)} with title {json.dumps(title)}'],
-            capture_output=True, timeout=10, check=False,
-        )
+        subprocess.run(cmd, capture_output=True, timeout=10, check=False)
     except Exception:
         logger.debug("watcher: notification failed", exc_info=True)
 
