@@ -383,6 +383,30 @@ class TestFigmaAuthClassification:
         e = _auth_error(self._Resp(403, "Not allowed to access this file"))
         assert e.error_type == "insufficient_permissions"
 
+    def test_a_scope_error_does_not_tell_you_to_regenerate(self):
+        """A live token missing one scope is not an invalid token.
+
+        Figma answers /v1/me with 403 "Invalid scope: [...]" for a token
+        scoped only for file access — which is every scope this app needs.
+        Matching on "invalid" would send someone to replace a token that
+        works.
+        """
+        from src.app.figma_client import _auth_error
+        e = _auth_error(self._Resp(403, 'Invalid scope: ["file_content:read"]'))
+        assert e.error_type == "insufficient_permissions"
+        assert "do not regenerate" in str(e).lower()
+
+    def test_the_message_field_is_read_as_well_as_err(self):
+        # /v1/files answers with "err", /v1/me with "message".
+        from src.app.figma_client import _auth_error
+
+        class MessageOnly:
+            status_code = 403
+            def json(self):
+                return {"status": 403, "message": "Token expired"}
+
+        assert _auth_error(MessageOnly()).error_type == "expired"
+
     def test_an_unreadable_body_does_not_crash_the_classifier(self):
         from src.app.figma_client import _auth_error
 

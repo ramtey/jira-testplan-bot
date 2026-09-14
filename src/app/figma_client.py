@@ -46,13 +46,24 @@ def _auth_error(response) -> FigmaAuthError:
     """Turn Figma's own error body into a typed, accurate failure."""
     global _auth_failure_reported
     try:
-        err = (response.json() or {}).get("err") or ""
+        body = response.json() or {}
     except Exception:
-        err = ""
+        body = {}
+    # Figma is not consistent about the field: /v1/files uses "err",
+    # /v1/me uses "message". Read both or miss half the diagnoses.
+    err = body.get("err") or body.get("message") or ""
     text = err.lower()
 
     if "expired" in text:
         kind, advice = "expired", "The Figma token has expired — generate a new one."
+    elif "scope" in text:
+        # "Invalid scope: [...]" proves the token is live — Figma authenticated
+        # it and then evaluated its scopes. Telling the user to regenerate it
+        # would send them to fix the one thing that is not wrong.
+        kind, advice = "insufficient_permissions", (
+            "The Figma token is live but missing a scope this endpoint needs "
+            f"({err}). Add the scope; do not regenerate the token."
+        )
     elif "rate" in text or "limit" in text:
         kind, advice = "rate_limited", "Figma is rate limiting requests."
     elif response.status_code == 401 or "invalid" in text or "not valid" in text:

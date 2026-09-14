@@ -531,6 +531,24 @@ class TokenHealthService:
                     )
                 elif response.status_code == 403:
                     error_text = response.text.lower()
+                    if "scope" in error_text:
+                        # /v1/me needs current_user:read, which the bot never
+                        # uses — it only reads files. A token scoped for file
+                        # access alone fails here while working perfectly for
+                        # every call the app actually makes, so reporting it
+                        # invalid sends people to replace a working token.
+                        return TokenStatus(
+                            service_name=service_name,
+                            is_valid=True,
+                            is_required=False,
+                            error_type=TokenErrorType.VALID,
+                            error_message=(
+                                "Token is live and scoped for file access. It cannot read "
+                                "/v1/me (needs current_user:read), which this app never "
+                                "calls — design context is unaffected."
+                            ),
+                            last_checked=last_checked,
+                        )
                     if "rate limit" in error_text:
                         return TokenStatus(
                             service_name=service_name,
