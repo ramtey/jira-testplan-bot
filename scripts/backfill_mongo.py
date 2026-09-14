@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import sys
@@ -76,6 +77,29 @@ def _pg_url(raw: str) -> str:
     return re.sub(r"[?&](sslmode|channel_binding)=[^&]*", "", url)
 
 
+async def _register_json_codec(conn: asyncpg.Connection) -> None:
+    """Decode json/jsonb into Python objects instead of raw strings.
+
+    Without this asyncpg hands back the serialized text — `'["a","b"]'`, and the
+    literal `'null'` for a SQL NULL — and the copy stores that string verbatim.
+    The documents then look fine by row count while being the wrong *type*: the
+    Pydantic models reject them on read, and `find_seed_regression_tests` filters
+    on `regression_tests.0`, which a string never matches, so it would have
+    returned nothing forever without erroring.
+
+    Affects all ten jsonb columns on bug_analyses plus runs.source_provenance.
+    `runs.ticket_keys` is a real Postgres ARRAY and decodes natively, which is why
+    plan lookups worked while these did not.
+    """
+    for type_name in ("json", "jsonb"):
+        await conn.set_type_codec(
+            type_name,
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )
+
+
 async def copy_table(conn: asyncpg.Connection, table: str, collection: str, *, dry_run: bool) -> tuple[int, int]:
     """Copy one table. Returns (rows read, highest id seen)."""
     rows = await conn.fetch(f'SELECT * FROM "{table}" ORDER BY id')
@@ -120,6 +144,7 @@ async def main() -> int:
         await ensure_indexes()
 
     conn = await asyncpg.connect(_pg_url(pg_raw))
+    await _register_json_codec(conn)
     try:
         if args.drop and not args.dry_run:
             db = get_db()
