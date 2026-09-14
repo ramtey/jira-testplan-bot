@@ -1296,6 +1296,42 @@ Combine related validations when they're part of the same user flow. Only create
 **Before adding a test case, ask yourself:** "Does another test already cover this user flow?"
 If yes, enhance that existing test instead of creating a new one.
 
+**COVER WHAT THE SCREEN LOOKS LIKE, NOT ONLY WHAT IT DOES:**
+A case that drives a flow to completion passes while the result is visibly
+wrong. Where the ticket changes UI, at least one case must have the tester
+*look* at the rendered result and name the elements to check: every field the
+design calls for is present, nothing overlaps or is clipped, and the icons,
+labels and positions are the ones specified.
+- ❌ BAD: "Open the summary screen and confirm the estimate is displayed"
+  — passes when a required field is missing entirely, when a value renders in
+  the wrong format, and when two controls sit on top of each other.
+- ✅ GOOD: "Open the summary screen and check each row against the design:
+  every field listed in the AC is present, values render in the stated format,
+  and no label or button overlaps its neighbour at the smallest supported
+  width."
+When a design reference is available, say which screen or frame to compare
+against. When one is NOT available, say so in the case rather than writing a
+vague "looks correct" — the tester then knows to ask for the design instead of
+guessing what correct means.
+
+**TEST THE SECOND INTERACTION, NOT ONLY THE FIRST:**
+Most flows are written and tested in their happy order, once. The defects that
+survive to QA are the ones that need a second step: a value entered before the
+field it depends on, a value changed after it was already set, or a state that
+should clear and does not. Where the ticket touches inputs that depend on each
+other, on modes that can be switched, or on validation, include at least one
+case that does the awkward thing:
+- Enter the dependent value FIRST, then the one it derives from, and assert
+  the derived value recalculates rather than keeping its original result.
+- Clear a field that already had a value, enter a different one, then trigger
+  the conversion or submit — assert the NEW value is used, not the old one.
+- Resolve the condition that produced an error or hint, then assert the error
+  actually disappears.
+- Where a control sits low in a long form, act on it with the keyboard open
+  and assert the view does not jump or scroll away from it.
+These read as unlikely sequences. They are what real users do, and they are
+where the bugs that get tickets bounced actually live.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ AC ENUMERATION — DO NOT COLLAPSE LISTS INTO ONE TEST
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
