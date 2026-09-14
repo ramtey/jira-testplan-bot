@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .bug_lens_routes import router as bug_lens_router
 from .config import settings
+from .db import crud
+from .db.models.run import Run as RunModel
 from .db.models.ticket_hold import HOLD_REASONS
 from .db.mongo import ensure_indexes, get_db
 from .jira_client import (
@@ -35,6 +37,7 @@ from .repositories import (
 )
 from .runs_routes import router as runs_router
 from .services import plan_service
+from .services import progress_key as progress_key_service
 from .services.plan_service import NonTestableIssueError, SourceLookupUnavailableError
 from .services.test_plan_generator import (
     classify_deliverable,
@@ -806,12 +809,51 @@ async def get_test_plan_progress(progress_key: str):
     ``progress_key`` is the composite the frontend builds from the ticket key(s)
     plus a fingerprint of the plan's section sizes; progress is shared across
     everyone testing the ticket and resets when a regenerated plan changes shape.
+
+    An unknown key is a 404, not an empty set. It used to return
+    ``{"checked_ids": []}`` for any string at all, which made a mistyped or
+    stale key indistinguishable from a real plan nobody has checked yet — so
+    ``mark-passed.sh``, whose stated guard is "a non-200 GET means the key is
+    wrong", could never detect one and wrote QA results somewhere nothing reads.
+    Callers that legitimately expect "no progress yet" treat 404 as empty; the
+    frontend already falls back to its local state when the fetch fails.
     """
     db = get_db()
     row = await test_plan_progress_repository.get_progress(
         db, progress_key=progress_key
     )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No progress recorded for key {progress_key!r}",
+        )
     return _serialize_progress(row)
+
+
+@app.get("/plans/{plan_id}/progress-key")
+async def get_plan_progress_key(plan_id: int):
+    """The canonical progress key for a stored plan.
+
+    Exists so the key has exactly one producer. Anything writing progress for a
+    plan — the UAT runner above all — should ask for the key rather than derive
+    it, because the derivation has to drop cases flagged ``covered_by_unit_test``
+    and that rule is easy to miss when counting sections by hand.
+    """
+    db = get_db()
+    result = await plan_repository.get_plan_with_cases(db, plan_id=plan_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    plan, _cases = result
+    run = await crud.get_by_id(db, RunModel, plan.run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Plan has no run")
+    key = progress_key_service.build_progress_key(list(run.ticket_keys or []), plan.body)
+    return {
+        "plan_id": plan.id,
+        "ticket_keys": list(run.ticket_keys or []),
+        "progress_key": key,
+        "fingerprint": progress_key_service.fingerprint(plan.body),
+    }
 
 
 @app.put("/test-plan-progress/{progress_key}")
