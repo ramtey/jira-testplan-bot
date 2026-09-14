@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     # Seconds between sweeps. Jira's own board moves on human timescales,
     # so polling faster than this buys nothing but API calls.
     watch_interval_seconds: int = 300
+    # Hours between token-health checks in the watcher. Tokens expire quietly
+    # and every downstream failure degrades to "found nothing" rather than an
+    # error, so something has to go and look. Far less often than a sweep —
+    # the answer changes on the timescale of a token expiry, not a ticket.
+    # 0 disables the check.
+    watch_token_check_hours: float = 6.0
     # Hard cap on plans generated per sweep. The watcher spends real money
     # with no human in the loop; this bounds a surprise (a sprint's worth of
     # tickets moved to Ready to Test at once) to a known cost.

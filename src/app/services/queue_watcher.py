@@ -356,6 +356,51 @@ async def sweep_once(
     return result
 
 
+# Last known health per service, so a recovery is reported as well as a break
+# and a standing failure keeps being reported rather than mentioned once.
+_token_health: dict[str, bool] = {}
+
+
+async def check_tokens_once() -> list:
+    """Check every configured token and log what is wrong, loudly.
+
+    The health check has always existed and nothing ever ran it. That is worth
+    more than it sounds: an expired Figma token cost every plan its design
+    context for an unknown stretch, and nothing anywhere said so, because each
+    downstream failure degraded to the same empty value a ticket with no
+    designs produces. A check nobody runs is not a check.
+
+    Never raises — a token check failing must not cost the sweep that follows.
+    """
+    from ..token_service import TokenHealthService
+
+    try:
+        statuses = await TokenHealthService().validate_all_tokens()
+    except Exception:
+        logger.exception("watcher: token health check raised; skipping this round")
+        return []
+
+    for st in statuses:
+        was_ok = _token_health.get(st.service_name)
+        if not st.is_valid:
+            # ERROR every round it stays broken. Mentioning it once is how it
+            # gets scrolled past for a month.
+            logger.error(
+                "watcher: %s token is NOT usable (%s) — %s%s",
+                st.service_name,
+                getattr(st.error_type, "value", st.error_type),
+                st.error_message,
+                f" See {st.help_url}" if getattr(st, "help_url", None) else "",
+            )
+        elif was_ok is False:
+            logger.info("watcher: %s token is working again", st.service_name)
+        _token_health[st.service_name] = st.is_valid
+
+    if statuses and all(st.is_valid for st in statuses):
+        logger.info("watcher: all %d tokens healthy", len(statuses))
+    return statuses
+
+
 async def watch(
     *,
     projects: list[str] | None = None,
@@ -371,7 +416,17 @@ async def watch(
     next cycle nothing.
     """
     interval = interval_seconds or settings.watch_interval_seconds
+    token_every = (settings.watch_token_check_hours or 0) * 3600
+    # None means "never checked" — the first pass always checks, so a watcher
+    # started with a dead token says so immediately instead of hours later.
+    last_token_check: float | None = None
+
     while True:
+        if token_every:
+            now = asyncio.get_running_loop().time()
+            if last_token_check is None or now - last_token_check >= token_every:
+                await check_tokens_once()
+                last_token_check = now
         try:
             result = await sweep_once(
                 projects=projects, status_name=status_name, dry_run=dry_run
