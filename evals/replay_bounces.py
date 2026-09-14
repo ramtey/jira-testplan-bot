@@ -339,7 +339,22 @@ async def phase_replay(rows, limit):
         try:
             serialized = serialize_issue(await jira.get_issue(key))
             cutoff = reason_cutoff(serialized, cutoff, row.get("reason"))
+            prs_before = len(((serialized.get("development_info") or {})
+                              .get("pull_requests")) or [])
             serialized, removed = rewind(serialized, cutoff)
+
+            # Every PR on the ticket postdates the bounce, so the rewind left
+            # no implementation to ground cases in. The bot would score near
+            # zero for a reason that has nothing to do with plan quality, so
+            # this is an exclusion, not a result. 3 of SK's 37 land here.
+            if prs_before and removed["prs"] == prs_before:
+                plan_path(key).write_text(json.dumps({
+                    "excluded": "no implementation existed at bounce time — "
+                                f"all {prs_before} PRs merged after the cutoff",
+                    "_rewound_to": cutoff.isoformat(),
+                }, indent=2))
+                print(f"excluded (all {prs_before} PRs postdate the bounce)")
+                continue
             plan = await generate_single(
                 GenerateTestPlanRequest(**prompt_payload(serialized)))
             plan["_rewound_to"] = cutoff.isoformat()
@@ -424,6 +439,9 @@ async def phase_grade(rows, limit):
         for i, row in enumerate(todo, 1):
             key = row["key"]
             plan = json.loads(plan_path(key).read_text())
+            if plan.get("excluded"):
+                print(f"  [{i}/{len(todo)}] {key} skipped — {plan['excluded']}")
+                continue
             if plan.get("error"):
                 print(f"  [{i}/{len(todo)}] {key} skipped — generation failed")
                 continue
@@ -439,11 +457,13 @@ async def phase_grade(rows, limit):
 
 
 def phase_score(rows):
-    graded, failed, ungraded = [], [], []
+    graded, failed, ungraded, excluded = [], [], [], []
     for row in rows:
         key = row["key"]
         if not plan_path(key).exists():
             ungraded.append(key)
+        elif json.loads(plan_path(key).read_text()).get("excluded"):
+            excluded.append(key)
         elif json.loads(plan_path(key).read_text()).get("error"):
             failed.append(key)
         elif grade_path(key).exists():
@@ -464,7 +484,9 @@ def phase_score(rows):
   Problems caught ........ {caught}/{len(problems)}   {caught / len(problems):.0%}
   Bounces fully prevented  {full}/{len(graded)}   {full / len(graded):.0%}
 
-  graded ................. {len(graded)}
+  graded ................. {len(graded)} of {len(rows)} keep tickets
+  excluded ............... {len(excluded)}   {excluded if excluded else ''}
+        (no implementation existed at bounce time — not a plan-quality miss)
   generation failed ...... {len(failed)}   {failed if failed else ''}
   not yet run ............ {len(ungraded)}
 """)
