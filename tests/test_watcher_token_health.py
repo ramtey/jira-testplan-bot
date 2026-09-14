@@ -86,3 +86,72 @@ async def test_the_check_failing_never_costs_the_sweep(monkeypatch, caplog):
     _patch(monkeypatch, FakeHealth([], raises=True))
     with caplog.at_level(logging.ERROR):
         assert await queue_watcher.check_tokens_once() == []
+
+
+class TestItRunsWhereTheWatcherActuallyRuns:
+    """launchd runs `testplan watch --once` — a fresh process every 5 minutes.
+
+    An in-process timer would either never fire or fire every sweep, so the
+    clock has to live on disk.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_first_ever_check_runs(self, monkeypatch, tmp_path):
+        _patch(monkeypatch, FakeHealth([FakeStatus("Jira", True)]))
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", tmp_path / "s.json")
+        monkeypatch.setattr(queue_watcher, "notify", lambda *a, **k: None)
+        assert len(await queue_watcher.check_tokens_if_due()) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_recent_check_is_not_repeated(self, monkeypatch, tmp_path):
+        state = tmp_path / "s.json"
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", state)
+        monkeypatch.setattr(queue_watcher, "notify", lambda *a, **k: None)
+        _patch(monkeypatch, FakeHealth([FakeStatus("Jira", True)]))
+        await queue_watcher.check_tokens_if_due()
+        # Second sweep, five minutes later in production terms.
+        assert await queue_watcher.check_tokens_if_due() == []
+
+    @pytest.mark.asyncio
+    async def test_an_old_check_runs_again(self, monkeypatch, tmp_path):
+        import json as _json
+        import time as _time
+        state = tmp_path / "s.json"
+        state.write_text(_json.dumps({
+            "last_checked_epoch": _time.time() - 60 * 60 * 24,
+            "health": {"Jira": True},
+        }))
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", state)
+        monkeypatch.setattr(queue_watcher, "notify", lambda *a, **k: None)
+        _patch(monkeypatch, FakeHealth([FakeStatus("Jira", True)]))
+        assert len(await queue_watcher.check_tokens_if_due()) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unwritable_state_path_does_not_break_the_sweep(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH",
+                            tmp_path / "nope" / "\0bad" / "s.json")
+        monkeypatch.setattr(queue_watcher, "notify", lambda *a, **k: None)
+        _patch(monkeypatch, FakeHealth([FakeStatus("Jira", True)]))
+        assert len(await queue_watcher.check_tokens_once()) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_broken_token_notifies(self, monkeypatch, tmp_path):
+        seen = []
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", tmp_path / "s.json")
+        monkeypatch.setattr(queue_watcher, "notify",
+                            lambda title, msg: seen.append((title, msg)))
+        _patch(monkeypatch, FakeHealth([FakeStatus("Figma", False)]))
+        await queue_watcher.check_tokens_once()
+        assert seen and "Figma" in seen[0][1]
+
+    @pytest.mark.asyncio
+    async def test_healthy_tokens_do_not_notify(self, monkeypatch, tmp_path):
+        seen = []
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", tmp_path / "s.json")
+        monkeypatch.setattr(queue_watcher, "notify",
+                            lambda title, msg: seen.append((title, msg)))
+        _patch(monkeypatch, FakeHealth([FakeStatus("Jira", True)]))
+        await queue_watcher.check_tokens_once()
+        assert seen == []

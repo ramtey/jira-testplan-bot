@@ -186,6 +186,11 @@ def watch(
         )
 
     if once:
+        # launchd runs exactly this path every five minutes, so the token
+        # check has to live here too — it is what the watcher actually is in
+        # production. check_tokens_if_due reads its clock from disk, so this
+        # costs a file read on the sweeps where nothing is due.
+        asyncio.run(queue_watcher.check_tokens_if_due())
         result = asyncio.run(
             queue_watcher.sweep_once(
                 projects=projects,

@@ -47,9 +47,15 @@ before this is deployed anywhere shared.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from ..config import settings
 from ..db.mongo import get_db
@@ -356,9 +362,81 @@ async def sweep_once(
     return result
 
 
-# Last known health per service, so a recovery is reported as well as a break
-# and a standing failure keeps being reported rather than mentioned once.
+# Token-health state lives on disk, not in memory. In production the watcher
+# is a LaunchAgent running `testplan watch --once` — a fresh process every
+# five minutes — so an in-process timer would either never fire or fire on
+# every sweep. The file is what makes "every six hours" mean anything.
+TOKEN_STATE_PATH = Path(
+    os.environ.get("WATCH_TOKEN_STATE",
+                   Path.home() / ".jira-testplan-bot" / "token-health.json")
+)
+
+# Kept for the long-running loop; the file is the source of truth across runs.
 _token_health: dict[str, bool] = {}
+
+
+def _read_token_state() -> dict:
+    try:
+        return json.loads(TOKEN_STATE_PATH.read_text())
+    except Exception:
+        # Missing or unreadable means "never checked", which makes the next
+        # check happen. Erring toward checking is the safe direction.
+        return {}
+
+
+def _write_token_state(state: dict) -> None:
+    try:
+        TOKEN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_STATE_PATH.write_text(json.dumps(state, indent=2))
+    except Exception:
+        logger.warning("watcher: could not persist token state to %s; the next "
+                       "sweep will re-check", TOKEN_STATE_PATH, exc_info=True)
+
+
+def notify(title: str, message: str) -> None:
+    """Put a message where a person will actually see it.
+
+    The watcher's log goes to ~/Library/Logs and nobody reads it — that is how
+    an expired Figma token cost every plan its design context unnoticed. This
+    is a local tool on someone's Mac, so the OS notification centre is the
+    right surface: no secret, no service, and it cannot be useful to alert
+    somewhere remote about a laptop that is asleep, because the watcher is not
+    running then either.
+
+    Best-effort and silent on failure: a notification that cannot be delivered
+    must never break a sweep.
+    """
+    if os.environ.get("WATCH_NOTIFY", "").lower() in ("0", "false", "off"):
+        return
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification {json.dumps(message)} with title {json.dumps(title)}'],
+            capture_output=True, timeout=10, check=False,
+        )
+    except Exception:
+        logger.debug("watcher: notification failed", exc_info=True)
+
+
+async def check_tokens_if_due(*, force: bool = False) -> list:
+    """Run the token check when it is due, reading the clock from disk.
+
+    Called from both entry points — the `--once` sweep launchd actually runs,
+    and the long-running loop — because the check belongs to the watcher, not
+    to one of its two shapes.
+    """
+    every_hours = settings.watch_token_check_hours or 0
+    if not every_hours and not force:
+        return []
+
+    state = _read_token_state()
+    last = state.get("last_checked_epoch")
+    if not force and isinstance(last, (int, float)):
+        if (time.time() - last) < every_hours * 3600:
+            return []
+    return await check_tokens_once()
 
 
 async def check_tokens_once() -> list:
@@ -380,8 +458,11 @@ async def check_tokens_once() -> list:
         logger.exception("watcher: token health check raised; skipping this round")
         return []
 
+    state = _read_token_state()
+    previous = state.get("health") or {}
+
     for st in statuses:
-        was_ok = _token_health.get(st.service_name)
+        was_ok = _token_health.get(st.service_name, previous.get(st.service_name))
         if not st.is_valid:
             # ERROR every round it stays broken. Mentioning it once is how it
             # gets scrolled past for a month.
@@ -396,8 +477,23 @@ async def check_tokens_once() -> list:
             logger.info("watcher: %s token is working again", st.service_name)
         _token_health[st.service_name] = st.is_valid
 
-    if statuses and all(st.is_valid for st in statuses):
+    broken = [st for st in statuses if not st.is_valid]
+    if broken:
+        names = ", ".join(st.service_name for st in broken)
+        notify(
+            "Test Plan Bot: token problem",
+            f"{names} not usable. Plans are being generated without it. "
+            f"{broken[0].error_message or ''}".strip(),
+        )
+    elif statuses:
         logger.info("watcher: all %d tokens healthy", len(statuses))
+        if previous and not all(previous.get(st.service_name, True) for st in statuses):
+            notify("Test Plan Bot", "All tokens are working again.")
+
+    _write_token_state({
+        "last_checked_epoch": time.time(),
+        "health": {st.service_name: st.is_valid for st in statuses},
+    })
     return statuses
 
 
@@ -416,17 +512,8 @@ async def watch(
     next cycle nothing.
     """
     interval = interval_seconds or settings.watch_interval_seconds
-    token_every = (settings.watch_token_check_hours or 0) * 3600
-    # None means "never checked" — the first pass always checks, so a watcher
-    # started with a dead token says so immediately instead of hours later.
-    last_token_check: float | None = None
-
     while True:
-        if token_every:
-            now = asyncio.get_running_loop().time()
-            if last_token_check is None or now - last_token_check >= token_every:
-                await check_tokens_once()
-                last_token_check = now
+        await check_tokens_if_due()
         try:
             result = await sweep_once(
                 projects=projects, status_name=status_name, dry_run=dry_run
