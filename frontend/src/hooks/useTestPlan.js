@@ -18,6 +18,11 @@ function buildTicketPayload(td) {
     // development_info means "unknown", not "no PR". The server needs that
     // distinction before it can refuse a plan for lack of an implementation.
     dev_status_unavailable: !!td.dev_status_unavailable,
+    // The ticket linked a design we couldn't read (expired token, rate limit,
+    // no access). Absent design context would otherwise be indistinguishable
+    // from a ticket that never had a design, and the plan would quietly skip
+    // visual checks instead of telling the tester it couldn't make them.
+    figma_unavailable: !!td.figma_unavailable,
     image_urls: td.attachments ? td.attachments.map((a) => a.url) : null,
     comments: td.comments || null,
     parent_info: td.parent || null,

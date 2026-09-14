@@ -233,6 +233,7 @@ def serialize_issue(issue) -> dict:
         },
         "development_info": development_info_dict,
         "dev_status_unavailable": getattr(issue, "dev_status_unavailable", False),
+        "figma_unavailable": getattr(issue, "figma_unavailable", False),
         "attachments": attachments_list,
         "comments": comments_list,
         "parent": parent_info_dict,
@@ -261,6 +262,7 @@ def prompt_payload(serialized: dict) -> dict:
         "testing_context": {},
         "development_info": serialized.get("development_info"),
         "dev_status_unavailable": bool(serialized.get("dev_status_unavailable")),
+        "figma_unavailable": bool(serialized.get("figma_unavailable")),
         "image_urls": [a["url"] for a in attachments if a.get("url")] or None,
         "comments": serialized.get("comments") or None,
         "parent_info": serialized.get("parent") or None,
@@ -397,6 +399,21 @@ async def generate_single(
     if parent_key_clean:
         seed_regressions = await _load_seed_regressions(
             request.ticket_key, parent_key_clean
+        )
+
+    # A design the ticket linked and we could not read. Recorded on the plan so
+    # the tester sees it, and carried into development_info so the generator
+    # writes "compare against the design — unavailable, ask for it" instead of
+    # quietly omitting every visual check. figma_context already lives in
+    # development_info, so its absence belongs there too.
+    if request.figma_unavailable:
+        provenance["figma_unavailable"] = True
+        dev_for_prompt = dict(request.development_info or {})
+        dev_for_prompt["figma_unavailable"] = True
+        request = request.model_copy(update={"development_info": dev_for_prompt})
+        logger.warning(
+            "figma unavailable for %s; the plan will say so rather than skip "
+            "visual checks silently", request.ticket_key,
         )
 
     try:

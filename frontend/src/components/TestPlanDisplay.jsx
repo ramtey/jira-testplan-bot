@@ -824,7 +824,11 @@ const PR_STATE_LABELS = {
  */
 function SourceProvenancePanel({ provenance }) {
   const entries = Array.isArray(provenance?.pull_requests) ? provenance.pull_requests : []
-  if (entries.length === 0) return null
+  const figmaUnavailable = !!provenance?.figma_unavailable
+  // An unreadable design is worth saying even on a ticket with no PRs — it is
+  // the difference between "no visual checks were needed" and "no visual
+  // checks could be written".
+  if (entries.length === 0 && !figmaUnavailable) return null
   const unmerged = !!provenance.grounded_on_unmerged
   return (
     <div
@@ -846,6 +850,13 @@ function SourceProvenancePanel({ provenance }) {
         <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', marginBottom: 'var(--s-3)' }}>
           Part of this plan rests on code that has not merged — those cases describe
           proposed behaviour and can drift as the PR changes.
+        </div>
+      )}
+      {figmaUnavailable && (
+        <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', marginBottom: 'var(--s-3)' }}>
+          This ticket links a design that could not be read, so nothing here checks
+          the build against the mocks. Open the design yourself before signing off
+          on anything visual.
         </div>
       )}
       <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>

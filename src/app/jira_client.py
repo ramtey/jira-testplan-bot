@@ -2789,17 +2789,28 @@ class JiraClient:
                 )
 
         async def _fetch_figma_context():
+            """(context, unavailable). The flag is the point.
+
+            "No design was linked" and "a design was linked and we could not
+            read it" both used to arrive as None, so a plan generated with an
+            expired token looked exactly like a plan for a ticket that had no
+            designs. Only the second one means the plan cannot check visual
+            fidelity — and only the tester can be told that.
+            """
             if not (description_str and settings.figma_token):
-                return None
+                return None, False
             figma_url = self._extract_figma_url(description_str)
             if not figma_url:
-                return None
+                return None, False
             try:
                 figma_client = FigmaClient()
-                return await figma_client.fetch_file_context(figma_url)
+                context = await figma_client.fetch_file_context(figma_url)
             except Exception as e:
                 logger.warning(f"Failed to fetch Figma context: {e}")
-                return None
+                return None, True
+            # A linked design that came back empty is still a design we could
+            # not read — 404, 429, or a file the token cannot see.
+            return context, context is None
 
         async def _fetch_comments():
             try:
@@ -2828,6 +2839,7 @@ class JiraClient:
             self._get_children(issue_key),
         )
         development_info, dev_status_unavailable = dev_status
+        figma_context, figma_unavailable = figma_context
 
         # Merge Figma context into development_info (matches the pre-parallel
         # ordering: enrich if dev_info exists, otherwise wrap it in a fresh
@@ -2941,6 +2953,7 @@ class JiraClient:
             ),
             development_info=development_info,
             dev_status_unavailable=dev_status_unavailable,
+            figma_unavailable=figma_unavailable,
             attachments=attachments if attachments else None,
             comments=filtered_comments if filtered_comments else None,
             parent=parent_issue,

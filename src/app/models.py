@@ -298,6 +298,11 @@ class JiraIssue:
     # `development_info` means "we couldn't look", not "there is nothing".
     # Only the second of those may be reported as "no implementation found".
     dev_status_unavailable: bool = False
+    # The ticket linked a design and we could not read it — an expired token,
+    # a rate limit, a file we lack access to. Distinct from "no design was
+    # linked": one means the plan cannot check visual fidelity and should say
+    # so, the other means there was nothing to check.
+    figma_unavailable: bool = False
     attachments: list[Attachment] | None = None
     comments: list[JiraComment] | None = None  # Filtered testing-related comments
     parent: ParentIssue | None = None  # Parent ticket context with design resources
@@ -418,6 +423,8 @@ class GenerateTestPlanRequest(BaseModel):
     # See JiraIssue.dev_status_unavailable — carried on the request so a
     # server-side generate and a browser generate make the same call.
     dev_status_unavailable: bool = False
+    # See JiraIssue.figma_unavailable.
+    figma_unavailable: bool = False
 
 
 class TicketInput(BaseModel):
@@ -436,6 +443,7 @@ class TicketInput(BaseModel):
     linked_info: dict | None = None
     bounce_history: list[dict] | None = None
     dev_status_unavailable: bool = False
+    figma_unavailable: bool = False
 
 
 class MultiTicketGenerateRequest(BaseModel):

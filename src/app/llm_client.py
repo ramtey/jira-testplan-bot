@@ -2739,6 +2739,25 @@ TICKET INFORMATION
                 prompt += "- ⚠️ THE TESTID REFERENCE IS EXHAUSTIVE: every interactive element in the app has a testID listed above. If a form field or button does NOT appear in the reference, it does not exist in this app — do NOT invent steps for it, regardless of what domain knowledge suggests.\n"
                 prompt += "- ⚠️ FORM FIELD COMPLETENESS: when writing form-filling steps, cross-check EVERY field against the testID reference. If you cannot find a matching testID for a field you are about to include, omit that step entirely.\n"
 
+        # The ticket linked a design we could not read. Say so loudly: silence
+        # here produces a plan with no visual checks, indistinguishable from a
+        # plan for a ticket that never had a design.
+        if development_info and development_info.get("figma_unavailable"):
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "DESIGN SPECIFICATIONS — UNAVAILABLE\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += (
+                "This ticket links a design, and it could not be fetched (expired "
+                "token, rate limit, or no access). You have NOT seen the design.\n"
+                "- Do NOT write any case asserting that something matches the "
+                "mocks, or describing what the design specifies. You do not know.\n"
+                "- Where a case would have compared against the design, still "
+                "write it, and say plainly in `expected` that the design was "
+                "unavailable and the tester must open it themselves to judge.\n"
+                "- Add a line to `risks_and_gaps` recording that visual fidelity "
+                "could not be covered because the design could not be read.\n"
+            )
+
         # Add Figma design context if available (Phase 5)
         if development_info and development_info.get("figma_context"):
             figma_context = development_info["figma_context"]
