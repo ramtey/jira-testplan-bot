@@ -167,6 +167,10 @@ class Attachment:
     size: int  # bytes
     url: str
     thumbnail_url: str | None = None
+    # ISO-8601 from Jira. A screenshot is evidence, and evidence has a date:
+    # without this there is no way to tell a mockup attached at grooming from
+    # the failure screenshot a tester attached when they bounced the ticket.
+    created: str | None = None
 
 
 @dataclass

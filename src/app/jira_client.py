@@ -1643,6 +1643,7 @@ class JiraClient:
                         size=size,
                         url=attachment.get("content", ""),
                         thumbnail_url=attachment.get("thumbnail"),
+                        created=attachment.get("created"),
                     )
                 )
 

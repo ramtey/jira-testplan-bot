@@ -28,7 +28,7 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -39,6 +39,11 @@ from src.app.config import settings
 from src.app.model_capabilities import supports_temperature
 
 RESULTS = Path(os.environ.get("EVAL_RESULTS_DIR", Path.home() / "sk_eval_results"))
+
+# How long before the complaint an attachment is still treated as evidence
+# for it. Generous on purpose: losing a legitimate screenshot only removes
+# context, while keeping the failure screenshot hands over the answer.
+ATTACHMENT_GRACE = timedelta(minutes=30)
 
 # The judge. Defaults to whatever the app generates with, which is the weakest
 # part of this harness: a model grading its own output tends to be generous.
@@ -191,7 +196,7 @@ def reason_cutoff(payload, transition_ts, reason):
     return transition_ts - timedelta(hours=6)
 
 
-def rewind(payload, cutoff):
+def rewind(serialized, cutoff):
     """Strip everything the ticket learned at or after `cutoff`.
 
     Without this the eval is circular. The bounce comment is still on the
@@ -201,14 +206,20 @@ def rewind(payload, cutoff):
     "would the plan have caught this?" unless the plan is written without the
     answer in front of it.
 
-    Three things carry the answer backwards in time:
+    Four things carry the answer backwards in time:
       - comments posted at/after the bounce (the complaint itself, and replies)
       - bounce_history (the complaint, rendered into the prompt verbatim)
       - PRs merged after the bounce (the fix, which describes what was wrong)
+      - attachments added at/after the bounce — the tester's failure screenshot
+        goes to the model as an image, and a picture of the bug is the answer
 
-    Returns (payload, what_was_removed) so a run can be audited.
+    Runs on the serialized issue, before prompt_payload() narrows attachments
+    to bare URLs and throws their dates away.
+
+    Returns (serialized, what_was_removed) so a run can be audited.
     """
-    removed = {"comments": 0, "bounces": 0, "prs": 0}
+    payload = serialized
+    removed = {"comments": 0, "bounces": 0, "prs": 0, "attachments": 0}
 
     comments = payload.get("comments") or []
     # An undateable comment is dropped, not kept: we cannot prove it predates
@@ -240,6 +251,16 @@ def rewind(payload, cutoff):
             dev["pull_requests"] = kept_pr
             payload["development_info"] = dev
 
+    # A tester uploads the screenshot and *then* writes the complaint — on
+    # SK-1431 the gap was half a second. Anything attached in the minutes
+    # before the complaint is part of the complaint, so attachments get a
+    # grace window that comments do not.
+    atts = payload.get("attachments") or []
+    att_cutoff = cutoff - ATTACHMENT_GRACE
+    kept_a = [a for a in atts if (_iso(a.get("created")) or att_cutoff) < att_cutoff]
+    removed["attachments"] = len(atts) - len(kept_a)
+    payload["attachments"] = kept_a or None
+
     return payload, removed
 
 
@@ -262,14 +283,19 @@ def bounce_cutoff(row):
 
 
 async def phase_replay(rows, limit):
+    from src.app.jira_client import JiraClient
     from src.app.models import GenerateTestPlanRequest
-    from src.app.services.plan_service import fetch_ticket_payload, generate_single
+    from src.app.services.plan_service import (
+        generate_single, prompt_payload, serialize_issue,
+    )
+    jira = JiraClient()
 
     (RESULTS / "plans").mkdir(parents=True, exist_ok=True)
     todo = [r for r in rows if not plan_path(r["key"]).exists()]
+    done = len(rows) - len(todo)          # count before --limit, or the line lies
     if limit:
         todo = todo[:limit]
-    print(f"{len(rows)} keep tickets | {len(rows) - len(todo)} already generated "
+    print(f"{len(rows)} keep tickets | {done} already generated "
           f"| generating {len(todo)}\n")
 
     for i, row in enumerate(todo, 1):
@@ -280,16 +306,18 @@ async def phase_replay(rows, limit):
             continue
         print(f"  [{i}/{len(todo)}] {key} ...", end=" ", flush=True)
         try:
-            payload = await fetch_ticket_payload(key)
-            cutoff = reason_cutoff(payload, cutoff, row.get("reason"))
-            payload, removed = rewind(payload, cutoff)
-            plan = await generate_single(GenerateTestPlanRequest(**payload))
+            serialized = serialize_issue(await jira.get_issue(key))
+            cutoff = reason_cutoff(serialized, cutoff, row.get("reason"))
+            serialized, removed = rewind(serialized, cutoff)
+            plan = await generate_single(
+                GenerateTestPlanRequest(**prompt_payload(serialized)))
             plan["_rewound_to"] = cutoff.isoformat()
             plan["_removed"] = removed
             plan_path(key).write_text(json.dumps(plan, indent=2, default=str))
             n = len(plan.get("happy_path") or []) + len(plan.get("edge_cases") or [])
             print(f"ok ({n} cases; hid {removed['comments']} comments, "
-                  f"{removed['bounces']} bounces, {removed['prs']} PRs)")
+                  f"{removed['bounces']} bounces, {removed['prs']} PRs, "
+                  f"{removed['attachments']} images)")
         except Exception as e:
             # Record the failure. A ticket we could not generate for is not a
             # ticket the plan missed — scoring must be able to tell them apart.
