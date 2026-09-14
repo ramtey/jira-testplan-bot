@@ -1,0 +1,104 @@
+name: Check for a newer Claude model
+
+# Unlike ci.yml, this one needs a secret (ANTHROPIC_API_KEY) to ask the Models
+# API what exists. It is a separate workflow so ci.yml stays hermetic and
+# secret-free — that property is worth keeping in a public repo.
+#
+# Secrets are not available to workflows triggered from forks, so this never
+# runs on pull_request. Schedule and manual dispatch only.
+
+on:
+  schedule:
+    - cron: '17 8 * * 1'   # Mondays, 08:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+
+      - id: check
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: uv run python scripts/check_for_newer_model.py --github
+
+      - name: Open the bump PR
+        if: steps.check.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW: ${{ steps.check.outputs.model }}
+          OLD: ${{ steps.check.outputs.current }}
+          NAME: ${{ steps.check.outputs.name }}
+          MONGODB_URI: mongodb://ci:ci@localhost:27017/ci
+        run: |
+          set -euo pipefail
+          BRANCH="model-bump/$NEW"
+
+          # Already proposed and still open, or already merged and reverted —
+          # either way, re-opening it every Monday is noise.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "$BRANCH already exists; nothing to do."
+            exit 0
+          fi
+
+          git switch -c "$BRANCH"
+          python - <<'PY'
+          import pathlib, os, re
+          p = pathlib.Path("src/app/model_capabilities.py")
+          s = p.read_text()
+          new = re.sub(r'(DEFAULT_CLAUDE_MODEL = ")[^"]+(")',
+                       rf'\g<1>{os.environ["NEW"]}\g<2>', s, count=1)
+          assert new != s, "DEFAULT_CLAUDE_MODEL not found — the constant moved"
+          p.write_text(new)
+          PY
+
+          # Run the suite on the bump. Green does NOT mean the bump is safe —
+          # the tests cannot reach the API — but red means don't bother a human.
+          uv run pytest -q
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Bump the default model to $NEW"
+          git push -u origin "$BRANCH"
+
+          gh pr create --title "Bump the default model to $NAME ($NEW)" --body "$(cat <<EOF
+          Anthropic is serving \`$NEW\`, newer than the pinned \`$OLD\`.
+          Opened automatically; **do not merge on green alone.**
+
+          The test suite cannot reach the API, so it proves the code imports —
+          not that the new model accepts the requests this bot sends. Every
+          previous bump broke something the tests could not see.
+
+          ## Check by hand before merging
+
+          - [ ] **Does it still accept \`temperature\`?** Opus 4.7 removed it and
+            everything since has kept it removed. If this model rejects it, add
+            it to \`_LAST_TEMPERATURE_VERSION\` in \`model_capabilities.py\`.
+          - [ ] **Does it accept \`output_config.effort\`?** See \`_FIRST_EFFORT_VERSION\`.
+          - [ ] **Does it think by default?** If so it needs output-token
+            headroom, and \`thinking\` blocks arrive ahead of the text block.
+            See \`_FIRST_THINKING_BY_DEFAULT\`.
+          - [ ] **Does it still accept forced \`tool_choice\`?** Plan generation
+            depends on it; some newer models reject it outright.
+          - [ ] Generate one real plan and read it.
+
+          ## Then measure it
+
+          \`\`\`
+          EVAL_RESULTS_DIR=~/sk_eval_<model> python evals/replay_bounces.py replay <corpus> --bounce-times <json>
+          EVAL_RESULTS_DIR=~/sk_eval_<model> python evals/replay_bounces.py grade  <corpus>
+          python evals/replay_bounces.py compare <corpus> --a ~/sk_eval_results --b ~/sk_eval_<model>
+          \`\`\`
+
+          A newer model is not automatically a better one for this task.
+          EOF
+          )"
