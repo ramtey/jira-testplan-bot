@@ -359,6 +359,12 @@ async def phase_replay(rows, limit):
                 GenerateTestPlanRequest(**prompt_payload(serialized)))
             plan["_rewound_to"] = cutoff.isoformat()
             plan["_removed"] = removed
+            # Whether design context actually reached this generation. An
+            # expired Figma token silently strips it, so a run has to record
+            # what it had rather than what it was configured to have.
+            plan["_had_figma"] = bool(
+                ((serialized.get("development_info") or {}).get("figma_context"))
+            )
             plan_path(key).write_text(json.dumps(plan, indent=2, default=str))
             n = len(plan.get("happy_path") or []) + len(plan.get("edge_cases") or [])
             print(f"ok ({n} cases; hid {removed['comments']} comments, "
@@ -502,14 +508,70 @@ def phase_score(rows):
     print()
 
 
+def _score_dir(rows, results_dir):
+    """(caught, total, per-ticket map) for one results directory."""
+    per = {}
+    caught = total = 0
+    for row in rows:
+        g = results_dir / "grades" / f"{row['key']}.json"
+        if not g.exists():
+            continue
+        problems = json.loads(g.read_text())["problems"]
+        if not problems:
+            continue
+        hit = sum(1 for p in problems if p["covered"])
+        per[row["key"]] = (hit, len(problems))
+        caught += hit
+        total += len(problems)
+    return caught, total, per
+
+
+def phase_compare(rows, dir_a, dir_b):
+    """Did the change help? Same corpus, same judge, one variable."""
+    a, b = Path(dir_a).expanduser(), Path(dir_b).expanduser()
+    ca, ta, pa = _score_dir(rows, a)
+    cb, tb, pb = _score_dir(rows, b)
+    if not ta or not tb:
+        sys.exit(f"Nothing graded in {a if not ta else b}")
+
+    shared = sorted(set(pa) & set(pb))
+    print(f"""
+  A  {a.name:28} {ca}/{ta}  {ca / ta:.0%}
+  B  {b.name:28} {cb}/{tb}  {cb / tb:.0%}
+
+  Tickets graded in both: {len(shared)}""")
+    if len(shared) < len(pa) or len(shared) < len(pb):
+        print(f"  (A has {len(pa)}, B has {len(pb)} — only the shared set is comparable)")
+
+    # Per-ticket movement on the shared set only; totals above can drift on
+    # corpus differences, this cannot.
+    sa = sum(pa[k][0] for k in shared)
+    sb = sum(pb[k][0] for k in shared)
+    st = sum(pa[k][1] for k in shared)
+    print(f"  On the shared set: {sa}/{st} ({sa / st:.0%})  ->  {sb}/{st} ({sb / st:.0%})")
+
+    better = [(k, pa[k][0], pb[k][0]) for k in shared if pb[k][0] > pa[k][0]]
+    worse = [(k, pa[k][0], pb[k][0]) for k in shared if pb[k][0] < pa[k][0]]
+    print(f"\n  improved: {len(better)}   regressed: {len(worse)}   unchanged: "
+          f"{len(shared) - len(better) - len(worse)}\n")
+    for label, rowset in (("IMPROVED", better), ("REGRESSED", worse)):
+        if rowset:
+            print(f"  {label}:")
+            for k, x, y in sorted(rowset, key=lambda r: -abs(r[2] - r[1])):
+                print(f"    {k}  {x} -> {y} of {pa[k][1]}")
+            print()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("phase", choices=["replay", "grade", "score"])
+    ap.add_argument("phase", choices=["replay", "grade", "score", "compare"])
     ap.add_argument("corpus", help="TSV of triage decisions")
     ap.add_argument("--limit", type=int, default=0,
                     help="only process this many (use a small number first)")
     ap.add_argument("--bounce-times", default=None,
                     help="mined corpus JSON, for exact bounce timestamps")
+    ap.add_argument("--a", help="compare: baseline results dir")
+    ap.add_argument("--b", help="compare: results dir to judge against it")
     args = ap.parse_args()
 
     rows = load_corpus(args.corpus, args.bounce_times)
@@ -517,6 +579,10 @@ def main():
         asyncio.run(phase_replay(rows, args.limit))
     elif args.phase == "grade":
         asyncio.run(phase_grade(rows, args.limit))
+    elif args.phase == "compare":
+        if not (args.a and args.b):
+            sys.exit("compare needs --a and --b results directories")
+        phase_compare(rows, args.a, args.b)
     else:
         phase_score(rows)
 
