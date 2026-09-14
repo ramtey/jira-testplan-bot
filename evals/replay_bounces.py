@@ -45,10 +45,11 @@ RESULTS = Path(os.environ.get("EVAL_RESULTS_DIR", Path.home() / "sk_eval_results
 # context, while keeping the failure screenshot hands over the answer.
 ATTACHMENT_GRACE = timedelta(minutes=30)
 
-# The judge. Defaults to whatever the app generates with, which is the weakest
-# part of this harness: a model grading its own output tends to be generous.
-# Override to cross-check a score you intend to act on.
-JUDGE_MODEL = os.environ.get("EVAL_JUDGE_MODEL", settings.llm_model)
+# The judge is deliberately NOT the model that writes the plans: a model
+# grading its own output tends to credit its own phrasing. Same capability
+# tier, different model, and it still accepts forced tool use — which the
+# grading call depends on.
+JUDGE_MODEL = os.environ.get("EVAL_JUDGE_MODEL", "claude-opus-4-8")
 
 GRADE_TOOL = {
     "name": "report_coverage",
@@ -264,6 +265,35 @@ def rewind(serialized, cutoff):
     return payload, removed
 
 
+def suppress_run_writes():
+    """Read the real database, write nothing to it.
+
+    A scratch database sounds like the careful choice and is the wrong one.
+    Seed regressions come from the team's own Bug Lens history on sibling
+    tickets, so an empty — or unauthorized — database returns none of them,
+    and _load_seed_regressions swallows the failure and returns []. The eval
+    would then be scoring plans systematically weaker than the ones production
+    writes, and reading the gap as a quality problem.
+
+    So generation reads production, and the run records it would write are
+    stubbed instead. run_id=None is already the module's documented
+    "persistence unavailable" path.
+    """
+    from src.app.services import plan_service, run_tracker
+
+    async def _start(**_kw):
+        return run_tracker.RunContext(run_id=None)
+
+    async def _noop(*_a, **_kw):
+        return None
+
+    plan_service.run_tracker.start_run = _start
+    plan_service.run_tracker.complete_with_plan = _noop
+    plan_service.run_tracker.complete = _noop
+    plan_service.run_tracker.complete_with_bug_analysis = _noop
+    plan_service.run_tracker.fail = _noop
+
+
 def plan_path(key):
     return RESULTS / "plans" / f"{key}.json"
 
@@ -290,6 +320,7 @@ async def phase_replay(rows, limit):
     )
     jira = JiraClient()
 
+    suppress_run_writes()
     (RESULTS / "plans").mkdir(parents=True, exist_ok=True)
     todo = [r for r in rows if not plan_path(r["key"]).exists()]
     done = len(rows) - len(todo)          # count before --limit, or the line lies
@@ -329,7 +360,12 @@ async def phase_replay(rows, limit):
 def render_plan(plan):
     """The plan as the judge sees it: every case, with a stable id."""
     lines = []
-    for section in ("happy_path", "edge_cases", "integration_tests"):
+    # needs_spec_cases belongs here too. They are real cases a tester would
+    # run, just flagged as needing an AC to confirm the expected value — and
+    # on a ticket whose ACs are thin, most of the plan lands there. Leaving
+    # the section out hid the bulk of the plan from the judge and scored it
+    # as a miss.
+    for section in ("happy_path", "edge_cases", "integration_tests", "needs_spec_cases"):
         for i, case in enumerate(plan.get(section) or []):
             if not isinstance(case, dict):
                 continue
@@ -378,6 +414,10 @@ async def phase_grade(rows, limit):
             if plan_path(r["key"]).exists() and not grade_path(r["key"]).exists()]
     if limit:
         todo = todo[:limit]
+    if JUDGE_MODEL == settings.llm_model:
+        print(f"  WARNING: judge and generator are both {JUDGE_MODEL}. A model "
+              f"grading its own plans scores them generously — set "
+              f"EVAL_JUDGE_MODEL to something else.\n")
     print(f"grading {len(todo)} plans with {JUDGE_MODEL}\n")
 
     async with httpx.AsyncClient(timeout=180.0) as client:
