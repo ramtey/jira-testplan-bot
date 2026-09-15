@@ -496,6 +496,21 @@ class WalkthroughUpdateRequest(BaseModel):
     existing_screenshots: list[WalkthroughScreenshotRef] = Field(default_factory=list)
 
 
+class AdoptPlanRequest(BaseModel):
+    """Request body for adopting a plan that exists only as a Jira comment.
+
+    ``confirm`` defaults to False so the default call is a dry run: it reports
+    the parsed section counts and the progress key adoption would produce,
+    without writing. A wrong count silently produces a key the UI never polls,
+    so it is made visible before it can be persisted.
+    """
+
+    # The comment to adopt. Omitted, the newest comment carrying the generated
+    # test-plan marker is used.
+    comment_id: str | None = None
+    confirm: bool = False
+
+
 class TestPlanProgressUpdateRequest(BaseModel):
     """Request body for saving a ticket's shared test-plan progress: the full set
     of checked test-case ids (e.g. ["happy_path:0", "edge_cases:2"]). The client

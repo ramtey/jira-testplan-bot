@@ -1,0 +1,1453 @@
+{
+ "comments": [
+  {
+   "id": "330141",
+   "author": {
+    "accountId": "5f0000000000000000000001",
+    "displayName": "QA Author"
+   },
+   "body": {
+    "type": "doc",
+    "version": 1,
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "🤖 Generated Test Plan"
+       }
+      ]
+     },
+     {
+      "type": "expand",
+      "content": [
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "🧭 HOW TO TEST THIS — START HERE"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "UAT complexity: HIGH"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "════════════════════════════════════════════"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "🔗 GROUNDED IN"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+         },
+         {
+          "type": "text",
+          "text": "https://example.com/org/repo/pull/1",
+          "marks": []
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "════════════════════════════════════════════"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "✅ HAPPY PATH TEST CASES"
+         }
+        ]
+       },
+       {
+        "type": "nestedExpand",
+        "attrs": {
+         "title": "1. Recipient receives the default-language asset after the sender previews an alternate 🔴 CRITICAL"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Preconditions: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               },
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail.",
+                "marks": [
+                 {
+                  "type": "code"
+                 }
+                ]
+               },
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               },
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail.",
+                "marks": [
+                 {
+                  "type": "code"
+                 }
+                ]
+               },
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Expected Result: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Test Data: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Runs on: Mobile · credentials: Test account · environment: Staging"
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "⚠️ Unverified — assumption. This expected result was not read from the implementation; confirm against the code before treating a failure as a defect."
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "🔍 EDGE CASES & ERROR SCENARIOS"
+         }
+        ]
+       },
+       {
+        "type": "nestedExpand",
+        "attrs": {
+         "title": "1. Switching language mid-playback stops the old track 🔴 CRITICAL [error_handling]"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Preconditions: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Expected Result: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Test Data: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Runs on: Mobile · credentials: Test account · environment: Staging"
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "⚠️ Unverified — assumption. This expected result was not read from the implementation; confirm against the code before treating a failure as a defect."
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "nestedExpand",
+        "attrs": {
+         "title": "2. Translation failure falls back to the default without retrying forever 🔴 CRITICAL [error_handling]"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Preconditions: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Expected Result: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail.",
+            "marks": [
+             {
+              "type": "code"
+             }
+            ]
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Test Data: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Runs on: Mobile · credentials: Test account · environment: Staging"
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "⚠️ Unverified — assumption. This expected result was not read from the implementation; confirm against the code before treating a failure as a defect."
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "nestedExpand",
+        "attrs": {
+         "title": "3. Switching template while an alternate language is selected does not trap the preview 🟡 HIGH [error_handling]"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Preconditions: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Expected Result: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Test Data: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Runs on: Mobile · credentials: Test account · environment: Staging"
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "⚠️ Unverified — assumption. This expected result was not read from the implementation; confirm against the code before treating a failure as a defect."
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "nestedExpand",
+        "attrs": {
+         "title": "4. Rapid repeated toggling issues one request, not one per tap 🟡 HIGH [boundary]"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Preconditions: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Expected Result: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail.",
+            "marks": [
+             {
+              "type": "code"
+             }
+            ]
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Test Data: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Runs on: Mobile · credentials: Test account · environment: Staging"
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "⚠️ Unverified — assumption. This expected result was not read from the implementation; confirm against the code before treating a failure as a defect."
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "nestedExpand",
+        "attrs": {
+         "title": "5. Leaving the screen mid-request does not strand the asset 🟡 HIGH [error_handling]"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Preconditions: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           },
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Expected Result: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Test Data: Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Runs on: Mobile · credentials: Test account · environment: Staging"
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "⚠️ Unverified — assumption. This expected result was not read from the implementation; confirm against the code before treating a failure as a defect."
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "nestedExpand",
+        "attrs": {
+         "title": "🔄 REGRESSION CHECKLIST"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail.",
+            "marks": [
+             {
+              "type": "code"
+             }
+            ]
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail.",
+            "marks": [
+             {
+              "type": "code"
+             }
+            ]
+           },
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "⚠️ RISKS / GAPS OBSERVED"
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Not test cases — gaps in the ticket itself that no case can mark pass or fail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "🚧 NEEDS SPEC — NOT VERIFIABLE FROM SOURCE (6)"
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Not test cases. Neither the UI these describe nor their expected results could be traced to the linked code, so they cannot be marked pass or fail. Confirm the intended behaviour, then regenerate."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         },
+         {
+          "type": "orderedList",
+          "content": [
+           {
+            "type": "listItem",
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "Generic placeholder describing the precondition or expectation for this case. The real wording is intentionally omitted; this fixture exists to pin ADF structure, not product detail."
+           }
+          ]
+         }
+        ]
+       }
+      ],
+      "attrs": {
+       "title": "Click to view"
+      }
+     }
+    ]
+   },
+   "updateAuthor": {
+    "accountId": "5f0000000000000000000001",
+    "displayName": "QA Author"
+   },
+   "created": "2026-09-15T09:46:39.652-0700",
+   "updated": "2026-09-15T09:46:39.652-0700",
+   "jsdPublic": true
+  }
+ ],
+ "total": 1,
+ "startAt": 0,
+ "maxResults": 1
+}

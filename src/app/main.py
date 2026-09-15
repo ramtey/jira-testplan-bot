@@ -22,6 +22,7 @@ from .jira_client import (
 )
 from .llm_client import LLMError, get_llm_client
 from .models import (
+    AdoptPlanRequest,
     GenerateTestPlanRequest,
     MultiTicketGenerateRequest,
     PostCommentRequest,
@@ -36,7 +37,7 @@ from .repositories import (
     walkthrough_repository,
 )
 from .runs_routes import router as runs_router
-from .services import plan_service
+from .services import plan_adoption, plan_service
 from .services import progress_key as progress_key_service
 from .services.plan_service import NonTestableIssueError, SourceLookupUnavailableError
 from .services.test_plan_generator import (
@@ -867,6 +868,40 @@ async def get_plan_progress_key(plan_id: int):
         "progress_key": key,
         "fingerprint": progress_key_service.fingerprint(plan.body),
     }
+
+
+@app.post("/tickets/{ticket_key}/adopt-plan")
+async def adopt_plan_from_jira(ticket_key: str, request: AdoptPlanRequest):
+    """Register a plan that exists only as a Jira comment as a run + plan.
+
+    The recovery path for a plan the database never recorded — generation ran,
+    the plan was posted to the ticket, and ``start_run`` had already swallowed a
+    database error, so no ``plan_id`` was ever produced. Without a run and a plan
+    body there is no ``build_progress_key`` result to write UAT progress under,
+    so the runner cannot mark and the UI renders nothing.
+
+    Deliberately *not* a regeneration: ``generate_single`` would produce a
+    different plan from the reviewed one already on the ticket. This parses the
+    reviewed plan back out of its own comment.
+
+    Two-step by default. ``confirm: false`` (the default) parses and reports the
+    section counts and the derived key without writing anything; ``confirm:
+    true`` persists. The preview exists because a misparsed section count
+    produces a key the UI never polls — progress written into a void, which is
+    the exact failure ``progress_key`` was created to end.
+    """
+    try:
+        if request.confirm:
+            return await plan_adoption.commit(ticket_key, request.comment_id)
+        return await plan_adoption.preview(ticket_key, request.comment_id)
+    except plan_adoption.PlanAdoptionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except JiraNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.put("/test-plan-progress/{progress_key}")

@@ -285,7 +285,20 @@ async def sweep_once(
             )
             continue
 
-        skip = await _screen(ticket_key)
+        # Screening reads the database, so it fails when the database is
+        # briefly unreachable. Catching it per ticket rather than letting it
+        # escape is the difference between losing one ticket and losing the
+        # sweep: on 2026-09-15 four consecutive sweeps died here on an Atlas
+        # ServerSelectionTimeoutError raised for SK-2342, and SK-2246 — queued
+        # behind it and perfectly healthy — was never even looked at.
+        try:
+            skip = await _screen(ticket_key)
+        except Exception as e:
+            result.outcomes.append(
+                TicketOutcome(ticket_key, "failed", "screen_failed", str(e))
+            )
+            logger.exception("watcher: screening failed for %s", ticket_key)
+            continue
         if skip:
             result.outcomes.append(TicketOutcome(ticket_key, "skipped", skip))
             continue

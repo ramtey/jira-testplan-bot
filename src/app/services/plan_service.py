@@ -553,6 +553,14 @@ async def generate_single(
         if saved:
             response["plan_id"] = saved["plan_id"]
             response["version"] = saved["version"]
+        else:
+            # The plan is good and is being returned, but nothing recorded it,
+            # so it has no id and no progress key. Say so instead of returning a
+            # response indistinguishable from a persisted one — an untracked
+            # plan that gets posted to Jira is only recoverable by adopting it
+            # back out of its own comment (``plan_adoption``).
+            response["not_persisted"] = True
+            response["persistence_error"] = run_ctx.failure
         return response
 
     except Exception as e:
@@ -797,6 +805,14 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         if saved:
             response["plan_id"] = saved["plan_id"]
             response["version"] = saved["version"]
+        else:
+            # The plan is good and is being returned, but nothing recorded it,
+            # so it has no id and no progress key. Say so instead of returning a
+            # response indistinguishable from a persisted one — an untracked
+            # plan that gets posted to Jira is only recoverable by adopting it
+            # back out of its own comment (``plan_adoption``).
+            response["not_persisted"] = True
+            response["persistence_error"] = run_ctx.failure
         return response
 
     except Exception as e:

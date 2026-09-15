@@ -28,11 +28,20 @@ class RunContext:
     """Handle passed between start_run and complete/fail calls.
 
     Holds the DB run id plus a monotonic start time so the route never has to
-    manage timing itself. If `run_id` is None, DB recording was skipped (silent
-    no-op) — all complete/fail calls become no-ops.
+    manage timing itself. If `run_id` is None, DB recording was skipped — all
+    complete/fail calls become no-ops.
+
+    `failure` carries why that happened. Recording it is not decoration: a
+    generation whose run never persisted still returns a perfectly good plan,
+    which the caller will render and may post to Jira, and nothing downstream
+    could previously tell that no `plan_id` exists. That is how the SK-2342 plan
+    reached its ticket with no run, no plan and therefore no progress key —
+    a transient Atlas outage reported as success. Callers surface this so an
+    untracked plan says so at generation time.
     """
     run_id: int | None
     started_at: float = field(default_factory=perf_counter)
+    failure: str | None = None
 
     def elapsed_ms(self) -> int:
         return int((perf_counter() - self.started_at) * 1000)
@@ -96,9 +105,13 @@ async def start_run(
             source_provenance=source_provenance,
         )
         return RunContext(run_id=run.id, started_at=started)
-    except Exception:
+    except Exception as exc:
         logger.exception("run_tracker.start_run failed; continuing without DB recording")
-        return RunContext(run_id=None, started_at=started)
+        return RunContext(
+            run_id=None,
+            started_at=started,
+            failure=f"{type(exc).__name__}: {exc}",
+        )
 
 
 async def complete_with_plan(
@@ -121,6 +134,7 @@ async def complete_with_plan(
         run = await crud.get_by_id(db, _run_type(), ctx.run_id)
         if run is None:
             logger.warning("run_tracker.complete_with_plan: run_id=%s vanished", ctx.run_id)
+            ctx.failure = f"run {ctx.run_id} vanished before its plan was saved"
             return None
         await run_repository.mark_completed(
             db,
@@ -156,8 +170,9 @@ async def complete_with_plan(
             version=version,
         )
         return {"plan_id": plan.id, "version": plan.version}
-    except Exception:
+    except Exception as exc:
         logger.exception("run_tracker.complete_with_plan failed")
+        ctx.failure = f"{type(exc).__name__}: {exc}"
         return None
 
 

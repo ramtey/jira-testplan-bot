@@ -563,3 +563,46 @@ def test_generate_test_plan_route_still_accepts_a_client_assembled_payload():
     assert response.status_code == 200, response.text
     assert response.json()["ticket_key"] == "SK-1"
     assert json.dumps(response.json())  # response is JSON-serializable as stored
+
+
+@pytest.mark.asyncio
+async def test_a_plan_that_could_not_be_persisted_says_so():
+    """A generated plan with no ``plan_id`` used to be indistinguishable from a
+    persisted one: ``run_tracker.start_run`` swallows a database error and
+    generation carries on, which is the right call — the user still gets their
+    plan — but the response said nothing about it.
+
+    That silence is what stranded SK-2342. Its plan was generated during a
+    transient Atlas outage on 2026-09-15, posted to the ticket as comment
+    330141, and left no run and no plan row, so no progress key could be built
+    and the UAT runner had nothing to mark against. Recovering it required
+    parsing the plan back out of its own Jira comment (``plan_adoption``).
+
+    The test suite never reaches a database (see ``conftest``), so every
+    generate here runs exactly the unpersisted path.
+    """
+    with (
+        patch.object(
+            plan_service.JiraClient, "get_issue", AsyncMock(return_value=_issue())
+        ),
+        patch.object(
+            plan_service.JiraClient,
+            "download_image_as_base64",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(plan_service, "get_llm_client", return_value=_stub_llm({})),
+        patch.object(plan_service, "classify_deliverable", AsyncMock(return_value=None)),
+        patch.object(plan_service, "run_grounding_critic", AsyncMock(return_value=None)),
+        patch.object(
+            plan_service, "run_code_grounding_critic", AsyncMock(return_value=None)
+        ),
+        patch.object(plan_service, "run_fix_scope_critic", AsyncMock(return_value=None)),
+        patch.object(
+            plan_service, "run_surface_mismatch_critic", AsyncMock(return_value=None)
+        ),
+        patch.object(plan_service, "compute_ac_coverage", lambda *a, **k: {}),
+    ):
+        response = await plan_service.generate_for_ticket("SK-1")
+
+    assert "plan_id" not in response
+    assert response["not_persisted"] is True

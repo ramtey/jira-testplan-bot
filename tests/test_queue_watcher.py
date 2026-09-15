@@ -507,3 +507,30 @@ async def test_screen_checks_the_hold_before_spending_a_jira_fetch():
         assert await queue_watcher._screen("SK-1") is not None
     finally:
         patch.stopall()
+
+
+@pytest.mark.asyncio
+async def test_a_screening_error_costs_one_ticket_not_the_whole_sweep():
+    """``_screen`` reads the database, so it fails when the database blips.
+
+    It used to be called outside the per-ticket try/except, so that exception
+    escaped ``sweep_once`` and killed the run. On 2026-09-15 four consecutive
+    sweeps died this way on an Atlas ServerSelectionTimeoutError raised while
+    screening SK-2342, and SK-2246 — queued behind it and perfectly healthy —
+    was never looked at at all.
+    """
+    async def _boom(ticket_key):
+        if ticket_key == "SK-1":
+            raise RuntimeError("No servers found yet")
+        return None
+
+    with _Harness(queue=("SK-1", "SK-2")) as h:
+        with patch.object(queue_watcher, "_screen", _boom):
+            result = await queue_watcher.sweep_once(projects=["SK"])
+
+    # The healthy ticket behind the failing one still got its plan.
+    assert h.generated == ["SK-2"]
+    outcomes = {o.ticket_key: o.action for o in result.outcomes}
+    assert outcomes["SK-1"] == "failed"
+    assert outcomes["SK-2"] == "generated"
+    assert "No servers found yet" in result.outcomes[0].detail
