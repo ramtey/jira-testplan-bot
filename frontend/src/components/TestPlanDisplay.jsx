@@ -1209,10 +1209,15 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const postTimerRef = useRef(null)
   const copyTimerRef = useRef(null)
 
+  // Success clears fast — it only has to confirm. A failure or a truncated post
+  // is something the tester has to act on, so it stays up long enough to read
+  // and (for truncation) to register that the Jira comment is not the whole plan.
+  const NOTIFICATION_MS = { success: 3000, error: 8000, warning: 12000 }
+
   const showNotification = (setter, timerRef, type, message) => {
     if (timerRef.current) clearTimeout(timerRef.current)
     setter({ type, message })
-    timerRef.current = setTimeout(() => setter(null), type === 'success' ? 3000 : 6000)
+    timerRef.current = setTimeout(() => setter(null), NOTIFICATION_MS[type] ?? 6000)
   }
 
   if (!testPlan) return null
@@ -1280,7 +1285,19 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
       const result = await response.json()
       const action = result.updated ? 'updated' : 'posted'
       if (onPosted) onPosted({ ticketKey: ticketData.key, planId: testPlan?.plan_id ?? null })
-      showNotification(setPostNotification, postTimerRef, 'success', `Test plan ${action} on ${ticketData.key}`)
+      if (result.truncated) {
+        // The backend cut the plan to fit Jira's ~32KB comment limit. That is a
+        // success as far as the request goes, but the comment is not the plan —
+        // reporting it as a plain success is how the loss went unnoticed before.
+        showNotification(
+          setPostNotification,
+          postTimerRef,
+          'warning',
+          `Test plan ${action} on ${ticketData.key}, but it was too long for a Jira comment and got cut short. The complete plan is here in the app.`
+        )
+      } else {
+        showNotification(setPostNotification, postTimerRef, 'success', `Test plan ${action} on ${ticketData.key}`)
+      }
     } catch (error) {
       showNotification(setPostNotification, postTimerRef, 'error', error.message)
     } finally {
@@ -1310,7 +1327,11 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         throw new Error(errorData.detail || 'Failed to post to Jira')
       }
 
-      setPostingStates((prev) => ({ ...prev, [issueKey]: 'done' }))
+      const result = await response.json()
+      setPostingStates((prev) => ({
+        ...prev,
+        [issueKey]: result.truncated ? 'truncated' : 'done',
+      }))
     } catch (error) {
       setPostingStates((prev) => ({ ...prev, [issueKey]: 'error' }))
       showNotification(setPostNotification, postTimerRef, 'error', `${issueKey}: ${error.message}`)
@@ -1329,7 +1350,19 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     }
     setPostingStates((prev) => {
       const anyError = keys.some((k) => prev[k] === 'error')
-      if (!anyError) {
+      const truncatedKeys = keys.filter((k) => prev[k] === 'truncated')
+      if (anyError) {
+        // Per-ticket errors already raised their own notification in postToKey.
+        return prev
+      }
+      if (truncatedKeys.length > 0) {
+        showNotification(
+          setPostNotification,
+          postTimerRef,
+          'warning',
+          `Posted to ${keys.join(', ')}, but the comment on ${truncatedKeys.join(', ')} was too long for Jira and got cut short. The complete plan is here in the app.`
+        )
+      } else {
         showNotification(setPostNotification, postTimerRef, 'success', `Posted to ${keys.join(', ')}`)
       }
       return prev
@@ -1500,11 +1533,24 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                   : isPosting
                 const copyLabel =
                   copyNotification?.type === 'success' ? 'Copied' : 'Copy markdown'
-                const postLabel = isMulti
-                  ? `Post to selected (${selectedKeys.size})`
-                  : postNotification?.type === 'success'
-                    ? postNotification.message
+                // The button has to carry every outcome, not just success. It is
+                // the post control most plans go through, and the only other
+                // report lives at the bottom of the page, where a reader scrolled
+                // anywhere else never sees it.
+                const postTone = postNotification?.type
+                const postIcon =
+                  { success: 'check', warning: 'alert', error: 'alert-circle' }[postTone] || 'send'
+                const postLabel = postNotification
+                  ? postNotification.message
+                  : isMulti
+                    ? `Post to selected (${selectedKeys.size})`
                     : 'Post to Jira'
+                const postStyle =
+                  postTone === 'error'
+                    ? { ...base, background: 'var(--danger-soft)', borderColor: 'rgba(239,68,68,.5)', color: 'var(--danger)' }
+                    : postTone === 'warning'
+                      ? { ...base, background: 'var(--warning-soft)', borderColor: 'rgba(245,158,11,.5)', color: 'var(--warning)' }
+                      : primary
                 return (
                   <>
                     <span className="tip">
@@ -1536,7 +1582,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                       <button
                         type="button"
                         style={{
-                          ...primary,
+                          ...postStyle,
                           opacity: postDisabled ? 0.5 : 1,
                           cursor: postDisabled ? 'not-allowed' : 'pointer',
                         }}
@@ -1547,10 +1593,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                         {isPostBusy ? (
                           <span className="spin" />
                         ) : (
-                          <Icon
-                            name={postNotification?.type === 'success' ? 'check' : 'send'}
-                            size={12}
-                          />
+                          <Icon name={postIcon} size={12} />
                         )}
                       </button>
                       <span className="tip-body">{postLabel}</span>
@@ -1560,6 +1603,50 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
               })()}
             </div>
           </div>
+
+          {/* Post result, reported where the post button is. This row lives
+              inside the sticky container on purpose: the bar follows the
+              viewport, so anything rendered below it in normal flow is off
+              screen for a reader who is not at the bottom of the plan. */}
+          {postNotification && (
+            <div
+              role="status"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--s-3)',
+                marginTop: 8,
+                padding: '6px 10px',
+                borderRadius: 'var(--r-md)',
+                border: '1px solid',
+                fontSize: 'var(--t-xs)',
+                fontWeight: 500,
+                ...(postNotification.type === 'error'
+                  ? { background: 'var(--danger-soft)', borderColor: 'rgba(239,68,68,.4)', color: 'var(--danger)' }
+                  : postNotification.type === 'warning'
+                    ? { background: 'var(--warning-soft)', borderColor: 'rgba(245,158,11,.35)', color: 'var(--warning)' }
+                    : { background: 'var(--success-soft)', borderColor: 'rgba(34,197,94,.35)', color: 'var(--success)' }),
+              }}
+            >
+              <Icon
+                name={
+                  postNotification.type === 'error'
+                    ? 'alert-circle'
+                    : postNotification.type === 'warning'
+                      ? 'alert'
+                      : 'check-circle'
+                }
+                size={13}
+                style={{ flexShrink: 0 }}
+              />
+              <span>
+                {postNotification.type === 'error' && (
+                  <strong style={{ fontWeight: 600 }}>Post failed — </strong>
+                )}
+                {postNotification.message}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -1633,10 +1720,10 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                 disabled={isPosting}
                 loading={isPosting}
               >
-                {postNotification?.type === 'success'
-                  ? `✓ ${postNotification.message}`
-                  : isPosting
+                {isPosting
                   ? 'Posting…'
+                  : postNotification?.type === 'success'
+                  ? `✓ ${postNotification.message}`
                   : 'Post to Jira'}
               </Btn>
             )}
@@ -1673,11 +1760,24 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                       data-checked={checked ? 'true' : 'false'}
                       role="checkbox"
                       aria-checked={checked}
-                      onClick={() => !isAnyPosting && state !== 'done' && toggleKeySelection(td.key)}
+                      onClick={() =>
+                        !isAnyPosting &&
+                        state !== 'done' &&
+                        state !== 'truncated' &&
+                        toggleKeySelection(td.key)
+                      }
                     />
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>{td.key}</span>
                     {state === 'posting' && <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>Posting…</span>}
                     {state === 'done' && <Chip size="sm" dot dotColor="var(--success)">Posted</Chip>}
+                    {state === 'truncated' && (
+                      <span className="tip">
+                        <Chip size="sm" dot dotColor="var(--warning)">Posted, truncated</Chip>
+                        <span className="tip-body">
+                          Too long for a Jira comment — the comment was cut short. The complete plan is here in the app.
+                        </span>
+                      </span>
+                    )}
                     {state === 'error' && <Chip size="sm" dot dotColor="var(--danger)">Failed</Chip>}
                   </label>
                 )
@@ -1696,9 +1796,17 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           </div>
         )}
 
-        {postNotification && postNotification.type === 'error' && (
+        {/* Fallback report for a plan with no test cases, which renders no
+            sticky bar and so has no status strip to report into. Every other
+            plan gets the strip, which stays on screen wherever the reader is. */}
+        {totalAll === 0 && postNotification && postNotification.type !== 'success' && (
           <div style={{ marginTop: 'var(--s-4)' }}>
-            <Alert tone="danger" title="Post failed">{postNotification.message}</Alert>
+            <Alert
+              tone={postNotification.type === 'error' ? 'danger' : 'warning'}
+              title={postNotification.type === 'error' ? 'Post failed' : 'Posted, but truncated'}
+            >
+              {postNotification.message}
+            </Alert>
           </div>
         )}
       </div>

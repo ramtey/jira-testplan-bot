@@ -229,15 +229,19 @@ _TRUNCATED_NOTICE = (
 )
 
 
-def _fit_to_jira_comment_limit(marked_text: str) -> str:
-    """Return `marked_text` shortened so the resulting ADF JSON fits Jira's
-    comment limit. Uses a binary search over input length, falling back to
-    the original text when it already fits. A clear notice is appended so
-    reviewers know content was dropped."""
+def _fit_to_jira_comment_limit(marked_text: str) -> tuple[str, bool]:
+    """Return `(text, truncated)` where `text` is `marked_text` shortened so the
+    resulting ADF JSON fits Jira's comment limit. Uses a binary search over input
+    length, falling back to the original text when it already fits. A clear notice
+    is appended so reviewers know content was dropped.
+
+    The `truncated` flag is returned rather than left implicit in the text so the
+    caller can tell the poster that content was dropped. Without it the UI reports
+    a plain success and the only record of the loss is inside the Jira comment."""
     import json as _json
     body = _wrap_body_in_expand(markdown_to_adf(marked_text))
     if len(_json.dumps(body)) <= JIRA_COMMENT_MAX_BYTES:
-        return marked_text
+        return marked_text, False
     lo, hi = 1000, len(marked_text)
     best = marked_text[:lo] + _TRUNCATED_NOTICE
     while lo <= hi:
@@ -249,7 +253,7 @@ def _fit_to_jira_comment_limit(marked_text: str) -> str:
             lo = mid + 1
         else:
             hi = mid - 1
-    return best
+    return best, True
 
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
 # The fail-back action lets the tester return a ticket to either "To Do"
@@ -2978,7 +2982,9 @@ class JiraClient:
 
         Returns:
             dict: Response from Jira API with comment ID and metadata
-                  (includes "updated": true if existing comment was updated)
+                  (includes "updated": true if an existing comment was updated,
+                  and "truncated": true if the plan had to be cut to fit Jira's
+                  comment size limit)
 
         Raises:
             JiraNotFoundError: If the issue doesn't exist
@@ -2989,7 +2995,12 @@ class JiraClient:
         # Using a marker that won't be visible to users but can be detected
         marker = TEST_PLAN_MARKER
         marked_text = f"{marker}\n\n{comment_text}"
-        marked_text = _fit_to_jira_comment_limit(marked_text)
+        marked_text, truncated = _fit_to_jira_comment_limit(marked_text)
+        if truncated:
+            logger.warning(
+                "Test plan for %s exceeded Jira's comment limit and was truncated",
+                issue_key,
+            )
 
         # Check if there's already a test plan comment to update
         try:
@@ -3014,6 +3025,7 @@ class JiraClient:
                                     logger.info(f"Updating existing test plan comment {comment_id} on {issue_key}")
                                     result = await self.update_comment(issue_key, comment_id, marked_text)
                                     result["updated"] = True
+                                    result["truncated"] = truncated
                                     return result
         except Exception as e:
             # If fetching/checking existing comments fails, fall back to creating new
@@ -3058,6 +3070,7 @@ class JiraClient:
 
         result = r.json()
         result["updated"] = False
+        result["truncated"] = truncated
         return result
 
     async def upload_attachments(

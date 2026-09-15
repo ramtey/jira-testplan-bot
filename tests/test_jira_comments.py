@@ -12,6 +12,7 @@ import pytest
 from src.app.jira_client import (
     JiraClient,
     TEST_PLAN_MARKER,
+    _fit_to_jira_comment_limit,
     _wrap_body_in_expand,
     markdown_to_adf,
 )
@@ -238,3 +239,91 @@ if __name__ == "__main__":
     print("=" * 60)
     print("\nTo run these tests, use: pytest tests/test_jira_comments.py -v")
     print("Or install pytest: uv add --dev pytest pytest-asyncio")
+
+
+def test_fit_to_jira_comment_limit_reports_untruncated():
+    """A plan that already fits comes back unchanged and flagged untruncated."""
+    text = f"{TEST_PLAN_MARKER}\n\nA short plan."
+    fitted, truncated = _fit_to_jira_comment_limit(text)
+    assert fitted == text
+    assert truncated is False
+
+
+def test_fit_to_jira_comment_limit_reports_truncated():
+    """An oversized plan is cut, and the caller is told so.
+
+    The notice inside the text is for whoever reads the Jira comment; the flag
+    is for the poster, who otherwise gets a plain success and no hint that the
+    comment is missing most of the plan.
+    """
+    text = f"{TEST_PLAN_MARKER}\n\n" + ("- A long test case step line.\n" * 4000)
+    fitted, truncated = _fit_to_jira_comment_limit(text)
+    assert truncated is True
+    assert len(fitted) < len(text)
+    assert "Plan truncated" in fitted
+
+
+@pytest.mark.asyncio
+async def test_post_comment_flags_truncation_on_new_comment():
+    """post_comment surfaces truncation when it creates a comment."""
+    jira = JiraClient()
+    oversized = "- A long test case step line.\n" * 4000
+
+    with patch.object(jira, 'get_comments', return_value=[]):
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 201
+            mock_response.json.return_value = {"id": "12345"}
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
+
+            result = await jira.post_comment("TEST-123", oversized)
+
+            assert result["updated"] is False
+            assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_post_comment_flags_truncation_on_update():
+    """The update-in-place path reports truncation too, not just the create path."""
+    jira = JiraClient()
+    oversized = "- A long test case step line.\n" * 4000
+    existing_comment = {
+        "id": "67890",
+        "body": {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": TEST_PLAN_MARKER}],
+                }
+            ],
+        },
+    }
+
+    with patch.object(jira, 'get_comments', return_value=[existing_comment]):
+        with patch.object(jira, 'update_comment', return_value={"id": "67890"}):
+            result = await jira.post_comment("TEST-123", oversized)
+
+    assert result["updated"] is True
+    assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_post_comment_reports_no_truncation_for_short_plan():
+    """A plan that fits is not flagged, so the UI can report a clean success."""
+    jira = JiraClient()
+
+    with patch.object(jira, 'get_comments', return_value=[]):
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 201
+            mock_response.json.return_value = {"id": "12345"}
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
+
+            result = await jira.post_comment("TEST-123", "Test plan content")
+
+    assert result["truncated"] is False

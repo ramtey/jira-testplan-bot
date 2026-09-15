@@ -636,6 +636,7 @@ async def post_comment(request: PostCommentRequest):
             "comment_id": comment_id,
             "issue_key": request.issue_key,
             "updated": result.get("updated", False),
+            "truncated": result.get("truncated", False),
             "plan_id": request.plan_id,
             "posted_at": posted_at_iso,
         }
