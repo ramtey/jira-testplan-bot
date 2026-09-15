@@ -590,16 +590,30 @@ async def _post_test_plan_to_jira(ticket_key: str, test_plan: str) -> list[TextC
         jira_client = JiraClient()
         result = await jira_client.post_comment(ticket_key, test_plan)
 
-        if result.get("updated"):
-            return [TextContent(
-                type="text",
-                text=f"✅ Test plan updated on {ticket_key} (comment ID: {result.get('id')})"
-            )]
+        action = "updated on" if result.get("updated") else "posted to"
+        parts = result.get("parts", 1)
+        posted = result.get("posted_parts", parts)
+        # A plan too big for one Jira comment is split across several. Saying
+        # only "posted" would leave the caller thinking it is one comment, and
+        # a post that stopped partway has to say how far it got.
+        spread = f" across {parts} comments" if parts > 1 else ""
+        if posted < parts:
+            why = f" ({result['part_error']})" if result.get("part_error") else ""
+            text = (
+                f"⚠️ Test plan {action} {ticket_key}, but only {posted} of {parts} "
+                f"comments landed{why} — the ticket has part of the plan."
+            )
+        elif result.get("truncated"):
+            text = (
+                f"⚠️ Test plan {action} {ticket_key}{spread}, but it was still too "
+                f"long for Jira and the last comment was cut short."
+            )
         else:
-            return [TextContent(
-                type="text",
-                text=f"✅ Test plan posted to {ticket_key} (comment ID: {result.get('id')})"
-            )]
+            text = (
+                f"✅ Test plan {action} {ticket_key}{spread} "
+                f"(comment ID: {result.get('id')})"
+            )
+        return [TextContent(type="text", text=text)]
 
     except JiraNotFoundError:
         return [TextContent(

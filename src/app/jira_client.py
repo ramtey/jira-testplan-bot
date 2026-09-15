@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import re
 from typing import NamedTuple
@@ -224,8 +225,8 @@ TEST_PLAN_EXPAND_TITLE = "Click to view"
 # wrapper/expand overhead added by `_wrap_body_in_expand`.
 JIRA_COMMENT_MAX_BYTES = 30000
 _TRUNCATED_NOTICE = (
-    "\n\n---\n_⚠️ Plan truncated — full version exceeds Jira's comment "
-    "size limit. See the local app for the complete test plan._"
+    "\n\n---\n_⚠️ Plan truncated — the rest is more than Jira comments can "
+    "hold. See the local app for the complete test plan._"
 )
 
 
@@ -235,25 +236,221 @@ def _fit_to_jira_comment_limit(marked_text: str) -> tuple[str, bool]:
     length, falling back to the original text when it already fits. A clear notice
     is appended so reviewers know content was dropped.
 
-    The `truncated` flag is returned rather than left implicit in the text so the
-    caller can tell the poster that content was dropped. Without it the UI reports
-    a plain success and the only record of the loss is inside the Jira comment."""
-    import json as _json
-    body = _wrap_body_in_expand(markdown_to_adf(marked_text))
-    if len(_json.dumps(body)) <= JIRA_COMMENT_MAX_BYTES:
+    This is the last resort, used only once a plan has already been spread over
+    `JIRA_COMMENT_MAX_PARTS` comments by `_split_marked_text_into_parts` and still
+    doesn't fit. The `truncated` flag is returned rather than left implicit in the
+    text so the caller can tell the poster that content was dropped. Without it the
+    UI reports a plain success and the only record of the loss is inside the Jira
+    comment."""
+    if _adf_size(marked_text) <= JIRA_COMMENT_MAX_BYTES:
         return marked_text, False
     lo, hi = 1000, len(marked_text)
     best = marked_text[:lo] + _TRUNCATED_NOTICE
     while lo <= hi:
         mid = (lo + hi) // 2
         candidate = marked_text[:mid].rstrip() + _TRUNCATED_NOTICE
-        body = _wrap_body_in_expand(markdown_to_adf(candidate))
-        if len(_json.dumps(body)) <= JIRA_COMMENT_MAX_BYTES:
+        if _adf_size(candidate) <= JIRA_COMMENT_MAX_BYTES:
             best = candidate
             lo = mid + 1
         else:
             hi = mid - 1
     return best, True
+
+
+# Jira has no "long comment" mode: past the size limit the comment is rejected
+# outright. Cutting the plan to fit means the tester runs two thirds of it and
+# never sees the rest, so an oversized plan is split across consecutive comments
+# instead. The cap stops a runaway plan from burying the ticket under an
+# unbounded wall of comments — past it the last part is truncated and the caller
+# is told, which is the same honest failure as before but several times further out.
+JIRA_COMMENT_MAX_PARTS = 5
+
+# Packing measures against the longest header any part can end up with, so
+# numbering the parts afterwards can only shrink them, never push one over.
+_PART_HEADER_PROBE = (
+    f"{TEST_PLAN_MARKER} (part {JIRA_COMMENT_MAX_PARTS} of {JIRA_COMMENT_MAX_PARTS})\n\n"
+)
+_CONTINUED_SUFFIX = " (continued)"
+
+
+def _adf_size(text: str) -> int:
+    """Bytes of ADF JSON that `text` turns into once wrapped for posting."""
+    return len(json.dumps(_wrap_body_in_expand(markdown_to_adf(text))))
+
+
+def _part_header(index: int, total: int) -> str:
+    """Marker line for part `index` of `total`. A single-part post keeps the
+    bare marker so the common case reads exactly as it always has."""
+    if total <= 1:
+        return f"{TEST_PLAN_MARKER}\n\n"
+    return f"{TEST_PLAN_MARKER} (part {index} of {total})\n\n"
+
+
+def _is_section_heading_line(line: str) -> bool:
+    """True for a section banner like `✅ HAPPY PATH TEST CASES`.
+
+    The uppercase check keeps a step or expected-result line that happens to
+    open with ✅ from being mistaken for a banner."""
+    stripped = line.strip()
+    if not stripped.startswith(_SECTION_PREFIXES):
+        return False
+    return stripped == stripped.upper()
+
+
+def _last_section_heading(text: str) -> str | None:
+    heading = None
+    for line in text.splitlines():
+        if _is_section_heading_line(line):
+            heading = line.strip()
+    return heading
+
+
+def _split_into_blocks(body: str) -> list[str]:
+    """Break the plan body at the dividers the formatter puts between test cases.
+
+    A part that ended mid-case would render as a headless pile of steps — the
+    nestedExpand grouping keys off the `**N. Title**` line that opens each case —
+    so the dividers are the only split points that keep cases whole."""
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in body.splitlines(keepends=True):
+        current.append(line)
+        stripped = line.strip()
+        if stripped and all(c == "─" for c in stripped):
+            blocks.append("".join(current))
+            current = []
+    if current:
+        blocks.append("".join(current))
+    return [b for b in blocks if b.strip()]
+
+
+def _largest_prefix_that_fits(header: str, block: str) -> int:
+    """Characters of `block` that still fit under the limit after `header`."""
+    lo, hi, best = 1, len(block), 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if _adf_size(header + block[:mid].rstrip()) <= JIRA_COMMENT_MAX_BYTES:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return max(best, 1)
+
+
+def _split_block_finer(block: str) -> list[str]:
+    """Break a single over-large block down further: paragraphs first, and a
+    hard character slice only when the block is one unbroken paragraph."""
+    chunks = [c for c in re.split(r"\n[ \t]*\n", block) if c.strip()]
+    if len(chunks) > 1:
+        return [c.rstrip() + "\n\n" for c in chunks]
+    kept = _largest_prefix_that_fits(_PART_HEADER_PROBE, block)
+    if kept >= len(block):
+        return [block]
+    return [block[:kept], block[kept:]]
+
+
+def _pack_blocks(blocks: list[str]) -> list[str]:
+    """Greedily fill parts with whole blocks, repeating the open section banner
+    at the top of each continuation so a part never opens with orphaned cases."""
+    parts: list[str] = []
+    queue = list(blocks)
+    current = ""
+    blocks_in_current = 0
+    carry: str | None = None  # section banner the next part should repeat
+
+    while queue:
+        block = queue.pop(0)
+        if blocks_in_current == 0 and not current:
+            # Don't repeat the banner if the block opens its own section.
+            opens_section = _is_section_heading_line(block.splitlines()[0] if block.splitlines() else "")
+            if carry and not opens_section:
+                current = f"{carry}{_CONTINUED_SUFFIX}\n\n"
+        candidate = current + block
+        if _adf_size(_PART_HEADER_PROBE + candidate) <= JIRA_COMMENT_MAX_BYTES:
+            current = candidate
+            blocks_in_current += 1
+            carry = _last_section_heading(block) or carry
+            continue
+        if blocks_in_current:
+            # Flush what we have and retry this block at the head of a new part.
+            parts.append(current)
+            current = ""
+            blocks_in_current = 0
+            queue.insert(0, block)
+            continue
+        # The block doesn't fit even on its own — break it down and retry.
+        finer = _split_block_finer(block)
+        if len(finer) == 1 and finer[0] == block:
+            # Unsplittable and still too big: take it whole and let the
+            # part cap's truncation notice account for the overflow.
+            current = candidate
+            blocks_in_current += 1
+            continue
+        queue[:0] = finer
+
+    if blocks_in_current or current.strip():
+        parts.append(current)
+    return parts
+
+
+def _split_marked_text_into_parts(marked_text: str) -> tuple[list[str], bool]:
+    """Return `(parts, truncated)`: the plan laid out over as many Jira comments
+    as it needs, and whether anything still had to be dropped.
+
+    One comment stays the norm — a plan that fits comes back as a single part,
+    byte-identical to what a single post produced before."""
+    if _adf_size(marked_text) <= JIRA_COMMENT_MAX_BYTES:
+        return [marked_text], False
+
+    body = marked_text
+    prefix = f"{TEST_PLAN_MARKER}\n\n"
+    if body.startswith(prefix):
+        body = body[len(prefix):]
+
+    bodies = _pack_blocks(_split_into_blocks(body)) or [body]
+    truncated = len(bodies) > JIRA_COMMENT_MAX_PARTS
+    if truncated:
+        bodies = bodies[:JIRA_COMMENT_MAX_PARTS]
+
+    total = len(bodies)
+    parts = [_part_header(i + 1, total) + b.rstrip() for i, b in enumerate(bodies)]
+
+    if truncated:
+        # The notice goes on before the refit, not after: refitting a part that
+        # already fits is a no-op, which would leave the last part looking like
+        # a clean end to the plan.
+        with_notice = parts[-1] + _TRUNCATED_NOTICE
+        if _adf_size(with_notice) <= JIRA_COMMENT_MAX_BYTES:
+            parts[-1] = with_notice
+        else:
+            parts[-1], _ = _fit_to_jira_comment_limit(with_notice)
+
+    # A part that somehow still overflows is cut rather than posted to a
+    # rejection; without this a mis-sized part fails the whole post.
+    for i, part in enumerate(parts):
+        if _adf_size(part) > JIRA_COMMENT_MAX_BYTES:
+            parts[i], cut = _fit_to_jira_comment_limit(part)
+            truncated = truncated or cut
+
+    return parts, truncated
+
+
+def _comment_carries_test_plan_marker(comment: dict) -> bool:
+    """True if `comment` is one of our test plan comments (or one of its parts)."""
+    body = comment.get("body", {})
+    if body.get("type") != "doc":
+        return False
+    content = body.get("content", [])
+    if not content:
+        return False
+    first_para = content[0]
+    if first_para.get("type") != "paragraph":
+        return False
+    para_content = first_para.get("content", [])
+    if not para_content:
+        return False
+    return TEST_PLAN_MARKER in (para_content[0].get("text") or "")
+
 
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
 # The fail-back action lets the tester return a ticket to either "To Do"
@@ -2969,73 +3166,12 @@ class JiraClient:
             story_points=story_points,
         )
 
-    async def post_comment(self, issue_key: str, comment_text: str) -> dict:
-        """
-        Post a comment to a Jira issue, or update existing test plan comment if found.
-
-        This method checks for existing test plan comments (identified by marker text)
-        and updates them instead of creating duplicates when regenerating test plans.
-
-        Args:
-            issue_key: The Jira issue key (e.g., "PROJ-123")
-            comment_text: Plain text comment to post
-
-        Returns:
-            dict: Response from Jira API with comment ID and metadata
-                  (includes "updated": true if an existing comment was updated,
-                  and "truncated": true if the plan had to be cut to fit Jira's
-                  comment size limit)
-
-        Raises:
-            JiraNotFoundError: If the issue doesn't exist
-            JiraAuthError: If authentication fails or permissions are insufficient
-            JiraConnectionError: If Jira is unreachable
-        """
-        # Add unique marker to identify test plan comments
-        # Using a marker that won't be visible to users but can be detected
-        marker = TEST_PLAN_MARKER
-        marked_text = f"{marker}\n\n{comment_text}"
-        marked_text, truncated = _fit_to_jira_comment_limit(marked_text)
-        if truncated:
-            logger.warning(
-                "Test plan for %s exceeded Jira's comment limit and was truncated",
-                issue_key,
-            )
-
-        # Check if there's already a test plan comment to update
-        try:
-            existing_comments = await self.get_comments(issue_key)
-
-            # Find existing test plan comment by looking for our marker
-            for comment in existing_comments:
-                # Extract text from ADF format
-                body = comment.get("body", {})
-                if body.get("type") == "doc":
-                    content = body.get("content", [])
-                    # Check first paragraph for marker
-                    if content and len(content) > 0:
-                        first_para = content[0]
-                        if first_para.get("type") == "paragraph":
-                            para_content = first_para.get("content", [])
-                            if para_content and len(para_content) > 0:
-                                text = para_content[0].get("text", "")
-                                if marker in text:
-                                    # Found existing test plan comment - update it
-                                    comment_id = comment.get("id")
-                                    logger.info(f"Updating existing test plan comment {comment_id} on {issue_key}")
-                                    result = await self.update_comment(issue_key, comment_id, marked_text)
-                                    result["updated"] = True
-                                    result["truncated"] = truncated
-                                    return result
-        except Exception as e:
-            # If fetching/checking existing comments fails, fall back to creating new
-            logger.warning(f"Failed to check for existing comments on {issue_key}: {e}")
-
-        # No existing test plan comment found - create new one
+    async def _create_comment(self, issue_key: str, comment_text: str) -> dict:
+        """POST one comment body to Jira and return the created comment."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
 
         payload = {
-            "body": _wrap_body_in_expand(markdown_to_adf(marked_text))
+            "body": _wrap_body_in_expand(markdown_to_adf(comment_text))
         }
 
         headers = {
@@ -3068,9 +3204,116 @@ class JiraClient:
             )
         r.raise_for_status()
 
-        result = r.json()
-        result["updated"] = False
+        return r.json()
+
+    async def post_comment(self, issue_key: str, comment_text: str) -> dict:
+        """
+        Post a test plan to a Jira issue, updating the existing plan comment(s) if found.
+
+        A plan too large for one Jira comment is split across consecutive comments
+        rather than cut off, up to `JIRA_COMMENT_MAX_PARTS`. Existing test plan
+        comments (identified by marker text) are reused in order, so regenerating a
+        plan updates the same comments instead of piling up duplicates; parts left
+        over from a longer previous plan are deleted.
+
+        Args:
+            issue_key: The Jira issue key (e.g., "PROJ-123")
+            comment_text: Plain text comment to post
+
+        Returns:
+            dict: Jira's response for the FIRST comment, plus:
+                  "updated": true if existing plan comments were reused
+                  "truncated": true if the plan still had to be cut to fit
+                  "parts": how many comments the plan was meant to occupy
+                  "posted_parts": how many of them actually landed
+                  "part_comment_ids": the ids of the comments that landed
+                  "stale_parts_left": leftover parts from a longer previous
+                      plan that could not be deleted
+                  "part_error": why posting stopped early, if it did
+
+        Raises:
+            JiraNotFoundError: If the issue doesn't exist
+            JiraAuthError: If authentication fails or permissions are insufficient
+            JiraConnectionError: If Jira is unreachable
+        """
+        marker = TEST_PLAN_MARKER
+        marked_text = f"{marker}\n\n{comment_text}"
+        parts, truncated = _split_marked_text_into_parts(marked_text)
+        if truncated:
+            logger.warning(
+                "Test plan for %s exceeded %d Jira comments and was truncated",
+                issue_key,
+                JIRA_COMMENT_MAX_PARTS,
+            )
+        elif len(parts) > 1:
+            logger.info(
+                "Test plan for %s does not fit one Jira comment; posting %d parts",
+                issue_key,
+                len(parts),
+            )
+
+        # Reuse the existing plan comments, in the order Jira returns them, so a
+        # regenerated plan lands where the last one did instead of alongside it.
+        existing_ids: list[str] = []
+        try:
+            for comment in await self.get_comments(issue_key):
+                if _comment_carries_test_plan_marker(comment):
+                    comment_id = comment.get("id")
+                    if comment_id:
+                        existing_ids.append(str(comment_id))
+        except Exception as e:
+            # If fetching/checking existing comments fails, fall back to creating new
+            logger.warning(f"Failed to check for existing comments on {issue_key}: {e}")
+            existing_ids = []
+
+        results: list[dict] = []
+        part_error: str | None = None
+        for index, part in enumerate(parts):
+            try:
+                if index < len(existing_ids):
+                    logger.info(
+                        "Updating existing test plan comment %s on %s",
+                        existing_ids[index],
+                        issue_key,
+                    )
+                    results.append(await self.update_comment(issue_key, existing_ids[index], part))
+                else:
+                    results.append(await self._create_comment(issue_key, part))
+            except Exception as e:
+                if not results:
+                    # Nothing landed — this is a plain failed post, report it as one.
+                    raise
+                # Some of the plan is already on the ticket. Reporting a bare
+                # failure here would be a lie in the other direction, so stop
+                # and let the caller say how far the post got.
+                logger.warning(
+                    "Test plan post to %s stopped after part %d of %d: %s",
+                    issue_key, index, len(parts), e,
+                )
+                part_error = str(e)
+                break
+
+        # Drop parts left behind by a longer previous plan, so the ticket doesn't
+        # keep showing cases the current plan no longer contains.
+        stale_left = 0
+        for stale_id in existing_ids[len(results):] if part_error is None else []:
+            try:
+                await self.delete_comment(issue_key, stale_id)
+            except Exception as e:
+                stale_left += 1
+                logger.warning(
+                    "Could not delete stale test plan comment %s on %s: %s",
+                    stale_id, issue_key, e,
+                )
+
+        result = dict(results[0])
+        result["updated"] = bool(existing_ids)
         result["truncated"] = truncated
+        result["parts"] = len(parts)
+        result["posted_parts"] = len(results)
+        result["part_comment_ids"] = [str(r.get("id")) for r in results if r.get("id")]
+        result["stale_parts_left"] = stale_left
+        result["part_error"] = part_error
         return result
 
     async def upload_attachments(
@@ -3400,6 +3643,34 @@ class JiraClient:
         r.raise_for_status()
 
         return r.json()
+
+    async def delete_comment(self, issue_key: str, comment_id: str) -> None:
+        """Delete a comment from a Jira issue.
+
+        Used to clear test plan parts left over when a regenerated plan needs
+        fewer comments than the one it replaces. A comment that is already gone
+        (404) counts as deleted — the goal is its absence, not the delete call.
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment/{comment_id}"
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.delete(url, headers=self._headers())
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            return
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for this comment or verify your account has proper access.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
 
     # The configured user's accountId is fixed for the lifetime of the
     # process — cache it on the class so repeated issue fetches don't

@@ -218,10 +218,22 @@ def generate(
                 result = asyncio.run(jira_client.post_comment(issue.key, jira_formatted))
 
                 if not quiet:
-                    if result.get("updated"):
-                        console.print("[green]✓[/green] Test plan updated in Jira")
+                    verb = "updated in" if result.get("updated") else "posted to"
+                    parts = result.get("parts", 1)
+                    posted = result.get("posted_parts", parts)
+                    spread = f" across {parts} comments" if parts > 1 else ""
+                    if posted < parts:
+                        console.print(
+                            f"[yellow]![/yellow] Test plan {verb} Jira, but only "
+                            f"{posted} of {parts} comments landed"
+                        )
+                    elif result.get("truncated"):
+                        console.print(
+                            f"[yellow]![/yellow] Test plan {verb} Jira{spread}, "
+                            f"but the last comment was cut short"
+                        )
                     else:
-                        console.print("[green]✓[/green] Test plan posted to Jira")
+                        console.print(f"[green]✓[/green] Test plan {verb} Jira{spread}")
 
         except NonTestableIssueError as e:
             # Epic / Spike. A per-ticket condition, so a batch skips it and

@@ -14,6 +14,10 @@ const API_BASE = API_BASE_URL
 
 const PROGRESS_STORAGE_PREFIX = 'testplan-progress:'
 
+// Post states that mean the plan reached the ticket, cleanly or with a caveat.
+// A ticket in any of them stays locked so a second click can't re-post it.
+const POSTED_STATES = new Set(['done', 'split', 'truncated', 'partial', 'stale'])
+
 const SECTIONS = [
   { key: 'happy_path', label: 'Happy Path', icon: 'check-circle', renderer: 'card' },
   { key: 'edge_cases', label: 'Edge & Error', icon: 'alert', renderer: 'card', showCategory: true },
@@ -1208,6 +1212,9 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const [copyNotification, setCopyNotification] = useState(null)
   const postTimerRef = useRef(null)
   const copyTimerRef = useRef(null)
+  // Per-ticket post outcomes, so the batch summary can name what actually
+  // happened to each ticket instead of collapsing everything into "posted".
+  const postOutcomesRef = useRef({})
 
   // Success clears fast — it only has to confirm. A failure or a truncated post
   // is something the tester has to act on, so it stays up long enough to read
@@ -1218,6 +1225,43 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     if (timerRef.current) clearTimeout(timerRef.current)
     setter({ type, message })
     timerRef.current = setTimeout(() => setter(null), NOTIFICATION_MS[type] ?? 6000)
+  }
+
+  // A plan too big for one Jira comment is now split across consecutive
+  // comments instead of being cut off. That is a success, but the tester still
+  // has to know the plan is spread over several comments — and a post that
+  // stopped partway has to say how far it got rather than read as clean.
+  const describePostResult = (result, target, action) => {
+    const parts = result.parts ?? 1
+    const posted = result.posted_parts ?? parts
+    const spread = parts > 1 ? ` across ${parts} comments` : ''
+    if (posted < parts) {
+      const why = result.part_error ? ` — ${result.part_error}` : ''
+      return {
+        type: 'warning',
+        message: `Test plan ${action} on ${target}, but only ${posted} of ${parts} comments landed${why}. The complete plan is here in the app.`,
+        state: 'partial',
+      }
+    }
+    if (result.truncated) {
+      return {
+        type: 'warning',
+        message: `Test plan ${action} on ${target}${spread}, but it was still too long for Jira and got cut short. The complete plan is here in the app.`,
+        state: 'truncated',
+      }
+    }
+    if (result.stale_parts_left > 0) {
+      return {
+        type: 'warning',
+        message: `Test plan ${action} on ${target}${spread}, but ${result.stale_parts_left} comment(s) from the previous plan could not be removed — the ticket still shows cases this plan dropped.`,
+        state: 'stale',
+      }
+    }
+    return {
+      type: 'success',
+      message: `Test plan ${action} on ${target}${spread}`,
+      state: parts > 1 ? 'split' : 'done',
+    }
   }
 
   if (!testPlan) return null
@@ -1285,19 +1329,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
       const result = await response.json()
       const action = result.updated ? 'updated' : 'posted'
       if (onPosted) onPosted({ ticketKey: ticketData.key, planId: testPlan?.plan_id ?? null })
-      if (result.truncated) {
-        // The backend cut the plan to fit Jira's ~32KB comment limit. That is a
-        // success as far as the request goes, but the comment is not the plan —
-        // reporting it as a plain success is how the loss went unnoticed before.
-        showNotification(
-          setPostNotification,
-          postTimerRef,
-          'warning',
-          `Test plan ${action} on ${ticketData.key}, but it was too long for a Jira comment and got cut short. The complete plan is here in the app.`
-        )
-      } else {
-        showNotification(setPostNotification, postTimerRef, 'success', `Test plan ${action} on ${ticketData.key}`)
-      }
+      const outcome = describePostResult(result, ticketData.key, action)
+      showNotification(setPostNotification, postTimerRef, outcome.type, outcome.message)
     } catch (error) {
       showNotification(setPostNotification, postTimerRef, 'error', error.message)
     } finally {
@@ -1328,10 +1361,9 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
       }
 
       const result = await response.json()
-      setPostingStates((prev) => ({
-        ...prev,
-        [issueKey]: result.truncated ? 'truncated' : 'done',
-      }))
+      const outcome = describePostResult(result, issueKey, result.updated ? 'updated' : 'posted')
+      postOutcomesRef.current[issueKey] = outcome
+      setPostingStates((prev) => ({ ...prev, [issueKey]: outcome.state }))
     } catch (error) {
       setPostingStates((prev) => ({ ...prev, [issueKey]: 'error' }))
       showNotification(setPostNotification, postTimerRef, 'error', `${issueKey}: ${error.message}`)
@@ -1350,20 +1382,33 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     }
     setPostingStates((prev) => {
       const anyError = keys.some((k) => prev[k] === 'error')
-      const truncatedKeys = keys.filter((k) => prev[k] === 'truncated')
       if (anyError) {
         // Per-ticket errors already raised their own notification in postToKey.
         return prev
       }
-      if (truncatedKeys.length > 0) {
+      const flagged = keys.filter((k) => postOutcomesRef.current[k]?.type === 'warning')
+      if (flagged.length > 0) {
+        // One line per flagged ticket: "cut short" and "only 1 of 3 landed" are
+        // different problems and a lumped summary hides which ticket has which.
+        const detail = flagged
+          .map((k) => postOutcomesRef.current[k].message)
+          .join(' ')
         showNotification(
           setPostNotification,
           postTimerRef,
           'warning',
-          `Posted to ${keys.join(', ')}, but the comment on ${truncatedKeys.join(', ')} was too long for Jira and got cut short. The complete plan is here in the app.`
+          `Posted to ${keys.join(', ')}. ${detail}`
         )
       } else {
-        showNotification(setPostNotification, postTimerRef, 'success', `Posted to ${keys.join(', ')}`)
+        const split = keys.filter((k) => prev[k] === 'split')
+        showNotification(
+          setPostNotification,
+          postTimerRef,
+          'success',
+          split.length > 0
+            ? `Posted to ${keys.join(', ')} — ${split.join(', ')} needed more than one Jira comment.`
+            : `Posted to ${keys.join(', ')}`
+        )
       }
       return prev
     })
@@ -1762,19 +1807,42 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                       aria-checked={checked}
                       onClick={() =>
                         !isAnyPosting &&
-                        state !== 'done' &&
-                        state !== 'truncated' &&
+                        !POSTED_STATES.has(state) &&
                         toggleKeySelection(td.key)
                       }
                     />
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>{td.key}</span>
                     {state === 'posting' && <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>Posting…</span>}
                     {state === 'done' && <Chip size="sm" dot dotColor="var(--success)">Posted</Chip>}
+                    {state === 'split' && (
+                      <span className="tip">
+                        <Chip size="sm" dot dotColor="var(--success)">Posted in parts</Chip>
+                        <span className="tip-body">
+                          Too long for one Jira comment — the whole plan is on the ticket, split across consecutive comments.
+                        </span>
+                      </span>
+                    )}
                     {state === 'truncated' && (
                       <span className="tip">
                         <Chip size="sm" dot dotColor="var(--warning)">Posted, truncated</Chip>
                         <span className="tip-body">
-                          Too long for a Jira comment — the comment was cut short. The complete plan is here in the app.
+                          Too long even split across several Jira comments — the last one was cut short. The complete plan is here in the app.
+                        </span>
+                      </span>
+                    )}
+                    {state === 'partial' && (
+                      <span className="tip">
+                        <Chip size="sm" dot dotColor="var(--warning)">Posted in part</Chip>
+                        <span className="tip-body">
+                          Posting stopped partway: some of the plan is on the ticket and some is not. The complete plan is here in the app.
+                        </span>
+                      </span>
+                    )}
+                    {state === 'stale' && (
+                      <span className="tip">
+                        <Chip size="sm" dot dotColor="var(--warning)">Posted, stale parts</Chip>
+                        <span className="tip-body">
+                          The new plan is posted, but comments from the previous plan could not be removed — the ticket still shows cases this plan dropped.
                         </span>
                       </span>
                     )}
@@ -1803,7 +1871,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           <div style={{ marginTop: 'var(--s-4)' }}>
             <Alert
               tone={postNotification.type === 'error' ? 'danger' : 'warning'}
-              title={postNotification.type === 'error' ? 'Post failed' : 'Posted, but truncated'}
+              title={postNotification.type === 'error' ? 'Post failed' : 'Posted, with a caveat'}
             >
               {postNotification.message}
             </Alert>
