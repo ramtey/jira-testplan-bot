@@ -464,3 +464,133 @@ def test_a_single_comment_plan_still_adopts_as_one():
     comments = [_comment("1", _render_adf(_plan_29()))]
     assert select_comments(comments, None) == comments
     assert select_comment(comments, None) is comments[0]
+
+
+def test_a_continued_banner_does_not_override_the_shape_of_what_follows():
+    """SK-2246 part 3 opens "🔗 INTEGRATION & BACKEND TESTS (continued)" and then
+    carries the regression checklist, not integration cases — the split landed
+    mid-plan and the banner names the section that was open, not the section the
+    content belongs to.
+
+    The parser files the checklist by its own nestedExpand title, so the banner
+    is harmless. Trusting the banner over that shape would move 11 regression
+    items into integration_tests and change every digit of the fingerprint but
+    the first, which is exactly how a key the UI never polls gets written.
+    """
+    part1 = {"type": "doc", "content": [
+        _para("🤖 Generated Test Plan (part 1 of 2)"),
+        {"type": "expand", "attrs": {"title": "Click to view"}, "content": [
+            _para("✅ HAPPY PATH TEST CASES"),
+            _case_expand(1, {"title": "Happy case", "steps": ["Do it"]}, with_category=False),
+            _para("🔗 INTEGRATION & BACKEND TESTS"),
+            _case_expand(1, {"title": "Integration case", "steps": ["Do it"]}, with_category=False)]}]}
+    part2 = {"type": "doc", "content": [
+        _para("🤖 Generated Test Plan (part 2 of 2)"),
+        {"type": "expand", "attrs": {"title": "Click to view"}, "content": [
+            _para("🔗 INTEGRATION & BACKEND TESTS (continued)"),
+            {"type": "nestedExpand", "attrs": {"title": "🔄 REGRESSION CHECKLIST"},
+             "content": [_para(f"• 🔴 Regression item {i}") for i in range(1, 12)]},
+            _para("⚠️ RISKS / GAPS OBSERVED"),
+            _para("• Coverage of the legacy path is unverified"),
+            _para("🚧 NEEDS SPEC — NOT VERIFIABLE FROM SOURCE"),
+            _para("• Retention window is unspecified")]}]}
+
+    parsed = parse_plan_from_parts([part1, part2], ticket_key="SK-2246")
+    summary = summarize(parsed, ["SK-2246"])
+
+    assert summary["section_counts"] == {
+        "happy_path": 1, "edge_cases": 0, "integration_tests": 1,
+        "regression_checklist": 11,
+    }
+    # The trailing blocks are commentary, not gradeable cases.
+    assert not any("RISKS" in item or "NEEDS SPEC" in item
+                   for item in parsed["regression_checklist"])
+    assert not any("legacy path" in item or "Retention window" in item
+                   for item in parsed["regression_checklist"])
+
+
+# --- Preview vs commit on an incomplete split ----------------------------
+
+
+class _StubJira:
+    """Stands in for ``JiraClient``, which both entry points construct inline."""
+
+    comments: list[dict] = []
+
+    async def get_comments(self, key: str) -> list[dict]:
+        return list(type(self).comments)
+
+
+def _incomplete_sk2246_comments() -> list[dict]:
+    """Parts 1 and 3 of a three-part plan — part 2 never made it to the ticket."""
+    parts = _split_adf(_plan_29(), ["🔍 EDGE CASES", "🔗 INTEGRATION"])
+    assert len(parts) == 3, "fixture did not split into three parts"
+    return [_comment("330140", parts[0]), _comment("330168", parts[2])]
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_a_short_split_with_a_warning_instead_of_refusing(
+    monkeypatch,
+):
+    """Preview writes nothing, so refusing outright only tells an operator "no".
+    Reporting the fragment's counts alongside "part 2 is missing" tells them
+    which comment to repost — and ``complete: false`` says the counts are not
+    the plan.
+
+    The conftest guard makes this a live proof that preview stays write-free:
+    any database access here raises ``ProductionDatabaseAccess`` instead.
+    """
+    from src.app import jira_client as jira_client_module
+    from src.app.services import plan_adoption
+
+    _StubJira.comments = _incomplete_sk2246_comments()
+    monkeypatch.setattr(jira_client_module, "JiraClient", _StubJira)
+
+    result = await plan_adoption.preview("SK-2246")
+
+    assert result["complete"] is False
+    assert result["committed"] is False
+    assert any("part 2 is missing" in w for w in result["warnings"])
+    assert result["comment_ids"] == ["330140", "330168"]
+    # The fragment is reported, not passed off as the whole plan.
+    assert result["section_counts"]["edge_cases"] < 8
+
+
+@pytest.mark.asyncio
+async def test_commit_refuses_a_short_split_before_it_writes_anything(monkeypatch):
+    """The other half of the deal. A fragment persisted as a plan derives a key
+    for a fraction of the plan, and the ticket then *has* a stored plan — so
+    adopting it properly once part 2 is back is refused by the
+    ``has_successful_test_plan`` guard. The refusal has to come first.
+
+    ``ProductionDatabaseAccess`` from the conftest guard is what would surface
+    if commit reached the database before checking, so a clean
+    ``PlanAdoptionError`` is proof it did not.
+    """
+    from src.app import jira_client as jira_client_module
+    from src.app.services import plan_adoption
+
+    _StubJira.comments = _incomplete_sk2246_comments()
+    monkeypatch.setattr(jira_client_module, "JiraClient", _StubJira)
+
+    with pytest.raises(plan_adoption.PlanAdoptionError, match="part 2 is missing"):
+        await plan_adoption.commit("SK-2246")
+
+
+@pytest.mark.asyncio
+async def test_preview_of_a_whole_split_plan_is_complete_and_unwarned(monkeypatch):
+    """The control: the same three parts, none missing."""
+    from src.app import jira_client as jira_client_module
+    from src.app.services import plan_adoption
+
+    parts = _split_adf(_plan_29(), ["🔍 EDGE CASES", "🔗 INTEGRATION"])
+    _StubJira.comments = [
+        _comment(cid, adf) for cid, adf in zip(["330140", "330167", "330168"], parts)
+    ]
+    monkeypatch.setattr(jira_client_module, "JiraClient", _StubJira)
+
+    result = await plan_adoption.preview("SK-2246")
+
+    assert result["complete"] is True
+    assert result["warnings"] == []
+    assert result["case_count"] == 29

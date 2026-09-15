@@ -97,6 +97,23 @@ class PlanAdoptionError(Exception):
     """The comment could not be read as a test plan."""
 
 
+class IncompletePlanParts(PlanAdoptionError):
+    """A split plan declares M parts and the ticket carries fewer.
+
+    Carries the parts that *are* present, because preview and commit owe the
+    caller different things here. ``preview`` writes nothing, and its whole job
+    is to make a misparse visible before it strands progress — so it reports the
+    short counts with this as a warning, and the operator can see which parts
+    the ticket is missing. ``commit`` lets it propagate: a plan adopted with a
+    hole derives a key for a fraction of the plan, which is the failure this
+    module exists to end.
+    """
+
+    def __init__(self, message: str, parts: list[dict]):
+        super().__init__(message)
+        self.parts = parts
+
+
 def _text(node: dict) -> str:
     if node.get("type") == "text":
         return node.get("text") or ""
@@ -410,12 +427,15 @@ def _parts_group(plan_comments: list[dict], total: int) -> list[dict]:
     found = [_part_of(c)[0] for c in group]
     missing = [n for n in range(1, total + 1) if n not in found]
     if missing:
-        raise PlanAdoptionError(
+        raise IncompletePlanParts(
             f"Test plan is split across {total} comments but "
             f"part{'s' if len(missing) > 1 else ''} "
             f"{', '.join(str(n) for n in missing)} "
-            f"{'are' if len(missing) > 1 else 'is'} missing from this ticket — "
-            "repost the plan before adopting it"
+            f"{'are' if len(missing) > 1 else 'is'} missing from this ticket "
+            f"(found part{'s' if len(found) > 1 else ''} "
+            f"{', '.join(str(n) for n in found)}) — "
+            "repost the plan before adopting it",
+            group,
         )
     return group
 
@@ -438,7 +458,18 @@ async def preview(ticket_key: str, comment_id: str | None = None) -> dict:
 
     key = ticket_key.upper()
     comments = await JiraClient().get_comments(key)
-    parts = select_comments(comments, comment_id)
+    # A short set is reported rather than refused: preview writes nothing, and
+    # seeing the counts next to "part 2 is missing" is what tells an operator
+    # which comment to repost. ``commit`` refuses the same set.
+    selection_warnings: list[str] = []
+    try:
+        parts = select_comments(comments, comment_id)
+        complete = True
+    except IncompletePlanParts as exc:
+        parts = exc.parts
+        selection_warnings.append(str(exc))
+        complete = False
+
     plan = parse_plan_from_parts([c.get("body") or {} for c in parts], ticket_key=key)
     summary = summarize(plan, [key])
     summary.update(
@@ -448,6 +479,10 @@ async def preview(ticket_key: str, comment_id: str | None = None) -> dict:
             "comment_ids": [str(c.get("id")) for c in parts],
             "comment_created": parts[0].get("created"),
             "committed": False,
+            # False means the counts above are a fragment, and committing this
+            # selection will be refused.
+            "complete": complete,
+            "warnings": [*selection_warnings, *(summary.get("warnings") or [])],
         }
     )
     return summary
@@ -461,6 +496,13 @@ async def commit(ticket_key: str, comment_id: str | None = None) -> dict:
     path for a plan that was never persisted, not a way to add a second plan
     alongside a real one — and ``has_successful_test_plan`` is what the
     watcher's never-regenerate guard keys off.
+
+    Also refuses an incomplete split: ``select_comments`` raises
+    ``IncompletePlanParts`` when parts are declared but absent, and unlike
+    ``preview`` this path does not catch it. Persisting a fragment writes a key
+    derived from a fraction of the plan, and the ticket then has a stored plan,
+    so the guard above blocks adopting it properly once the missing part is
+    back.
     """
     import json as _json
 
@@ -526,6 +568,9 @@ async def commit(ticket_key: str, comment_id: str | None = None) -> dict:
             "run_id": run.id,
             "plan_id": saved.id,
             "committed": True,
+            # Always true — an incomplete set never reaches here — but kept so
+            # the field does not vanish between preview and commit responses.
+            "complete": True,
         }
     )
     return summary
