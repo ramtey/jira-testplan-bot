@@ -31,7 +31,9 @@ import pytest
 from src.app.services.plan_adoption import (
     PlanAdoptionError,
     parse_plan_from_adf,
+    parse_plan_from_parts,
     select_comment,
+    select_comments,
     summarize,
 )
 from src.app.services.progress_key import build_progress_key
@@ -296,3 +298,169 @@ def test_selecting_a_missing_comment_id_is_an_error_not_a_silent_fallback():
     """Adopting the wrong comment would register a plan nobody reviewed."""
     with pytest.raises(PlanAdoptionError):
         select_comment([{"id": "1", "body": {}}], "330141")
+
+
+# --- Plans split across several Jira comments -----------------------------
+#
+# A plan too large for one comment is posted as "(part N of M)" comments, each
+# carrying the marker. Adoption used to take `plan_comments[-1]` — the last
+# part — and reconstruct a fraction of the plan from it. That is worse than
+# failing: it parses cleanly, derives a plausible key for the fragment, and
+# strands every mark under a key the UI never polls. SK-2246 is the real case:
+# a 29-case plan over three comments parsed as 0-0-0-11.
+
+
+def _split_adf(plan: dict, boundaries: list[str]) -> list[dict]:
+    """Render `plan` and cut it into parts before each heading in `boundaries`,
+    the way jira_client splits an oversized plan — the open section banner
+    repeated with "(continued)" at the top of a part that starts mid-section."""
+    full = _render_adf(plan)
+    nodes = full["content"][1]["content"]
+
+    cuts = [0]
+    for node in nodes[1:]:
+        text = node.get("attrs", {}).get("title") or (
+            node.get("content", [{}])[0].get("text", "")
+            if node.get("type") == "paragraph"
+            else ""
+        )
+        if any(text.startswith(b) for b in boundaries):
+            cuts.append(nodes.index(node))
+    cuts.append(len(nodes))
+    chunks = [nodes[a:b] for a, b in zip(cuts, cuts[1:]) if nodes[a:b]]
+
+    total = len(chunks)
+    return [
+        {
+            "type": "doc",
+            "content": [
+                _para(f"🤖 Generated Test Plan (part {i + 1} of {total})"),
+                {"type": "expand", "attrs": {"title": "Click to view"}, "content": chunk},
+            ],
+        }
+        for i, chunk in enumerate(chunks)
+    ]
+
+
+def _plan_29() -> dict:
+    def cases(n, prefix):
+        return [
+            {"title": f"{prefix} case {i}", "steps": [f"Step {i}"], "expected": "It works"}
+            for i in range(1, n + 1)
+        ]
+
+    return {
+        "happy_path": cases(6, "Happy"),
+        "edge_cases": cases(8, "Edge"),
+        "integration_tests": cases(4, "Integration"),
+        "regression_checklist": [f"Regression item {i}" for i in range(1, 12)],
+    }
+
+
+def _comment(cid: str, adf: dict) -> dict:
+    return {"id": cid, "created": "2026-09-15T09:46:30.210-0700", "body": adf}
+
+
+def test_every_part_of_a_split_plan_is_adopted_not_just_the_last():
+    """The whole point: 6-8-4-11, not the 0-0-0-11 the last part alone gives."""
+    plan = _plan_29()
+    parts = _split_adf(plan, ["🔍 EDGE CASES", "🔗 INTEGRATION"])
+    assert len(parts) > 1, "fixture did not actually split"
+
+    comments = [_comment(f"33014{i}", adf) for i, adf in enumerate(parts)]
+    chosen = select_comments(comments, None)
+    assert len(chosen) == len(parts)
+
+    parsed = parse_plan_from_parts([c["body"] for c in chosen], ticket_key="SK-2246")
+    summary = summarize(parsed, ["SK-2246"])
+    assert summary["section_counts"] == {
+        "happy_path": 6, "edge_cases": 8, "integration_tests": 4,
+        "regression_checklist": 11,
+    }
+    assert summary["case_count"] == 29
+
+
+def test_a_split_plan_adopts_to_the_same_key_as_the_unsplit_one():
+    """Splitting is a transport detail. If it moved the key, every mark written
+    against the plan before the split would be orphaned after it."""
+    plan = _plan_29()
+    whole = parse_plan_from_adf(_render_adf(plan), ticket_key="SK-2246")
+    parts = _split_adf(plan, ["🔍 EDGE CASES", "🔗 INTEGRATION"])
+    split = parse_plan_from_parts([p for p in parts], ticket_key="SK-2246")
+
+    assert build_progress_key(["SK-2246"], json.dumps(split)) == build_progress_key(
+        ["SK-2246"], json.dumps(whole)
+    )
+
+
+def test_a_continued_section_banner_files_its_cases_under_the_right_section():
+    """A part that opens mid-section repeats its banner as "… (continued)".
+    Unmatched, its cases land before any heading and are dropped as headless."""
+    plan = _plan_29()
+    full = _render_adf(plan)
+    nodes = full["content"][1]["content"]
+    cut = next(i for i, n in enumerate(nodes) if (n.get("attrs", {}).get("title") or "").startswith("3."))
+
+    part1 = {"type": "doc", "content": [
+        _para("🤖 Generated Test Plan (part 1 of 2)"),
+        {"type": "expand", "attrs": {"title": "Click to view"}, "content": nodes[:cut]}]}
+    part2 = {"type": "doc", "content": [
+        _para("🤖 Generated Test Plan (part 2 of 2)"),
+        {"type": "expand", "attrs": {"title": "Click to view"},
+         "content": [_para("✅ HAPPY PATH TEST CASES (continued)"), *nodes[cut:]]}]}
+
+    parsed = parse_plan_from_parts([part1, part2], ticket_key="SK-2246")
+    assert parsed["adoption_warnings"] == []
+    assert len(parsed["happy_path"]) == 6
+
+
+def test_a_regression_checklist_split_across_parts_keeps_both_halves():
+    """The checklist banner appears in each part that carries it; assigning
+    instead of extending would keep only the last part's bullets."""
+    def checklist(items):
+        return {"type": "nestedExpand", "attrs": {"title": "🔄 REGRESSION CHECKLIST"},
+                "content": [_para(f"• {i}") for i in items]}
+
+    part1 = {"type": "doc", "content": [
+        _para("🤖 Generated Test Plan (part 1 of 2)"),
+        {"type": "expand", "attrs": {"title": "Click to view"}, "content": [
+            _para("✅ HAPPY PATH TEST CASES"),
+            _case_expand(1, {"title": "Only case", "steps": ["Do it"]}, with_category=False),
+            checklist(["A", "B"])]}]}
+    part2 = {"type": "doc", "content": [
+        _para("🤖 Generated Test Plan (part 2 of 2)"),
+        {"type": "expand", "attrs": {"title": "Click to view"},
+         "content": [checklist(["C", "D"])]}]}
+
+    parsed = parse_plan_from_parts([part1, part2], ticket_key="SK-2246")
+    assert parsed["regression_checklist"] == ["A", "B", "C", "D"]
+
+
+def test_a_split_plan_missing_a_part_is_refused_rather_than_adopted_short():
+    """A hole gives wrong counts, and wrong counts are the whole failure mode.
+    Better to refuse than to persist a key nothing will poll."""
+    plan = _plan_29()
+    parts = _split_adf(plan, ["🔍 EDGE CASES", "🔗 INTEGRATION"])
+    comments = [_comment(f"33014{i}", adf) for i, adf in enumerate(parts)]
+    del comments[1]
+
+    with pytest.raises(PlanAdoptionError, match="missing"):
+        select_comments(comments, None)
+
+
+def test_naming_one_part_adopts_the_whole_plan_it_belongs_to():
+    """A comment_id pointing at part 3 means "adopt this plan", not "adopt this
+    third of it" — the id is how a human refers to the plan they can see."""
+    plan = _plan_29()
+    parts = _split_adf(plan, ["🔍 EDGE CASES", "🔗 INTEGRATION"])
+    comments = [_comment(f"33014{i}", adf) for i, adf in enumerate(parts)]
+
+    chosen = select_comments(comments, comments[-1]["id"])
+    assert [c["id"] for c in chosen] == [c["id"] for c in comments]
+
+
+def test_a_single_comment_plan_still_adopts_as_one():
+    """The ordinary case keeps its old behaviour — one comment, no part header."""
+    comments = [_comment("1", _render_adf(_plan_29()))]
+    assert select_comments(comments, None) == comments
+    assert select_comment(comments, None) is comments[0]

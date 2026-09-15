@@ -88,6 +88,9 @@ _PRIORITY_RE = re.compile(r"\s*[🔴🟡🟢]\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*$")
 _CATEGORY_RE = re.compile(r"\s*\[([^\]]+)\]\s*$")
 
 _BULLET_PREFIXES = ("•", "●", "-", "*")
+# "🤖 Generated Test Plan (part 2 of 3)" — the header `jira_client` puts on each
+# comment when a plan is too large to post as one.
+_PART_HEADER_RE = re.compile(r"\(part\s+(\d+)\s+of\s+(\d+)\)")
 
 
 class PlanAdoptionError(Exception):
@@ -217,13 +220,23 @@ def _section_for_heading(text: str) -> str | None:
 
 
 def parse_plan_from_adf(adf: dict, *, ticket_key: str) -> dict:
-    """Reconstruct a plan body from the ADF of its Jira comment.
+    """Reconstruct a plan body from the ADF of its Jira comment."""
+    return parse_plan_from_parts([adf], ticket_key=ticket_key)
+
+
+def parse_plan_from_parts(adfs: list[dict], *, ticket_key: str) -> dict:
+    """Reconstruct a plan body from the ADF of every comment it was posted as.
 
     Returns a dict shaped like a stored ``json`` plan body — the same shape
     ``progress_key.fingerprint`` and the frontend's ``displayPlan`` read.
+
+    Parts are walked as one continuous document: the open section carries
+    across the boundary, so a part that starts mid-section — its banner
+    repeated as "… (continued)" — files its cases under the right key instead
+    of being dropped as headless.
     """
-    nodes = _find_plan_container(adf)
-    if not nodes:
+    part_nodes = [_find_plan_container(adf) for adf in adfs]
+    if not any(part_nodes):
         raise PlanAdoptionError("Comment has no readable content")
 
     plan: dict[str, Any] = {
@@ -238,9 +251,9 @@ def parse_plan_from_adf(adf: dict, *, ticket_key: str) -> dict:
     current: str | None = None
     # The marker paragraph sits outside the expand that holds the body, so it
     # has to be looked for across the whole document rather than in `nodes`.
-    saw_marker = "🤖" in _text(adf)[:4000]
+    saw_marker = any("🤖" in _text(adf)[:4000] for adf in adfs)
 
-    for node in nodes:
+    for node in [node for nodes in part_nodes for node in nodes]:
         node_type = node.get("type")
 
         if node_type in ("paragraph", "heading"):
@@ -265,7 +278,12 @@ def parse_plan_from_adf(adf: dict, *, ticket_key: str) -> dict:
 
         title = (node.get("attrs") or {}).get("title") or ""
         if title.startswith(_REGRESSION_HEADING):
-            plan["regression_checklist"] = _parse_regression(node.get("content") or [])
+            # Extend rather than assign: a checklist long enough to be split
+            # across parts appears once per part, and assigning would keep only
+            # the last part's bullets.
+            plan["regression_checklist"].extend(
+                _parse_regression(node.get("content") or [])
+            )
             current = None
             continue
         if not _CASE_TITLE_RE.match(title):
@@ -328,21 +346,84 @@ def _is_plan_comment(comment: dict) -> bool:
     return _comment_carries_test_plan_marker(comment)
 
 
-def select_comment(comments: list[dict], comment_id: str | None) -> dict:
-    """The comment to adopt: the one asked for, else the newest bot plan."""
-    if comment_id:
-        for comment in comments:
-            if str(comment.get("id")) == str(comment_id):
-                return comment
-        raise PlanAdoptionError(f"Comment {comment_id} not found on this ticket")
+def _marker_text(comment: dict) -> str:
+    """The marker paragraph of a plan comment, which carries the part header."""
+    content = (comment.get("body") or {}).get("content") or []
+    return _para_text(content[0]) if content else ""
 
+
+def _part_of(comment: dict) -> tuple[int, int]:
+    """``(index, total)`` from a ``(part N of M)`` marker; ``(1, 1)`` without one.
+
+    A plan too large for one Jira comment is posted as several, each carrying
+    the marker. Adopting only one of them reconstructs a fraction of the plan
+    and derives a progress key for that fraction — a key the UI never polls.
+    """
+    match = _PART_HEADER_RE.search(_marker_text(comment))
+    if not match:
+        return (1, 1)
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def select_comments(comments: list[dict], comment_id: str | None) -> list[dict]:
+    """The comments making up one plan, in part order.
+
+    A single-comment plan is a one-element list. A split plan returns every
+    part, so the caller parses the whole plan rather than whichever part
+    happened to be posted last.
+    """
     plan_comments = [c for c in comments if _is_plan_comment(c)]
+
+    if comment_id:
+        named = next(
+            (c for c in comments if str(c.get("id")) == str(comment_id)), None
+        )
+        if named is None:
+            raise PlanAdoptionError(f"Comment {comment_id} not found on this ticket")
+        # Naming one part of a split plan means adopting that plan, not that
+        # fragment — pull in its siblings.
+        _, total = _part_of(named)
+        if total > 1 and _is_plan_comment(named):
+            return _parts_group(plan_comments, total)
+        return [named]
+
     if not plan_comments:
         raise PlanAdoptionError(
             "No bot-generated test plan comment found on this ticket — "
             "pass a comment_id to adopt a specific comment"
         )
-    return plan_comments[-1]
+    _, total = _part_of(plan_comments[-1])
+    if total > 1:
+        return _parts_group(plan_comments, total)
+    return [plan_comments[-1]]
+
+
+def _parts_group(plan_comments: list[dict], total: int) -> list[dict]:
+    """The `total`-part plan among `plan_comments`, ordered part 1..N.
+
+    Missing parts are an error rather than a quiet short plan: a plan adopted
+    with a hole in it produces wrong section counts, and the wrong counts are
+    exactly what strands UAT progress under an unpollable key.
+    """
+    group = [c for c in plan_comments if _part_of(c)[1] == total]
+    group.sort(key=lambda c: _part_of(c)[0])
+    found = [_part_of(c)[0] for c in group]
+    missing = [n for n in range(1, total + 1) if n not in found]
+    if missing:
+        raise PlanAdoptionError(
+            f"Test plan is split across {total} comments but "
+            f"part{'s' if len(missing) > 1 else ''} "
+            f"{', '.join(str(n) for n in missing)} "
+            f"{'are' if len(missing) > 1 else 'is'} missing from this ticket — "
+            "repost the plan before adopting it"
+        )
+    return group
+
+
+def select_comment(comments: list[dict], comment_id: str | None) -> dict:
+    """The first comment of the plan to adopt. Kept for callers that want a
+    single comment; use ``select_comments`` to get every part of a split plan."""
+    return select_comments(comments, comment_id)[0]
 
 
 async def preview(ticket_key: str, comment_id: str | None = None) -> dict:
@@ -357,14 +438,15 @@ async def preview(ticket_key: str, comment_id: str | None = None) -> dict:
 
     key = ticket_key.upper()
     comments = await JiraClient().get_comments(key)
-    comment = select_comment(comments, comment_id)
-    plan = parse_plan_from_adf(comment.get("body") or {}, ticket_key=key)
+    parts = select_comments(comments, comment_id)
+    plan = parse_plan_from_parts([c.get("body") or {} for c in parts], ticket_key=key)
     summary = summarize(plan, [key])
     summary.update(
         {
             "ticket_key": key,
-            "comment_id": str(comment.get("id")),
-            "comment_created": comment.get("created"),
+            "comment_id": str(parts[0].get("id")),
+            "comment_ids": [str(c.get("id")) for c in parts],
+            "comment_created": parts[0].get("created"),
             "committed": False,
         }
     )
@@ -396,8 +478,8 @@ async def commit(ticket_key: str, comment_id: str | None = None) -> dict:
 
     key = ticket_key.upper()
     comments = await JiraClient().get_comments(key)
-    comment = select_comment(comments, comment_id)
-    plan = parse_plan_from_adf(comment.get("body") or {}, ticket_key=key)
+    parts = select_comments(comments, comment_id)
+    plan = parse_plan_from_parts([c.get("body") or {} for c in parts], ticket_key=key)
 
     db = get_db()
     if await plan_repository.has_successful_test_plan(db, ticket_key=key):
@@ -432,14 +514,15 @@ async def commit(ticket_key: str, comment_id: str | None = None) -> dict:
         db,
         plan_id=saved.id,
         ticket_key=key,
-        jira_comment_id=str(comment.get("id")),
+        jira_comment_id=str(parts[0].get("id")),
     )
 
     summary = summarize(plan, list(run.ticket_keys or []))
     summary.update(
         {
             "ticket_key": key,
-            "comment_id": str(comment.get("id")),
+            "comment_id": str(parts[0].get("id")),
+            "comment_ids": [str(c.get("id")) for c in parts],
             "run_id": run.id,
             "plan_id": saved.id,
             "committed": True,
