@@ -457,6 +457,25 @@ async def check_tokens_if_due(*, force: bool = False) -> list:
     return await check_tokens_once()
 
 
+def _is_token_problem(status) -> bool:
+    """Is this a fact about the token, or a fact about the network?
+
+    Offline, every check comes back is_valid=False with SERVICE_UNAVAILABLE —
+    we could not reach Jira, GitHub, Figma or Anthropic to ask. That says
+    nothing about the tokens, and alerting on it is the same "failed lookup
+    reported as an answer" this monitor exists to catch. A token nobody
+    configured and nothing requires is not a problem either.
+    """
+    if status.is_valid:
+        return False
+    kind = getattr(status.error_type, "value", status.error_type)
+    if kind == "service_unavailable":
+        return False
+    if kind == "missing" and not getattr(status, "is_required", False):
+        return False
+    return True
+
+
 async def check_tokens_once() -> list:
     """Check every configured token and log what is wrong, loudly.
 
@@ -478,10 +497,13 @@ async def check_tokens_once() -> list:
 
     state = _read_token_state()
     previous = state.get("health") or {}
+    previous_checked = state.get("last_checked_epoch") or 0
 
+    problems, unreachable = [], []
     for st in statuses:
         was_ok = _token_health.get(st.service_name, previous.get(st.service_name))
-        if not st.is_valid:
+        if _is_token_problem(st):
+            problems.append(st)
             # ERROR every round it stays broken. Mentioning it once is how it
             # gets scrolled past for a month.
             logger.error(
@@ -491,27 +513,40 @@ async def check_tokens_once() -> list:
                 st.error_message,
                 f" See {st.help_url}" if getattr(st, "help_url", None) else "",
             )
-        elif was_ok is False:
-            logger.info("watcher: %s token is working again", st.service_name)
-        _token_health[st.service_name] = st.is_valid
+            _token_health[st.service_name] = False
+        elif not st.is_valid:
+            # Could not reach the service. We learned nothing about this token,
+            # so leave its last known state alone rather than recording a
+            # verdict we do not have.
+            unreachable.append(st)
+            logger.info("watcher: could not check %s (%s) — leaving its last "
+                        "known state alone", st.service_name, st.error_message)
+        else:
+            if was_ok is False:
+                logger.info("watcher: %s token is working again", st.service_name)
+            _token_health[st.service_name] = True
 
-    broken = [st for st in statuses if not st.is_valid]
-    if broken:
-        names = ", ".join(st.service_name for st in broken)
+    if problems:
+        names = ", ".join(st.service_name for st in problems)
         notify(
             "Test Plan Bot: token problem",
             f"{names} not usable. Plans are being generated without it. "
-            f"{broken[0].error_message or ''}".strip(),
+            f"{problems[0].error_message or ''}".strip(),
         )
-    elif statuses:
+    elif statuses and not unreachable:
         logger.info("watcher: all %d tokens healthy", len(statuses))
         if previous and not all(previous.get(st.service_name, True) for st in statuses):
             notify("Test Plan Bot", "All tokens are working again.", sound=False)
 
-    _write_token_state({
-        "last_checked_epoch": time.time(),
-        "health": {st.service_name: st.is_valid for st in statuses},
-    })
+    # A round where nothing could be reached is not a round that happened.
+    # Leaving the clock alone means the next sweep retries in five minutes
+    # instead of accepting six hours of silence bought by being offline.
+    learned_something = bool(problems) or any(st.is_valid for st in statuses)
+    state = {"health": {**previous, **_token_health}}
+    state["last_checked_epoch"] = (
+        time.time() if learned_something else previous_checked
+    )
+    _write_token_state(state)
     return statuses
 
 

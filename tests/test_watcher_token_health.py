@@ -155,3 +155,72 @@ class TestItRunsWhereTheWatcherActuallyRuns:
         _patch(monkeypatch, FakeHealth([FakeStatus("Jira", True)]))
         await queue_watcher.check_tokens_once()
         assert seen == []
+
+
+class TestOfflineIsNotABrokenToken:
+    """Being unable to ask is not an answer.
+
+    Offline, every check returns is_valid=False with SERVICE_UNAVAILABLE. The
+    first version of this monitor read that as "the token is broken" and woke
+    the user on a plane — the same failed-lookup-reported-as-fact bug it was
+    built to catch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unreachable_services_do_not_notify(self, monkeypatch, tmp_path):
+        seen = []
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", tmp_path / "s.json")
+        monkeypatch.setattr(queue_watcher, "notify",
+                            lambda *a, **k: seen.append(a))
+        _patch(monkeypatch, FakeHealth([
+            FakeStatus("Jira", False, "service_unavailable", "Cannot connect. Check network."),
+            FakeStatus("Figma", False, "service_unavailable", "Cannot connect. Check network."),
+        ]))
+        await queue_watcher.check_tokens_once()
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_a_real_failure_still_notifies_while_offline_ones_do_not(
+        self, monkeypatch, tmp_path
+    ):
+        seen = []
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", tmp_path / "s.json")
+        monkeypatch.setattr(queue_watcher, "notify", lambda t, m, **k: seen.append(m))
+        _patch(monkeypatch, FakeHealth([
+            FakeStatus("Jira", False, "service_unavailable", "Cannot connect."),
+            FakeStatus("Figma", False, "expired", "Token has expired."),
+        ]))
+        await queue_watcher.check_tokens_once()
+        assert len(seen) == 1
+        assert "Figma" in seen[0] and "Jira" not in seen[0]
+
+    @pytest.mark.asyncio
+    async def test_being_offline_does_not_overwrite_a_known_good_state(
+        self, monkeypatch, tmp_path
+    ):
+        import json as _json
+        state = tmp_path / "s.json"
+        state.write_text(_json.dumps({"last_checked_epoch": 111.0,
+                                      "health": {"Figma": True}}))
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", state)
+        monkeypatch.setattr(queue_watcher, "notify", lambda *a, **k: None)
+        _patch(monkeypatch, FakeHealth([
+            FakeStatus("Figma", False, "service_unavailable", "Cannot connect.")]))
+        await queue_watcher.check_tokens_once()
+        after = _json.loads(state.read_text())
+        # Still believed good, and the clock did not advance — so the next
+        # sweep retries rather than buying six hours of silence by being offline.
+        assert after["health"]["Figma"] is True
+        assert after["last_checked_epoch"] == 111.0
+
+    @pytest.mark.asyncio
+    async def test_an_unconfigured_optional_token_is_not_an_alert(
+        self, monkeypatch, tmp_path
+    ):
+        seen = []
+        monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", tmp_path / "s.json")
+        monkeypatch.setattr(queue_watcher, "notify", lambda *a, **k: seen.append(a))
+        _patch(monkeypatch, FakeHealth([
+            FakeStatus("Figma", False, "missing", "Not configured (optional).")]))
+        await queue_watcher.check_tokens_once()
+        assert seen == []
