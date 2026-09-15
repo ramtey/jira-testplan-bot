@@ -71,6 +71,7 @@ from .test_plan_generator import (
     run_code_grounding_critic,
     run_fix_scope_critic,
     run_grounding_critic,
+    run_regression_grounding_critic,
     run_surface_mismatch_critic,
 )
 
@@ -517,6 +518,18 @@ async def generate_single(
         critic_gaps += [g for g in [
             await run_surface_mismatch_critic(llm, test_plan, deliverable)
         ] if g]
+        # Regression-grounding critic — the only pass that reads
+        # `regression_checklist`. The four above iterate exactly the three
+        # structured sections, so before this a checklist line naming a
+        # control the app never had (SK-2342's "Text" share option, its seek
+        # control) reached a tester unchecked. Narrows the wording of such a
+        # line; never removes a line, so the section count — and therefore
+        # the plan's progress-key fingerprint — is unaffected.
+        critic_gaps += [g for g in [
+            await run_regression_grounding_critic(
+                llm, test_plan, single_ticket_dev_info
+            )
+        ] if g]
         if critic_gaps:
             # The plan is still worth shipping — but a tester reading it must
             # know which safety nets were not in place when it was written.
@@ -538,6 +551,9 @@ async def generate_single(
             "needs_spec_cases": needs_spec_cases,
             "ac_coverage": ac_coverage,
             "grounding_warnings": normalize_grounding_warnings(test_plan),
+            "regression_grounding_notes": (
+                test_plan.regression_grounding_notes or []
+            ),
             "risks_and_gaps": test_plan.risks_and_gaps or [],
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
@@ -762,6 +778,13 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         multi_critic_gaps += [g for g in [
             await run_surface_mismatch_critic(llm, test_plan, aggregated_deliverable)
         ] if g]
+        # See generate_single: the only critic that reads the regression
+        # checklist, and the only one that rewrites rather than badges.
+        multi_critic_gaps += [g for g in [
+            await run_regression_grounding_critic(
+                llm, test_plan, multi_ticket_dev_info
+            )
+        ] if g]
         if multi_critic_gaps:
             provenance["critics_unavailable"] = multi_critic_gaps
             logger.warning("critics unavailable: %s", "; ".join(multi_critic_gaps))
@@ -786,6 +809,9 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             "ac_coverage": ac_coverage,
             "superseded_acs": ac_coverage.get("superseded_acs", []),
             "grounding_warnings": grounding_warnings,
+            "regression_grounding_notes": (
+                test_plan.regression_grounding_notes or []
+            ),
             "risks_and_gaps": test_plan.risks_and_gaps or [],
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,

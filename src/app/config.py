@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     # the extra GitHub search + LLM round-trip (~2s + ~1s per flagged case).
     code_grounding_recheck_enabled: bool = True
 
+    # Post-generation critic that checks the UI controls named in
+    # regression-checklist lines against the linked repo's source, and
+    # narrows any line naming a control that isn't there. The other four
+    # critics all skip that section, so before this existed a checklist line
+    # was the only content in a plan nothing verified: SK-2342 shipped a
+    # "Text" share option the sheet never built and a seek control the
+    # preview player never had, and both were marked PASS because the runner
+    # silently reinterpreted them. Costs one GitHub search per
+    # control-naming line plus one LLM round-trip per plan. The pass can only
+    # narrow a line's wording, never drop a line, so turning it off can't
+    # change a plan's shape — only leave the phantom controls in.
+    regression_grounding_critic_enabled: bool = True
+
     # Refuse to write a plan for a ticket with no merged and no open pull
     # request. A ten-case plan of speculation is worse than no plan, because
     # it looks authoritative: SK-2609 shipped ten cases against a

@@ -1686,6 +1686,44 @@ Before writing each line, ask: which specific endpoint, screen, or field, and ho
 would the tester know it regressed? If you can't answer both, drop the line
 rather than padding the checklist.
 
+❌ DO NOT NAME A CONTROL THAT ISN'T IN YOUR SOURCES — the UI GROUNDING rules
+above apply to checklist lines in full, and this is the other way the checklist
+leaks. The rule against vacuous lines pushes you toward naming something
+specific; it is NOT a licence to invent the specifics. A line naming a control
+the app doesn't have cannot be graded honestly: the tester either fails a working
+app or silently regrades the line against something you didn't ask for, and a
+PASS then means nothing.
+- ❌ "🟡 Text, Print and Download share options from the share menu still work" —
+  when the diff shows the sheet building exactly `PDF`, `PDF & Audio Walkthrough`
+  and `Print or Download`, that array is the complete list and "Text" is not in
+  it. Name the options that are.
+- ❌ "🟡 Audio playback transport (play/pause/seek) behaves the same as before" —
+  when the player's progress bar is a plain non-interactive view with no gesture
+  handler, there is no seek to regress. Assert the transport that exists.
+- ❌ Enumerating siblings you assume exist ("the Edit, Duplicate and Delete row
+  actions") when the diff shows only two of them.
+- ✅ "🟡 The Print or Download share option still works from the share menu and is
+  unaffected by this change."
+
+Because a checklist line is a bare string, it has nowhere to carry
+`needs_manual_verification` or a `grounding_warnings` entry — so the escape hatch
+the UI GROUNDING rules give a test case is not available here. Use this instead,
+in order:
+1. **Name only controls you can point at in the diff, the testID reference, the
+   screen guide, the ticket, or a screenshot.** Keep the rest of the line.
+2. **When you want to cover a neighbouring surface but cannot confirm its
+   controls, write the line about the surface and the observable behaviour
+   instead of the control.** "🟡 Sharing by a non-audio option still reaches the
+   Prepare Message screen and sends" covers the same ground as naming three
+   buttons, and every word of it is gradeable. Breadth is the point of this
+   checklist — keep the coverage, drop the unverifiable specifics.
+3. **Only drop the line entirely if you cannot name the surface either.** That
+   is the vacuous case the rule above already bans.
+
+Do NOT solve this by hedging ("the Text share option, if present, still works").
+A tester cannot grade "if present" either — it is the same ungradeable line with
+an apology attached. Pick a control you can source, or describe the behaviour.
+
 **PLATFORM SCOPE — DO NOT INVENT PLATFORMS:**
 Only add platform-launch or platform-smoke items for platforms that are
 explicitly named in the ticket description, ACs, comments, linked PR, or
@@ -1949,6 +1987,26 @@ class LLMClient(ABC):
         Default implementation returns an empty dict — providers that
         don't (or can't reliably) run the critic behave the same as before
         this pass existed, and every warning stays at WARN severity.
+        """
+        return {}
+
+    async def verify_regression_grounding(
+        self,
+        lines: list[dict],
+    ) -> dict[str, dict]:
+        """Fifth-pass critic — check the UI controls named in each
+        regression-checklist line against the linked repo's source.
+
+        ``lines`` is the payload produced by
+        ``regression_grounding_critic.build_regression_grounding_inputs``;
+        each entry pairs one checklist line with source snippets from the
+        repo the ticket's PR touched.
+
+        Returns a dict ``{line_id: {"verdict":
+        "grounded"|"unfounded_control"|"unverifiable", "reason": str,
+        "rewrite": str}}``. Default implementation returns an empty dict —
+        providers that don't run the critic behave the same as before this
+        pass existed, and every line stays exactly as generated.
         """
         return {}
 
@@ -2739,7 +2797,16 @@ TICKET INFORMATION
                 prompt += "- Only reference testIDs that appear in the list above\n"
                 prompt += "- Use exact screen names from the guide for navigation steps\n"
                 prompt += "- If a flow requires screens not in the guide, describe them generically\n"
-                prompt += "- ⚠️ THE TESTID REFERENCE IS EXHAUSTIVE: every interactive element in the app has a testID listed above. If a form field or button does NOT appear in the reference, it does not exist in this app — do NOT invent steps for it, regardless of what domain knowledge suggests.\n"
+                # The reference is auto-generated and NOT exhaustive: its
+                # extractor drops any testID written as a conditional
+                # expression, so real shipping controls are missing from it
+                # (agent-calculator's play/pause button among them). Telling
+                # the model otherwise made every inference from the file
+                # unsound in both directions — it licensed "not listed, so it
+                # doesn't exist", which is exactly the reasoning that would
+                # delete a real control. Presence is proof; absence is a
+                # prompt to go and check the diff.
+                prompt += "- ⚠️ THE TESTID REFERENCE IS STRONG BUT INCOMPLETE EVIDENCE: it is auto-generated and misses elements whose testID is built conditionally. If an element IS listed, it exists — use that testID. If an element is NOT listed, treat that as a reason to look for it in the PR diff, the screen guide, or a screenshot before using it; if you can't find it in any of those either, do NOT invent steps for it, regardless of what domain knowledge suggests.\n"
                 prompt += "- ⚠️ FORM FIELD COMPLETENESS: when writing form-filling steps, cross-check EVERY field against the testID reference. If you cannot find a matching testID for a field you are about to include, omit that step entirely.\n"
 
         # Context the ticket pointed at that we could not read. Naming it beats
@@ -3266,7 +3333,10 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                     if testid_reference:
                         ref_preview = testid_reference[:3000] + "\n...(truncated)" if len(testid_reference) > 3000 else testid_reference
                         prompt += f"\n**Available TestIDs:**\n{ref_preview}\n"
-                    prompt += "\n⚠️ THE TESTID REFERENCE IS EXHAUSTIVE: every interactive element has a testID listed above. If a form field does NOT appear in the reference, it does not exist in this app — do NOT invent steps for it.\n"
+                    # See the note on the same claim in _build_prompt: the
+                    # generated reference is incomplete, so absence from it is
+                    # a prompt to check the diff, not a proof of non-existence.
+                    prompt += "\n⚠️ THE TESTID REFERENCE IS STRONG BUT INCOMPLETE EVIDENCE: it is auto-generated and misses elements whose testID is built conditionally. Listed means it exists. Not listed means check the PR diff or screen guide before using it — and if it isn't there either, do NOT invent steps for it.\n"
                 break
 
         # ── Cross-project seams ───────────────────────────────────────────────
@@ -4845,6 +4915,72 @@ class ClaudeClient(LLMClient):
         if not tool_block:
             return {}
         return parse_surface_verdicts(tool_block.get("input"))
+
+    async def verify_regression_grounding(
+        self,
+        lines: list[dict],
+    ) -> dict[str, dict]:
+        """Ask Claude to check each regression-checklist line's named
+        controls against the repo source.
+
+        Soft best-effort, like the four critics before it: any transport
+        error or malformed response degrades to an empty verdict dict, and
+        every checklist line stays exactly as generated.
+
+        The token budget is larger than the other critics' because this
+        one carries whole source files plus (sometimes) the testID
+        reference, and because ``unfounded_control`` verdicts have to
+        return a rewritten line rather than just a one-word verdict.
+        """
+        from .regression_grounding_critic import (
+            REGRESSION_CRITIC_SYSTEM_PROMPT,
+            REPORT_REGRESSION_GROUNDING_TOOL,
+            build_regression_critic_user_message,
+            parse_regression_verdicts,
+        )
+
+        if not lines:
+            return {}
+
+        user_message = build_regression_critic_user_message(lines)
+
+        try:
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(6144, thinking=8192),
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": REGRESSION_CRITIC_SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": user_message}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [REPORT_REGRESSION_GROUNDING_TOOL],
+                    "tool_choice": {
+                        "type": "tool",
+                        "name": "report_regression_grounding",
+                    },
+                },
+                timeout=90.0,
+            )
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError):
+            import logging
+            logging.getLogger(__name__).warning(
+                "verify_regression_grounding: transport error; skipping critic pass",
+                exc_info=True,
+            )
+            return {}
+
+        tool_block = next(
+            (b for b in (data.get("content") or []) if b.get("type") == "tool_use"),
+            None,
+        )
+        if not tool_block:
+            return {}
+        return parse_regression_verdicts(tool_block.get("input"))
 
     async def _claude_bug_analysis(self, tickets: list[dict]) -> BugAnalysis:
         prompt = self._build_bug_analysis_prompt(tickets)

@@ -3,10 +3,9 @@
 Extracted from ``src/app/main.py`` so the route module stays a thin
 FastAPI wrapper. Everything here is pure orchestration or
 transformation: context-flag derivation, AC-coverage computation,
-warning normalization, and the three post-generation critics
-(grounding, code-grounding, fix-scope).
+warning normalization, and the post-generation critics.
 
-The critics catch three distinct failure modes of the LLM's first pass:
+The critics catch distinct failure modes of the LLM's first pass:
     * ``_run_grounding_critic`` — case cites an AC whose text doesn't
       describe the behaviour the case tests (LLM paraphrased or
       hallucinated the citation).
@@ -15,6 +14,11 @@ The critics catch three distinct failure modes of the LLM's first pass:
       to INFO so QA doesn't chase a false-positive.
     * ``_run_fix_scope_critic`` — case tests something the merged PR
       explicitly did NOT change (reporter drift from the ticket body).
+    * ``run_regression_grounding_critic`` — a *regression-checklist line*
+      names a UI control the source does not have. The only pass that
+      reads that section; the four above all iterate exactly
+      happy_path/edge_cases/integration_tests, which is why SK-2342
+      shipped two ungradeable checklist lines.
 
 Each critic degrades gracefully on failure so the plan still ships.
 """
@@ -44,6 +48,12 @@ from ..grounding_critic import (
     build_case_verification_inputs,
 )
 from ..models import GenerateTestPlanRequest, TicketInput
+from ..regression_grounding_critic import (
+    apply_regression_verdicts,
+    build_regression_grounding_inputs,
+    build_search_query as build_regression_search_query,
+    names_a_control,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -652,8 +662,162 @@ async def run_fix_scope_critic(
         )
 
 
+def _testid_reference_from(dev_infos: list[dict]) -> str | None:
+    """First ``testid_reference`` across the batch's repository contexts.
+
+    Passed to the critic as *supporting* evidence only — the file is
+    auto-generated and provably incomplete (its extractor drops testIDs
+    written as conditional expressions), so the critic's system prompt
+    says outright that absence from it proves nothing.
+    """
+    for entry in dev_infos or []:
+        if not isinstance(entry, dict):
+            continue
+        dev = entry.get("development_info") or {}
+        repo_context = dev.get("repository_context") or {}
+        if not isinstance(repo_context, dict):
+            continue
+        ref = repo_context.get("testid_reference")
+        if isinstance(ref, str) and ref.strip():
+            return ref
+    return None
+
+
+async def run_regression_grounding_critic(
+    llm,
+    test_plan,
+    dev_infos: list[dict],
+) -> str | None:
+    """Fifth-pass critic — narrow regression-checklist lines that name UI
+    controls the linked source does not have.
+
+    The four critics before this one all iterate exactly
+    ``happy_path`` / ``edge_cases`` / ``integration_tests``, leaving
+    ``regression_checklist`` as the one part of a plan nothing checks.
+    SK-2342 is what that costs: two lines asserted against a "Text" share
+    option and a seek control, neither of which ships, and both were
+    marked PASS only because the runner reinterpreted them.
+
+    This pass can only *narrow* a line, never drop one — see the module
+    docstring of ``regression_grounding_critic`` for why that matters and
+    how it is enforced. The checklist's value is breadth, so a pass that
+    could delete unprovable lines would be a worse bug than the one it
+    fixes.
+
+    Requires a GitHub token and a linked repo. Every failure — no token,
+    no repo, throttled search, LLM error — leaves every line exactly as
+    generated. Returns a sentence naming the pass when it could not run,
+    so the plan can say which safety nets were absent when it was
+    written; ``None`` when it ran (whether or not it changed anything).
+    """
+    if not settings.regression_grounding_critic_enabled:
+        return None
+
+    candidates = [
+        (i, line)
+        for i, line in enumerate(getattr(test_plan, "regression_checklist", None) or [])
+        if isinstance(line, str) and line.strip() and names_a_control(line)
+    ]
+    if not candidates:
+        # Nothing control-shaped in the checklist. Not an unavailability —
+        # there was genuinely nothing for this critic to check.
+        return None
+
+    if not settings.github_token:
+        return (
+            "regression-grounding critic could not run (no GitHub token), so "
+            "the regression checklist's named UI controls were not checked "
+            "against source"
+        )
+
+    repos = extract_repos(dev_infos)
+    if not repos:
+        return (
+            "regression-grounding critic could not run (no linked repo), so "
+            "the regression checklist's named UI controls were not checked "
+            "against source"
+        )
+
+    from ..github_client import GitHubClient
+    client = GitHubClient()
+
+    hits_by_line: dict[int, list[dict]] = {}
+    throttled = False
+    for idx, line in candidates:
+        query = build_regression_search_query(line)
+        if not query:
+            continue
+        for repo in repos:
+            try:
+                hits = await client.search_relevant_files(repo, query, max_files=3)
+            except GitHubSearchThrottled as e:
+                # Every later search in this pass hits the same window, so
+                # stop asking. The lines already searched keep their hits;
+                # the rest go to the critic with no snippets and come back
+                # `unverifiable`, which is the honest answer.
+                logger.warning(
+                    "regression_grounding_critic: search throttled repo=%s q=%r (%s)",
+                    repo, query, e,
+                )
+                throttled = True
+                break
+            except Exception:
+                logger.exception(
+                    "regression_grounding_critic: search failed repo=%s q=%r",
+                    repo, query,
+                )
+                hits = []
+            if hits:
+                hits_by_line[idx] = hits
+                break
+        if throttled:
+            break
+
+    lines = build_regression_grounding_inputs(
+        test_plan,
+        hits_by_line,
+        testid_reference=_testid_reference_from(dev_infos),
+    )
+    if not lines:
+        return None
+
+    try:
+        verdicts = await llm.verify_regression_grounding(lines)
+    except Exception:
+        logger.exception(
+            "verify_regression_grounding raised; skipping regression-grounding critic"
+        )
+        # A critic that could not run has checked nothing. Saying so is the
+        # difference between "checked, found nothing" and "never looked" —
+        # only the first is evidence.
+        return (
+            "regression-grounding critic could not run, so the regression "
+            "checklist's named UI controls were not checked against source"
+        )
+
+    added = apply_regression_verdicts(test_plan, verdicts)
+    narrowed = [n for n in added if n["status"] == "narrowed"]
+    if narrowed:
+        logger.info(
+            "regression_grounding_critic: narrowed %d checklist line(s): %s",
+            len(narrowed),
+            [f"{n['line_index']}: {n['original'][:60]!r} -> {n['rewritten'][:60]!r}"
+             for n in narrowed],
+        )
+    if throttled:
+        return (
+            "regression-grounding critic ran partially — GitHub code search "
+            "was rate-limited, so some regression-checklist lines were left "
+            "unchecked"
+        )
+    return None
+
+
 # Sections whose cases can be quarantined. `regression_checklist` is plain
-# strings with no grounding metadata, so it is never a candidate.
+# strings with no grounding metadata, so it is never a candidate. Note that
+# `run_regression_grounding_critic` above checks that section instead, and
+# deliberately cannot quarantine: it narrows a line's text and never removes
+# the line, because a checklist's value is the breadth quarantining would cut.
 _QUARANTINABLE_SECTIONS = ("happy_path", "edge_cases", "integration_tests")
 
 

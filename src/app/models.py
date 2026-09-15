@@ -344,6 +344,20 @@ class TestPlan:
     #  "explanation": "Searched the bulk-fill diff and testID reference; no
     #  control matching 'Edit' was found."}
     grounding_warnings: list[dict] | None = None
+    # Provenance from the regression-grounding critic, which is the only pass
+    # that looks at `regression_checklist` (the other four critics iterate the
+    # three structured sections). Kept separate from `grounding_warnings`
+    # because those are keyed to an `ac_id` + case title and render as per-case
+    # "Unverified UI" badges; a checklist line has neither, and a narrowed line
+    # has been corrected rather than left in doubt. One entry per line the
+    # critic acted on — never one per line in the section. Each entry:
+    # {"line_index": 4, "status": "narrowed" | "unchecked",
+    #  "original": "Text, Print and Download share options still work…",
+    #  "rewritten": "The Print or Download share option still works…",
+    #  "explanation": "Regression critic: ShareOptionsSheet.tsx builds exactly
+    #  PDF / PDF & Audio Walkthrough / Print or Download.",
+    #  "source": "critic_regression", "severity": "info"}
+    regression_grounding_notes: list[dict] | None = None
     # Cross-project mode only. Echoes the seam catalog the LLM was given so
     # the UI can render the producer/consumer pairs the plan covers. Shape:
     # {"verified_seams": [...], "suspected_seams": [...], "repos": [...]}.
