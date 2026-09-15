@@ -571,23 +571,36 @@ def phase_compare(rows, dir_a, dir_b):
     if len(shared) < len(pa) or len(shared) < len(pb):
         print(f"  (A has {len(pa)}, B has {len(pb)} — only the shared set is comparable)")
 
-    # Per-ticket movement on the shared set only; totals above can drift on
-    # corpus differences, this cannot.
-    sa = sum(pa[k][0] for k in shared)
-    sb = sum(pb[k][0] for k in shared)
-    st = sum(pa[k][1] for k in shared)
-    print(f"  On the shared set: {sa}/{st} ({sa / st:.0%})  ->  {sb}/{st} ({sb / st:.0%})")
+    sa, sb = sum(pa[k][0] for k in shared), sum(pb[k][0] for k in shared)
+    ta, tb = sum(pa[k][1] for k in shared), sum(pb[k][1] for k in shared)
+    print(f"  On the shared set: {sa}/{ta} ({sa / ta:.0%})  ->  {sb}/{tb} ({sb / tb:.0%})")
 
-    better = [(k, pa[k][0], pb[k][0]) for k in shared if pb[k][0] > pa[k][0]]
-    worse = [(k, pa[k][0], pb[k][0]) for k in shared if pb[k][0] < pa[k][0]]
-    print(f"\n  improved: {len(better)}   regressed: {len(worse)}   unchanged: "
-          f"{len(shared) - len(better) - len(worse)}\n")
-    for label, rowset in (("IMPROVED", better), ("REGRESSED", worse)):
-        if rowset:
-            print(f"  {label}:")
-            for k, x, y in sorted(rowset, key=lambda r: -abs(r[2] - r[1])):
-                print(f"    {k}  {x} -> {y} of {pa[k][1]}")
+    # The judge decides how many distinct problems a QA comment describes, and
+    # it does not always decide the same way. A ticket whose problem count
+    # moved is not a like-for-like comparison: "1 caught -> 3 caught" can mean
+    # the plan got better, or that the same comment was split three ways and
+    # all three were already covered. Scoring those together silently credits
+    # a change for the judge changing its mind, so they are reported apart.
+    resplit = [k for k in shared if pa[k][1] != pb[k][1]]
+    comparable = [k for k in shared if pa[k][1] == pb[k][1]]
+
+    better = [k for k in comparable if pb[k][0] > pa[k][0]]
+    worse = [k for k in comparable if pb[k][0] < pa[k][0]]
+    print(f"\n  Like-for-like ({len(comparable)} tickets, same problem count):")
+    print(f"    improved: {len(better)}   regressed: {len(worse)}   "
+          f"unchanged: {len(comparable) - len(better) - len(worse)}\n")
+    for label, keys in (("IMPROVED", better), ("REGRESSED", worse)):
+        if keys:
+            print(f"    {label}:")
+            for k in sorted(keys, key=lambda k: -abs(pb[k][0] - pa[k][0])):
+                print(f"      {k}  {pa[k][0]} -> {pb[k][0]} of {pa[k][1]}")
             print()
+    if resplit:
+        print(f"    NOT COMPARABLE ({len(resplit)}) — the judge split the QA "
+              f"comment differently:")
+        for k in sorted(resplit):
+            print(f"      {k}  {pa[k][0]}/{pa[k][1]}  ->  {pb[k][0]}/{pb[k][1]}")
+        print()
 
 
 def main():
