@@ -637,7 +637,19 @@ async def post_comment(request: PostCommentRequest):
             "issue_key": request.issue_key,
             "updated": result.get("updated", False),
             "truncated": result.get("truncated", False),
+            # A plan too big for one Jira comment is posted across several. The
+            # response is an explicit allowlist, so every field the client needs
+            # to describe a partial or split post has to be named here — left
+            # out, they default to "one comment, all of it landed", which is the
+            # silent success this endpoint keeps being fixed for.
+            "parts": result.get("parts", 1),
+            "posted_parts": result.get("posted_parts", 1),
+            "part_comment_ids": result.get("part_comment_ids", []),
+            "stale_parts_left": result.get("stale_parts_left", 0),
+            "part_error": result.get("part_error"),
             "plan_id": request.plan_id,
+            # Null when the plan was never persisted (no plan_id), so the client
+            # can say "not tracked" rather than quietly showing no status at all.
             "posted_at": posted_at_iso,
         }
     except JiraNotFoundError as e:

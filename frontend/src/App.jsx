@@ -17,6 +17,7 @@ import TestPlanDisplay from './components/TestPlanDisplay'
 import BugAnalysisDisplay from './components/BugAnalysisDisplay'
 import TokenStatus from './components/TokenStatus'
 import RunHistoryBanner from './components/RunHistoryBanner'
+import UntrackedPlanNotice from './components/UntrackedPlanNotice'
 import HistoricalPlanPreview from './components/HistoricalPlanPreview'
 import StalePlanNotice from './components/StalePlanNotice'
 import EpicChildrenList from './components/EpicChildrenList'
@@ -120,6 +121,11 @@ function App() {
     return stored.ticketKey === restoring ? stored.runs : []
   })
   const [historyPreview, setHistoryPreview] = useState(null)
+  // "No versions recorded" and "the history endpoint is down" render the same
+  // empty array, and the Jira live/not-live chip lives inside the banner that
+  // array suppresses. Kept apart so the app can say which one it is instead of
+  // showing no Jira status at all.
+  const [runHistoryAvailable, setRunHistoryAvailable] = useState(true)
 
   useEffect(() => saveStored(STORAGE_KEYS.issueKey, issueKey), [issueKey])
   useEffect(() => saveStored(STORAGE_KEYS.ticketsData, ticketsData), [ticketsData])
@@ -213,14 +219,17 @@ function App() {
       const res = await fetch(`${API_BASE_URL}/runs/by-ticket/${key}`)
       if (!res.ok) {
         setRunHistory([])
+        setRunHistoryAvailable(false)
         return []
       }
       const data = await res.json()
       const runs = Array.isArray(data.runs) ? data.runs : []
       setRunHistory(runs)
+      setRunHistoryAvailable(true)
       return runs
     } catch {
       setRunHistory([])
+      setRunHistoryAvailable(false)
       return []
     }
   }
@@ -663,6 +672,15 @@ function App() {
                         }
                       />
                     )}
+
+                  {/* The live/not-live-in-Jira chip lives in the banner above,
+                      which renders nothing without run history. A plan on screen
+                      with no recorded run therefore showed no Jira status at all
+                      — indistinguishable from "not posted yet". Say which of the
+                      two it actually is. */}
+                  {!isMultiTicket && testPlan.plan && runHistory.length === 0 && (
+                    <UntrackedPlanNotice available={runHistoryAvailable} />
+                  )}
 
                   <ActionButtons
                     onGenerateTestPlan={handleGenerateTestPlan}
