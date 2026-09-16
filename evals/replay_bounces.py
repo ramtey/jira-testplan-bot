@@ -46,6 +46,11 @@ RESULTS = Path(os.environ.get("EVAL_RESULTS_DIR", Path.home() / "sk_eval_results
 # context, while keeping the failure screenshot hands over the answer.
 ATTACHMENT_GRACE = timedelta(minutes=30)
 
+# Pause before re-fetching a ticket whose development context failed. Long
+# enough to outlast the timeout that caused it, short enough that a corpus of
+# 34 does not turn into a coffee break.
+CONTEXT_RETRY_PAUSE_S = 20
+
 # The judge is deliberately NOT the model that writes the plans: a model
 # grading its own output tends to credit its own phrasing. Same capability
 # tier, different model, and it still accepts forced tool use — which the
@@ -319,6 +324,43 @@ def bounce_cutoff(row):
     return ts
 
 
+async def fetch_with_context(jira, key, serialize_issue):
+    """Fetch the ticket, and once more if its development context failed.
+
+    The pipeline is already honest about this: a dev-status timeout returns
+    zero pull requests with ``dev_status_unavailable`` set, so the plan says
+    "could not check" rather than claiming the ticket has no implementation.
+    Honest is not sufficient here. A ticket that generates with no code in one
+    run and with 38 merged PRs in the next moves the score for a reason that
+    has nothing to do with the generator, and a noise floor measured through
+    that jitter reads high enough to hide a real regression behind it.
+
+    SK-2239 did exactly this during the 2026-09-16 pre-flight: 0 PRs on a
+    ReadTimeout, 38 on a retry a minute later.
+
+    Returns ``(serialized, retried)``. A caller that still sees
+    ``dev_status_unavailable`` should exclude the ticket rather than score it.
+    """
+    serialized = serialize_issue(await jira.get_issue(key))
+    if not serialized.get("dev_status_unavailable"):
+        return serialized, False
+    await asyncio.sleep(CONTEXT_RETRY_PAUSE_S)
+    return serialize_issue(await jira.get_issue(key)), True
+
+
+def context_of(plan):
+    """The conditions a plan was generated under, for parity checks.
+
+    Two runs are only comparable when the generator was shown the same kinds
+    of material. Recording this per plan is what lets `compare` say "these two
+    tickets are not like-for-like" instead of reporting the difference as
+    model variance.
+    """
+    if not isinstance(plan, dict):
+        return {}
+    return plan.get("_context") or {}
+
+
 async def phase_replay(rows, limit):
     from src.app.jira_client import JiraClient
     from src.app.models import GenerateTestPlanRequest
@@ -344,7 +386,21 @@ async def phase_replay(rows, limit):
             continue
         print(f"  [{i}/{len(todo)}] {key} ...", end=" ", flush=True)
         try:
-            serialized = serialize_issue(await jira.get_issue(key))
+            serialized, retried = await fetch_with_context(
+                jira, key, serialize_issue)
+            if serialized.get("dev_status_unavailable"):
+                # Same shape as the "all PRs postdate the bounce" exclusion
+                # below, and for the same reason: no implementation reached
+                # the generator, so a low score here measures the outage.
+                plan_path(key).write_text(json.dumps({
+                    "excluded": "development context could not be fetched "
+                                "(dev-status unavailable, and still unavailable "
+                                "on retry) — scoring this would measure the "
+                                "outage, not the plan",
+                    "_context": {"dev_status_unavailable": True, "retried": True},
+                }, indent=2))
+                print("excluded (dev-status unavailable after retry)")
+                continue
             cutoff = reason_cutoff(serialized, cutoff, row.get("reason"))
             prs_before = len(((serialized.get("development_info") or {})
                               .get("pull_requests")) or [])
@@ -366,12 +422,26 @@ async def phase_replay(rows, limit):
                 GenerateTestPlanRequest(**prompt_payload(serialized)))
             plan["_rewound_to"] = cutoff.isoformat()
             plan["_removed"] = removed
-            # Whether design context actually reached this generation. An
-            # expired Figma token silently strips it, so a run has to record
-            # what it had rather than what it was configured to have.
+            # What actually reached this generation, rather than what it was
+            # configured to have. An expired Figma token strips design context
+            # silently; a spent Figma quota does the same for days; a
+            # Confluence or Slack link that would not load leaves a gap the
+            # prompt names but the score cannot see. A run that does not
+            # record its own conditions cannot be compared to another one.
+            prov = plan.get("source_provenance") or {}
             plan["_had_figma"] = bool(
                 ((serialized.get("development_info") or {}).get("figma_context"))
             )
+            plan["_context"] = {
+                "had_figma": plan["_had_figma"],
+                "figma_unavailable": bool(serialized.get("figma_unavailable")),
+                "dev_status_unavailable": False,
+                "prs_at_cutoff": prs_before - removed["prs"],
+                "context_gaps": prov.get("context_gaps") or [],
+                "critics_unavailable": prov.get("critics_unavailable") or [],
+                "fetch_retried": retried,
+                "model": settings.llm_model,
+            }
             plan_path(key).write_text(json.dumps(plan, indent=2, default=str))
             n = len(plan.get("happy_path") or []) + len(plan.get("edge_cases") or [])
             print(f"ok ({n} cases; hid {removed['comments']} comments, "
@@ -554,6 +624,57 @@ def _score_dir(rows, results_dir):
     return caught, total, per
 
 
+def _conditions(results_dir, key):
+    """The comparable signature of one generation's conditions."""
+    f = results_dir / "plans" / f"{key}.json"
+    if not f.exists():
+        return None
+    ctx = context_of(json.loads(f.read_text()))
+    if not ctx:
+        # Plans generated before _context existed. Absence is not parity, so
+        # say unknown rather than assume the conditions matched.
+        return None
+    return (
+        ("figma", bool(ctx.get("had_figma"))),
+        ("prs", ctx.get("prs_at_cutoff")),
+        ("gaps", len(ctx.get("context_gaps") or [])),
+        ("critics_down", len(ctx.get("critics_unavailable") or [])),
+        ("model", ctx.get("model")),
+    )
+
+
+def report_condition_parity(a, b, shared):
+    """Say which tickets were not shown the same kinds of material.
+
+    A change is only measurable against a run that had the same inputs. Figma
+    quota, a Confluence link that would not load, a critic that could not run
+    — each silently removes context from one side, and the difference then
+    reads as model variance or as a win for whatever prompt change is being
+    tested. This does not exclude anything; it names what cannot be read
+    straight.
+    """
+    differ, unknown = [], []
+    for k in shared:
+        ca, cb = _conditions(a, k), _conditions(b, k)
+        if ca is None or cb is None:
+            unknown.append(k)
+        elif ca != cb:
+            differ.append((k, ca, cb))
+    if unknown:
+        print(f"  conditions unrecorded for {len(unknown)} ticket(s) — generated "
+              f"before this run recorded them; parity unverified:")
+        print(f"    {', '.join(sorted(unknown))}\n")
+    if differ:
+        print(f"  DIFFERENT CONDITIONS ({len(differ)}) — not like-for-like, the "
+              f"generator was shown different material:")
+        for k, ca, cb in sorted(differ):
+            diffs = [f"{n}: {x} -> {y}" for (n, x), (_, y) in zip(ca, cb) if x != y]
+            print(f"    {k}  {'; '.join(diffs)}")
+        print()
+    if not differ and not unknown:
+        print("  conditions match on every shared ticket\n")
+
+
 def phase_compare(rows, dir_a, dir_b):
     """Did the change help? Same corpus, same judge, one variable."""
     a, b = Path(dir_a).expanduser(), Path(dir_b).expanduser()
@@ -570,6 +691,9 @@ def phase_compare(rows, dir_a, dir_b):
   Tickets graded in both: {len(shared)}""")
     if len(shared) < len(pa) or len(shared) < len(pb):
         print(f"  (A has {len(pa)}, B has {len(pb)} — only the shared set is comparable)")
+
+    print()
+    report_condition_parity(a, b, shared)
 
     sa, sb = sum(pa[k][0] for k in shared), sum(pb[k][0] for k in shared)
     ta, tb = sum(pa[k][1] for k in shared), sum(pb[k][1] for k in shared)
