@@ -7,6 +7,8 @@ from typing import NamedTuple
 
 import httpx
 
+from src.app.http_retry import retrying_client
+
 from .adf_parser import extract_text_from_adf
 from .attachment_types import attachment_icon, has_inline_preview
 from .config import settings
@@ -1466,7 +1468,7 @@ class JiraClient:
         )
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with retrying_client(timeout=10) as client:
                 summary_response = await client.get(
                     summary_url, headers=self._headers()
                 )
@@ -2007,7 +2009,7 @@ class JiraClient:
             Tuple of (base64_data, media_type) or None if download fails
         """
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with retrying_client(timeout=30, follow_redirects=True) as client:
                 response = await client.get(image_url, headers=self._headers())
                 response.raise_for_status()
 
@@ -2043,7 +2045,7 @@ class JiraClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
                 r.raise_for_status()
 
@@ -2144,7 +2146,7 @@ class JiraClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.post(
                     url,
                     headers={**self._headers(), "Content-Type": "application/json"},
@@ -2338,7 +2340,7 @@ class JiraClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.post(
                     url,
                     headers={**self._headers(), "Content-Type": "application/json"},
@@ -2392,7 +2394,7 @@ class JiraClient:
         params = {"orderBy": "name", "maxResults": 100}
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -2444,7 +2446,7 @@ class JiraClient:
         page_size = 100
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 while fetched < max_issues:
                     payload = {
                         "jql": f"updated >= -{days}d ORDER BY updated DESC",
@@ -2498,7 +2500,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/project/{project_key}/statuses"
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers())
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -2567,7 +2569,7 @@ class JiraClient:
         """
         boards_url = f"{self.base_url}/rest/agile/1.0/board"
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 br = await client.get(
                     boards_url,
                     headers=self._headers(),
@@ -2603,7 +2605,7 @@ class JiraClient:
 
         cfg_url = f"{self.base_url}/rest/agile/1.0/board/{board_id}/configuration"
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 cr = await client.get(cfg_url, headers=self._headers())
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             logger.warning("Board %s config fetch failed: %s", board_id, exc)
@@ -2698,7 +2700,7 @@ class JiraClient:
             count = data.get("count")
             return (status_name, int(count) if isinstance(count, int) else None)
 
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with retrying_client(timeout=20) as client:
             uses_sprints = await _project_uses_sprints(client)
             results = await asyncio.gather(
                 *(_count_one(client, s, uses_sprints) for s in status_names)
@@ -2740,7 +2742,7 @@ class JiraClient:
 
         headers = {**self._headers(), "Content-Type": "application/json"}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 main_task = client.post(url, headers=headers, json=main_payload)
                 probe_task = client.post(url, headers=headers, json=probe_payload)
                 r, probe_r = await asyncio.gather(main_task, probe_task)
@@ -2830,7 +2832,7 @@ class JiraClient:
         params = {"fields": fields_param, "expand": "renderedFields,changelog"}
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3182,7 +3184,7 @@ class JiraClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.post(url, headers=headers, json=payload)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3342,7 +3344,7 @@ class JiraClient:
             for name, content, mime_type in files
         ]
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with retrying_client(timeout=60) as client:
                 r = await client.post(url, headers=headers, files=files_payload)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3385,7 +3387,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/attachment/content/{attachment_id}"
         headers = self._headers()
         try:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            async with retrying_client(timeout=15, follow_redirects=False) as client:
                 r = await client.get(url, headers=headers)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             logger.warning(
@@ -3483,7 +3485,7 @@ class JiraClient:
         headers = {**self._headers(), "Content-Type": "application/json"}
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.post(url, headers=headers, json={"body": body})
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3533,7 +3535,7 @@ class JiraClient:
         headers = {**self._headers(), "Content-Type": "application/json"}
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.post(url, headers=headers, json={"body": body})
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3570,7 +3572,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers())
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3620,7 +3622,7 @@ class JiraClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.put(url, headers=headers, json=payload)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3656,7 +3658,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment/{comment_id}"
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.delete(url, headers=self._headers())
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3685,7 +3687,7 @@ class JiraClient:
             return JiraClient._my_account_id_cache
         url = f"{self.base_url}/rest/api/3/myself"
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers())
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3710,7 +3712,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         params = {"fields": "parent"}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3733,7 +3735,7 @@ class JiraClient:
         url2 = f"{self.base_url}/rest/api/3/issue/{parent_key}"
         params2 = {"fields": "subtasks"}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r2 = await client.get(url2, headers=self._headers(), params=params2)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3763,7 +3765,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         params = {"fields": "subtasks"}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3782,7 +3784,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         params = {"fields": "status"}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3801,7 +3803,7 @@ class JiraClient:
         """List available transitions from the issue's current status."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers())
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3820,7 +3822,7 @@ class JiraClient:
         headers = {**self._headers(), "Content-Type": "application/json"}
         payload = {"transition": {"id": transition_id}}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.post(url, headers=headers, json=payload)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3844,7 +3846,7 @@ class JiraClient:
         headers = {**self._headers(), "Content-Type": "application/json"}
         payload = {"accountId": account_id}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.put(url, headers=headers, json=payload)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3880,7 +3882,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         params = {"fields": "assignee", "expand": "changelog"}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with retrying_client(timeout=20) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3920,7 +3922,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
         params = {"fields": "summary"}
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with retrying_client(timeout=15) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -3950,7 +3952,7 @@ class JiraClient:
         )
         rows: list[dict] = []
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with retrying_client(timeout=10) as client:
                 summary_response = await client.get(summary_url, headers=self._headers())
                 if summary_response.status_code != 200:
                     return []
@@ -4003,7 +4005,7 @@ class JiraClient:
         )
         urls: list[str] = []
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with retrying_client(timeout=10) as client:
                 summary_response = await client.get(summary_url, headers=self._headers())
                 if summary_response.status_code != 200:
                     return []
@@ -4052,7 +4054,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/user/search"
         params = {"query": query, "maxResults": 5}
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with retrying_client(timeout=15) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
@@ -4086,7 +4088,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/user/search"
         params = {"query": query, "maxResults": max(1, min(max_results, 20))}
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with retrying_client(timeout=15) as client:
                 r = await client.get(url, headers=self._headers(), params=params)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
