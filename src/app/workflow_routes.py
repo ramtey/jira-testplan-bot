@@ -18,6 +18,11 @@ import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
+from .attachment_types import (
+    ALLOWED_ATTACHMENT_LABEL,
+    MAX_ATTACHMENT_BYTES,
+    resolve_attachment_mime,
+)
 from .config import settings
 from .db.mongo import get_db
 from .github_client import GitHubClient
@@ -224,17 +229,6 @@ async def _harvest_loom_urls_from_merged_prs(
     return [], [], "no_looms"
 
 
-_ALLOWED_IMAGE_MIME = {
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/gif",
-    "image/webp",
-    "application/pdf",
-}
-_MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB per file; Jira allows more but this is a sane UI cap.
-
-
 def _parse_workflow_payload(payload: str | None) -> WorkflowActionRequest | None:
     if not payload:
         return None
@@ -313,15 +307,16 @@ async def _validate_and_read_images(
     for upload in images:
         if upload is None or not upload.filename:
             continue
-        mime = (upload.content_type or "").lower()
-        if mime not in _ALLOWED_IMAGE_MIME:
+        mime = resolve_attachment_mime(upload.filename, upload.content_type)
+        if mime is None:
+            declared = (upload.content_type or "").strip() or "unknown"
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported attachment type: {mime or 'unknown'}. "
-                       f"Allowed: PNG, JPEG, GIF, WEBP, PDF.",
+                detail=f"Unsupported attachment type: {declared}. "
+                       f"Allowed: {ALLOWED_ATTACHMENT_LABEL}.",
             )
         content = await upload.read()
-        if len(content) > _MAX_IMAGE_BYTES:
+        if len(content) > MAX_ATTACHMENT_BYTES:
             raise HTTPException(
                 status_code=400,
                 detail=f"{upload.filename} is larger than 10 MB.",
@@ -940,7 +935,7 @@ async def get_pr_looms(issue_key: str) -> dict:
 # the same 10 MB ceiling that gates hand-uploaded screenshots so the two
 # entry points behave symmetrically — a browser preview and a submit
 # accept the same size envelope.
-_PR_IMAGE_PROXY_MAX_BYTES = _MAX_IMAGE_BYTES
+_PR_IMAGE_PROXY_MAX_BYTES = MAX_ATTACHMENT_BYTES
 
 
 def _guard_pr_image_url(url: str) -> str:

@@ -885,3 +885,54 @@ async def test_enrich_attachments_with_media_ids_tolerates_failed_lookup():
         ("a.png", "uuid-a"),
         ("b.png", None),
     ]
+
+
+# ---------- text attachments (.txt / .json) ----------
+
+def _paperclip_paragraphs(doc):
+    return [
+        p for p in doc["content"]
+        if p.get("type") == "paragraph"
+        and p.get("content")
+        and p["content"][0].get("text", "").startswith("📎")
+    ]
+
+
+def test_build_qa_pass_adf_renders_text_attachment_as_paperclip_callout():
+    # A .json attached as API evidence has nothing to preview, so it gets a
+    # `📎 <filename>` callout even though its media UUID resolved fine —
+    # wrapping it in a mediaSingle would show the reader a broken picture.
+    doc = _build_qa_pass_adf(
+        None,
+        None,
+        None,
+        None,
+        [
+            ImageAttachment("shot.png", "https://jira.example/shot", "uuid-shot"),
+            ImageAttachment("response.json", "https://jira.example/resp", "uuid-resp"),
+            ImageAttachment("curl.txt", "https://jira.example/curl", "uuid-curl"),
+        ],
+    )
+    assert doc is not None
+    # Only the screenshot renders inline.
+    media = _media_single_nodes(doc)
+    assert len(media) == 1
+    assert media[0]["content"][0]["attrs"]["id"] == "uuid-shot"
+    texts = [p["content"][0]["text"] for p in _paperclip_paragraphs(doc)]
+    assert texts == ["📎 response.json", "📎 curl.txt"]
+
+
+def test_build_qa_fail_adf_inline_token_for_text_attachment_renders_callout():
+    # Inlining a text attachment next to a line puts a labelled callout at
+    # the token position — and, as with images, it isn't repeated at the
+    # bottom of the comment.
+    doc = _build_qa_fail_adf(
+        "Response body: [[img:response.json]]",
+        None,
+        [ImageAttachment("response.json", "https://jira.example/resp", "uuid-resp")],
+    )
+    assert doc is not None
+    assert _media_single_nodes(doc) == []
+    callouts = _paperclip_paragraphs(doc)
+    assert len(callouts) == 1
+    assert callouts[0]["content"][0]["text"] == "📎 response.json"

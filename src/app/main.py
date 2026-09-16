@@ -7,6 +7,11 @@ from dataclasses import asdict
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from .attachment_types import (
+    ALLOWED_ATTACHMENT_LABEL,
+    MAX_ATTACHMENT_BYTES,
+    resolve_attachment_mime,
+)
 from .bug_lens_routes import router as bug_lens_router
 from .config import settings
 from .db import crud
@@ -676,17 +681,6 @@ async def post_comment(request: PostCommentRequest):
 # ``needs_walkthrough`` rule server-side) computes it identically.
 
 
-_WALKTHROUGH_ALLOWED_IMAGE_MIME = {
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/gif",
-    "image/webp",
-    "application/pdf",
-}
-_WALKTHROUGH_MAX_IMAGE_BYTES = 10 * 1024 * 1024
-
-
 @app.get("/tickets/{ticket_key}/walkthrough")
 async def get_ticket_walkthrough(ticket_key: str):
     """Return the human-authored walkthrough (Loom link, screenshot, notes) for a
@@ -735,17 +729,18 @@ async def put_ticket_walkthrough(
     for upload in screenshots or []:
         if upload is None or not upload.filename:
             continue
-        mime = (upload.content_type or "").lower()
-        if mime not in _WALKTHROUGH_ALLOWED_IMAGE_MIME:
+        mime = resolve_attachment_mime(upload.filename, upload.content_type)
+        if mime is None:
+            declared = (upload.content_type or "").strip() or "unknown"
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Unsupported attachment type: {mime or 'unknown'}. "
-                    "Allowed: PNG, JPEG, GIF, WEBP, PDF."
+                    f"Unsupported attachment type: {declared}. "
+                    f"Allowed: {ALLOWED_ATTACHMENT_LABEL}."
                 ),
             )
         content = await upload.read()
-        if len(content) > _WALKTHROUGH_MAX_IMAGE_BYTES:
+        if len(content) > MAX_ATTACHMENT_BYTES:
             raise HTTPException(
                 status_code=400,
                 detail=f"{upload.filename} is larger than 10 MB.",

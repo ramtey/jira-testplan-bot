@@ -211,6 +211,36 @@ function EnvPill({ value, on, onToggle, disabled }) {
   )
 }
 
+// Attachment types the Jira upload accepts. Mirrors ALLOWED_ATTACHMENT_MIME in
+// src/app/attachment_types.py — keep the two in sync. Text payloads (.txt /
+// .json) are here for API/HTTP work: a response body or a curl transcript is
+// the evidence, and there's no screenshot to take. They attach to the ticket
+// and render as a `📎 <filename>` line in the comment rather than inline.
+const ATTACHMENT_ACCEPT =
+  'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,application/json,.txt,.json'
+
+// A .json dragged from Finder or dropped out of an archive can arrive with an
+// empty or generic type, so fall back to the extension the way the server
+// does. Anything still unrecognised is dropped here instead of bouncing off a
+// 400 after the upload starts.
+const TEXT_ATTACHMENT_RE = /\.(txt|json)$/i
+
+function isAllowedAttachment(file) {
+  if (!file) return false
+  const type = (file.type || '').split(';')[0].trim().toLowerCase()
+  if (type.startsWith('image/') || type === 'application/pdf') return true
+  if (type === 'text/plain' || type === 'application/json' || type === 'text/json') return true
+  if (type === '' || type === 'application/octet-stream') {
+    return TEXT_ATTACHMENT_RE.test(file.name || '')
+  }
+  return false
+}
+
+// Chip icon: a picture for previewable attachments, a document for text ones.
+function attachmentIconName(filename) {
+  return TEXT_ATTACHMENT_RE.test(filename || '') ? 'file-text' : 'image'
+}
+
 function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef(null)
@@ -223,14 +253,12 @@ function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
     const handler = (e) => {
       const items = e.clipboardData?.items
       if (!items) return
-      const imageItems = Array.from(items).filter(
-        (it) => it.type.startsWith('image/') || it.type === 'application/pdf'
-      )
-      if (imageItems.length === 0) return
-      e.preventDefault()
-      const fileList = imageItems
+      const fileList = Array.from(items)
+        .filter((it) => it.kind === 'file')
         .map((it) => it.getAsFile())
-        .filter(Boolean)
+        .filter(isAllowedAttachment)
+      if (fileList.length === 0) return
+      e.preventDefault()
       onAdd(fileList)
     }
     window.addEventListener('paste', handler)
@@ -266,11 +294,11 @@ function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
         }}
       >
         <Icon name="image" size={13} style={{ marginRight: 6, verticalAlign: '-2px' }} />
-        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF, up to 10 MB each.
+        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF / TXT / JSON, up to 10 MB each.
         <input
           ref={inputRef}
           type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp,application/pdf"
+          accept={ATTACHMENT_ACCEPT}
           multiple
           hidden
           onClick={(e) => e.stopPropagation()}
@@ -297,7 +325,7 @@ function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
               }}
               title={`${f.name} · ${(f.size / 1024).toFixed(0)} KB`}
             >
-              <Icon name="image" size={11} />
+              <Icon name={attachmentIconName(f.name)} size={11} />
               {truncateMiddle(f.name)}
               {onInsertToken && (
                 <button
@@ -307,7 +335,11 @@ function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
                     onInsertToken(f.name)
                   }}
                   disabled={disabled}
-                  title={`Inline "${f.name}" at the cursor — renders as an image next to that line`}
+                  title={
+                    TEXT_ATTACHMENT_RE.test(f.name)
+                      ? `Inline "${f.name}" at the cursor — renders as a labelled attachment next to that line`
+                      : `Inline "${f.name}" at the cursor — renders as an image next to that line`
+                  }
                   aria-label={`Inline ${f.name} at cursor`}
                   style={{
                     background: 'transparent',
@@ -1179,9 +1211,7 @@ function WorkflowActions({
   }
 
   const addImageFiles = (files) => {
-    const incoming = Array.from(files || []).filter(
-      (f) => f && (f.type.startsWith('image/') || f.type === 'application/pdf')
-    )
+    const incoming = Array.from(files || []).filter(isAllowedAttachment)
     if (incoming.length === 0) return
     setImageFiles((prev) => [...prev, ...incoming])
   }
@@ -1624,7 +1654,7 @@ function WorkflowActions({
                 This becomes the bounce-back history. Be specific.
               </div>
               <div style={{ marginTop: 4, fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
-                Tip: click ⇢ on an attached screenshot to inline it next to a specific bullet, or type <code>![](https://…)</code> for an image URL.
+                Tip: click ⇢ on an attached file to inline it next to a specific bullet, or type <code>![](https://…)</code> for an image URL.
               </div>
             </div>
           )}
@@ -1747,13 +1777,13 @@ function WorkflowActions({
                     disabled={pendingAction !== null}
                   />
                   <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
-                    Tip: click ⇢ on an attached screenshot to inline it next to a specific line, or type <code>![](https://…)</code> for an image URL.
+                    Tip: click ⇢ on an attached file to inline it next to a specific line, or type <code>![](https://…)</code> for an image URL.
                   </div>
                 </div>
               </>
             )}
 
-            <span className="lbl">Screenshots</span>
+            <span className="lbl">Attachments</span>
             <ImageDropzone
               files={imageFiles}
               onAdd={addImageFiles}

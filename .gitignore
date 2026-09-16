@@ -241,3 +241,6 @@ dist-ssr/
 # This repo uses npm. Keep pnpm/yarn out so competing lockfiles don't sneak in.
 pnpm-lock.yaml
 yarn.lock
+
+# Playwright MCP session artifacts (screenshots, snapshots, console logs)
+.playwright-mcp/

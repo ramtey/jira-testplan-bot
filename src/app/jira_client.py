@@ -8,6 +8,7 @@ from typing import NamedTuple
 import httpx
 
 from .adf_parser import extract_text_from_adf
+from .attachment_types import attachment_icon, has_inline_preview
 from .config import settings
 from .description_analyzer import analyze_description, extract_acceptance_criteria
 from .figma_client import FigmaClient
@@ -501,15 +502,16 @@ def _normalize_environments(environments: list[str] | None) -> list[str]:
 def _build_attachment_label_paragraph(filename: str) -> dict:
     """Render a single attachment as a plain `📷 <filename>` paragraph.
 
-    Fallback for when the Atlassian media-services UUID couldn't be
-    resolved (network glitch, 4xx on the redirect probe, legacy
-    walkthrough screenshot without a stored media_id). The comment
-    still posts; the reader sees the filename plus the image in the
-    Attachments panel below.
+    Used when the Atlassian media-services UUID couldn't be resolved
+    (network glitch, 4xx on the redirect probe, legacy walkthrough
+    screenshot without a stored media_id), and for text attachments
+    (.txt / .json), which have no inline preview at all — those get a
+    `📎 <filename>` label instead. Either way the comment still posts;
+    the reader opens the file from the Attachments panel below.
     """
     return {
         "type": "paragraph",
-        "content": [{"type": "text", "text": f"📷 {filename}"}],
+        "content": [{"type": "text", "text": f"{attachment_icon(filename)} {filename}"}],
     }
 
 
@@ -622,11 +624,11 @@ def _media_block_from_token(
         att = attachments_by_name.get(name.strip().lower())
         if att is None:
             return None, None
-        if att.media_id:
+        if att.media_id and has_inline_preview(att.filename):
             return _build_attachment_media_node(att.media_id), att.filename
-        # No UUID resolved — fall back to the labeled callout the rest of
-        # the pipeline uses for attach-without-media cases. Still counts
-        # as "used" so we don't render the same filename twice.
+        # No UUID resolved, or a text attachment with nothing to preview —
+        # fall back to the labeled callout the rest of the pipeline uses.
+        # Still counts as "used" so we don't render the same filename twice.
         return _build_attachment_label_paragraph(att.filename), att.filename
     url = match.group("url")
     if url:
@@ -839,7 +841,7 @@ def _build_qa_pass_adf(
     for image in images:
         if image.filename in used_filenames:
             continue
-        if image.media_id:
+        if image.media_id and has_inline_preview(image.filename):
             content.append(_build_attachment_media_node(image.media_id))
         else:
             content.append(_build_attachment_label_paragraph(image.filename))
@@ -950,7 +952,7 @@ def _build_qa_fail_adf(
     for image in images:
         if image.filename in used_filenames:
             continue
-        if image.media_id:
+        if image.media_id and has_inline_preview(image.filename):
             content.append(_build_attachment_media_node(image.media_id))
         else:
             content.append(_build_attachment_label_paragraph(image.filename))
