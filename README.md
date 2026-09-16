@@ -207,15 +207,15 @@ opt in.
   via `models.LOOM_URL_RE` on both the client and the Pydantic request
   model so a typo can't reach Jira as a broken link — each rendered as its
   own paragraph above the fold), an optional attachment dropzone
-  (click / drag / paste — PNG / JPEG / GIF / WEBP / PDF / TXT / JSON, so
-  API and HTTP work can ship a response body or a curl transcript as its
-  evidence; files upload directly to the Jira issue as attachments before
-  the transition runs, and render **inline** in the comment via
-  `mediaSingle` ADF nodes with a `📷 <filename>` fallback if the
+  (click / drag / paste — PNG / JPEG / GIF / WEBP / PDF / TXT / MD / JSON,
+  so API and HTTP work can ship a response body, a curl transcript or a
+  markdown repro as its evidence; files upload directly to the Jira issue
+  as attachments before the transition runs, and render **inline** in the
+  comment via `mediaSingle` ADF nodes with a `📷 <filename>` fallback if the
   media-services UUID can't be resolved. Text payloads have nothing to
   preview, so they always render as a `📎 <filename>` callout and are
-  read from the Attachments panel). Each uploaded screenshot
-  can be **paired to a specific ticked bullet**: a small "attach to step"
+  read from the Attachments panel). Each uploaded screenshot can be
+  **paired to a specific ticked bullet**: a small "attach to step"
   chip on every ticked step lets the tester choose which screenshot lines
   up with which step; the pairing is rendered in the comment as an
   indented `mediaSingle` under that bullet so reviewers see the picture

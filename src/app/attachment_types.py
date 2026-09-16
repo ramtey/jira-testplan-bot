@@ -7,9 +7,9 @@ the allow-list. They import from here instead so a new file type is added
 once.
 
 Images and PDFs render inline in the posted Jira comment via ``mediaSingle``.
-Text payloads (an API response body, a curl transcript, a log excerpt) have
-nothing to preview, so they render as a ``📎 <filename>`` callout and are read
-from the ticket's Attachments panel.
+Text payloads (an API response body, a curl transcript, a log excerpt, a
+markdown repro) have nothing to preview, so they render as a
+``📎 <filename>`` callout and are read from the ticket's Attachments panel.
 """
 
 import os
@@ -28,16 +28,17 @@ _IMAGE_MIME = {
 # a response body, a request transcript, a log excerpt.
 _TEXT_MIME = {
     "text/plain",
+    "text/markdown",
     "application/json",
 }
 
 ALLOWED_ATTACHMENT_MIME = _IMAGE_MIME | {"application/pdf"} | _TEXT_MIME
 
-ALLOWED_ATTACHMENT_LABEL = "PNG, JPEG, GIF, WEBP, PDF, TXT, JSON"
+ALLOWED_ATTACHMENT_LABEL = "PNG, JPEG, GIF, WEBP, PDF, TXT, MD, JSON"
 
 # Extensions whose attachment has no inline preview — rendered as a
 # `📎 <filename>` callout instead of a media node.
-_TEXT_EXTENSIONS = {".txt", ".json"}
+_TEXT_EXTENSIONS = {".txt", ".md", ".json"}
 
 # Browsers disagree about text payloads: Chrome reports `application/json`
 # for a .json file, other sources report `text/plain`, a file dragged out of
@@ -52,6 +53,7 @@ _EXTENSION_MIME = {
     ".webp": "image/webp",
     ".pdf": "application/pdf",
     ".txt": "text/plain",
+    ".md": "text/markdown",
     ".json": "application/json",
 }
 
@@ -68,6 +70,7 @@ _MIME_ALIASES = {
     "text/json": "application/json",
     "application/x-json": "application/json",
     "text/x-log": "text/plain",
+    "text/x-markdown": "text/markdown",
 }
 
 

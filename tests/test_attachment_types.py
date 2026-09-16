@@ -21,8 +21,9 @@ def test_resolve_accepts_images_and_pdf_unchanged():
     assert resolve_attachment_mime("doc.pdf", "application/pdf") == "application/pdf"
 
 
-def test_resolve_accepts_text_and_json_payloads():
+def test_resolve_accepts_text_markdown_and_json_payloads():
     assert resolve_attachment_mime("curl.txt", "text/plain") == "text/plain"
+    assert resolve_attachment_mime("repro.md", "text/markdown") == "text/markdown"
     assert resolve_attachment_mime("resp.json", "application/json") == "application/json"
 
 
@@ -30,8 +31,9 @@ def test_resolve_strips_charset_parameter():
     assert resolve_attachment_mime("curl.txt", "text/plain; charset=utf-8") == "text/plain"
 
 
-def test_resolve_normalizes_json_aliases():
+def test_resolve_normalizes_aliases():
     assert resolve_attachment_mime("resp.json", "text/json") == "application/json"
+    assert resolve_attachment_mime("repro.md", "text/x-markdown") == "text/markdown"
 
 
 def test_resolve_falls_back_to_extension_when_browser_sends_nothing():
@@ -42,6 +44,9 @@ def test_resolve_falls_back_to_extension_when_browser_sends_nothing():
     assert (
         resolve_attachment_mime("log.txt", "application/octet-stream") == "text/plain"
     )
+    # A .md is the one that most often arrives mislabelled — Chrome says
+    # text/markdown, Finder drags say nothing at all.
+    assert resolve_attachment_mime("repro.md", "") == "text/markdown"
 
 
 def test_resolve_rejects_unknown_extension_behind_a_generic_mime():
@@ -59,11 +64,13 @@ def test_inline_preview_only_for_non_text_attachments():
     assert has_inline_preview("doc.pdf") is True
     assert has_inline_preview("resp.JSON") is False
     assert has_inline_preview("curl.txt") is False
+    assert has_inline_preview("repro.md") is False
 
 
 def test_attachment_icon_matches_preview_capability():
     assert attachment_icon("shot.png") == "📷"
     assert attachment_icon("resp.json") == "📎"
+    assert attachment_icon("repro.md") == "📎"
 
 
 # ---------- the workflow route's upload validator ----------
@@ -81,12 +88,14 @@ async def test_validate_reads_text_attachments_with_resolved_mime():
     files = await _validate_and_read_images([
         _upload("resp.json", b'{"ok":true}', "application/json"),
         _upload("curl.txt", b"HTTP/2 200", "text/plain; charset=utf-8"),
+        _upload("repro.md", b"# Steps", "text/markdown"),
         # No content-type at all — resolved from the extension.
         _upload("trace.json", b"[]", None),
     ])
     assert [(name, mime) for name, _, mime in files] == [
         ("resp.json", "application/json"),
         ("curl.txt", "text/plain"),
+        ("repro.md", "text/markdown"),
         ("trace.json", "application/json"),
     ]
     assert files[0][1] == b'{"ok":true}'
@@ -98,4 +107,4 @@ async def test_validate_rejects_a_type_outside_the_allow_list():
         await _validate_and_read_images([_upload("bundle.zip", b"PK", "application/zip")])
     assert exc.value.status_code == 400
     assert "application/zip" in exc.value.detail
-    assert "TXT, JSON" in exc.value.detail
+    assert "TXT, MD, JSON" in exc.value.detail

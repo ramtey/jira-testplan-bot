@@ -213,23 +213,31 @@ function EnvPill({ value, on, onToggle, disabled }) {
 
 // Attachment types the Jira upload accepts. Mirrors ALLOWED_ATTACHMENT_MIME in
 // src/app/attachment_types.py — keep the two in sync. Text payloads (.txt /
-// .json) are here for API/HTTP work: a response body or a curl transcript is
-// the evidence, and there's no screenshot to take. They attach to the ticket
+// .md / .json) are here for API/HTTP work: a response body, a curl transcript
+// or a markdown repro is the evidence, and there's no screenshot to take. They attach to the ticket
 // and render as a `📎 <filename>` line in the comment rather than inline.
 const ATTACHMENT_ACCEPT =
-  'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,application/json,.txt,.json'
+  'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,application/json,.txt,.md,.json'
 
 // A .json dragged from Finder or dropped out of an archive can arrive with an
 // empty or generic type, so fall back to the extension the way the server
 // does. Anything still unrecognised is dropped here instead of bouncing off a
 // 400 after the upload starts.
-const TEXT_ATTACHMENT_RE = /\.(txt|json)$/i
+const TEXT_ATTACHMENT_RE = /\.(txt|md|json)$/i
 
 function isAllowedAttachment(file) {
   if (!file) return false
   const type = (file.type || '').split(';')[0].trim().toLowerCase()
   if (type.startsWith('image/') || type === 'application/pdf') return true
-  if (type === 'text/plain' || type === 'application/json' || type === 'text/json') return true
+  if (
+    type === 'text/plain' ||
+    type === 'text/markdown' ||
+    type === 'text/x-markdown' ||
+    type === 'application/json' ||
+    type === 'text/json'
+  ) {
+    return true
+  }
   if (type === '' || type === 'application/octet-stream') {
     return TEXT_ATTACHMENT_RE.test(file.name || '')
   }
@@ -294,7 +302,7 @@ function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
         }}
       >
         <Icon name="image" size={13} style={{ marginRight: 6, verticalAlign: '-2px' }} />
-        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF / TXT / JSON, up to 10 MB each.
+        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF / TXT / MD / JSON, up to 10 MB each.
         <input
           ref={inputRef}
           type="file"

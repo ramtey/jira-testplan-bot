@@ -911,6 +911,7 @@ def test_build_qa_pass_adf_renders_text_attachment_as_paperclip_callout():
             ImageAttachment("shot.png", "https://jira.example/shot", "uuid-shot"),
             ImageAttachment("response.json", "https://jira.example/resp", "uuid-resp"),
             ImageAttachment("curl.txt", "https://jira.example/curl", "uuid-curl"),
+            ImageAttachment("repro.md", "https://jira.example/repro", "uuid-repro"),
         ],
     )
     assert doc is not None
@@ -919,7 +920,7 @@ def test_build_qa_pass_adf_renders_text_attachment_as_paperclip_callout():
     assert len(media) == 1
     assert media[0]["content"][0]["attrs"]["id"] == "uuid-shot"
     texts = [p["content"][0]["text"] for p in _paperclip_paragraphs(doc)]
-    assert texts == ["📎 response.json", "📎 curl.txt"]
+    assert texts == ["📎 response.json", "📎 curl.txt", "📎 repro.md"]
 
 
 def test_build_qa_fail_adf_inline_token_for_text_attachment_renders_callout():
