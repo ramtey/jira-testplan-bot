@@ -25,6 +25,41 @@ from .model_capabilities import TOKEN_VALIDATION_MODEL
 logger = logging.getLogger(__name__)
 
 
+#: A syntactically valid Figma file key that cannot exist. Reading it proves
+#: the token authenticates and carries file scope without spending quota:
+#: Figma charges /v1/files by what it returns, and a miss returns nothing.
+_FIGMA_PROBE_MISS_KEY = "000000000000000000000000"
+
+#: Below this, a Figma 429 is a burst throttle that clears itself and is not
+#: worth waking anyone over. Above it, the file-read quota is spent — which on
+#: 2026-09-16 meant a Retry-After of 241725s (2.8 days) with design context
+#: silently missing from every plan the whole time.
+_FIGMA_THROTTLE_TOLERANCE_S = 3600
+
+
+def _retry_after_seconds(response) -> int | None:
+    """Figma's Retry-After in seconds, or None when it did not say."""
+    raw = response.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _humanize_seconds(seconds: int | None) -> str:
+    if not seconds or seconds < 0:
+        return "an unknown time"
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} min"
+    if seconds < 172800:
+        return f"{seconds / 3600:.1f} hours"
+    return f"{seconds / 86400:.1f} days"
+
+
 class TokenErrorType(str, Enum):
     """Types of token errors."""
     VALID = "valid"
@@ -499,25 +534,88 @@ class TokenHealthService:
                 last_checked=last_checked,
             )
 
+        # Probe the endpoint the app actually calls. /v1/me answers a
+        # different question — it needs current_user:read, which this bot
+        # never asks for — so it keeps reporting a healthy token while real
+        # file reads are dead. On 2026-09-16 /v1/me gave its usual 403-scope
+        # "token is fine" while every /v1/files call had been 429 for days and
+        # design context was missing from every plan carrying a Figma link.
+        probe_key = settings.figma_healthcheck_file_key
+        checks_quota = bool(probe_key)
+        url = f"https://api.figma.com/v1/files/{probe_key or _FIGMA_PROBE_MISS_KEY}"
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
-                    "https://api.figma.com/v1/me",
-                    headers={"X-FIGMA-TOKEN": settings.figma_token},
+                    url, headers={"X-FIGMA-TOKEN": settings.figma_token},
                 )
 
                 if response.status_code == 200:
-                    user_data = response.json()
+                    try:
+                        file_name = (response.json() or {}).get("name")
+                    except ValueError:
+                        file_name = None
                     return TokenStatus(
                         service_name=service_name,
                         is_valid=True,
                         is_required=False,
                         error_type=TokenErrorType.VALID,
                         last_checked=last_checked,
-                        details={
-                            "user_email": user_data.get("email"),
-                            "user_handle": user_data.get("handle"),
-                        },
+                        details={"file_key": probe_key, "file_name": file_name},
+                    )
+                elif response.status_code == 404:
+                    if checks_quota:
+                        # The configured file is the one thing this check is
+                        # allowed to assume exists. A miss means it was deleted
+                        # or this token lost access to it, and the check is now
+                        # blind to the quota it was configured to watch.
+                        return TokenStatus(
+                            service_name=service_name,
+                            is_valid=False,
+                            is_required=False,
+                            error_type=TokenErrorType.INSUFFICIENT_PERMISSIONS,
+                            error_message=(
+                                "FIGMA_HEALTHCHECK_FILE_KEY names a file this token "
+                                "cannot read. Point it at a file the token can open, "
+                                "or design-context health is no longer being checked."
+                            ),
+                            last_checked=last_checked,
+                        )
+                    return TokenStatus(
+                        service_name=service_name,
+                        is_valid=True,
+                        is_required=False,
+                        error_type=TokenErrorType.VALID,
+                        error_message=(
+                            "Token authenticates and is scoped for file reads. Quota "
+                            "was NOT checked: set FIGMA_HEALTHCHECK_FILE_KEY to a real "
+                            "file key to catch a spent file-read budget, which this "
+                            "check cannot see without one."
+                        ),
+                        last_checked=last_checked,
+                        details={"quota_checked": False},
+                    )
+                elif response.status_code == 429:
+                    wait = _retry_after_seconds(response)
+                    # A burst throttle clears itself in seconds and is nobody's
+                    # emergency. A spent quota is: Figma's file budget recovers
+                    # over days, and every plan generated meanwhile ships
+                    # without design context. Only Retry-After tells them apart,
+                    # so a missing header is treated as the serious case.
+                    brief = wait is not None and wait <= _FIGMA_THROTTLE_TOLERANCE_S
+                    return TokenStatus(
+                        service_name=service_name,
+                        is_valid=brief,
+                        is_required=False,
+                        error_type=TokenErrorType.RATE_LIMITED,
+                        error_message=(
+                            "Figma file reads are rate limited. The token itself is "
+                            "fine, but design context is missing from every plan with "
+                            "a Figma link until the limit clears — expected in "
+                            f"{_humanize_seconds(wait)}."
+                        ),
+                        last_checked=last_checked,
+                        details={"retry_after_seconds": wait},
                     )
                 elif response.status_code == 401:
                     return TokenStatus(
@@ -532,49 +630,51 @@ class TokenHealthService:
                 elif response.status_code == 403:
                     error_text = response.text.lower()
                     if "scope" in error_text:
-                        # /v1/me needs current_user:read, which the bot never
-                        # uses — it only reads files. A token scoped for file
-                        # access alone fails here while working perfectly for
-                        # every call the app actually makes, so reporting it
-                        # invalid sends people to replace a working token.
+                        # Kept from when this probed /v1/me: a file-scoped token
+                        # fails there and works everywhere the app looks. It
+                        # should not reach here now, and if it does, a scope
+                        # complaint still proves the token is live.
                         return TokenStatus(
                             service_name=service_name,
                             is_valid=True,
                             is_required=False,
                             error_type=TokenErrorType.VALID,
                             error_message=(
-                                "Token is live and scoped for file access. It cannot read "
-                                "/v1/me (needs current_user:read), which this app never "
-                                "calls — design context is unaffected."
+                                "Token is live and scoped for file access. Figma "
+                                "rejected a scope this app does not use — design "
+                                "context is unaffected."
                             ),
                             last_checked=last_checked,
                         )
                     if "rate limit" in error_text:
                         return TokenStatus(
                             service_name=service_name,
-                            is_valid=True,  # Token is valid, just rate limited
+                            is_valid=True,
                             is_required=False,
                             error_type=TokenErrorType.RATE_LIMITED,
-                            error_message="Figma API rate limit exceeded (100 req/min). Wait and try again.",
+                            error_message="Figma API rate limit exceeded. Wait and try again.",
                             last_checked=last_checked,
                         )
-                    else:
+                    if "invalid token" in error_text or "expired" in error_text:
                         return TokenStatus(
                             service_name=service_name,
                             is_valid=False,
                             is_required=False,
-                            error_type=TokenErrorType.INSUFFICIENT_PERMISSIONS,
-                            error_message="Figma token lacks required permissions.",
+                            error_type=TokenErrorType.EXPIRED,
+                            error_message=(
+                                "Figma rejected the token outright. Generate a new "
+                                "personal access token with file read scope."
+                            ),
                             help_url="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens",
                             last_checked=last_checked,
                         )
-                elif response.status_code == 429:
                     return TokenStatus(
                         service_name=service_name,
-                        is_valid=True,  # Token is valid, just rate limited
+                        is_valid=False,
                         is_required=False,
-                        error_type=TokenErrorType.RATE_LIMITED,
-                        error_message="Figma API rate limit exceeded (100 req/min).",
+                        error_type=TokenErrorType.INSUFFICIENT_PERMISSIONS,
+                        error_message="Figma token lacks required permissions.",
+                        help_url="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens",
                         last_checked=last_checked,
                     )
                 else:

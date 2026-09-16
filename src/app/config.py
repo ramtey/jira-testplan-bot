@@ -77,6 +77,11 @@ class Settings(BaseSettings):
 
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
+    # A real file key the health check reads, to prove design context actually
+    # works. Without one the check can only prove the token authenticates:
+    # Figma bills /v1/files by what it returns, so a nonexistent key answers
+    # 404 even while the quota for real files is exhausted.
+    figma_healthcheck_file_key: str | None = None
 
     # Slack (for resolving Slack message links in Jira descriptions/comments)
     slack_user_token: str | None = None  # Slack user token (xoxp-) - required scopes: channels:history, groups:history, im:history, mpim:history, users:read
