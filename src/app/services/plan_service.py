@@ -236,6 +236,7 @@ def serialize_issue(issue) -> dict:
         "development_info": development_info_dict,
         "dev_status_unavailable": getattr(issue, "dev_status_unavailable", False),
         "figma_unavailable": getattr(issue, "figma_unavailable", False),
+        "comments_unavailable": getattr(issue, "comments_unavailable", False),
         "attachments": attachments_list,
         "comments": comments_list,
         "parent": parent_info_dict,
@@ -265,6 +266,7 @@ def prompt_payload(serialized: dict) -> dict:
         "development_info": serialized.get("development_info"),
         "dev_status_unavailable": bool(serialized.get("dev_status_unavailable")),
         "figma_unavailable": bool(serialized.get("figma_unavailable")),
+        "comments_unavailable": bool(serialized.get("comments_unavailable")),
         "image_urls": [a["url"] for a in attachments if a.get("url")] or None,
         "comments": serialized.get("comments") or None,
         "parent_info": serialized.get("parent") or None,
@@ -429,6 +431,26 @@ async def generate_single(
         # silence. Confluence gaps are added inside the client, which is where
         # those pages are fetched.
         context_gaps = list(slack_gaps)
+        # A read that failed is a gap, exactly like a Confluence page that
+        # would not load. context_gaps is a list of strings precisely so a new
+        # source needs no new plumbing to reach the prompt and the tester.
+        unreadable_prs = [
+            pr.get("url") or pr.get("title") or "a pull request"
+            for pr in ((request.development_info or {}).get("pull_requests") or [])
+            if isinstance(pr, dict) and pr.get("github_enrichment_failed")
+        ]
+        if unreadable_prs:
+            context_gaps.append(
+                f"{len(unreadable_prs)} linked pull request(s) could not be read "
+                f"from GitHub, so their diffs are missing and cases cannot be "
+                f"grounded in them: {', '.join(unreadable_prs[:3])}"
+            )
+        if request.comments_unavailable:
+            context_gaps.append(
+                "the ticket's comments could not be read, so anything reported "
+                "in a comment — a bounce reason, a reproduction step — is "
+                "missing from this plan"
+            )
         if context_gaps:
             provenance["context_gaps"] = context_gaps
             logger.warning("context unavailable for %s: %s",

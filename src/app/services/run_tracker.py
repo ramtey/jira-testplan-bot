@@ -38,6 +38,11 @@ class RunContext:
     reached its ticket with no run, no plan and therefore no progress key —
     a transient Atlas outage reported as success. Callers surface this so an
     untracked plan says so at generation time.
+
+    Every write records here, not just the plan one. `complete`, `fail` and
+    `complete_with_bug_analysis` used to log and move on, so a run left
+    "running" forever or a Bug Lens analysis that never saved looked from the
+    outside exactly like one that worked.
     """
     run_id: int | None
     started_at: float = field(default_factory=perf_counter)
@@ -194,6 +199,7 @@ async def complete(
         run = await crud.get_by_id(db, _run_type(), ctx.run_id)
         if run is None:
             logger.warning("run_tracker.complete: run_id=%s vanished", ctx.run_id)
+            ctx.failure = f"run {ctx.run_id} vanished before it could be completed"
             return
         await run_repository.mark_completed(
             db,
@@ -203,8 +209,9 @@ async def complete(
             output_tokens=output_tokens,
             cost_usd=cost_usd,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("run_tracker.complete failed")
+        ctx.failure = f"{type(exc).__name__}: {exc}"
 
 
 async def complete_with_bug_analysis(
@@ -226,6 +233,7 @@ async def complete_with_bug_analysis(
                 "run_tracker.complete_with_bug_analysis: run_id=%s vanished",
                 ctx.run_id,
             )
+            ctx.failure = f"run {ctx.run_id} vanished before the analysis was saved"
             return
         await run_repository.mark_completed(
             db,
@@ -240,8 +248,9 @@ async def complete_with_bug_analysis(
             run_id=ctx.run_id,
             analysis=analysis,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("run_tracker.complete_with_bug_analysis failed")
+        ctx.failure = f"{type(exc).__name__}: {exc}"
 
 
 async def fail(ctx: RunContext, *, error_code: str) -> None:
@@ -251,6 +260,7 @@ async def fail(ctx: RunContext, *, error_code: str) -> None:
         db = get_db()
         run = await crud.get_by_id(db, _run_type(), ctx.run_id)
         if run is None:
+            ctx.failure = f"run {ctx.run_id} vanished before the failure was recorded"
             return
         await run_repository.mark_failed(
             db,
@@ -258,8 +268,9 @@ async def fail(ctx: RunContext, *, error_code: str) -> None:
             error_code=error_code,
             latency_ms=ctx.elapsed_ms(),
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("run_tracker.fail failed")
+        ctx.failure = f"{type(exc).__name__}: {exc}"
 
 
 def _run_type():

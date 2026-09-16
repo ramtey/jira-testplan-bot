@@ -432,11 +432,19 @@ async def analyze_bug(request: BugAnalysisRequest):
         if blame:
             analysis.blame_evidence = blame
         await run_tracker.complete_with_bug_analysis(run_ctx, analysis=analysis)
-        return {
+        response = {
             "ticket_key": request.ticket_key,
             **asdict(analysis),
             "is_fixed": analysis.fix_status == "fixed",
         }
+        # The analysis is good either way and the caller keeps it. But an
+        # analysis that never reached the database has no history and no id,
+        # and saying so beats letting it look saved — the SK-2342 lesson from
+        # the test-plan path, which already reports this.
+        if run_ctx.failure:
+            response["not_persisted"] = True
+            response["persistence_error"] = run_ctx.failure
+        return response
     except LLMError as e:
         await run_tracker.fail(run_ctx, error_code=f"LLMError: {e}")
         raise HTTPException(status_code=503, detail=str(e))

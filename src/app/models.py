@@ -89,6 +89,12 @@ class PullRequest:
     # reader can tell which revision the plan's cases were written against.
     head_sha: str | None = None
     number: int | None = None  # GitHub PR number
+    # GitHub was asked for this PR's diff and could not answer. Without it the
+    # PR arrives with no files_changed, which downstream reads as "the diff is
+    # empty" — and a grounding critic then concludes the code does not
+    # implement the behaviour under test. A PR we could not read is not a PR
+    # that changed nothing.
+    github_enrichment_failed: bool = False
 
 
 @dataclass
@@ -303,6 +309,11 @@ class JiraIssue:
     # linked": one means the plan cannot check visual fidelity and should say
     # so, the other means there was nothing to check.
     figma_unavailable: bool = False
+    # The comment fetch failed. An empty comment list and a comment list we
+    # could not read arrive the same way otherwise, and a bounce reason or a
+    # reproduction step living in a comment we never saw is exactly the
+    # context whose absence a plan must not present as its absence.
+    comments_unavailable: bool = False
     attachments: list[Attachment] | None = None
     comments: list[JiraComment] | None = None  # Filtered testing-related comments
     parent: ParentIssue | None = None  # Parent ticket context with design resources
@@ -439,6 +450,8 @@ class GenerateTestPlanRequest(BaseModel):
     dev_status_unavailable: bool = False
     # See JiraIssue.figma_unavailable.
     figma_unavailable: bool = False
+    # See JiraIssue.comments_unavailable.
+    comments_unavailable: bool = False
 
 
 class TicketInput(BaseModel):
@@ -458,6 +471,7 @@ class TicketInput(BaseModel):
     bounce_history: list[dict] | None = None
     dev_status_unavailable: bool = False
     figma_unavailable: bool = False
+    comments_unavailable: bool = False
 
 
 class MultiTicketGenerateRequest(BaseModel):

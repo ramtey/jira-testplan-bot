@@ -23,6 +23,7 @@ function buildTicketPayload(td) {
     // from a ticket that never had a design, and the plan would quietly skip
     // visual checks instead of telling the tester it couldn't make them.
     figma_unavailable: !!td.figma_unavailable,
+    comments_unavailable: !!td.comments_unavailable,
     image_urls: td.attachments ? td.attachments.map((a) => a.url) : null,
     comments: td.comments || null,
     parent_info: td.parent || null,

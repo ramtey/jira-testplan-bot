@@ -1648,6 +1648,15 @@ class JiraClient:
                 if github_client and pr_url and "github.com" in pr_url:
                     try:
                         gh_details = await github_client.fetch_pr_details(pr_url, include_patch=True, include_comments=True)
+                        if not gh_details:
+                            # fetch_pr_details returns None for every failure.
+                            # We got here with a client, so a token exists and
+                            # this is a refusal, not an absent configuration.
+                            pr_obj.github_enrichment_failed = True
+                            logger.warning(
+                                "GitHub returned no detail for %s; its diff is "
+                                "missing from this plan", pr_url,
+                            )
                         if gh_details:
                             pr_obj.github_description = gh_details.description
                             # GitHub is the authority on state; Jira's
@@ -1690,6 +1699,7 @@ class JiraClient:
                                 f"{len(gh_details.files_changed)} files changed, {len(gh_details.comments)} comments"
                             )
                     except Exception as e:
+                        pr_obj.github_enrichment_failed = True
                         logger.warning(f"Failed to enrich PR with GitHub data: {e}")
 
                 pull_requests.append(pr_obj)
@@ -3018,11 +3028,18 @@ class JiraClient:
             return context, context is None
 
         async def _fetch_comments():
+            """(comments, unavailable). Same shape as the Figma fetch above.
+
+            This used to return [] on any failure, which is also what a ticket
+            with no comments returns. A throttle or a 5xx therefore told the
+            generator the ticket had nothing to say — and a bounce reason or a
+            reproduction step lives in exactly those comments.
+            """
             try:
-                return await self.get_comments(issue_key)
+                return await self.get_comments(issue_key), False
             except Exception as e:
                 logger.warning(f"Failed to fetch comments for {issue_key}: {e}")
-                return []
+                return [], True
 
         async def _fetch_parent():
             if not parent_key:
@@ -3045,6 +3062,7 @@ class JiraClient:
         )
         development_info, dev_status_unavailable = dev_status
         figma_context, figma_unavailable = figma_context
+        comments_data, comments_unavailable = comments_data
 
         # Merge Figma context into development_info (matches the pre-parallel
         # ordering: enrich if dev_info exists, otherwise wrap it in a fresh
@@ -3159,6 +3177,7 @@ class JiraClient:
             development_info=development_info,
             dev_status_unavailable=dev_status_unavailable,
             figma_unavailable=figma_unavailable,
+            comments_unavailable=comments_unavailable,
             attachments=attachments if attachments else None,
             comments=filtered_comments if filtered_comments else None,
             parent=parent_issue,
