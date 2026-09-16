@@ -120,6 +120,11 @@ function formatSingleTestForClipboard(test) {
   if (test.expected) lines.push('', 'Expected:', String(test.expected))
   if (test.expected_verified === true) {
     lines.push('', `Expected verified against: ${test.expected_source || 'source not cited'}`)
+    // The citation is a promise to stop checking. Say when its shape cannot
+    // support that promise — this is "unchecked", not "wrong".
+    if (test.expected_source_unconfirmed) {
+      lines.push(`⚠️ Citation unconfirmed — ${test.expected_source_unconfirmed_reason}. Verify before treating a failure as a defect.`)
+    }
   } else if (test.expected_verified === false) {
     lines.push('', 'Expected: UNVERIFIED — assumption, not read from the implementation.')
   }

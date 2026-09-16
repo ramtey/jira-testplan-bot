@@ -227,6 +227,12 @@ def _case_grounding_text(test: dict) -> str:
     verified = test.get("expected_verified")
     if verified is True:
         out += f"Expected verified against: {test.get('expected_source') or 'source not cited'}\n\n"
+        if test.get("expected_source_unconfirmed"):
+            out += (
+                "⚠️ Citation unconfirmed — "
+                f"{test.get('expected_source_unconfirmed_reason')}. Verify before "
+                "treating a failure as a defect.\n\n"
+            )
     elif verified is False:
         out += (
             "⚠️ Unverified — assumption. This expected result was not read from the "

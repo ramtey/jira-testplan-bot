@@ -74,6 +74,7 @@ from .test_plan_generator import (
     run_regression_grounding_critic,
     run_surface_mismatch_critic,
 )
+from src.app.citation_integrity import flag_unconfirmed_citations
 
 logger = logging.getLogger(__name__)
 
@@ -540,6 +541,18 @@ async def generate_single(
         # behaviour it found in the repo, and those rescues have to land
         # before we decide what is ungrounded.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)
+        # Audit the promise, after quarantining so both the cases that stayed
+        # and the ones that moved are covered. This only marks a citation as
+        # unconfirmed — it never changes expected_verified, because doing so
+        # would re-trigger quarantining and move cases between sections, which
+        # the progress key counts.
+        unconfirmed = flag_unconfirmed_citations(test_plan)
+        if unconfirmed:
+            provenance["unconfirmed_citations"] = len(unconfirmed)
+            logger.info(
+                "%d case(s) claim a verified expected result with a citation "
+                "that cannot be one", len(unconfirmed),
+            )
         ac_coverage = compute_ac_coverage(test_plan, single_ticket_data)
 
         response = {
@@ -791,6 +804,18 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         # See generate_single: quarantining runs after every critic so the
         # code-grounding recheck's rescues are respected.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)
+        # Audit the promise, after quarantining so both the cases that stayed
+        # and the ones that moved are covered. This only marks a citation as
+        # unconfirmed — it never changes expected_verified, because doing so
+        # would re-trigger quarantining and move cases between sections, which
+        # the progress key counts.
+        unconfirmed = flag_unconfirmed_citations(test_plan)
+        if unconfirmed:
+            provenance["unconfirmed_citations"] = len(unconfirmed)
+            logger.info(
+                "%d case(s) claim a verified expected result with a citation "
+                "that cannot be one", len(unconfirmed),
+            )
         ac_coverage = compute_ac_coverage(test_plan, tickets_data)
         valid_ac_ids = {
             f"{t['ticket_key']}-AC{i}"

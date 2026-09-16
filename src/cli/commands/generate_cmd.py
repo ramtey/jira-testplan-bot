@@ -302,6 +302,15 @@ def _case_grounding_lines(test: dict, format: str) -> list[str]:
             if format == "markdown"
             else f"Expected verified against: {source}"
         )
+        if test.get("expected_source_unconfirmed"):
+            reason = test.get("expected_source_unconfirmed_reason")
+            lines.append(
+                f"> ⚠️ **Citation unconfirmed** — {reason}. Verify before "
+                "treating a failure as a defect."
+                if format == "markdown"
+                else f"⚠️ Citation unconfirmed — {reason}. Verify before "
+                "treating a failure as a defect."
+            )
         lines.append("")
     elif verified is False:
         lines.append(

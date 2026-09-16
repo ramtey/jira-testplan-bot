@@ -201,6 +201,12 @@ def _parse_case_details(nodes: list[dict], case: dict) -> None:
             case["surface_line"] = text[len("Runs on:"):].strip()
         elif text.startswith("⚠️ Needs manual verification"):
             case["needs_manual_verification"] = True
+        elif text.startswith("⚠️ Citation unconfirmed"):
+            # Restored so an adopted plan carries the same caveat the tester
+            # read. The reason text is the renderer's, not reconstructable, so
+            # keep it verbatim.
+            case["expected_source_unconfirmed"] = True
+            case["expected_source_unconfirmed_reason"] = text.split("—", 1)[-1].strip()
         elif text.startswith("⚠️ Unverified"):
             # The renderer emits this footer only for expected_verified=False.
             case["expected_verified"] = False
