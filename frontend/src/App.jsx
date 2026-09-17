@@ -24,7 +24,7 @@ import EpicChildrenList from './components/EpicChildrenList'
 import BatchSummary from './components/BatchSummary'
 import JiraBrowser from './components/JiraBrowser'
 import Icon from './components/Icon'
-import { Alert } from './components/ui'
+import { Alert, ErrNote } from './components/ui'
 
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
@@ -612,9 +612,7 @@ function App() {
           />
 
           {error && (
-            <div style={{ marginTop: 'var(--s-5)' }}>
-              <Alert tone="danger" title="Error">{error}</Alert>
-            </div>
+            <ErrNote error={error} style={{ padding: 0, marginTop: 'var(--s-5)' }} />
           )}
 
           {ticketsData.length > 0 && (

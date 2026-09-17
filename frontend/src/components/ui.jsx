@@ -5,6 +5,7 @@
 
 import { useState } from 'react'
 import Icon from './Icon'
+import { humanizeError } from '../utils/errorMessage'
 
 export function Btn({ variant = 'secondary', size, icon, iconRight, loading, disabled, children, onClick, style, title, type = 'button' }) {
   return (
@@ -165,6 +166,22 @@ export function Alert({ tone = 'info', title, children, icon, action }) {
         <div className="desc">{children}</div>
       </div>
       {action}
+    </div>
+  )
+}
+
+// A failed fetch, rendered the way the rest of the app renders a problem.
+// Call sites used to drop `{error}` into a bare red <div>, which put the raw
+// exception text in the layout; this gives it the same bordered, tinted box
+// every other notice uses and keeps the original in the tooltip.
+export function ErrNote({ error, style }) {
+  if (!error) return null
+  const { title, detail, raw } = humanizeError(error)
+  return (
+    <div style={{ padding: 'var(--s-4) var(--s-5)', ...style }} title={raw}>
+      {detail
+        ? <Alert tone="danger" title={title}>{detail}</Alert>
+        : <Alert tone="danger">{title}</Alert>}
     </div>
   )
 }

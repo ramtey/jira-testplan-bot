@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL, useJiraTicketUrl } from '../config'
 import Icon from './Icon'
-import { TypeMark } from './ui'
+import { ErrNote, TypeMark } from './ui'
 
 const CATEGORY_ORDER = ['new', 'indeterminate', 'done']
 const CATEGORY_LABEL = {
@@ -618,9 +618,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
             {projectsLoading && projects === null && (
               <div style={{ padding: '8px 14px', color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Loading projects…</div>
             )}
-            {projectsError && (
-              <div style={{ padding: '8px 14px', color: 'var(--danger)', fontSize: 'var(--t-xs)' }}>{projectsError}</div>
-            )}
+            <ErrNote error={projectsError} />
 
             {!isFiltering && pinnedProjects.length > 0 && (
               <>
@@ -734,9 +732,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
             {statusesLoading && statuses === null && (
               <div style={{ padding: '8px 14px', color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Loading…</div>
             )}
-            {statusesError && (
-              <div style={{ padding: '8px 14px', color: 'var(--danger)', fontSize: 'var(--t-xs)' }}>{statusesError}</div>
-            )}
+            <ErrNote error={statusesError} />
 
             {groupedStatuses.map((group) => (
               <div key={group.key}>
@@ -826,9 +822,7 @@ function JiraBrowser({ onSelectIssue, onSelectMultiple, selectedIssueKey, railCo
             {issuesLoading && issues === null && (
               <div style={{ padding: '8px 14px', color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Loading…</div>
             )}
-            {issuesError && (
-              <div style={{ padding: '8px 14px', color: 'var(--danger)', fontSize: 'var(--t-xs)' }}>{issuesError}</div>
-            )}
+            <ErrNote error={issuesError} />
             {issues && issues.length === 0 && !issuesLoading && (
               <div className="rail-empty">
                 <div className="rail-empty__icon">
