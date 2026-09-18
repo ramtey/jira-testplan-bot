@@ -20,6 +20,7 @@ import httpx
 
 from .config import settings
 from .confluence_client import ConfluenceClient, ConfluencePage
+from .copy_only import detect_copy_only, render_copy_only_guidance
 from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
@@ -3078,6 +3079,18 @@ TICKET INFORMATION
         prompt += UI_GROUNDING_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
 
+        # Copy-only shape rule. Single-ticket only: the budget is
+        # "(this ticket's copy variants) + 4", which means nothing over a
+        # batch that also carries a backend change, so
+        # _build_multi_ticket_prompt deliberately does not inject it.
+        # The block itself decides nothing — it hands the model the rule and
+        # the extracted strings and makes the model classify. See
+        # src/app/copy_only.py for why the verdict is not taken here.
+        if settings.copy_only_rule_enabled:
+            copy_ctx = detect_copy_only(summary, description, development_info)
+            if copy_ctx is not None:
+                prompt += render_copy_only_guidance(copy_ctx)
+
         return prompt
 
     def _build_multi_ticket_prompt(
@@ -3516,6 +3529,7 @@ class OllamaClient(LLMClient):
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
+                    copy_only=test_plan_data.get("copy_only") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -3584,6 +3598,7 @@ class OllamaClient(LLMClient):
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
+                    copy_only=test_plan_data.get("copy_only") or None,
                 )
 
         except httpx.ConnectError as e:
@@ -4060,6 +4075,43 @@ SUBMIT_TEST_PLAN_TOOL = {
                     "required": ["ac_id", "missing_element", "explanation"],
                 },
             },
+            "copy_only": {
+                "type": "object",
+                "description": (
+                    "Set this WHENEVER a 'COPY-ONLY TICKET RULE' block appeared in the prompt — "
+                    "including when you decide the ticket is NOT copy-only, because the decision "
+                    "is the point. Omit entirely when no such block appeared. This is how the "
+                    "rule's 'budget check before emitting' becomes checkable after the fact: "
+                    "downstream compares `variant_count` + 4 against the number of manual cases "
+                    "you actually emitted."
+                ),
+                "properties": {
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["copy_only", "not_copy_only"],
+                        "description": "'copy_only' ONLY when the behavioral change is limited to user-visible strings and the constants/helpers that select between them, plus their tests. If the diff changes what the code does — a reachable branch, a computed value, what is persisted or requested, whether a control exists or when it renders — answer 'not_copy_only'. Unsure is 'not_copy_only'.",
+                    },
+                    "variant_count": {
+                        "type": "integer",
+                        "description": "Required when verdict is 'copy_only'. The number of DISTINCT user-visible string variants, counted per rule 1 — per variant, not per route to it, and not per literal (a dialog's title + body + button labels is ONE variant). The manual-case budget is this number + 4.",
+                    },
+                    "variants": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One short label per variant you counted, e.g. 'leave-group dialog — manages 2+ groups'. Lets a reviewer check the count instead of taking it on faith.",
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One or two sentences. For 'copy_only', name what the non-string lines in the diff do and why they do not change behaviour. For 'not_copy_only', name the specific line or file that changes behaviour — this is the field that prevents the rule being waved off with 'it seemed complicated'.",
+                    },
+                    "unreachable_variants": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Fixture honesty. Variants that a single test account cannot reach because they need a capability another account has (e.g. 'brokerage-level permission'). Name the capability, not just the variant. Empty when one account reaches everything.",
+                    },
+                },
+                "required": ["verdict", "rationale"],
+            },
             "uat_complexity": {
                 "type": "string",
                 "enum": ["low", "medium", "high"],
@@ -4384,6 +4436,7 @@ class ClaudeClient(LLMClient):
                 cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,
+                copy_only=test_plan_data.get("copy_only") or None,
             )
         except httpx.HTTPStatusError as e:
             raise self._status_error(e) from e
@@ -4474,6 +4527,7 @@ class ClaudeClient(LLMClient):
                 cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,
+                copy_only=test_plan_data.get("copy_only") or None,
             )
         except httpx.HTTPStatusError as e:
             raise self._status_error(e) from e

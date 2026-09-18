@@ -390,6 +390,16 @@ class TestPlan:
     # won't read the full plan: what observably changed + where to click to see
     # it. Shape: {"reason": "why it's complex", "summary": "plain how-to-see-it"}.
     how_to_see_it: dict | None = None
+    # The model's own answer to "is this ticket copy-only?", present only when
+    # a COPY-ONLY TICKET RULE block was in the prompt (see src/app/copy_only.py).
+    # Carries the verdict either way — "not_copy_only" with a rationale is a
+    # result, not a non-answer. When the verdict is copy_only it also carries
+    # the variant count the case budget is derived from, which is what lets
+    # `copy_only.audit_plan_shape` check the budget the model claimed to apply
+    # against the plan it actually emitted. Shape:
+    # {"verdict": "copy_only", "variant_count": 3, "variants": [...],
+    #  "rationale": "...", "unreachable_variants": ["..."]}
+    copy_only: dict | None = None
 
 
 # ============================================================================

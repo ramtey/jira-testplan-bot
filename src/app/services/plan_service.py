@@ -40,6 +40,7 @@ import logging
 from dataclasses import asdict
 
 from ..config import NON_TESTABLE_ISSUE_TYPES, settings
+from ..copy_only import audit_plan_shape
 from ..db.models.plan import PlanFormat
 from ..db.models.run import RunType
 from ..db.mongo import get_db
@@ -421,10 +422,33 @@ async def generate_single(
         )
 
     try:
-        images = await _download_images(request.image_urls)
+        llm = llm or get_llm_client()
 
-        resolved_slack, slack_gaps = await resolve_slack_messages_in_text(
-            request.description, request.comments
+        # Three independent legs, all of which have to finish before the
+        # generator prompt can be built: Jira attachment downloads, Slack
+        # link resolution, and the pre-plan deliverable classifier (an LLM
+        # round-trip of its own when it is enabled). None of them reads
+        # another's output, so running them in sequence only added their
+        # latencies together — on a ticket with three attachments and a
+        # Slack thread in the description, that was most of the wait before
+        # the first token of the plan.
+        #
+        # The classifier names the deliverable + verification surface so the
+        # generator can anchor cases to the right target and the post-plan
+        # surface critic has something to check against. Gated by
+        # settings.surface_classifier_enabled; off means it returns None
+        # immediately and this gather costs nothing extra.
+        images, (resolved_slack, slack_gaps), deliverable = await asyncio.gather(
+            _download_images(request.image_urls),
+            resolve_slack_messages_in_text(request.description, request.comments),
+            classify_deliverable(
+                llm,
+                ticket_key=request.ticket_key,
+                summary=request.summary,
+                description=request.description,
+                issue_type=request.issue_type,
+                development_info=request.development_info,
+            ),
         )
         # Sources the ticket points at that we could not read. Recorded on the
         # plan and handed to the generator so it writes around nothing in
@@ -459,21 +483,6 @@ async def generate_single(
             [asdict(m) for m in resolved_slack] if resolved_slack else None
         )
 
-        llm = llm or get_llm_client()
-
-        # Pre-plan classifier — name the deliverable + verification surface
-        # so the generator can anchor cases to the right target and the
-        # post-plan surface critic has something to check against. Gated
-        # by settings.surface_classifier_enabled; off means the pipeline
-        # runs exactly as it did before this step existed.
-        deliverable = await classify_deliverable(
-            llm,
-            ticket_key=request.ticket_key,
-            summary=request.summary,
-            description=request.description,
-            issue_type=request.issue_type,
-            development_info=request.development_info,
-        )
         testing_context = dict(request.testing_context or {})
         if deliverable is not None and deliverable.artifact_type != "unknown":
             testing_context["deliverable_hint"] = format_deliverable_hint(deliverable)
@@ -507,52 +516,70 @@ async def generate_single(
                 "acceptance_criteria": extract_acceptance_criteria(request.description),
             }
         ]
-        # Grounding critic — catch cases that cite an AC by number but test a
-        # behaviour that AC's text doesn't actually contain (e.g. a "filter by
-        # date range" case tagged against an AC that only says "viewable").
-        # Runs before compute_ac_coverage so any badges added here survive
-        # the covers_acs cleanup pass.
-        critic_gaps = [g for g in [
-            await run_grounding_critic(llm, test_plan, single_ticket_data)
-        ] if g]
-        # Code-grounding recheck — for each just-added AC-critic warning,
-        # look at the linked repo's source and downgrade the warning to
-        # INFO when the behaviour under test is demonstrably implemented.
-        # Runs immediately after the AC critic so fresh warnings can be
-        # softened before the fix-scope critic keys off them.
         single_ticket_dev_info = [
             {
                 "ticket_key": request.ticket_key,
                 "development_info": request.development_info,
             }
         ]
-        await run_code_grounding_critic(llm, test_plan, single_ticket_dev_info)
-        # Fix-scope critic — catch reporter-drift cases that cite a real AC
-        # but test behaviour the merged PR explicitly did NOT change.
-        # Ordered after the grounding critic so already-badged cases skip
-        # the second LLM call.
-        critic_gaps += [g for g in [
-            await run_fix_scope_critic(llm, test_plan, single_ticket_dev_info)
-        ] if g]
-        # Surface-mismatch critic — for tickets whose deliverable lives
-        # OUTSIDE the running app (asset upload, config flip, doc edit),
-        # badge cases whose steps target the app anyway. Skipped for
-        # code_behavior / unknown / classifier-off (see should_run).
-        critic_gaps += [g for g in [
-            await run_surface_mismatch_critic(llm, test_plan, deliverable)
-        ] if g]
         # Regression-grounding critic — the only pass that reads
-        # `regression_checklist`. The four above iterate exactly the three
-        # structured sections, so before this a checklist line naming a
-        # control the app never had (SK-2342's "Text" share option, its seek
+        # `regression_checklist`. The four case critics below iterate exactly
+        # happy_path / edge_cases / integration_tests and append to
+        # `grounding_warnings`, so before this existed a checklist line naming
+        # a control the app never had (SK-2342's "Text" share option, its seek
         # control) reached a tester unchecked. Narrows the wording of such a
-        # line; never removes a line, so the section count — and therefore
-        # the plan's progress-key fingerprint — is unaffected.
-        critic_gaps += [g for g in [
-            await run_regression_grounding_critic(
-                llm, test_plan, single_ticket_dev_info
-            )
-        ] if g]
+        # line; never removes a line, so the section count — and therefore the
+        # plan's progress-key fingerprint — is unaffected.
+        #
+        # Started here rather than awaited last because it touches a disjoint
+        # part of the plan from all four case critics: nothing it reads is
+        # written by them, and nothing it writes is read by them. Its latency
+        # therefore overlaps the chain's instead of following it. The overlap
+        # is in the LLM round-trips, not in the GitHub searches — those
+        # serialize behind the process-wide code-search limiter either way,
+        # and interleaving them means either critic can now be the one that
+        # runs out of budget. Both report that in `critics_unavailable` rather
+        # than reporting a clean check, which is the property that makes the
+        # interleaving safe to accept.
+        regression_critic = asyncio.create_task(
+            run_regression_grounding_critic(llm, test_plan, single_ticket_dev_info)
+        )
+        critic_gaps: list[str] = []
+        try:
+            # Grounding critic — catch cases that cite an AC by number but test
+            # a behaviour that AC's text doesn't actually contain (e.g. a
+            # "filter by date range" case tagged against an AC that only says
+            # "viewable"). Runs before compute_ac_coverage so any badges added
+            # here survive the covers_acs cleanup pass.
+            critic_gaps += [g for g in [
+                await run_grounding_critic(llm, test_plan, single_ticket_data)
+            ] if g]
+            # Code-grounding recheck — for each just-added AC-critic warning,
+            # look at the linked repo's source and downgrade the warning to
+            # INFO when the behaviour under test is demonstrably implemented.
+            # Runs immediately after the AC critic so fresh warnings can be
+            # softened before the fix-scope critic keys off them.
+            await run_code_grounding_critic(llm, test_plan, single_ticket_dev_info)
+            # Fix-scope critic — catch reporter-drift cases that cite a real AC
+            # but test behaviour the merged PR explicitly did NOT change.
+            # Ordered after the grounding critic so already-badged cases skip
+            # the second LLM call.
+            critic_gaps += [g for g in [
+                await run_fix_scope_critic(llm, test_plan, single_ticket_dev_info)
+            ] if g]
+            # Surface-mismatch critic — for tickets whose deliverable lives
+            # OUTSIDE the running app (asset upload, config flip, doc edit),
+            # badge cases whose steps target the app anyway. Skipped for
+            # code_behavior / unknown / classifier-off (see should_run).
+            critic_gaps += [g for g in [
+                await run_surface_mismatch_critic(llm, test_plan, deliverable)
+            ] if g]
+        finally:
+            # Awaited in a finally so a failure in the chain cannot leave the
+            # regression pass running against a plan nobody will ship — an
+            # orphaned task would carry on mutating `test_plan` and then log
+            # its result into a request that already failed.
+            critic_gaps += [g for g in [await regression_critic] if g]
         if critic_gaps:
             # The plan is still worth shipping — but a tester reading it must
             # know which safety nets were not in place when it was written.
@@ -576,6 +603,25 @@ async def generate_single(
                 "that cannot be one", len(unconfirmed),
             )
         ac_coverage = compute_ac_coverage(test_plan, single_ticket_data)
+
+        # Copy-only budget check, on the record. Only present when the model
+        # was shown the COPY-ONLY TICKET RULE and agreed the diff was copy —
+        # see src/app/copy_only.py for why nothing is cut here. An overrun is
+        # reported, not corrected: the rule says to cut from the exclusion
+        # list and never from rule 1, and a mechanical trim would cut whatever
+        # sorted last, including the variant cases the rule protects.
+        copy_only_audit = audit_plan_shape(test_plan)
+        if copy_only_audit:
+            provenance["copy_only"] = copy_only_audit
+            if copy_only_audit["within_budget"] is False:
+                logger.warning(
+                    "copy-only budget exceeded for %s: %d manual cases against a "
+                    "budget of %d (%d variants)",
+                    request.ticket_key,
+                    copy_only_audit["manual_cases"],
+                    copy_only_audit["budget"],
+                    copy_only_audit["variant_count"],
+                )
 
         response = {
             "ticket_key": request.ticket_key,
@@ -790,11 +836,6 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             cross_project=cross_project_payload,
         )
 
-        # Critics run in the same order as the single-ticket path; see
-        # generate_single for what each one catches.
-        multi_critic_gaps = [g for g in [
-            await run_grounding_critic(llm, test_plan, tickets_data)
-        ] if g]
         multi_ticket_dev_info = [
             {
                 "ticket_key": t.get("ticket_key"),
@@ -802,24 +843,33 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             }
             for t in tickets_data
         ]
-        await run_code_grounding_critic(llm, test_plan, multi_ticket_dev_info)
-        multi_critic_gaps += [g for g in [
-            await run_fix_scope_critic(llm, test_plan, multi_ticket_dev_info)
-        ] if g]
-        # Surface-mismatch critic — runs against the aggregated deliverable.
-        # Skipped for pure-code batches or when the batch mixes code with
-        # non-code work (see aggregate_deliverables_for_critique). This
-        # matches the single-ticket path so the two behave symmetrically.
-        multi_critic_gaps += [g for g in [
-            await run_surface_mismatch_critic(llm, test_plan, aggregated_deliverable)
-        ] if g]
-        # See generate_single: the only critic that reads the regression
-        # checklist, and the only one that rewrites rather than badges.
-        multi_critic_gaps += [g for g in [
-            await run_regression_grounding_critic(
-                llm, test_plan, multi_ticket_dev_info
-            )
-        ] if g]
+        # Critics run in the same shape as the single-ticket path; see
+        # generate_single for what each one catches, and for why the
+        # regression pass overlaps the chain instead of following it.
+        regression_critic = asyncio.create_task(
+            run_regression_grounding_critic(llm, test_plan, multi_ticket_dev_info)
+        )
+        multi_critic_gaps: list[str] = []
+        try:
+            multi_critic_gaps += [g for g in [
+                await run_grounding_critic(llm, test_plan, tickets_data)
+            ] if g]
+            await run_code_grounding_critic(llm, test_plan, multi_ticket_dev_info)
+            multi_critic_gaps += [g for g in [
+                await run_fix_scope_critic(llm, test_plan, multi_ticket_dev_info)
+            ] if g]
+            # Surface-mismatch critic — runs against the aggregated
+            # deliverable. Skipped for pure-code batches or when the batch
+            # mixes code with non-code work (see
+            # aggregate_deliverables_for_critique). This matches the
+            # single-ticket path so the two behave symmetrically.
+            multi_critic_gaps += [g for g in [
+                await run_surface_mismatch_critic(
+                    llm, test_plan, aggregated_deliverable
+                )
+            ] if g]
+        finally:
+            multi_critic_gaps += [g for g in [await regression_critic] if g]
         if multi_critic_gaps:
             provenance["critics_unavailable"] = multi_critic_gaps
             logger.warning("critics unavailable: %s", "; ".join(multi_critic_gaps))

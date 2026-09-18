@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     # planner defaults to "compare against the running app").
     surface_classifier_enabled: bool = False
 
+    # Copy-only plan-shape rule. When a single ticket's diff reads as
+    # user-visible strings (plus the constants that select between them and
+    # their tests), the generator prompt gains a block that makes the model
+    # classify the diff and, if it agrees, cap the manual checklist at
+    # (distinct copy variants) + 4. Costs no extra LLM call: it is prompt
+    # text plus a deterministic diff scan. Turn it off to get the pre-rule
+    # behaviour, where a six-sentence copy change could ship thirty cases —
+    # one per route to the same dialog, one per retired string, and a tail of
+    # persistence checks the PR's own component tests already covered.
+    copy_only_rule_enabled: bool = True
+
     # Bug Lens repo hints: maps a regex pattern (matched against summary + description + comments)
     # to one or more "owner/repo" strings to search when the ticket has no explicit GitHub links.
     # Set via env as JSON, e.g. BUG_LENS_REPO_HINTS='{"title.?rep|folders": ["acme/mobile-app"]}'

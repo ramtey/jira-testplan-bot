@@ -838,11 +838,15 @@ function SourceProvenancePanel({ provenance }) {
   const criticsUnavailable = Array.isArray(provenance?.critics_unavailable)
     ? provenance.critics_unavailable
     : []
+  const copyOnly = provenance?.copy_only
+  const unreachableVariants = Array.isArray(copyOnly?.unreachable_variants)
+    ? copyOnly.unreachable_variants
+    : []
   // An unreadable design is worth saying even on a ticket with no PRs — it is
   // the difference between "no visual checks were needed" and "no visual
   // checks could be written".
   if (entries.length === 0 && !figmaUnavailable && contextGaps.length === 0
-      && criticsUnavailable.length === 0) return null
+      && criticsUnavailable.length === 0 && !copyOnly) return null
   const unmerged = !!provenance.grounded_on_unmerged
   return (
     <div
@@ -881,6 +885,33 @@ function SourceProvenancePanel({ provenance }) {
             {criticsUnavailable.map((c) => <li key={c}>{c}</li>)}
           </ul>
           Absence of warnings below does not mean the plan was checked and found clean.
+        </div>
+      )}
+      {copyOnly && (
+        <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', marginBottom: 'var(--s-3)' }}>
+          Planned as a <strong>copy-only</strong> change
+          {typeof copyOnly.variant_count === 'number' && (
+            <> — {copyOnly.variant_count} distinct string variant{copyOnly.variant_count === 1 ? '' : 's'},
+            {' '}{copyOnly.manual_cases} manual case{copyOnly.manual_cases === 1 ? '' : 's'} against a budget of {copyOnly.budget}</>
+          )}.
+          {copyOnly.rationale && (
+            <div style={{ marginTop: 'var(--s-1)', color: 'var(--fg-subtle)' }}>{copyOnly.rationale}</div>
+          )}
+          {copyOnly.within_budget === false && (
+            <div style={{ marginTop: 'var(--s-2)', color: '#fcd34d' }}>
+              The plan is over its own copy-only budget. Nothing was cut for you — read
+              the checklist for cases that re-test one string by a second route, or
+              re-test wiring the PR's component tests already cover.
+            </div>
+          )}
+          {unreachableVariants.length > 0 && (
+            <div style={{ marginTop: 'var(--s-2)', color: '#fcd34d' }}>
+              One account cannot reach every variant. These need a different account:
+              <ul style={{ margin: 'var(--s-2) 0 0', paddingLeft: 'var(--s-5)' }}>
+                {unreachableVariants.map((v) => <li key={v}>{v}</li>)}
+              </ul>
+            </div>
+          )}
         </div>
       )}
       {figmaUnavailable && (
