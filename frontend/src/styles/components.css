@@ -737,3 +737,7 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
   display: flex; align-items: center; justify-content: flex-end; gap: var(--s-3);
   margin-top: var(--s-4);
 }
+
+/* The source-path rows (Verified against / Grounded in). Long paths wrap — see
+   the `code` rule in base.css — so these only need to be allowed to shrink. */
+.pathrow { min-width: 0; }

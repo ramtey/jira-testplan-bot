@@ -346,7 +346,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
       </div>
 
       {!checked && (
-      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: '6px var(--s-6)', padding: '0 var(--s-6) var(--s-6)', alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr)', gap: '6px var(--s-6)', padding: '0 var(--s-6) var(--s-6)', alignItems: 'start', overflowWrap: 'anywhere' }}>
         {test.preconditions && (
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Preconditions</span>
@@ -376,7 +376,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
         {test.expected_verified === true && (
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Verified against</span>
-            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+            <div className="pathrow" style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
               {test.expected_source
                 ? <code style={{ fontSize: 11 }}>{test.expected_source}</code>
                 : <span style={{ color: '#fcd34d' }}>marked verified but no source cited</span>}
@@ -396,7 +396,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
         {groundedIn.length > 0 && (
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Grounded in</span>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            <div className="pathrow" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
               {groundedIn.map((src, i) => (
                 <code
                   key={i}
@@ -408,6 +408,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
                     borderRadius: 3,
                     color: 'var(--fg-muted)',
                     fontFamily: 'var(--font-mono)',
+                    minWidth: 0,
                   }}
                 >
                   {src}

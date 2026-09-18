@@ -36,6 +36,10 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
   border-radius: var(--r-sm);
 }
 
+/* Code spans hold paths, ids and branch names — single tokens longer than the
+   column they sit in. Break them, or they run past the card's border. */
+code { overflow-wrap: anywhere; }
+
 /* Scrollbar */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-track { background: transparent; }
