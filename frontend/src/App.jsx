@@ -74,6 +74,10 @@ function App() {
     () => initialUrlKey || loadStored(STORAGE_KEYS.issueKey, '')
   )
   const [loading, setLoading] = useState(false)
+  // True between the ticket landing and the stored plan/analysis reads
+  // finishing. The ticket is on screen by then, but whether a plan already
+  // exists is still unknown, so the generate action stays out of reach.
+  const [hydrating, setHydrating] = useState(false)
   const [fetchingKeys, setFetchingKeys] = useState([])
   const [slowFetch, setSlowFetch] = useState(false)
   const [error, setError] = useState(null)
@@ -197,6 +201,17 @@ function App() {
   const isMultiTicket = ticketsData.length > 1
   const ticketData = ticketsData.length === 1 ? ticketsData[0] : null
 
+  // The generate/analyze actions stay out of reach until the fetch has fully
+  // landed and the stored-plan lookup has answered. The /basic response paints
+  // the ticket within one round-trip, so otherwise the button is clickable
+  // against a half-loaded ticket (no dev info, no PR analysis) and before the
+  // app knows a plan already exists — one click, a duplicate LLM run.
+  const actionsPendingLabel = loading
+    ? 'Loading ticket…'
+    : hydrating
+      ? 'Checking for an existing plan…'
+      : null
+
   // Shared QA hold on the active ticket. Owned here rather than inside
   // TicketDetails because the tab title needs it: one ticket per tab means the
   // title is the only place you can see a parked ticket without opening it.
@@ -310,6 +325,7 @@ function App() {
       keys.every((k, i) => k === currentKeys[i])
 
     setLoading(true)
+    setHydrating(false)
     setFetchingKeys(keys)
     setSlowFetch(false)
     setError(null)
@@ -356,9 +372,13 @@ function App() {
           const data = await response.json()
           if (isStale()) return
           setTicketsData([data])
-          loadRunHistory(data.key).then((runs) =>
-            hydrateStoredArtifacts(data.key, runs)
-          )
+          setHydrating(true)
+          loadRunHistory(data.key)
+            .then((runs) => hydrateStoredArtifacts(data.key, runs))
+            .finally(() => {
+              // A newer fetch owns the flag now; leave it to that one.
+              if (!isStale()) setHydrating(false)
+            })
         } finally {
           // Let the basic promise settle so its guards run against the
           // final fullLanded/isStale state before we exit this scope.
@@ -439,6 +459,10 @@ function App() {
     if (ticketsData.length !== 1) return
     const key = ticketsData[0].key
     let refreshed
+    // Same reasoning as the initial fetch: the post-action refresh re-reads the
+    // ticket and the stored runs, and a Generate click landing in that window
+    // duplicates a plan that is about to hydrate.
+    setHydrating(true)
     try {
       const response = await fetch(`${API_BASE_URL}/issue/${key}`)
       if (!response.ok) return
@@ -446,11 +470,18 @@ function App() {
       setTicketsData([refreshed])
     } catch {
       return
+    } finally {
+      // The block below keeps the flag up while it checks for a stored plan.
+      // Every other exit from here — failed fetch included — clears it, or the
+      // actions never come back.
+      if (!refreshed || actionId !== 'pull-to-testing') setHydrating(false)
     }
 
     if (actionId !== 'pull-to-testing') return
-    if (NON_TESTABLE_ISSUE_TYPES.has(refreshed.issue_type)) return
-    if (testPlan.plan) return
+    if (NON_TESTABLE_ISSUE_TYPES.has(refreshed.issue_type) || testPlan.plan) {
+      setHydrating(false)
+      return
+    }
     try {
       const res = await fetch(`${API_BASE_URL}/runs/by-ticket/${key}`)
       const data = res.ok ? await res.json() : { runs: [] }
@@ -463,6 +494,7 @@ function App() {
         // used to appear and assumes nothing was generated.
         await hydrateStoredArtifacts(key, runs)
       }
+      setHydrating(false)
       if (runs.length === 0) {
         const plan = await handleGenerateTestPlan([refreshed])
         // First-entry-into-In-Testing hook: for Bug tickets, follow the plan
@@ -492,6 +524,8 @@ function App() {
       }
     } catch {
       // network blip — leave the user to click Generate manually
+    } finally {
+      setHydrating(false)
     }
   }
 
@@ -681,6 +715,7 @@ function App() {
                   )}
 
                   <ActionButtons
+                    pendingLabel={actionsPendingLabel}
                     onGenerateTestPlan={handleGenerateTestPlan}
                     onStopGeneration={testPlan.stop}
                     generatingPlan={testPlan.generating}

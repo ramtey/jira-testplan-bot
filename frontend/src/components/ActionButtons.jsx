@@ -5,6 +5,7 @@
 import { Btn, Prog } from './ui'
 
 function ActionButtons({
+  pendingLabel,
   onGenerateTestPlan,
   onStopGeneration,
   generatingPlan,
@@ -23,6 +24,32 @@ function ActionButtons({
       : 'Analyzing bug…'
   const showAutoRunCaption =
     showBugLens && bugAnalysisAutoTriggered && bugAnalysisComplete && !isBusy
+
+  // The ticket is still loading, or the app hasn't finished checking whether a
+  // plan already exists. Clicking Generate now would run against partial data
+  // or duplicate a plan that's about to appear, so show what's outstanding
+  // instead of a button. A run already in flight outranks this — its Stop
+  // control has to stay reachable.
+  if (pendingLabel && !isBusy) {
+    return (
+      <div style={{ marginTop: 'var(--s-6)' }}>
+        <span
+          role="status"
+          aria-live="polite"
+          style={{
+            color: 'var(--fg-subtle)',
+            fontSize: 'var(--t-sm)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 'var(--s-3)',
+          }}
+        >
+          <span className="spin" style={{ color: 'var(--accent)' }} />
+          {pendingLabel}
+        </span>
+      </div>
+    )
+  }
 
   return (
     <div style={{ marginTop: 'var(--s-6)' }}>
