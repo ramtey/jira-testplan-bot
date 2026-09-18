@@ -8,8 +8,15 @@ agrees with you as often as Opus does, every future run costs a fifth as much,
 with evidence rather than hope.
 
     python evals/label_grounding.py sample     pick 100, stratified
-    python evals/label_grounding.py label      work through them, resumable
+    python evals/label_grounding.py html       render them as a local page
+    python evals/label_grounding.py label      work through them in the terminal
+    python evals/label_grounding.py import ~/Downloads/labels.json
     python evals/label_grounding.py agreement  Cohen's kappa, held-out
+
+The page and the terminal are the same task; the page is easier to read a
+70-line diff in. It is written to the results directory and opened from disk,
+never published: it embeds source from private repositories and real ticket
+text.
 
 Sampling is stratified on purpose. Uniform sampling of 362 mostly-fine
 citations would hand you ~90 easy SUPPORTS and tell you nothing about the
@@ -100,6 +107,61 @@ def phase_sample(size):
 
 def _by_id():
     return {c["snippet_id"]: c for c in _all_claims()}
+
+
+def phase_html():
+    """Write the local labelling page. Judge verdicts are never embedded."""
+    from evals.label_page import build, snippet_to_lines
+
+    if not SAMPLE.exists():
+        sys.exit("No sample yet. Run `sample` first.")
+    sample = json.loads(SAMPLE.read_text())
+    claims = _by_id()
+    page_claims = []
+    for item in sample:
+        c = claims.get(item["id"])
+        if c is None:
+            continue
+        snippet = (SNIPPETS / f"{item['id']}.txt").read_text()
+        # Only what a labeller may see. Not `verdict`, not `shape_problems`,
+        # not the split — anything more could steer a label, and View Source
+        # is one keystroke away.
+        page_claims.append({
+            "id": item["id"], "key": c["key"], "section": c["section"],
+            "index": c["index"], "expected": c.get("expected") or "(none given)",
+            "source": c.get("expected_source"),
+            "code": snippet_to_lines(snippet),
+        })
+    out = RESULTS / "labeling.html"
+    out.write_text(build(page_claims))
+    leaked = [w for w in ("SUPPORTS", "SILENT", "CONTRADICTS")
+              if f'"{w}"' in json.dumps(page_claims)]
+    assert not leaked, f"verdict words reached the page payload: {leaked}"
+    print(f"""
+  wrote {out}  ({len(page_claims)} claims)
+
+  open {out}
+
+  Label with S / I / C, arrow keys to move, progress is kept in the browser.
+  Then "Download labels.json" and:
+
+    python evals/label_grounding.py import ~/Downloads/labels.json
+""")
+
+
+def phase_import(path):
+    incoming = json.loads(Path(path).expanduser().read_text())
+    if not isinstance(incoming, dict):
+        sys.exit("Expected an object of {snippet_id: VERDICT}.")
+    known = set(_by_id())
+    good = {k: v for k, v in incoming.items()
+            if k in known and v in ("SUPPORTS", "SILENT", "CONTRADICTS")}
+    dropped = len(incoming) - len(good)
+    existing = json.loads(LABELS.read_text()) if LABELS.exists() else {}
+    existing.update(good)
+    LABELS.write_text(json.dumps(existing, indent=2))
+    print(f"  imported {len(good)} labels ({dropped} unusable) -> {LABELS}")
+    print(f"  {len(existing)} labels total. Now: python evals/label_grounding.py agreement")
 
 
 def phase_label():
@@ -213,11 +275,18 @@ def phase_agreement():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("phase", choices=["sample", "label", "agreement"])
+    ap.add_argument("phase", choices=["sample", "html", "label", "import", "agreement"])
+    ap.add_argument("path", nargs="?", help="import: the downloaded labels.json")
     ap.add_argument("--size", type=int, default=100)
     args = ap.parse_args()
     if args.phase == "sample":
         phase_sample(args.size)
+    elif args.phase == "html":
+        phase_html()
+    elif args.phase == "import":
+        if not args.path:
+            sys.exit("import needs the path to the downloaded labels.json")
+        phase_import(args.path)
     elif args.phase == "label":
         phase_label()
     else:
