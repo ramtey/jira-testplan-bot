@@ -58,12 +58,17 @@ def phase_sample(size):
         sys.exit("No resolved claims. Run score_grounding.py resolve first.")
     rng = random.Random(20260918)
 
-    # Three strata. The judge's own verdict decides two of them, which is a
-    # sampling aid only — the labelling screen never shows it.
-    suspect = [c for c in claims if c.get("shape_problems")]
+    # Three strata, and they must be disjoint. A claim can carry both a shape
+    # problem and a CONTRADICTS verdict, and the first version sampled it from
+    # both — 99 unique claims in a 100-row sample, with one able to land in
+    # the tune split and the holdout at once. That is the exact contamination
+    # the 70/30 split exists to prevent.
     contradicts = [c for c in claims if c.get("verdict") == "CONTRADICTS"]
-    rest = [c for c in claims
-            if c not in suspect and c.get("verdict") != "CONTRADICTS"]
+    taken = {c["snippet_id"] for c in contradicts}
+    suspect = [c for c in claims
+               if c.get("shape_problems") and c["snippet_id"] not in taken]
+    taken |= {c["snippet_id"] for c in suspect}
+    rest = [c for c in claims if c["snippet_id"] not in taken]
 
     want_c = min(len(contradicts), max(size // 4, 1))
     want_s = min(len(suspect), size // 3)
@@ -75,6 +80,11 @@ def phase_sample(size):
 
     ids = [{"id": c["snippet_id"], "split": "tune" if i < TUNE_SIZE else "holdout"}
            for i, c in enumerate(picked)]
+    seen = {i["id"] for i in ids}
+    assert len(seen) == len(ids), (
+        f"{len(ids) - len(seen)} claim(s) sampled twice; a claim in both splits "
+        f"makes the holdout meaningless"
+    )
     SAMPLE.write_text(json.dumps(ids, indent=2))
     print(f"""
   sampled {len(ids)} claims -> {SAMPLE}

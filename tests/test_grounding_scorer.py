@@ -88,3 +88,27 @@ class TestAgreement:
 
     def test_no_pairs_is_not_an_answer(self):
         assert _kappa([]) is None
+
+
+class TestTheLabelSampleIsDisjoint:
+    """A claim sampled from two strata can land in both the tune split and the
+    holdout, and then the holdout is not held out. The first version did this:
+    99 unique claims in a 100-row sample, because a citation can carry both a
+    shape problem and a CONTRADICTS verdict."""
+
+    def test_strata_do_not_overlap(self):
+        claims = [
+            {"snippet_id": "a", "verdict": "CONTRADICTS", "shape_problems": ["cites line 1"]},
+            {"snippet_id": "b", "verdict": "SUPPORTS", "shape_problems": ["no line"]},
+            {"snippet_id": "c", "verdict": "SILENT", "shape_problems": []},
+        ]
+        contradicts = [c for c in claims if c.get("verdict") == "CONTRADICTS"]
+        taken = {c["snippet_id"] for c in contradicts}
+        suspect = [c for c in claims
+                   if c.get("shape_problems") and c["snippet_id"] not in taken]
+        taken |= {c["snippet_id"] for c in suspect}
+        rest = [c for c in claims if c["snippet_id"] not in taken]
+
+        ids = [c["snippet_id"] for c in contradicts + suspect + rest]
+        assert sorted(ids) == ["a", "b", "c"]
+        assert len(set(ids)) == len(ids), "claim 'a' qualifies for two strata"
