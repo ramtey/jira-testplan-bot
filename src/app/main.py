@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .attachment_types import (
@@ -116,9 +116,46 @@ app.add_middleware(
 )
 
 
+# A health check that cannot fail reports nothing. This one had been
+# `return {"status": "ok"}` — a literal — so on 2026-09-18 it answered "ok"
+# while Atlas was unreachable and every database-backed route was returning
+# 503. Same shape as the Figma check that passed through a spent quota:
+# the endpoint whose whole job is to report a failure was the one hiding it.
+_HEALTH_PING_TIMEOUT_SECONDS = 3.0
+
+
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+async def health(response: Response):
+    """Liveness plus a real database round-trip.
+
+    Returns 503 when Mongo cannot be reached, because every route that
+    matters is dead in that state and a 200 here would send a caller
+    looking for the problem somewhere else. The ping is bounded well under
+    the client's own 10s server-selection timeout: a health check that
+    hangs for ten seconds is its own kind of failure, and an unreachable
+    cluster should be *reported* quickly, not waited out.
+    """
+    database: dict[str, str] = {"status": "ok"}
+    try:
+        await asyncio.wait_for(
+            get_db().command("ping"), timeout=_HEALTH_PING_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        database = {
+            "status": "unreachable",
+            "error": f"ping exceeded {_HEALTH_PING_TIMEOUT_SECONDS:g}s",
+        }
+    except Exception as e:
+        # Includes the case where the client cannot even be constructed —
+        # a missing MONGODB_URI is as fatal to the app as a dead cluster.
+        database = {"status": "unreachable", "error": f"{type(e).__name__}: {e}"[:300]}
+
+    if database["status"] != "ok":
+        response.status_code = 503
+        logger.warning("health: database unreachable — %s", database["error"])
+        return {"status": "degraded", "database": database}
+
+    return {"status": "ok", "database": database}
 
 
 @app.get("/health/tokens")

@@ -45,6 +45,7 @@ from __future__ import annotations
 import pytest
 
 from src.app.db import mongo as db_mongo
+from src.app import github_client as gh_client
 
 
 class ProductionDatabaseAccess(RuntimeError):
@@ -77,6 +78,21 @@ def block_real_database(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     monkeypatch.setattr(db_mongo, "init_client", _blocked)
     monkeypatch.setattr(db_mongo, "_db", None)
     monkeypatch.setattr(db_mongo, "_client", None)
+
+
+@pytest.fixture(autouse=True)
+def reset_code_search_budget():
+    """Give every test a fresh GitHub code-search budget.
+
+    The limiter is deliberately process-wide — GitHub bills the quota to the
+    token, not to a client object — which means without this the tenth search
+    in a *session* starts blocking or raising inside whichever test happens to
+    run tenth. Shared rate-limit state is per-process by design and per-test by
+    necessity.
+    """
+    gh_client.reset_code_search_limiter()
+    yield
+    gh_client.reset_code_search_limiter()
 
 
 class _NoopDatabase:

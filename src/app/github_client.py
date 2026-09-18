@@ -9,6 +9,7 @@ This module integrates with GitHub to enrich test plan context with:
 """
 
 import asyncio
+import collections
 import logging
 import re
 import time
@@ -24,6 +25,36 @@ logger = logging.getLogger(__name__)
 # generation already runs for minutes, so a short wait is worth the evidence;
 # waiting out a full window is not, and the critic degrades honestly instead.
 _MAX_SEARCH_BACKOFF_SECONDS = 15.0
+
+# GitHub's code-search quota: 10 requests per minute, far tighter than the
+# 5000/hour `core` budget the rest of this client spends. A plan issues one
+# search per recheckable grounding warning *plus* one per control-naming
+# regression-checklist line, so an ordinary ticket blows through it in a
+# burst and the regression critic — the last pass to run — is the one left
+# with no evidence. Pace the calls instead of discovering the wall.
+_CODE_SEARCH_LIMIT = 10
+_CODE_SEARCH_WINDOW_SECONDS = 60.0
+
+# Minimum gap between two code searches. GitHub's secondary rate limits
+# police burstiness separately from the published quota — ten searches in
+# six seconds trips them even with budget left — and a second apart is the
+# spacing GitHub's own docs ask for.
+_MIN_SEARCH_INTERVAL_SECONDS = 1.0
+
+# Slack added to a stated reset before trusting it.
+_RESET_CUSHION_SECONDS = 2.0
+
+# How long a search will wait for a pacing slot before giving up. Sized to ride
+# out one full window and no more: a plan needing 18 searches should take the
+# extra minute and come back with its regression checklist actually checked,
+# rather than return in six seconds having skipped eight lines. That trade is
+# the whole reason the critic exists — the plan is a document a tester acts on,
+# and generation already runs for minutes.
+#
+# It is still a bound, not "wait forever": each call waits at most one window,
+# so the cost grows linearly with searches and cannot stall a generation
+# indefinitely behind someone else's quota.
+_MAX_SEARCH_WAIT_SECONDS = _CODE_SEARCH_WINDOW_SECONDS + 10.0
 
 
 class GitHubAuthError(Exception):
@@ -56,6 +87,144 @@ class GitHubSearchThrottled(Exception):
     def __init__(self, message: str, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class _CodeSearchRateLimiter:
+    """Process-wide pacing for GitHub code search.
+
+    Two things this has to get right, both learned the hard way on 2026-09-18:
+
+    *Whose budget.* Module-level state, not per-client: the code-grounding
+    critic and the regression-grounding critic each construct their own
+    ``GitHubClient``, and GitHub bills the quota to the token, not the object.
+    A per-instance budget lets the second critic spend one the first already
+    exhausted, which is exactly the observed failure.
+
+    *Whose clock.* The quota is a **fixed** 60s window with a server-side
+    reset — ``x-ratelimit-reset`` is an absolute epoch and the resource is
+    named ``code_search``. A locally-guessed sliding window drifts out of
+    phase with it and refuses calls GitHub would have allowed while allowing
+    calls it refuses. So the authority here is GitHub's own headers, fed back
+    by ``note_response``; the local window is only the estimate used before
+    any header has been seen.
+    """
+
+    def __init__(self, limit: int, window: float) -> None:
+        self._limit = limit
+        self._window = window
+        self._calls: collections.deque[float] = collections.deque()
+        self._lock = asyncio.Lock()
+        # Set when GitHub itself refuses us. Kept separate from the call log
+        # because GitHub's reset can be far longer than our window — a spent
+        # secondary limit has quoted 2.8 days — and a window-shaped budget
+        # cannot express that.
+        self._blocked_until = 0.0
+        # Last thing GitHub told us about the code_search resource.
+        self._remaining: int | None = None
+        self._reset_at = 0.0  # monotonic
+        self._last_call = 0.0
+
+    def _prune(self, now: float) -> None:
+        while self._calls and now - self._calls[0] >= self._window:
+            self._calls.popleft()
+
+    def _wait_needed(self, now: float) -> float:
+        """Seconds to wait before the next search may be issued."""
+        # 1. An explicit refusal outranks everything.
+        wait = max(0.0, self._blocked_until - now)
+
+        # 2. GitHub's own accounting, when we have it. The cushion matters:
+        #    waking exactly on the stated reset still drew a 403 in testing —
+        #    our clock and GitHub's disagree by a little, and the boundary is
+        #    not worth arriving early for.
+        if self._remaining is not None and self._remaining <= 0:
+            wait = max(wait, (self._reset_at - now) + _RESET_CUSHION_SECONDS)
+        elif self._remaining is None:
+            # 3. No headers yet this process — fall back to the local window.
+            self._prune(now)
+            if len(self._calls) >= self._limit:
+                wait = max(wait, self._window - (now - self._calls[0]))
+
+        # 4. Space requests out regardless. GitHub's *secondary* limits punish
+        #    bursts independently of the published quota, and a plan that
+        #    fires ten searches in six seconds trips them even with budget
+        #    left. A second apart is GitHub's own documented guidance.
+        wait = max(wait, _MIN_SEARCH_INTERVAL_SECONDS - (now - self._last_call))
+        return max(0.0, wait)
+
+    async def acquire(self) -> None:
+        """Reserve a slot, waiting if the quota or the spacing rule says to.
+
+        Raises:
+            GitHubSearchThrottled: the wait would exceed
+                ``_MAX_SEARCH_WAIT_SECONDS``. Raising the same exception the
+                HTTP 403/429 path raises is what lets callers treat "we paced
+                ourselves out" and "GitHub refused us" identically — both mean
+                the search did not run, and neither is evidence about the code.
+        """
+        async with self._lock:
+            now = time.monotonic()
+            wait = self._wait_needed(now)
+
+            if wait > _MAX_SEARCH_WAIT_SECONDS:
+                raise GitHubSearchThrottled(
+                    f"code-search budget spent; next slot in {wait:.0f}s",
+                    retry_after=wait,
+                )
+            if wait > 0:
+                logger.info("code search paced: waiting %.1fs for the next slot", wait)
+                await asyncio.sleep(wait)
+                now = time.monotonic()
+
+            # Spend the slot optimistically; note_response corrects us.
+            if self._remaining is not None:
+                self._remaining -= 1
+            self._prune(now)
+            self._calls.append(now)
+            self._last_call = now
+
+    def note_response(self, response: httpx.Response) -> None:
+        """Adopt GitHub's accounting for the code_search resource.
+
+        Ignores responses for other resources: the same client spends the
+        5000/hour ``core`` budget on file fetches, and letting those headers
+        overwrite the code-search state would report a budget that is almost
+        never near zero.
+        """
+        if response.headers.get("x-ratelimit-resource") not in (None, "code_search"):
+            return
+        remaining = response.headers.get("x-ratelimit-remaining")
+        reset = response.headers.get("x-ratelimit-reset")
+        if remaining is None or reset is None:
+            return
+        try:
+            self._remaining = int(remaining)
+            # Absolute epoch -> monotonic, so a clock adjustment cannot strand us.
+            self._reset_at = time.monotonic() + max(0.0, float(reset) - time.time())
+        except ValueError:
+            return
+
+    def note_external_throttle(self, retry_after: float) -> None:
+        """Treat a 403/429 from GitHub as proof the window is spent.
+
+        Blocks every caller until GitHub's stated reset, so the rest of the
+        pass stops issuing requests that can only fail instead of each one
+        discovering the throttle for itself.
+        """
+        self._blocked_until = time.monotonic() + max(0.0, retry_after)
+
+
+_code_search_limiter = _CodeSearchRateLimiter(
+    _CODE_SEARCH_LIMIT, _CODE_SEARCH_WINDOW_SECONDS
+)
+
+
+def reset_code_search_limiter() -> None:
+    """Drop the pacing state. For tests — the budget is process-wide."""
+    global _code_search_limiter
+    _code_search_limiter = _CodeSearchRateLimiter(
+        _CODE_SEARCH_LIMIT, _CODE_SEARCH_WINDOW_SECONDS
+    )
 
 
 @dataclass
@@ -340,6 +509,24 @@ class GitHubClient:
             return 60.0
         return None
 
+    @staticmethod
+    def _retry_after_is_measured(response: httpx.Response) -> bool:
+        """Whether GitHub actually told us when the window rolls over.
+
+        ``_throttle_retry_after`` falls back to a flat 60s when it can only
+        recognise a throttle from the body ("secondary rate limit"), and that
+        guess must not be trusted the way a header is: secondary limits often
+        clear in a couple of seconds, so treating the guess as authoritative
+        would cancel a retry that would have succeeded. Only ``Retry-After``
+        and ``X-RateLimit-Reset`` are measurements.
+        """
+        if response.headers.get("retry-after"):
+            return True
+        return bool(
+            response.headers.get("x-ratelimit-remaining") == "0"
+            and response.headers.get("x-ratelimit-reset")
+        )
+
     async def search_relevant_files(self, repo: str, query: str, max_files: int = 3) -> list[dict]:
         """
         Search for code in a repo using GitHub code search, then fetch the content
@@ -369,16 +556,34 @@ class GitHubClient:
         search_url = f"{self.base_url}/search/code?q={urllib.parse.quote(query)}+repo:{repo}&per_page={max_files}"
         results = []
 
+        # Pace before spending the call. Checked after the cache so a repeated
+        # query costs no budget.
+        await _code_search_limiter.acquire()
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(search_url, headers=self._headers())
+                _code_search_limiter.note_response(response)
 
-                # One backoff and retry. The primary code-search window is a
-                # minute wide, so a single wait usually recovers the call —
-                # and recovering it is the difference between the critic having
-                # evidence and silently having none.
+                # One backoff and retry — but only when the wait is one we are
+                # actually willing to sit through. Sleeping the capped 15s when
+                # GitHub has said the window rolls over in 50 guarantees the
+                # retry lands inside the same window and fails: the old code
+                # spent 15s per warning to learn nothing. If the reset is
+                # further out than the cap, give up now and say so.
                 retry_after = self._throttle_retry_after(response)
                 if retry_after is not None:
+                    _code_search_limiter.note_external_throttle(retry_after)
+                    if (
+                        retry_after > _MAX_SEARCH_BACKOFF_SECONDS
+                        and self._retry_after_is_measured(response)
+                    ):
+                        raise GitHubSearchThrottled(
+                            f"GitHub code search rate-limited for {repo} "
+                            f"(status {response.status_code}); resets in "
+                            f"{retry_after:.0f}s, longer than we will wait",
+                            retry_after=retry_after,
+                        )
                     wait = min(retry_after, _MAX_SEARCH_BACKOFF_SECONDS)
                     logger.warning(
                         "GitHub code search throttled for %s (status %d); "
@@ -387,8 +592,10 @@ class GitHubClient:
                     )
                     await asyncio.sleep(wait)
                     response = await client.get(search_url, headers=self._headers())
+                    _code_search_limiter.note_response(response)
                     retry_after = self._throttle_retry_after(response)
                     if retry_after is not None:
+                        _code_search_limiter.note_external_throttle(retry_after)
                         raise GitHubSearchThrottled(
                             f"GitHub code search rate-limited for {repo} "
                             f"(status {response.status_code}) after one retry",

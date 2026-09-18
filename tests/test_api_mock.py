@@ -17,9 +17,12 @@ client = TestClient(app)
 
 def test_health_endpoint():
     """Test the health check endpoint."""
-    response = client.get("/health")
+    db = MagicMock()
+    db.command = AsyncMock(return_value={"ok": 1})
+    with patch("src.app.main.get_db", return_value=db):
+        response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "database": {"status": "ok"}}
     print("✓ Health endpoint works!")
 
 

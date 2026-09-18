@@ -471,14 +471,23 @@ async def run_code_grounding_critic(
     # evidence about the code, and treating a throttle as evidence is what made
     # this critic quietly report false negatives.
     throttled_warnings: list[dict] = []
+    # Pass-level, not per-warning: once GitHub has throttled us, every later
+    # search in this pass hits the same window. The flag used to be reset on
+    # each iteration and only ever broke the *repo* loop, so the pass kept
+    # asking — spending two requests and a backoff sleep per remaining warning
+    # to be refused again, and holding the window open in the process. The
+    # regression critic below always did this correctly; this is the same shape.
+    throttled = False
     for i, warning in enumerate(recheckable):
         query = build_search_query(warning)
         if not query:
             continue
+        if throttled:
+            throttled_warnings.append(warning)
+            continue
         # Search each linked repo in order; stop as soon as we get
         # anything. Most tickets link one repo — the second-repo path
         # exists only for cross-project batches.
-        throttled = False
         for repo in repos:
             try:
                 hits = await client.search_relevant_files(repo, query, max_files=3)
