@@ -651,29 +651,58 @@ async def post_comment(request: PostCommentRequest):
         result = await jira.post_comment(request.issue_key, request.comment_text)
         comment_id = result.get("id")
         posted_at_iso: str | None = None
-        if request.plan_id is not None and comment_id:
-            try:
-                db = get_db()
-                await plan_repository.mark_plan_posted_to_jira(
-                    db,
-                    plan_id=request.plan_id,
-                    ticket_key=request.issue_key.upper(),
-                    jira_comment_id=str(comment_id),
-                )
-                plan_with_cases = await plan_repository.get_plan_with_cases(
-                    db, plan_id=request.plan_id
-                )
-                if plan_with_cases and plan_with_cases[0].posted_at:
-                    posted_at_iso = plan_with_cases[0].posted_at.isoformat()
-            except Exception:
-                # Posting succeeded; failing to record the mark shouldn't fail
-                # the request. The next post attempt will re-record.
-                import logging
-                logging.exception(
-                    "Failed to mark plan %s posted on %s",
-                    request.plan_id,
-                    request.issue_key,
-                )
+        # Tri-state. None: there was no plan to record (no plan_id — the client
+        # already says "not tracked" for that). True: this version is now marked
+        # as the one live in Jira. False: the comment landed but the mark did
+        # not — the plan is on the ticket while the version badge still reads
+        # "Not live in Jira", and re-posting repeats it identically because the
+        # write fails the same way every time. That third case is the silent
+        # success this endpoint keeps being fixed for; it is reported, not
+        # swallowed.
+        recorded: bool | None = None
+        record_error: str | None = None
+        if request.plan_id is not None:
+            if not comment_id:
+                recorded = False
+                record_error = "Jira did not return a comment id"
+            else:
+                db = None
+                try:
+                    db = get_db()
+                    await plan_repository.mark_plan_posted_to_jira(
+                        db,
+                        plan_id=request.plan_id,
+                        ticket_key=request.issue_key.upper(),
+                        jira_comment_id=str(comment_id),
+                    )
+                    recorded = True
+                except Exception:
+                    # Posting succeeded; failing to record the mark shouldn't
+                    # fail the request. The tester keeps their posted plan —
+                    # they are told the app could not record it.
+                    recorded = False
+                    record_error = "the app could not reach its database"
+                    logging.exception(
+                        "Failed to mark plan %s posted on %s",
+                        request.plan_id,
+                        request.issue_key,
+                    )
+                if recorded:
+                    # Read-back only, for the timestamp. The mark is what makes
+                    # this version live; losing its timestamp here does not
+                    # unmake it, so this failure must never flip `recorded`.
+                    try:
+                        plan_with_cases = await plan_repository.get_plan_with_cases(
+                            db, plan_id=request.plan_id
+                        )
+                        if plan_with_cases and plan_with_cases[0].posted_at:
+                            posted_at_iso = plan_with_cases[0].posted_at.isoformat()
+                    except Exception:
+                        logging.exception(
+                            "Marked plan %s posted on %s but could not read it back",
+                            request.plan_id,
+                            request.issue_key,
+                        )
         return {
             "success": True,
             "comment_id": comment_id,
@@ -694,6 +723,14 @@ async def post_comment(request: PostCommentRequest):
             # Null when the plan was never persisted (no plan_id), so the client
             # can say "not tracked" rather than quietly showing no status at all.
             "posted_at": posted_at_iso,
+            # Whether this version was recorded as the one live in Jira. False
+            # means the comment is on the ticket but the version badge will not
+            # reflect it — the client has to say so, because retrying does not
+            # help while the cause persists. `record_error` is a reason fragment
+            # ("the app could not reach its database"), not a sentence: the
+            # client composes it into one.
+            "recorded": recorded,
+            "record_error": record_error,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -704,8 +741,10 @@ async def post_comment(request: PostCommentRequest):
     except JiraContentLimitError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except Exception as e:
-        # Catch-all for unexpected errors
-        import logging
+        # Catch-all for unexpected errors. `logging` is the module-level import
+        # — a local `import logging` here would make the name local to the whole
+        # function and shadow it in the handlers above, which are the ones that
+        # run while this endpoint is degrading rather than failing.
         logging.exception(f"Unexpected error posting comment to {request.issue_key}: {type(e).__name__}: {e}")
         raise HTTPException(
             status_code=500,

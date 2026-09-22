@@ -16,7 +16,7 @@ const PROGRESS_STORAGE_PREFIX = 'testplan-progress:'
 
 // Post states that mean the plan reached the ticket, cleanly or with a caveat.
 // A ticket in any of them stays locked so a second click can't re-post it.
-const POSTED_STATES = new Set(['done', 'split', 'truncated', 'partial', 'stale'])
+const POSTED_STATES = new Set(['done', 'split', 'truncated', 'partial', 'stale', 'unrecorded'])
 
 const SECTIONS = [
   { key: 'happy_path', label: 'Happy Path', icon: 'check-circle', renderer: 'card' },
@@ -1272,26 +1272,45 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     const parts = result.parts ?? 1
     const posted = result.posted_parts ?? parts
     const spread = parts > 1 ? ` across ${parts} comments` : ''
+    // The comment can land while the app fails to record it as the live
+    // version. That is not an alternative to the outcomes below — a post can
+    // be partial *and* unrecorded — so it reads as a suffix on whichever one
+    // applies rather than a branch competing with them. `recorded` is null
+    // when there was no stored plan to record, which UntrackedPlanNotice
+    // already explains; only an explicit false is worth saying here.
+    const unrecorded = result.recorded === false
+    const recordNote = unrecorded
+      ? ` It was not recorded as the live version${
+          result.record_error ? ` (${result.record_error})` : ''
+        } — the version badge will still read "Not live in Jira", and posting again will not change that until the cause is fixed.`
+      : ''
     if (posted < parts) {
       const why = result.part_error ? ` — ${result.part_error}` : ''
       return {
         type: 'warning',
-        message: `Test plan ${action} on ${target}, but only ${posted} of ${parts} comments landed${why}. The complete plan is here in the app.`,
+        message: `Test plan ${action} on ${target}, but only ${posted} of ${parts} comments landed${why}. The complete plan is here in the app.${recordNote}`,
         state: 'partial',
       }
     }
     if (result.truncated) {
       return {
         type: 'warning',
-        message: `Test plan ${action} on ${target}${spread}, but it was still too long for Jira and got cut short. The complete plan is here in the app.`,
+        message: `Test plan ${action} on ${target}${spread}, but it was still too long for Jira and got cut short. The complete plan is here in the app.${recordNote}`,
         state: 'truncated',
       }
     }
     if (result.stale_parts_left > 0) {
       return {
         type: 'warning',
-        message: `Test plan ${action} on ${target}${spread}, but ${result.stale_parts_left} comment(s) from the previous plan could not be removed — the ticket still shows cases this plan dropped.`,
+        message: `Test plan ${action} on ${target}${spread}, but ${result.stale_parts_left} comment(s) from the previous plan could not be removed — the ticket still shows cases this plan dropped.${recordNote}`,
         state: 'stale',
+      }
+    }
+    if (unrecorded) {
+      return {
+        type: 'warning',
+        message: `Test plan ${action} on ${target}${spread}.${recordNote}`,
+        state: 'unrecorded',
       }
     }
     return {
@@ -1880,6 +1899,14 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                         <Chip size="sm" dot dotColor="var(--warning)">Posted, stale parts</Chip>
                         <span className="tip-body">
                           The new plan is posted, but comments from the previous plan could not be removed — the ticket still shows cases this plan dropped.
+                        </span>
+                      </span>
+                    )}
+                    {state === 'unrecorded' && (
+                      <span className="tip">
+                        <Chip size="sm" dot dotColor="var(--warning)">Posted, not recorded</Chip>
+                        <span className="tip-body">
+                          The plan is on the ticket, but the app could not record it as the live version — the version badge will still read "Not live in Jira". Posting again will not change that until the cause is fixed.
                         </span>
                       </span>
                     )}
