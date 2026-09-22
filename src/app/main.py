@@ -915,6 +915,45 @@ async def get_test_plan_progress(progress_key: str):
     return _serialize_progress(row)
 
 
+@app.get("/test-plan-progress/{progress_key}/other-shapes")
+async def get_progress_under_other_shapes(progress_key: str):
+    """Progress recorded for the same ticket(s) under a *different* plan shape.
+
+    The fingerprint in a progress key is the plan's section sizes, so any
+    regeneration that changes those sizes moves progress to a fresh key. That is
+    deliberate — stale checks must not carry over onto a different set of cases —
+    but it left the old marks invisible: the UI polls the current shape, gets the
+    404 above, and renders 0%, which reads as "nobody tested this" rather than
+    "your results are filed under the plan they were made against".
+
+    This is the lookup that tells those two apart. Read-only, and it never
+    migrates anything: which checks still apply after a regeneration is a
+    judgement only a tester can make.
+    """
+    db = get_db()
+    rows = await test_plan_progress_repository.find_for_same_tickets(
+        db, progress_key=progress_key
+    )
+    asked = progress_key.upper()
+    others = []
+    for row in rows:
+        if row.progress_key == asked:
+            continue
+        try:
+            checked = json.loads(row.checked_ids)
+        except (ValueError, TypeError):
+            checked = []
+        others.append(
+            {
+                "progress_key": row.progress_key,
+                "fingerprint": row.progress_key.rsplit(":", 1)[-1],
+                "checked_count": len(checked) if isinstance(checked, list) else 0,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+        )
+    return {"progress_key": asked, "others": others}
+
+
 @app.get("/plans/{plan_id}/progress-key")
 async def get_plan_progress_key(plan_id: int):
     """The canonical progress key for a stored plan.

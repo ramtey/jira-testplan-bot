@@ -19,10 +19,28 @@ containing a covered case. The runner would mark cases under a key the UI never
 reads: SK-2642 was written as ``SK-2642:4-8-2-7`` while the UI polled
 ``SK-2642:4-8-1-7`` and rendered 0/20.
 
-Deriving the key here — from the stored plan, on the server — leaves exactly one
-producer. The rule below must stay in step with ``buildStorageKey`` and
-``displayPlan`` in ``TestPlanDisplay.jsx``; ``tests/test_progress_key.py`` pins
-the shape.
+Deriving the key here — from the stored plan, on the server — leaves one
+producer. That only became true on 2026-09-22: the first pass added this module
+and repointed the script at it, but left ``buildStorageKey`` in
+``TestPlanDisplay.jsx`` computing the key from ``displayPlan``, so the browser
+remained a second producer and this docstring conceded as much ("must stay in
+step with"). SK-2327 is what the survivor cost. The browser was rendering a plan
+the database had never seen — a leftover cached one — derived ``SK-2327:3-4-0-7``
+from it, and showed 0% while eleven cases sat passed under ``SK-2327:4-5-0-6``.
+
+The frontend now asks ``GET /plans/{plan_id}/progress-key`` and uses the answer
+verbatim; it still counts its own sections, but only to compare against the
+``fingerprint`` returned here and warn when the two disagree, rather than to
+build a key. A plan with no stored run has no key at all and is said to be
+untracked, because inventing one is how progress gets written where nothing
+reads it. ``tests/test_progress_key.py`` pins the shape, the 404, and the
+sibling lookup the UI uses to tell "untested" from "tested under a previous
+plan shape"; ``frontend/src/utils/planState.test.js`` pins the precedence rule
+that keeps a cached plan from shadowing the stored one in the first place.
+
+Section sizes as the key still mean any regeneration that changes a section's
+length orphans the prior progress. That is deliberate — stale checks must not
+land on a different set of cases — but it is no longer silent.
 """
 
 from __future__ import annotations

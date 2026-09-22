@@ -13,6 +13,28 @@ import { Btn, Chip, ACTag, Pri, Cbx, Alert } from './ui'
 const API_BASE = API_BASE_URL
 
 const PROGRESS_STORAGE_PREFIX = 'testplan-progress:'
+// Where the server's answer for a plan's key is remembered. Reusing a cached
+// answer from the one producer is not a second producer; re-deriving the key
+// locally would be, which is why the offline path reads this instead.
+const PROGRESS_KEY_CACHE_PREFIX = 'testplan-progress-key:'
+
+function rememberProgressKey(planId, key) {
+  if (typeof window === 'undefined' || !planId || !key) return
+  try {
+    window.localStorage.setItem(`${PROGRESS_KEY_CACHE_PREFIX}${planId}`, key)
+  } catch {
+    /* storage full or disabled — the key is re-fetched next load */
+  }
+}
+
+function recallProgressKey(planId) {
+  if (typeof window === 'undefined' || !planId) return null
+  try {
+    return window.localStorage.getItem(`${PROGRESS_KEY_CACHE_PREFIX}${planId}`)
+  } catch {
+    return null
+  }
+}
 
 // Post states that mean the plan reached the ticket, cleanly or with a caveat.
 // A ticket in any of them stays locked so a second click can't re-post it.
@@ -33,10 +55,27 @@ function sectionLength(testPlan, key) {
   return Array.isArray(testPlan?.[key]) ? testPlan[key].length : 0
 }
 
-function buildStorageKey(testPlan, ticketKeys) {
-  if (!ticketKeys || ticketKeys.length === 0) return null
-  const fingerprint = SECTION_KEYS.map((k) => sectionLength(testPlan, k)).join('-')
-  return `${PROGRESS_STORAGE_PREFIX}${ticketKeys.join('+')}:${fingerprint}`
+/**
+ * The section-size fingerprint, computed here for one purpose only: to check
+ * the server's against it.
+ *
+ * The progress key itself is NOT built here any more. It has exactly one
+ * producer — `src/app/services/progress_key.py`, deriving it from the *stored*
+ * plan — and this component asks for it via `GET /plans/{id}/progress-key`.
+ *
+ * Building it locally is what let the key follow whatever the view happened to
+ * be holding: a stale cached plan, or one generated but never recorded. SK-2327
+ * polled `SK-2327:3-4-0-7` off a leftover 14-case render while its 15-case
+ * stored plan had 11 cases passed under `SK-2327:4-5-0-6`, and showed 0%. The
+ * same split, from the other side, is what `progress_key.py` was written to end
+ * (mark-passed.sh vs this file; see its docstring).
+ *
+ * Keeping the local count as a *check* rather than a source means a future
+ * divergence between this view's filtering and the server's counting rule
+ * surfaces as a visible warning instead of silent zeros.
+ */
+function localFingerprint(testPlan) {
+  return SECTION_KEYS.map((k) => sectionLength(testPlan, k)).join('-')
 }
 
 /**
@@ -1062,6 +1101,63 @@ function NoSourcePanel({ plan }) {
   )
 }
 
+/**
+ * What is, and isn't, being recorded about this plan's QA progress.
+ *
+ * "0%" is the most expensive thing this view can render wrongly: it reads as
+ * "nobody has tested this", and it looked identical whether the plan genuinely
+ * had no marks, the key was pointing somewhere nothing writes, or eleven passed
+ * cases were sitting under the previous plan's shape. Each of those now says
+ * which one it is.
+ */
+function ProgressTrackingNotice({ status, shapeDrift, storedFingerprint, shownFingerprint, orphans }) {
+  if (shapeDrift) {
+    return (
+      <Alert tone="danger" title="The plan on screen isn't the stored plan">
+        Progress is recorded against the stored plan ({storedFingerprint} cases per
+        section), but this view is showing {shownFingerprint}. Ticking a box here
+        would land on a different case. Reload the ticket to get the stored plan
+        back, or regenerate to replace it.
+      </Alert>
+    )
+  }
+  if (status === 'untracked') {
+    return (
+      <Alert tone="warning" title="Progress isn't being shared">
+        This plan has no stored run, so it has no progress key. Checks are kept in
+        this browser only — nobody else sees them, and the UAT runner can't write
+        to them. Regenerate the plan, or adopt it from its Jira comment, to start
+        tracking.
+      </Alert>
+    )
+  }
+  if (status === 'unreachable') {
+    return (
+      <Alert tone="warning" title="Couldn't reach the server for this plan's progress key">
+        Checks are kept in this browser until it answers. They are deliberately
+        not being written under a guessed key.
+      </Alert>
+    )
+  }
+  if (orphans && orphans.length > 0) {
+    const total = orphans.reduce((n, o) => n + o.checked_count, 0)
+    const newest = orphans[0]
+    const when = newest.updated_at ? new Date(newest.updated_at).toLocaleString() : 'an earlier run'
+    return (
+      <Alert tone="info" title="Progress exists under a previous plan shape">
+        {total} case{total === 1 ? ' was' : 's were'} marked against an earlier
+        version of this plan ({orphans.map((o) => o.fingerprint).join(', ')}; last
+        updated {when}). Progress is keyed to a plan's section sizes, so
+        regenerating starts it over — those marks are still recorded, they just
+        don't map onto the cases below. This plan's own checklist is empty, not
+        untested.
+      </Alert>
+    )
+  }
+  return null
+}
+
+
 function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const isMulti = !!(ticketsData && ticketsData.length > 1)
 
@@ -1109,10 +1205,85 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const ticketKeysJoined = isMulti
     ? allKeys.join('+')
     : ticketData?.key || ''
+  // ---------------------------------------------------------------------
+  // The progress key. Asked for, never derived — see `localFingerprint`.
+  //
+  // `pending`     the key request is in flight
+  // `ready`       the server gave us the canonical key; progress is shared
+  // `untracked`   this plan has no stored run, so it has no canonical key
+  // `unreachable` the server didn't answer
+  // ---------------------------------------------------------------------
+  const planId = testPlan?.plan_id ?? null
+  const [keyState, setKeyState] = useState({ status: 'pending', key: null, fingerprint: null })
+
+  useEffect(() => {
+    const untracked = { status: 'untracked', key: null, fingerprint: null }
+    if (!ticketKeysJoined || !planId) {
+      setKeyState(untracked)
+      return
+    }
+    let cancelled = false
+    setKeyState({ status: 'pending', key: null, fingerprint: null })
+    fetch(`${API_BASE}/plans/${planId}/progress-key`)
+      .then(async (r) => {
+        if (cancelled) return
+        // A plan the database lost, or one whose run went missing. Either way
+        // there is no canonical key to write under.
+        if (r.status === 404) {
+          setKeyState(untracked)
+          return
+        }
+        if (!r.ok) throw new Error(`progress-key ${r.status}`)
+        const data = await r.json()
+        if (cancelled) return
+        rememberProgressKey(planId, data.progress_key)
+        setKeyState({
+          status: 'ready',
+          key: data.progress_key,
+          fingerprint: data.fingerprint ?? null,
+        })
+      })
+      .catch(() => {
+        if (cancelled) return
+        // Never fall back to a locally-derived key: a wrong key writes QA
+        // results somewhere nothing reads, which is the failure this whole
+        // path exists to prevent. The last answer the server gave for *this
+        // plan* is not a derivation, so reuse it — that keeps the offline
+        // checks under the key they'll sync from, rather than stranding them
+        // under a second one. With no cached answer, say the progress isn't
+        // being tracked.
+        const remembered = recallProgressKey(planId)
+        setKeyState(
+          remembered
+            ? { status: 'ready', key: remembered, fingerprint: null }
+            : { status: 'unreachable', key: null, fingerprint: null }
+        )
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [planId, ticketKeysJoined])
+
+  // Only a `ready` key may touch the server.
+  const serverKey = keyState.status === 'ready' ? keyState.key : null
+
+  // The stored plan and the plan on screen disagree about their shape. The key
+  // still follows the stored plan (one producer), but checkbox indices are
+  // relative to what is rendered, so the two no longer line up and the tester
+  // has to know before ticking anything.
+  const shapeDrift =
+    keyState.status === 'ready' &&
+    keyState.fingerprint !== null &&
+    keyState.fingerprint !== localFingerprint(displayPlan)
+
+  // localStorage mirror. Follows the canonical key when there is one; otherwise
+  // a `local:` key that is never sent anywhere, so an unrecorded plan still has
+  // working checkboxes without inventing a server key nothing will read.
   const storageKey = useMemo(() => {
-    if (!ticketKeysJoined) return null
-    return buildStorageKey(displayPlan, ticketKeysJoined.split('+'))
-  }, [displayPlan, ticketKeysJoined])
+    if (serverKey) return `${PROGRESS_STORAGE_PREFIX}${serverKey}`
+    if (!ticketKeysJoined || keyState.status === 'pending') return null
+    return `${PROGRESS_STORAGE_PREFIX}local:${ticketKeysJoined}:${localFingerprint(displayPlan)}`
+  }, [serverKey, keyState.status, ticketKeysJoined, displayPlan])
 
   const [checkedTests, setCheckedTests] = useState(() => {
     if (!storageKey || typeof window === 'undefined') return new Set()
@@ -1126,8 +1297,18 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     }
   })
 
+  // Which key `checkedTests` was loaded for. The canonical key now arrives
+  // asynchronously, so `storageKey` changes mid-session (null while the key
+  // request is in flight, then the real key). Without this the mirror effect
+  // below would fire on the new key while `checkedTests` still held the old
+  // key's value — writing one key's checks under another, or, when the old
+  // value was the empty starting set, deleting the cache the loader had just
+  // read. The mirror waits until the two agree.
+  const hydratedForKey = useRef(null)
+
   useEffect(() => {
     if (!storageKey || typeof window === 'undefined') {
+      hydratedForKey.current = storageKey
       setCheckedTests(new Set())
       return
     }
@@ -1143,12 +1324,16 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     } catch {
       /* ignore corrupt cache */
     }
+    hydratedForKey.current = storageKey
     setCheckedTests(local)
+  }, [storageKey])
 
+  useEffect(() => {
     // Authoritative: the shared per-ticket progress lives on the server, so the
     // whole QA team converges on the same checked set. Falls back to the local
-    // optimistic state if the server is unreachable.
-    const serverKey = storageKey.slice(PROGRESS_STORAGE_PREFIX.length)
+    // optimistic state if the server is unreachable. Without a canonical key
+    // there is nothing to sync with — the local mirror above is all there is.
+    if (!serverKey) return
     let cancelled = false
     let lastUpdatedAt = null
 
@@ -1181,12 +1366,47 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
       cancelled = true
       clearInterval(pollId)
     }
-  }, [storageKey])
+  }, [serverKey])
+
+  // Progress recorded for this ticket under a *different* plan shape.
+  //
+  // A 404 on the current key renders exactly like a plan nobody has touched —
+  // 0%, every box empty. After a regeneration that is usually wrong: the marks
+  // exist, filed under the shape they were made against, because the key
+  // encodes section sizes. Asked once per key; the server never migrates
+  // anything, since which checks still apply to a changed plan is a judgement
+  // only a tester can make.
+  const [orphanedProgress, setOrphanedProgress] = useState(null)
+  useEffect(() => {
+    setOrphanedProgress(null)
+    if (!serverKey) return
+    let cancelled = false
+    const encoded = encodeURIComponent(serverKey)
+    fetch(`${API_BASE}/test-plan-progress/${encoded}`)
+      .then((r) =>
+        r.status === 404
+          ? fetch(`${API_BASE}/test-plan-progress/${encoded}/other-shapes`)
+          : null
+      )
+      .then((r) => (r && r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return
+        const others = (data.others || []).filter((o) => o.checked_count > 0)
+        if (others.length > 0) setOrphanedProgress(others)
+      })
+      .catch(() => {
+        /* offline — the notice is an extra, not a requirement */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [serverKey])
 
   // Mirror every change to localStorage as an offline cache + optimistic source
   // for the next load. The server remains the shared source of truth.
   useEffect(() => {
     if (!storageKey || typeof window === 'undefined') return
+    if (hydratedForKey.current !== storageKey) return
     try {
       if (checkedTests.size === 0) {
         window.localStorage.removeItem(storageKey)
@@ -1208,8 +1428,10 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     []
   )
   const scheduleProgressSave = (nextSet) => {
-    if (!storageKey || typeof window === 'undefined') return
-    const serverKey = storageKey.slice(PROGRESS_STORAGE_PREFIX.length)
+    // No canonical key means no shared write. Deriving one here to have
+    // something to PUT is exactly how progress ends up under a key nothing
+    // reads; the checks stay in this browser and the notice says so.
+    if (!serverKey || typeof window === 'undefined') return
     const payload = [...nextSet]
     if (progressSaveTimer.current) clearTimeout(progressSaveTimer.current)
     progressSaveTimer.current = setTimeout(() => {
@@ -1750,6 +1972,14 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           )}
         </div>
       )}
+
+      <ProgressTrackingNotice
+        status={keyState.status}
+        shapeDrift={shapeDrift}
+        storedFingerprint={keyState.fingerprint}
+        shownFingerprint={localFingerprint(displayPlan)}
+        orphans={orphanedProgress}
+      />
 
       <SourceProvenancePanel provenance={testPlan.source_provenance} />
 

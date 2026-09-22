@@ -87,7 +87,17 @@ function App() {
   const [ticketsData, setTicketsData] = useState(() => loadStored(STORAGE_KEYS.ticketsData, []))
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
 
-  const testPlan = useTestPlan()
+  // The ticket(s) this load is opening, resolved before any fetch so the plan
+  // cache can be matched against them. A cached plan that belongs to a
+  // different ticket is dropped rather than rendered under this one.
+  const [restoringKeys] = useState(() =>
+    (initialUrlKey || loadStored(STORAGE_KEYS.issueKey, ''))
+      .split(',')
+      .map((k) => k.trim().toUpperCase())
+      .filter(Boolean)
+  )
+
+  const testPlan = useTestPlan(restoringKeys)
   const bugLens = useBugLens()
 
   // Titles of the main-change cases surfaced as a "steps to cover in the video"
@@ -271,17 +281,22 @@ function App() {
         if (res.ok) {
           const data = await res.json()
           const parsed = JSON.parse(data.body)
-          testPlan.setPlan((prev) =>
-            prev ?? {
-              ...parsed,
-              plan_id: latest.plan_id,
-              version: latest.version,
-              // When it was written, so StalePlanNotice can compare it against
-              // PR merge times. Absent on a plan generated in this session —
-              // that one is new by definition.
-              created_at: latest.created_at,
-            }
-          )
+          // `adoptStored`, not a "first one wins" merge. The old guard was
+          // `prev ?? stored`, and `prev` is non-null on every reload of the
+          // same ticket — sessionStorage rehydrates a plan before this fetch
+          // can land — so the stored plan was dropped and the cached copy
+          // rendered on. SK-2327 showed 0/14 against a 15-case stored plan
+          // that way. A plan generated in this session still wins; see
+          // utils/planState.
+          testPlan.adoptStored([key], {
+            ...parsed,
+            plan_id: latest.plan_id,
+            version: latest.version,
+            // When it was written, so StalePlanNotice can compare it against
+            // PR merge times. Absent on a plan generated in this session —
+            // that one is new by definition.
+            created_at: latest.created_at,
+          })
         }
       } catch {
         // Unparseable or unreachable — the banner is still there as a fallback.

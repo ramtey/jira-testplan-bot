@@ -1,6 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL } from '../config'
 import { loadStored, saveStored } from '../utils/sessionStorage'
+import {
+  EMPTY_PLAN_STATE,
+  ORIGIN,
+  nextPlanState,
+  planOwner,
+  readStoredPlan,
+  writeStoredPlan,
+} from '../utils/planState'
 
 const STORAGE_KEY = 'jtb.testPlan'
 
@@ -38,25 +46,66 @@ function buildTicketPayload(td) {
  * and error/loading flags. Caller passes `ticketsData` at generate-time so the
  * hook doesn't have to subscribe to the upstream ticket store.
  *
+ * `restoringKeys` is the ticket(s) this page load is opening, needed at mount:
+ * the sessionStorage cache is scoped to its ticket, so a cached plan belonging
+ * to anything else is dropped instead of rendered under the wrong ticket.
+ *
+ * The plan is held with its provenance (see `utils/planState`) so a cached copy
+ * can never outrank the plan the server has — the bug that rendered SK-2327's
+ * 15-case stored plan as a leftover 14-case one, and with it a progress key
+ * nothing had ever written.
+ *
  * generate() resolves to the plan on success and null when aborted. Errors are
  * captured in `error` and also thrown so callers can short-circuit if needed.
  */
-export function useTestPlan() {
+export function useTestPlan(restoringKeys = []) {
   const [generating, setGenerating] = useState(false)
-  const [plan, setPlan] = useState(() => loadStored(STORAGE_KEY, null))
+  const [state, setState] = useState(() =>
+    readStoredPlan(loadStored(STORAGE_KEY, null), restoringKeys)
+  )
   const [error, setError] = useState(null)
   const [controller, setController] = useState(null)
 
-  useEffect(() => saveStored(STORAGE_KEY, plan), [plan])
+  useEffect(() => saveStored(STORAGE_KEY, writeStoredPlan(state)), [state])
+
+  // Kept in a ref as well so the async generate/adopt paths can apply their
+  // result against the state at the moment it lands, not the one they closed
+  // over when they started.
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  const apply = (incoming) => {
+    const next = nextPlanState(stateRef.current, incoming)
+    stateRef.current = next
+    setState(next)
+    return next.plan
+  }
 
   const reset = () => {
-    setPlan(null)
+    stateRef.current = EMPTY_PLAN_STATE
+    setState(EMPTY_PLAN_STATE)
     setError(null)
   }
 
   const stop = () => {
     if (controller) controller.abort()
   }
+
+  /**
+   * Show the plan the server has for this ticket.
+   *
+   * Outranks a plan restored from this tab's cache — that's the whole point —
+   * and yields to one generated in this session, which is newer than any read
+   * that was already in flight.
+   */
+  const adoptStored = (ticketKeys, plan) =>
+    apply({ plan, origin: ORIGIN.stored, ticketKeys: planOwner(ticketKeys) })
+
+  /** Replace the plan outright. Used by callers that own the plan's identity. */
+  const setPlan = (plan, ticketKeys) =>
+    plan === null
+      ? reset()
+      : apply({ plan, origin: ORIGIN.generated, ticketKeys: planOwner(ticketKeys) })
 
   const generate = async (ticketsData) => {
     if (!ticketsData || ticketsData.length === 0) return null
@@ -65,7 +114,9 @@ export function useTestPlan() {
     setController(abort)
     setGenerating(true)
     setError(null)
-    setPlan(null)
+    reset()
+
+    const owner = planOwner(ticketsData.map((t) => t.key))
 
     try {
       const isMulti = ticketsData.length > 1
@@ -89,7 +140,7 @@ export function useTestPlan() {
       }
 
       const data = await response.json()
-      setPlan(data)
+      apply({ plan: data, origin: ORIGIN.generated, ticketKeys: owner })
       return data
     } catch (err) {
       if (err.name === 'AbortError') {
@@ -104,5 +155,15 @@ export function useTestPlan() {
     }
   }
 
-  return { generating, plan, error, setPlan, generate, stop, reset }
+  return {
+    generating,
+    plan: state.plan,
+    planOrigin: state.origin,
+    error,
+    setPlan,
+    adoptStored,
+    generate,
+    stop,
+    reset,
+  }
 }

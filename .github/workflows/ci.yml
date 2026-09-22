@@ -53,5 +53,10 @@ jobs:
             "@rollup/rollup-linux-x64-gnu@$(node -p "require('./node_modules/rollup/package.json').version")" \
             "@esbuild/linux-x64@$(node -p "require('./node_modules/esbuild/package.json').version")"
       - run: npm run lint
+      # node's built-in test runner, no dependencies. Covers the pure modules
+      # the React components lean on — `planState` above all, which decides
+      # which plan wins a page load and is where SK-2327 rendered 0% over
+      # eleven passed cases.
+      - run: npm test
       # Build too: eslint won't catch a broken import or a bad JSX edit.
       - run: npm run build

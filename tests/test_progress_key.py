@@ -20,6 +20,7 @@ impossible to write silently.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -158,3 +159,135 @@ def test_a_known_progress_key_still_returns_its_checks(monkeypatch):
     r = c.get("/test-plan-progress/SK-2642:4-8-1-7")
     assert r.status_code == 200
     assert r.json()["checked_ids"] == ["tc-happy_path-0"]
+
+
+# ---------------------------------------------------------------------------
+# The SK-2327 regression: 0% rendered over eleven real passes.
+#
+# The frontend derived the key from whatever plan it had on screen, so a plan
+# the database had never seen — a leftover cached render, or one generated but
+# not persisted — produced a key nobody writes. GET returned the 404 above, and
+# the checklist rendered empty, which reads as "nothing was tested" rather than
+# "your results are filed under the plan they were made against".
+#
+# The key now has one producer on both sides (`/plans/{id}/progress-key`), and
+# these pin the lookup that lets the UI say which of the two it is.
+# ---------------------------------------------------------------------------
+
+
+def _client_with_rows(monkeypatch, rows):
+    """A TestClient whose progress repository holds `rows` (key -> checked ids)."""
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+    from src.app import main
+
+    class _Row:
+        def __init__(self, key, ids):
+            self.progress_key = key
+            self.checked_ids = json.dumps(ids)
+            self.updated_at = datetime(2026, 9, 22, 21, 19, 20, tzinfo=timezone.utc)
+
+    async def fake_find_for_same_tickets(_db, *, progress_key):
+        prefix = progress_key.rsplit(":", 1)[0].upper() + ":"
+        return [_Row(k, v) for k, v in rows.items() if k.startswith(prefix)]
+
+    monkeypatch.setattr(
+        main.test_plan_progress_repository,
+        "find_for_same_tickets",
+        fake_find_for_same_tickets,
+    )
+    monkeypatch.setattr(main, "get_db", lambda: object())
+    return TestClient(main.app)
+
+
+SK_2327 = {"SK-2327:4-5-0-6": ["happy_path:0", "happy_path:1", "edge_cases:0"]}
+
+
+def test_progress_under_another_shape_is_findable(monkeypatch):
+    """The exact shape that broke. The UI polled SK-2327:3-4-0-7 off a plan the
+    database never had; the marks were under SK-2327:4-5-0-6. Asking about the
+    empty key must surface the one that isn't."""
+    c = _client_with_rows(monkeypatch, SK_2327)
+    body = c.get("/test-plan-progress/SK-2327:3-4-0-7/other-shapes").json()
+    assert [o["progress_key"] for o in body["others"]] == ["SK-2327:4-5-0-6"]
+    assert body["others"][0]["checked_count"] == 3
+    assert body["others"][0]["fingerprint"] == "4-5-0-6"
+
+
+def test_the_key_asked_about_is_not_reported_as_another_shape(monkeypatch):
+    """Otherwise every plan with progress would claim its own marks are orphaned."""
+    c = _client_with_rows(monkeypatch, SK_2327)
+    body = c.get("/test-plan-progress/SK-2327:4-5-0-6/other-shapes").json()
+    assert body["others"] == []
+
+
+def test_another_ticket_is_never_reported_as_another_shape(monkeypatch):
+    """The prefix is the ticket(s), not a substring of them: SK-23 must not
+    match SK-2327, and SK-2327 must not match the SK-2327+SK-2328 bundle."""
+    c = _client_with_rows(
+        monkeypatch,
+        {**SK_2327, "SK-2325:4-6-2-10": ["happy_path:0"], "SK-2327+SK-2328:1-0-0-0": ["happy_path:0"]},
+    )
+    body = c.get("/test-plan-progress/SK-2327:3-4-0-7/other-shapes").json()
+    assert [o["progress_key"] for o in body["others"]] == ["SK-2327:4-5-0-6"]
+
+
+def test_a_ticket_with_no_progress_at_all_reports_nothing(monkeypatch):
+    """No marks anywhere is a real state, and must stay distinguishable from
+    marks filed under a previous shape — that distinction is the whole point."""
+    c = _client_with_rows(monkeypatch, {})
+    assert c.get("/test-plan-progress/SK-2327:3-4-0-7/other-shapes").json()["others"] == []
+
+
+def test_a_corrupt_checked_ids_blob_counts_as_zero_rather_than_raising(monkeypatch):
+    """A notice is an extra; it must never be able to break the plan view."""
+    c = _client_with_rows(monkeypatch, {"SK-2327:4-5-0-6": ["a"]})
+    from src.app import main
+
+    async def corrupt(_db, *, progress_key):
+        class _Row:
+            progress_key = "SK-2327:4-5-0-6"
+            checked_ids = "not json"
+            updated_at = None
+
+        return [_Row()]
+
+    monkeypatch.setattr(
+        main.test_plan_progress_repository, "find_for_same_tickets", corrupt
+    )
+    body = c.get("/test-plan-progress/SK-2327:3-4-0-7/other-shapes").json()
+    assert body["others"][0]["checked_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_the_sibling_query_anchors_on_the_whole_ticket_prefix():
+    """Pins the query itself, not a stand-in for it.
+
+    The prefix is matched as ``^<TICKETS>:``. Anchored, or SK-23 would match
+    SK-2327; terminated by the colon, or SK-2327 would match the SK-2327+SK-2328
+    bundle — both of which would report another ticket's marks as this one's.
+    ``re.escape`` matters because ``+`` is the multi-ticket separator and a live
+    regex metacharacter.
+    """
+    from src.app.repositories import test_plan_progress_repository as repo
+
+    captured = {}
+
+    async def fake_find_many(_db, _model, filter_, **kwargs):
+        captured["filter"] = filter_
+        captured["sort"] = kwargs.get("sort")
+        return []
+
+    original = repo.crud.find_many
+    repo.crud.find_many = fake_find_many
+    try:
+        await repo.find_for_same_tickets(object(), progress_key="SK-2327+SK-2328:4-5-0-6")
+    finally:
+        repo.crud.find_many = original
+
+    pattern = captured["filter"]["progress_key"]["$regex"]
+    assert re.match(pattern, "SK-2327+SK-2328:3-4-0-7")
+    assert not re.match(pattern, "SK-2327:4-5-0-6")
+    assert not re.match(pattern, "SK-2327+SK-2328-EXTRA:1-0-0-0")
+    assert captured["sort"] == [("updated_at", -1)]
