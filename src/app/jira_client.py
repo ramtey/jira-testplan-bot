@@ -1438,6 +1438,43 @@ class JiraContentLimitError(Exception):
     """Raised when Jira rejects content as too large (CONTENT_LIMIT_EXCEEDED)."""
 
 
+def _uploads_in_request_order(
+    uploaded: object, files: list[tuple[str, bytes, str]]
+) -> list[dict]:
+    """Return Jira's attachment objects in the order the files were sent.
+
+    `POST /rest/api/3/issue/{key}/attachments` takes every file in one
+    multipart request and echoes back a list, but Atlassian documents no
+    ordering guarantee for that list — and the comment builder renders
+    screenshots in exactly the order it receives them, so a reshuffled
+    response would silently reshuffle the tester's screenshots. Re-key
+    the response by filename, consuming duplicates in turn (Jira happily
+    stores two attachments with the same name), so attach order is what
+    lands in the comment. Anything Jira renamed on the way in, or an
+    unexpected response shape, keeps its server-side position at the end
+    rather than being dropped.
+    """
+    if not isinstance(uploaded, list):
+        return []
+    by_name: dict[str, list[dict]] = {}
+    for entry in uploaded:
+        if not isinstance(entry, dict):
+            continue
+        by_name.setdefault(str(entry.get("filename") or ""), []).append(entry)
+    ordered: list[dict] = []
+    for name, _content, _mime in files:
+        queue = by_name.get(name)
+        if queue:
+            ordered.append(queue.pop(0))
+    placed = {id(entry) for entry in ordered}
+    leftovers = [
+        entry
+        for entry in uploaded
+        if isinstance(entry, dict) and id(entry) not in placed
+    ]
+    return ordered + leftovers
+
+
 class JiraClient:
     def __init__(self) -> None:
         self.base_url = settings.jira_url.rstrip("/")
@@ -3434,7 +3471,7 @@ class JiraClient:
                 error_type="insufficient_permissions",
             )
         r.raise_for_status()
-        return r.json()
+        return _uploads_in_request_order(r.json(), files)
 
     async def resolve_media_id(self, attachment_id: str) -> str | None:
         """Return the Atlassian media-services UUID for a Jira attachment.
