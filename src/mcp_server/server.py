@@ -207,6 +207,32 @@ _SURFACE_LABELS = {
 }
 
 
+_PROVISIONING_LABELS = {
+    "real_record": "real record — confirmed",
+    "real_record_unconfirmed": "real record — UNCONFIRMED",
+    "stub": "needs a stubbed payload (Engineering)",
+    "unreachable": "not producible from live data",
+}
+
+
+def _data_shape_bits(test: dict) -> tuple[str, str, str] | None:
+    """(headline, how-to-get-it, evidence) for a case that needs a specific
+    input shape, or None when it runs on ordinary data."""
+    shape = test.get("data_shape")
+    if not isinstance(shape, dict):
+        return None
+    what = str(shape.get("shape") or "").strip()
+    route = str(shape.get("provisioning") or "").strip()
+    obtain = str(shape.get("obtain") or "").strip()
+    evidence = str(shape.get("evidence") or "").strip()
+    if not (what or route or obtain):
+        return None
+    headline = " — ".join(
+        p for p in (what, _PROVISIONING_LABELS.get(route, route)) if p
+    )
+    return headline, obtain, evidence
+
+
 def _case_grounding_text(test: dict) -> str:
     """Surface/credentials/environment + verified-vs-assumption, as plain text.
 
@@ -214,6 +240,24 @@ def _case_grounding_text(test: dict) -> str:
     MCP-posted comment carries the same execution and provenance metadata.
     """
     out = ""
+
+    bits = _data_shape_bits(test)
+    if bits:
+        headline, obtain, evidence = bits
+        out += f"Data shape: {headline}\n"
+        if obtain:
+            out += f"How to get it: {obtain}\n"
+        if evidence:
+            out += f"Evidence: {evidence}\n"
+        out += "\n"
+    if test.get("data_ask_unactionable"):
+        out += (
+            "⚠️ Data ask is not actionable — "
+            f"{test.get('data_ask_unactionable_reason') or 'no provisioning route given'}. "
+            "Settle whether a real record can produce this shape before sending "
+            "anyone to look for one.\n\n"
+        )
+
     runs_on = []
     if test.get("surface"):
         runs_on.append(_SURFACE_LABELS.get(test["surface"], test["surface"]))

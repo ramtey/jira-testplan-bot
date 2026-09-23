@@ -274,6 +274,32 @@ _SURFACE_LABELS = {
 }
 
 
+_PROVISIONING_LABELS = {
+    "real_record": "real record — confirmed",
+    "real_record_unconfirmed": "real record — UNCONFIRMED",
+    "stub": "needs a stubbed payload (Engineering)",
+    "unreachable": "not producible from live data",
+}
+
+
+def _data_shape_bits(test: dict) -> tuple[str, str, str] | None:
+    """(headline, how-to-get-it, evidence) for a case that needs a specific
+    input shape, or None when it runs on ordinary data."""
+    shape = test.get("data_shape")
+    if not isinstance(shape, dict):
+        return None
+    what = str(shape.get("shape") or "").strip()
+    route = str(shape.get("provisioning") or "").strip()
+    obtain = str(shape.get("obtain") or "").strip()
+    evidence = str(shape.get("evidence") or "").strip()
+    if not (what or route or obtain):
+        return None
+    headline = " — ".join(
+        p for p in (what, _PROVISIONING_LABELS.get(route, route)) if p
+    )
+    return headline, obtain, evidence
+
+
 def _case_grounding_lines(test: dict, format: str) -> list[str]:
     """Surface/credentials/environment + the verified-vs-assumption marker.
 
@@ -281,6 +307,27 @@ def _case_grounding_lines(test: dict, format: str) -> list[str]:
     reviewer knows which assertions were read from the implementation.
     """
     lines: list[str] = []
+
+    bits = _data_shape_bits(test)
+    if bits:
+        headline, obtain, evidence = bits
+        lines.append("**Data shape:**" if format == "markdown" else "Data shape:")
+        lines.append(headline)
+        if obtain:
+            lines.append(f"How to get it: {obtain}")
+        if evidence:
+            lines.append(f"Evidence: {evidence}")
+        lines.append("")
+    if test.get("data_ask_unactionable"):
+        reason = test.get("data_ask_unactionable_reason") or "no provisioning route given"
+        lines.append(
+            f"> ⚠️ **Data ask is not actionable** — {reason}. Settle whether a real "
+            "record can produce this shape before sending anyone to look for one."
+            if format == "markdown"
+            else f"⚠️ Data ask is not actionable — {reason}. Settle whether a real "
+            "record can produce this shape before sending anyone to look for one."
+        )
+        lines.append("")
 
     runs_on = []
     if test.get("surface"):

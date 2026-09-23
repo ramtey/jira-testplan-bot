@@ -148,6 +148,27 @@ const SURFACE_LABELS = {
   manual_only: 'Manual only',
 }
 
+// Three different asks to three different people: a record someone searches
+// for, a payload someone mocks, and a shape no record can deliver to the code
+// under test. See src/app/data_provisioning.py.
+const PROVISIONING_LABELS = {
+  real_record: 'real record — confirmed',
+  real_record_unconfirmed: 'real record — UNCONFIRMED',
+  stub: 'needs a stubbed payload (Engineering)',
+  unreachable: 'not producible from live data',
+}
+
+const dataShapeParts = (test) => {
+  const shape = test?.data_shape
+  if (!shape || typeof shape !== 'object') return null
+  const what = typeof shape.shape === 'string' ? shape.shape.trim() : ''
+  const route = typeof shape.provisioning === 'string' ? shape.provisioning.trim() : ''
+  const obtain = typeof shape.obtain === 'string' ? shape.obtain.trim() : ''
+  const evidence = typeof shape.evidence === 'string' ? shape.evidence.trim() : ''
+  if (!what && !route && !obtain) return null
+  return { what, route: PROVISIONING_LABELS[route] || route, obtain, evidence }
+}
+
 function formatSingleTestForClipboard(test) {
   const lines = []
   if (test.title) lines.push(typeof test.title === 'string' ? test.title : JSON.stringify(test.title))
@@ -168,6 +189,15 @@ function formatSingleTestForClipboard(test) {
     lines.push('', 'Expected: UNVERIFIED — assumption, not read from the implementation.')
   }
   if (test.test_data) lines.push('', 'Test data:', String(test.test_data))
+  const shapeParts = dataShapeParts(test)
+  if (shapeParts) {
+    lines.push('', `Data shape: ${[shapeParts.what, shapeParts.route].filter(Boolean).join(' — ')}`)
+    if (shapeParts.obtain) lines.push(`How to get it: ${shapeParts.obtain}`)
+    if (shapeParts.evidence) lines.push(`Evidence: ${shapeParts.evidence}`)
+  }
+  if (test.data_ask_unactionable) {
+    lines.push('', `⚠️ Data ask is not actionable — ${test.data_ask_unactionable_reason || 'no provisioning route given'}.`)
+  }
   const runsOn = [
     test.surface ? (SURFACE_LABELS[test.surface] || test.surface) : null,
     test.credentials ? `credentials: ${test.credentials}` : null,
@@ -220,7 +250,12 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
     ? test.grounded_in.filter((s) => typeof s === 'string' && s.trim())
     : []
   const isUntraced = planHasAcs && acIds.length === 0 && groundedIn.length === 0
+  const shapeParts = dataShapeParts(test)
+  // `tc-happy_path-0` is the DOM anchor; `happy_path:0` is what gets stored.
+  // Both spellings have been written into progress rows before, which is why
+  // the badge below shows the stored one and mark-passed.sh rejects this one.
   const checkboxId = `tc-${section.key}-${index}`
+  const storedId = `${section.key}:${index}`
 
   return (
     <div
@@ -410,6 +445,31 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Test data</span>
             <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{renderInline(test.test_data)}</div>
+          </>
+        )}
+        {shapeParts && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Data shape</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+              <div>
+                {shapeParts.what}
+                {shapeParts.route && (
+                  <em style={{ color: 'var(--fg-faint)' }}>
+                    {shapeParts.what ? ' — ' : ''}{shapeParts.route}
+                  </em>
+                )}
+              </div>
+              {shapeParts.obtain && <div>How to get it: {renderInline(shapeParts.obtain)}</div>}
+              {shapeParts.evidence && <div>Evidence: {renderInline(shapeParts.evidence)}</div>}
+            </div>
+          </>
+        )}
+        {test.data_ask_unactionable && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Data ask</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d' }}>
+              ⚠️ Not actionable — {test.data_ask_unactionable_reason || 'no provisioning route given'}. Settle whether a real record can produce this shape before sending anyone to look for one.
+            </div>
           </>
         )}
         {test.expected_verified === true && (

@@ -715,6 +715,31 @@ must use EXACTLY that list — no additions, no inferred siblings.
 - If you are not certain a field exists in this specific app, omit it
 ❌ The app is a real-estate calculator → Don't add "City Transfer Tax" or other domain-typical fields unless they are listed in the testID reference or ticket description
 
+**A MAPPING IS NOT A FIELD BINDING.** A diff that adds a data reference,
+import mapping, or field binding proves the value is FETCHED AND SAVED. It does
+NOT prove that any form, template, or layout renders a field for it — in most
+apps the template's field list is maintained separately from the mapping, in a
+system whose definitions are not in your context. The mapping landing correctly
+and the form having nowhere to show it is a completely ordinary combination.
+
+- Unless the field appears in the testID reference, a screen guide, or a
+  template definition you can actually read, do NOT write "verify X appears on
+  the form / on the report / on the PDF". Assert against the saved record
+  instead: "verify the saved file carries X" — that is what the mapping change
+  actually promises.
+- If the AC genuinely asks you to verify the rendered field and you cannot find
+  it, keep the case but set `needs_manual_verification: true` and emit a
+  matching `grounding_warnings` entry naming the field. Do not quietly assume it
+  renders.
+- ❌ BAD: "Import a property and verify Acres and Legal Range appear on the
+  reference form." (If the template has no field bound to them, QA marks this
+  failed and files a bug against a mapping that works.)
+- ✅ GOOD: "Import a property and verify the saved file data carries Acres and
+  Legal Range with the imported values." / "Verify Acres is displayed on the
+  form — UNVERIFIED: no field bound to `acres` was found in the template
+  definitions available here; confirm the form has one before treating a blank
+  as a defect."
+
 **DO NOT INVENT UI COPY, STRINGS, OR MESSAGES:**
 A test step that quotes UI text is asserting that *exact* string exists in the app. NEVER fabricate that string from domain plausibility — if the source isn't in your context, you cannot quote it.
 
@@ -743,6 +768,74 @@ A unit test's fixture values (e.g. `finhoadues1: '275'`, mock API responses, see
 ✅ GOOD (intent-based): `Enter a property address that has monthly HOA dues in Spoke VRE` ... `Verify the HOA Dues field is auto-populated with the monthly dues amount shown in the property data modal`
 ✅ GOOD (user-observable): `Enter a property address known to have no HOA` instead of `fin_hoa_yn_std='N'`; `a property with annual HOA dues` instead of `fin_hoa_period_1='Annually'`
 ✅ GOOD (capture-then-compare): `Note the 'Estimated Monthly HOA Dues' value shown in the modal` ... `Verify the HOA Dues field auto-populates with the value noted above, in monthly mode`
+
+**A DATA SHAPE IS NOT AN ASK UNTIL YOU SAY HOW TO PRODUCE ONE:**
+Some cases need a specific INPUT SHAPE rather than ordinary data: a record with
+a malformed value in a field the code parses as a number, a field populated
+while its sibling is empty, a formatting variant (commas inside a numeric
+string), an account state a normal account never reaches. For every such case
+you MUST set `data_shape` and commit to a `provisioning` route.
+
+"Ask Engineering to supply a property that has X" is NOT a route. It sends QA
+hunting for something that may not exist, and when nothing turns up the request
+reads as QA failing to look hard enough rather than as a shape the system cannot
+produce. Name the route, and the ask becomes actionable — a different route is a
+different ask, to a different person, at a different cost.
+
+The four routes:
+- `real_record` — you CONFIRMED from the context that live data carries this
+  shape (a sample in the ticket, a linked example, a query result, a payload in
+  the diff). Give the user-observable characteristic to search on, and cite the
+  evidence. This is a FIXTURE ask: someone finds a record.
+- `real_record_unconfirmed` — plausible, but you did NOT confirm it. Say so in
+  `evidence`, and put BOTH halves in `obtain`: the search to try, and the
+  fallback if it comes up empty ("if every record supplies both fields or
+  neither, this is a stub case, not a data hunt").
+- `stub` — no live record is expected to carry this shape: malformed or
+  unparseable input, a forced upstream error, a payload a well-behaved producer
+  would never emit. Name the layer to intercept (the client, the parser's input,
+  a fixture file) and route the case to Engineering. This is a STUB ask: someone
+  writes a test with a mocked payload. Do not dress it up as a data hunt.
+- `unreachable` — you determined live data cannot deliver this shape TO THE CODE
+  UNDER TEST even though the raw source may contain it, because a selector,
+  filter, sort, or cutoff upstream discards the records that carry it. Name that
+  selector in `evidence`. An `unreachable` shape ALSO belongs in
+  `risks_and_gaps` when it means the branch under test is dead in production.
+
+**Rare and unreachable are different claims.** "Rare" means keep looking.
+"Excluded by the rule that picks which record gets imported" means no amount of
+looking will find one. Never write the second as the first. Before calling a
+shape reachable, look for the selectors that make it unreachable: latest/most
+recent ordering, active/status filters, date cutoffs, dedupe by key, first match
+wins. If the pipeline picks ONE record out of many by a rule, a shape that
+survives only on the records that rule discards is `unreachable`.
+
+If you cannot tell which route applies, `real_record_unconfirmed` with an honest
+`evidence` line is the correct answer. Guessing `real_record` is the failure
+this rule exists to prevent.
+
+❌ BAD: "Ask Engineering to supply a property whose lot-size field holds a
+   non-numeric value." (No route, no evidence, no fallback — nobody can act on
+   this, and it may be asking for something that cannot exist.)
+✅ GOOD (`stub`): shape: "An import payload whose mapped numeric lot-size field
+   holds a non-numeric string." provisioning: "stub". evidence: "No such value
+   appears in any sample in the ticket or diff, and the provider validates the
+   field before it is published." obtain: "Engineering stubs the provider
+   response at the import client and runs the parser — QA cannot produce this
+   from the UI."
+✅ GOOD (`unreachable`): shape: "An imported record whose acreage field is
+   non-numeric." provisioning: "unreachable". evidence: "The importer selects
+   the listing with the latest list date; every malformed value in the sampled
+   data sits on a superseded older listing, so none can reach the parser."
+   obtain: "Not obtainable as a UAT case. Engineering covers it with a stubbed
+   payload; the exclusion is filed in risks_and_gaps because the branch may be
+   dead in production."
+✅ GOOD (`real_record_unconfirmed`): shape: "A record where the assessment
+   supplies lot square footage but no acreage." provisioning:
+   "real_record_unconfirmed". evidence: "Nothing in the ticket or diff shows the
+   two fields varying independently." obtain: "Search for a record with square
+   footage populated and acreage blank. If every record supplies both or
+   neither, this is a stub case for Engineering, not a data hunt."
 
 **TEST DATA MUST BE REPRODUCIBLE WHEN A BOUNDARY IS BEING TESTED:**
 When the change involves a numeric threshold, distance, radius, boundary, cutoff, or coordinate from the diff/AC (e.g., "filter results within 50km", "cap at 100 items", "reject inputs > $1M", "addresses inside the service area"), the `test_data` field MUST include concrete worked examples on BOTH sides of the boundary so two different testers reach the same verdict.
@@ -1575,6 +1668,12 @@ Return ONLY valid JSON (no markdown, no code blocks):
       "environment": "Environment name AND base URL, e.g. 'staging — https://api-staging.example.com'",
       "expected_verified": true,
       "expected_source": "REQUIRED when expected_verified is true — the <file>:<line> the expected result was read from, e.g. 'src/middleware/auth.ts:64'. Omit when expected_verified is false.",
+      "data_shape": {
+        "shape": "OPTIONAL: only when this case needs a specific input shape rather than ordinary data",
+        "provisioning": "real_record|real_record_unconfirmed|stub|unreachable",
+        "evidence": "What you checked and what it showed — or what you could not confirm, or which upstream selector excludes this shape",
+        "obtain": "The concrete ask: who does what. For real_record_unconfirmed, also the fallback if no record turns up"
+      },
       "covered_by_unit_test": false,
       "unit_test_ref": "OPTIONAL: only when covered_by_unit_test is true — the test file path (+ test name if known) that already covers this, e.g. 'src/netSheet.test.ts › computes buyer total'"
     }
@@ -1642,6 +1741,15 @@ implementation (`true`, and then `expected_source` MUST carry the
 `expected` must say "unverified — assumption"). Do not default `expected_verified`
 to true to look thorough; an unverified expectation labelled verified is worse
 than one labelled honestly.
+
+**`data_shape` (required on every case that needs a specific input shape;
+omit it entirely on cases that run on ordinary data):** this is the
+machine-readable half of the DATA SHAPE rule above. `provisioning` is the whole
+point — it separates "someone finds a record" (`real_record`,
+`real_record_unconfirmed`) from "someone mocks a payload" (`stub`) from "no
+record can ever reach this code path" (`unreachable`). Those are three different
+asks to three different people, and a plan that leaves the reader to guess sends
+QA hunting for data that may not exist.
 
 **`covered_by_unit_test` / `unit_test_ref` (optional, applies to happy_path,
 edge_cases, and integration_tests):** Only set these when an "Existing Unit
@@ -1789,6 +1897,8 @@ Before generating each section, mentally sort your tests:
 ✅ Nothing duplicates existing CI coverage (parameterized `it.each` tables count — read the whole table)
 ✅ No vacuous "X remains unaffected" cases without a named signal and a confirmed comparison target
 ✅ Every case carries `surface`, `credentials`, and `expected_verified`; every `expected_verified: true` carries a real `expected_source`
+✅ Every case that needs an unusual input shape carries `data_shape` with a `provisioning` route — no case asks anyone to "supply a record that…" without saying whether one can exist
+✅ No case asserts a field on a form/template/report unless the field was found in the testID reference, a screen guide, or a template definition — a mapping in the diff is not a field binding
 ✅ Gaps the ticket missed are in `risks_and_gaps`, NOT disguised as test cases
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
@@ -3897,6 +4007,40 @@ TEST_CASE_SCHEMA = {
         "expected_source": {
             "type": "string",
             "description": "Required when `expected_verified` is true. The single primary `<file>:<line>` the expected result rests on, e.g. 'src/middleware/auth.ts:64'. Omit entirely when `expected_verified` is false.",
+        },
+        "data_shape": {
+            "type": "object",
+            "description": (
+                "Set on any case that needs a SPECIFIC input shape rather than "
+                "ordinary data — a record with a malformed value, a field "
+                "populated while its sibling is empty, a formatting variant, a "
+                "state a normal account never reaches (see 'A DATA SHAPE IS NOT "
+                "AN ASK UNTIL YOU SAY HOW TO PRODUCE ONE'). Omit for cases that "
+                "run on ordinary data. A case that asks anyone to supply, find, "
+                "or produce a record with a named characteristic and carries no "
+                "`data_shape` is malformed: the reader cannot tell whether they "
+                "are being sent to look for something that exists."
+            ),
+            "properties": {
+                "shape": {
+                    "type": "string",
+                    "description": "The required input shape in one sentence, in user-observable terms — not database column names.",
+                },
+                "provisioning": {
+                    "type": "string",
+                    "enum": ["real_record", "real_record_unconfirmed", "stub", "unreachable"],
+                    "description": "'real_record': you CONFIRMED live data carries this shape — a fixture ask, someone finds a record. 'real_record_unconfirmed': plausible but unconfirmed; `obtain` must carry the fallback. 'stub': no live record is expected to carry it (malformed input, forced error) — an Engineering ask, someone mocks the payload. 'unreachable': live data cannot deliver it to the code under test because an upstream selector/filter/cutoff discards the records that carry it; name that selector in `evidence`. Rare is not unreachable — do not use 'unreachable' for 'I did not find one'.",
+                },
+                "evidence": {
+                    "type": "string",
+                    "description": "What you actually checked, and what it showed. For 'real_record', the sample/query/diff that confirms the shape exists. For the other three, say plainly what you could NOT confirm, or which selector excludes it. 'Unconfirmed' here is an honest answer; a fabricated confirmation is not.",
+                },
+                "obtain": {
+                    "type": "string",
+                    "description": "The concrete ask: who does what. A search characteristic for a real record, the layer to intercept for a stub. When provisioning is 'real_record_unconfirmed' this MUST also state the fallback if no record turns up, because the fallback is a different ask to a different person.",
+                },
+            },
+            "required": ["shape", "provisioning", "obtain"],
         },
         "grounded_in_unmerged": {
             "type": "boolean",

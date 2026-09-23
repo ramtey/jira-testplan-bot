@@ -90,6 +90,65 @@ const formatSurface = (test) => {
 
 // Whether the expected result was read out of the implementation or assumed.
 // A reviewer needs to know which assertions carry weight.
+// What KIND of ask a case's test data is. A record someone searches for, a
+// payload someone mocks, and a shape no record can deliver to the code are
+// three different asks to three different people — a plan that leaves the
+// reader to guess sends QA hunting for data that may not exist.
+const PROVISIONING_LABELS = {
+  real_record: 'real record — confirmed',
+  real_record_unconfirmed: 'real record — UNCONFIRMED',
+  stub: 'needs a stubbed payload (Engineering)',
+  unreachable: 'not producible from live data',
+}
+
+const dataShapeParts = (test) => {
+  const shape = test?.data_shape
+  if (!shape || typeof shape !== 'object') return null
+  const what = typeof shape.shape === 'string' ? shape.shape.trim() : ''
+  const route = typeof shape.provisioning === 'string' ? shape.provisioning.trim() : ''
+  const obtain = typeof shape.obtain === 'string' ? shape.obtain.trim() : ''
+  const evidence = typeof shape.evidence === 'string' ? shape.evidence.trim() : ''
+  if (!what && !route && !obtain) return null
+  return {
+    what,
+    route: PROVISIONING_LABELS[route] || route,
+    obtain,
+    evidence,
+  }
+}
+
+const formatDataShape = (test) => {
+  const parts = dataShapeParts(test)
+  let md = ''
+  if (parts) {
+    const head = [parts.what, parts.route && `_${parts.route}_`].filter(Boolean).join(' — ')
+    md += `**Data shape:** ${head}\n\n`
+    if (parts.obtain) md += `- How to get it: ${parts.obtain}\n`
+    if (parts.evidence) md += `- Evidence: ${parts.evidence}\n`
+    if (parts.obtain || parts.evidence) md += '\n'
+  }
+  if (test?.data_ask_unactionable) {
+    md += `> ⚠️ **Data ask is not actionable** — ${test.data_ask_unactionable_reason || 'no provisioning route given'}. Settle whether a real record can produce this shape before sending anyone to look for one.\n\n`
+  }
+  return md
+}
+
+const formatDataShapeJira = (test) => {
+  const parts = dataShapeParts(test)
+  let out = ''
+  if (parts) {
+    const head = [parts.what, parts.route].filter(Boolean).join(' — ')
+    out += `Data shape: ${head}\n`
+    if (parts.obtain) out += `How to get it: ${parts.obtain}\n`
+    if (parts.evidence) out += `Evidence: ${parts.evidence}\n`
+    out += '\n'
+  }
+  if (test?.data_ask_unactionable) {
+    out += `⚠️ Data ask is not actionable — ${test.data_ask_unactionable_reason || 'no provisioning route given'}. Settle whether a real record can produce this shape before sending anyone to look for one.\n\n`
+  }
+  return out
+}
+
 const formatExpectedVerification = (test) => {
   if (test.expected_verified === true) {
     const src = typeof test.expected_source === 'string' && test.expected_source.trim()
@@ -448,6 +507,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatDataShape(test)
       markdown += formatSurface(test)
       markdown += formatExpectedVerification(test)
       markdown += formatCoversAcs(test)
@@ -486,6 +546,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatDataShape(test)
       markdown += formatSurface(test)
       markdown += formatExpectedVerification(test)
       markdown += formatCoversAcs(test)
@@ -529,6 +590,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       if (test.test_data) {
         markdown += `**Test Data:** ${test.test_data}\n\n`
       }
+      markdown += formatDataShape(test)
       markdown += formatSurface(test)
       markdown += formatExpectedVerification(test)
       markdown += formatCoversAcs(test)
@@ -775,6 +837,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.test_data) {
         jira += `Test Data: ${test.test_data}\n\n`
       }
+      jira += formatDataShapeJira(test)
       jira += formatSurfaceJira(test)
       jira += formatExpectedVerificationJira(test)
       jira += '────────────────────────────────────────────\n\n'
@@ -815,6 +878,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.test_data) {
         jira += `Test Data: ${test.test_data}\n\n`
       }
+      jira += formatDataShapeJira(test)
       jira += formatSurfaceJira(test)
       jira += formatExpectedVerificationJira(test)
       jira += '────────────────────────────────────────────\n\n'
@@ -852,6 +916,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
       if (test.test_data) {
         jira += `Test Data: ${test.test_data}\n\n`
       }
+      jira += formatDataShapeJira(test)
       jira += formatSurfaceJira(test)
       jira += formatExpectedVerificationJira(test)
       jira += '────────────────────────────────────────────\n\n'

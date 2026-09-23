@@ -76,6 +76,7 @@ from .test_plan_generator import (
     run_surface_mismatch_critic,
 )
 from src.app.citation_integrity import flag_unconfirmed_citations
+from src.app.data_provisioning import flag_unactionable_data_asks
 
 logger = logging.getLogger(__name__)
 
@@ -602,6 +603,17 @@ async def generate_single(
                 "%d case(s) claim a verified expected result with a citation "
                 "that cannot be one", len(unconfirmed),
             )
+        # Same shape as the citation audit: a case that defers its data to
+        # someone else without naming a provisioning route is flagged where it
+        # stands, never moved. Sending QA to hunt for a shape live data cannot
+        # produce is the failure this catches (SK-2325).
+        unactionable = flag_unactionable_data_asks(test_plan)
+        if unactionable:
+            provenance["unactionable_data_asks"] = len(unactionable)
+            logger.info(
+                "%d case(s) ask for test data without saying whether a real "
+                "record can produce it", len(unactionable),
+            )
         ac_coverage = compute_ac_coverage(test_plan, single_ticket_data)
 
         # Copy-only budget check, on the record. Only present when the model
@@ -887,6 +899,17 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             logger.info(
                 "%d case(s) claim a verified expected result with a citation "
                 "that cannot be one", len(unconfirmed),
+            )
+        # Same shape as the citation audit: a case that defers its data to
+        # someone else without naming a provisioning route is flagged where it
+        # stands, never moved. Sending QA to hunt for a shape live data cannot
+        # produce is the failure this catches (SK-2325).
+        unactionable = flag_unactionable_data_asks(test_plan)
+        if unactionable:
+            provenance["unactionable_data_asks"] = len(unactionable)
+            logger.info(
+                "%d case(s) ask for test data without saying whether a real "
+                "record can produce it", len(unactionable),
             )
         ac_coverage = compute_ac_coverage(test_plan, tickets_data)
         valid_ac_ids = {
