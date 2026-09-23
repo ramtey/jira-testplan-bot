@@ -16,6 +16,13 @@ anywhere, because the GET returned 200 and an empty set for every key.
 
 These tests pin the counting rule and the 404, which together make a wrong key
 impossible to write silently.
+
+The rule has since grown a fifth number. Lifting a covered case out of the
+checklist also removed its ``section:index``, so a tester who ran one anyway had
+nowhere to record it — SK-2325's plan 536 rendered its whole integration section
+as zero. Covered cases are addressable now, under ``covered_by_unit_test:<n>``,
+and the fingerprint carries their count. It is appended only when there is at
+least one, so every plan without covered cases keeps the key it already had.
 """
 from __future__ import annotations
 
@@ -28,6 +35,7 @@ from src.app.services.progress_key import (
     COVERABLE_KEYS,
     SECTION_KEYS,
     build_progress_key,
+    case_index,
     fingerprint,
 )
 
@@ -36,9 +44,10 @@ def _plan(**sections) -> str:
     return json.dumps(sections)
 
 
-def test_a_case_covered_by_a_unit_test_is_not_counted():
-    """It is pulled out of the manual checklist, so counting it produces a key
-    the UI never asks for."""
+def test_a_case_covered_by_a_unit_test_is_not_counted_in_its_own_section():
+    """It is pulled out of the manual checklist, so counting it in its section
+    produces a key the UI never asks for. It is counted once, at the end, as the
+    size of its own namespace."""
     body = _plan(
         happy_path=[{"title": "a"}, {"title": "b"}],
         edge_cases=[{"title": "c"}],
@@ -48,12 +57,13 @@ def test_a_case_covered_by_a_unit_test_is_not_counted():
         ],
         regression_checklist=["r1", "r2"],
     )
-    assert fingerprint(body) == "2-1-1-2"
+    assert fingerprint(body) == "2-1-1-2-1"
 
 
 def test_the_sk_2642_regression():
     """The exact shape that broke: 21 stored cases, one integration case already
-    covered by a unit test. The key must be 4-8-1-7, not 4-8-2-7."""
+    covered by a unit test. The integration count must be 1, not 2 — the covered
+    case is not on the manual checklist. It is named by the trailing 1."""
     body = _plan(
         happy_path=[{"title": f"h{i}"} for i in range(4)],
         edge_cases=[{"title": f"e{i}"} for i in range(8)],
@@ -63,7 +73,119 @@ def test_the_sk_2642_regression():
         ],
         regression_checklist=[f"r{i}" for i in range(7)],
     )
-    assert build_progress_key(["SK-2642"], body) == "SK-2642:4-8-1-7"
+    assert build_progress_key(["SK-2642"], body) == "SK-2642:4-8-1-7-1"
+
+
+# ---------------------------------------------------------------------------
+# The fifth number.
+#
+# Lifting a covered case out of the checklist also lifted it out of the *id
+# space*: it had no `section:index`, so a tester who ran it anyway had nowhere
+# to record that. SK-2325's plan 536 had all four integration cases flagged
+# covered — the section read 0 of 0, two were verified live with real evidence,
+# and mark-passed.sh answered "'integration_tests:0' is out of range —
+# integration_tests has 0 case(s), valid indexes 0..-1".
+#
+# They are addressable now, so the key has to account for them, and these pin
+# the one property that makes the change safe to ship: a plan with no covered
+# cases keeps the key it already had, so nothing that is currently tracked moves.
+# ---------------------------------------------------------------------------
+
+
+def test_a_plan_with_no_covered_cases_keeps_its_four_number_key():
+    """The migration guarantee. Writing the fifth number as `-0` would have
+    re-keyed every plan in flight and orphaned every mark on every ticket."""
+    body = _plan(
+        happy_path=[{"title": "a"}],
+        edge_cases=[{"title": "b"}, {"title": "c"}],
+        integration_tests=[],
+        regression_checklist=["r"],
+    )
+    assert fingerprint(body) == "1-2-0-1"
+    assert build_progress_key(["SK-1"], body) == "SK-1:1-2-0-1"
+
+
+def test_covered_cases_are_counted_across_sections_not_per_section():
+    """One namespace, one number. Three counts would be more faithful and would
+    also re-key any plan that merely moved a covered case between sections."""
+    body = _plan(
+        happy_path=[{"title": "x", "covered_by_unit_test": True}],
+        edge_cases=[{"title": "y", "covered_by_unit_test": True}],
+        integration_tests=[{"title": "z", "covered_by_unit_test": True}],
+        regression_checklist=[],
+    )
+    assert fingerprint(body) == "0-0-0-0-3"
+
+
+def test_the_sk_2325_plan_536_shape():
+    """The plan that could not be marked: 5 happy, 8 edge, 0 integration (all
+    four lifted), 9 regression. It read as `5-8-0-9` and had no id for the two
+    cases a tester verified live."""
+    body = _plan(
+        happy_path=[{"title": f"h{i}"} for i in range(5)],
+        edge_cases=[{"title": f"e{i}"} for i in range(8)],
+        integration_tests=[
+            {"title": f"i{i}", "covered_by_unit_test": True} for i in range(4)
+        ],
+        regression_checklist=[f"r{i}" for i in range(9)],
+    )
+    assert build_progress_key(["SK-2325"], body) == "SK-2325:5-8-0-9-4"
+    assert "covered_by_unit_test:0" in case_index(body)
+    assert "covered_by_unit_test:3" in case_index(body)
+
+
+def test_case_index_numbers_covered_cases_in_flat_render_order():
+    """`markdown.js::collectCoveredCasesWithOrigin` walks happy_path, edge_cases,
+    integration_tests in that order and numbers what it finds. This is the other
+    producer of that numbering, and the two must agree or a mark lands on a
+    different case than the one the tester ticked."""
+    body = _plan(
+        happy_path=[
+            {"title": "manual h"},
+            {"title": "covered h", "covered_by_unit_test": True},
+        ],
+        edge_cases=[{"title": "covered e", "covered_by_unit_test": True}],
+        integration_tests=[{"title": "covered i", "covered_by_unit_test": True}],
+    )
+    index = case_index(body)
+    assert index["covered_by_unit_test:0"]["title"] == "covered h"
+    assert index["covered_by_unit_test:1"]["title"] == "covered e"
+    assert index["covered_by_unit_test:2"]["title"] == "covered i"
+    assert index["covered_by_unit_test:0"]["origin_section"] == "happy_path"
+
+
+def test_case_index_skips_covered_cases_when_numbering_their_own_section():
+    """The ids of the manual cases must not shift when a case beside them is
+    flagged covered — those ids are already recorded in `test_plan_progress`."""
+    body = _plan(
+        edge_cases=[
+            {"title": "first manual"},
+            {"title": "lifted", "covered_by_unit_test": True},
+            {"title": "second manual"},
+        ]
+    )
+    index = case_index(body)
+    assert index["edge_cases:0"]["title"] == "first manual"
+    assert index["edge_cases:1"]["title"] == "second manual"
+    assert "edge_cases:2" not in index
+
+
+def test_case_index_reads_a_regression_entry_that_is_a_bare_string():
+    """Regression items are strings, not case objects — they skip every guard
+    the card sections have, this one included."""
+    index = case_index(_plan(regression_checklist=["Login still works"]))
+    assert index["regression_checklist:0"]["title"] == "Login still works"
+
+
+def test_covered_cases_are_marked_optional_in_the_index():
+    """The flag the checklist denominator keys off: ticking every required case
+    must still read 100% when a covered case is left unticked."""
+    body = _plan(
+        happy_path=[{"title": "required"}, {"title": "c", "covered_by_unit_test": True}]
+    )
+    index = case_index(body)
+    assert index["happy_path:0"]["optional"] is False
+    assert index["covered_by_unit_test:0"]["optional"] is True
 
 
 def test_the_regression_checklist_is_never_filtered():
@@ -113,9 +235,9 @@ def test_ticket_keys_are_upper_cased():
 
 
 @pytest.mark.parametrize("covered", [True, False])
-def test_only_a_truthy_flag_removes_a_case(covered):
+def test_only_a_truthy_flag_moves_a_case_into_the_covered_namespace(covered):
     body = _plan(integration_tests=[{"title": "x", "covered_by_unit_test": covered}])
-    assert fingerprint(body) == ("0-0-0-0" if covered else "0-0-1-0")
+    assert fingerprint(body) == ("0-0-0-0-1" if covered else "0-0-1-0")
 
 
 # ---------------------------------------------------------------------------

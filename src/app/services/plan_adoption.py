@@ -29,19 +29,30 @@ Parsing that structure back is the inverse of
 checklist and the progress key depend on.
 
 What does not survive is the machine-only metadata the renderer never wrote:
-``covers_acs``, ``grounded_in``, ``expected_source``, ``ac_coverage``, and — when
-the poster left ``includeCovered`` off, which is the default — any case flagged
-``covered_by_unit_test``. Adopted plans are therefore marked ``adopted_from_jira``
-so nobody mistakes a reconstruction for a generated plan.
+``covers_acs``, ``grounded_in``, ``expected_source`` and ``ac_coverage``. Adopted
+plans are therefore marked ``adopted_from_jira`` so nobody mistakes a
+reconstruction for a generated plan.
 
 Why the fingerprint is still exact
 ----------------------------------
 ``formatTestPlanAsJira`` renders the four graded sections through ``uncovered()``,
-so cases flagged ``covered_by_unit_test`` are *already* absent from the comment.
+so cases flagged ``covered_by_unit_test`` are never among the numbered cases.
 ``progress_key.fingerprint`` counts those same sections with the same cases
-filtered out. Counting what the comment contains therefore reproduces the
-fingerprint by construction, whether or not the original plan had covered cases
-— the unrecoverable ones are exactly the ones the key never counted.
+filtered out, so counting what the comment contains reproduces the first four
+numbers by construction.
+
+The fifth number needs more than that. Covered cases are addressable now
+(``covered_by_unit_test:<n>``) and their count is part of the key, so they cannot
+simply be dropped on the way back in — a plan adopted without them derives a
+different key from the plan it was posted from, which is the SK-2642 split
+reappearing on the recovery path. The comment therefore always carries them, in
+a trailing list that names the section each was lifted from, and
+``_parse_covered`` files them back there.
+
+Every case also prints its canonical ``[section:index]`` id, so the parser reads
+the section a case belongs to rather than inferring it from the last banner it
+saw. That is strictly better evidence: a part boundary that loses a banner used
+to drop everything after it.
 
 Single producer is preserved: this module produces a plan *body* and nothing
 else. The key is still derived only by ``progress_key.build_progress_key`` from
@@ -69,6 +80,10 @@ _SECTION_HEADINGS: tuple[tuple[str, str], ...] = (
 
 _REGRESSION_HEADING = "🔄 REGRESSION CHECKLIST"
 
+# The sections a printed case id may name. Anything else in that slot is a
+# malformed id, and the section the walk is standing in is the safer reading.
+_CASE_SECTIONS = frozenset(key for _heading, key in _SECTION_HEADINGS)
+
 # Headings that end the regression checklist. The ADF builder's
 # ``_collect_until_next_section`` stops only at ``_SECTION_PREFIXES``
 # ('✅', '🔍', '🔗', '🔄'), so everything after the regression banner —
@@ -82,6 +97,18 @@ _REGRESSION_TERMINATORS = (
 )
 
 _CASE_TITLE_RE = re.compile(r"^\s*(\d+)\.\s+(.*)$", re.DOTALL)
+# Leading "[edge_cases:3]" — the canonical id the renderer now prints beside
+# every case so a reader never has to map the displayed grouping onto storage.
+# Parsed back rather than merely stripped: it names the section the case belongs
+# to outright, which is stronger than inferring it from the last banner seen.
+_CASE_ID_RE = re.compile(r"^\[([a-z_]+):(\d+)\]\s*")
+# "[covered_by_unit_test:0] Title (from integration_tests; covered by src/x.test.ts)"
+_COVERED_CASE_RE = re.compile(
+    r"^\[covered_by_unit_test:(\d+)\]\s*(.*?)"
+    r"\s*\(from (happy_path|edge_cases|integration_tests)"
+    r"(?:;\s*covered by\s*(.+?))?\)$"
+)
+_COVERED_HEADING = "🧪 ALREADY COVERED BY UNIT TESTS"
 # Trailing "🔴 CRITICAL" / "🟡 HIGH" / "🟢 MEDIUM" appended by the renderer.
 _PRIORITY_RE = re.compile(r"\s*[🔴🟡🟢]\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*$")
 # Trailing "[error_handling]" appended for edge cases.
@@ -146,10 +173,21 @@ def _find_plan_container(adf: dict) -> list[dict]:
     return content
 
 
-def _split_title(raw: str) -> dict:
-    """Pull ``N. Title 🔴 PRIORITY [category]`` apart into its fields."""
+def _split_title(raw: str) -> tuple[dict, str | None]:
+    """Pull ``N. [section:index] Title 🔴 PRIORITY [category]`` apart.
+
+    Returns the case and the section its printed id names, or ``None`` when the
+    comment predates ids. The id is stripped from the title either way — it is
+    an address, not part of what the case says.
+    """
     match = _CASE_TITLE_RE.match(raw.strip())
     remainder = match.group(2).strip() if match else raw.strip()
+
+    id_section: str | None = None
+    id_match = _CASE_ID_RE.match(remainder)
+    if id_match:
+        id_section = id_match.group(1)
+        remainder = remainder[id_match.end():].strip()
 
     priority: str | None = None
     category: str | None = None
@@ -169,7 +207,7 @@ def _split_title(raw: str) -> dict:
         case["priority"] = priority
     if category:
         case["category"] = category
-    return case
+    return case, id_section
 
 
 def _parse_case_details(nodes: list[dict], case: dict) -> None:
@@ -214,15 +252,23 @@ def _parse_case_details(nodes: list[dict], case: dict) -> None:
         case["steps"] = steps
 
 
-def _parse_regression(nodes: list[dict]) -> list[str]:
-    """Leading bullets of the regression nestedExpand, up to the next section."""
+def _parse_regression(nodes: list[dict]) -> tuple[list[str], list[dict]]:
+    """Leading bullets of the regression nestedExpand, up to the next section.
+
+    Also returns the nodes from that next section onward. The ADF builder's
+    ``_collect_until_next_section`` stops only at the four section emoji, so
+    risks/gaps, needs-spec *and the covered-case list* are all swallowed into
+    this one nestedExpand. Handing the tail back is what lets the covered list
+    be read rather than dropped — and a dropped covered list is a plan whose
+    fingerprint no longer matches the one it was posted from.
+    """
     items: list[str] = []
-    for node in nodes:
+    for position, node in enumerate(nodes):
         if node.get("type") in ("bulletList", "orderedList"):
             for item in node.get("content") or []:
                 text = _strip_bullet(_para_text(item))
                 if text:
-                    items.append(text)
+                    items.append(_strip_case_id(text))
             continue
         if node.get("type") not in ("paragraph", "heading"):
             continue
@@ -230,9 +276,65 @@ def _parse_regression(nodes: list[dict]) -> list[str]:
         if not text:
             continue
         if text.startswith(_REGRESSION_TERMINATORS):
-            break
-        items.append(_strip_bullet(text))
-    return items
+            return items, list(nodes[position:])
+        items.append(_strip_case_id(_strip_bullet(text)))
+    return items, []
+
+
+def _strip_case_id(text: str) -> str:
+    """Drop a leading ``[regression_checklist:2]`` address from a bullet."""
+    return _CASE_ID_RE.sub("", text, count=1).strip()
+
+
+def _covered_lines(nodes: list[dict]) -> list[str]:
+    """Every bullet line in `nodes`, flattened — paragraphs and lists alike."""
+    lines: list[str] = []
+    for node in nodes:
+        node_type = node.get("type")
+        if node_type in ("bulletList", "orderedList"):
+            for item in node.get("content") or []:
+                text = _strip_bullet(_para_text(item))
+                if text:
+                    lines.append(text)
+            continue
+        if node_type not in ("paragraph", "heading"):
+            continue
+        text = _para_text(node)
+        if text:
+            lines.append(_strip_bullet(text))
+    return lines
+
+
+def _parse_covered(nodes: list[dict]) -> list[tuple[str, dict]]:
+    """Cases the comment lists as already covered by a unit test.
+
+    Returns ``(origin_section, case)`` pairs in printed order. The origin
+    section is printed precisely so this can put each case back where it came
+    from: covered cases do not count towards their own section's size, but they
+    do count towards the fingerprint's fifth component, so losing them here
+    would make an adopted plan derive a different key from the plan it was
+    rendered out of — the SK-2642 split, from the recovery path.
+    """
+    out: list[tuple[str, dict]] = []
+    started = False
+    for line in _covered_lines(nodes):
+        if line.startswith(_COVERED_HEADING):
+            started = True
+            continue
+        if not started:
+            continue
+        match = _COVERED_CASE_RE.match(line)
+        if not match:
+            continue
+        _index, title, section, ref = match.groups()
+        case: dict[str, Any] = {
+            "title": title.strip(),
+            "covered_by_unit_test": True,
+        }
+        if ref:
+            case["unit_test_ref"] = ref.strip()
+        out.append((section, case))
+    return out
 
 
 def _section_for_heading(text: str) -> str | None:
@@ -272,6 +374,9 @@ def parse_plan_from_parts(adfs: list[dict], *, ticket_key: str) -> dict:
     }
     warnings: list[str] = []
     current: str | None = None
+    # Covered cases are printed as one trailing list rather than inside their
+    # sections, so they are gathered separately and filed back at the end.
+    covered: list[tuple[str, dict]] = []
     # The marker paragraph sits outside the expand that holds the body, so it
     # has to be looked for across the whole document rather than in `nodes`.
     saw_marker = any("🤖" in _text(adf)[:4000] for adf in adfs)
@@ -292,8 +397,11 @@ def parse_plan_from_parts(adfs: list[dict], *, ticket_key: str) -> dict:
                 continue
             # A `**N. Title**` paragraph: a case in a comment whose cases were
             # never grouped into nestedExpands.
-            if current and _CASE_TITLE_RE.match(text):
-                plan[current].append(_split_title(text))
+            if _CASE_TITLE_RE.match(text):
+                case, id_section = _split_title(text)
+                target = id_section if id_section in _CASE_SECTIONS else current
+                if target:
+                    plan[target].append(case)
             continue
 
         if node_type != "nestedExpand":
@@ -304,21 +412,29 @@ def parse_plan_from_parts(adfs: list[dict], *, ticket_key: str) -> dict:
             # Extend rather than assign: a checklist long enough to be split
             # across parts appears once per part, and assigning would keep only
             # the last part's bullets.
-            plan["regression_checklist"].extend(
-                _parse_regression(node.get("content") or [])
-            )
+            items, tail = _parse_regression(node.get("content") or [])
+            plan["regression_checklist"].extend(items)
+            covered.extend(_parse_covered(tail))
             current = None
             continue
         if not _CASE_TITLE_RE.match(title):
             continue
-        if current is None:
+        case, id_section = _split_title(title)
+        target = id_section if id_section in _CASE_SECTIONS else current
+        if target is None:
             warnings.append(
                 f"Case {title[:60]!r} appeared before any section heading and was skipped"
             )
             continue
-        case = _split_title(title)
         _parse_case_details(node.get("content") or [], case)
-        plan[current].append(case)
+        plan[target].append(case)
+
+    # Nothing above found the covered list — it can also sit at the top level in
+    # a comment the ADF builder never grouped.
+    if not covered:
+        covered = _parse_covered([n for nodes in part_nodes for n in nodes])
+    for section, case in covered:
+        plan[section].append(case)
 
     if not saw_marker:
         warnings.append(

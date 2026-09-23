@@ -24,11 +24,13 @@ from .jira_client import (
     JiraConnectionError,
     JiraContentLimitError,
     JiraNotFoundError,
+    plan_version_note,
 )
 from .llm_client import LLMError, get_llm_client
 from .models import (
     AdoptPlanRequest,
     GenerateTestPlanRequest,
+    MarkCarryOverRequest,
     MultiTicketGenerateRequest,
     PostCommentRequest,
     TestPlanProgressUpdateRequest,
@@ -43,6 +45,7 @@ from .repositories import (
 )
 from .runs_routes import router as runs_router
 from .services import plan_adoption, plan_service
+from .services import mark_carryover
 from .services import progress_key as progress_key_service
 from .services.plan_service import NonTestableIssueError, SourceLookupUnavailableError
 from .services.test_plan_generator import (
@@ -648,7 +651,35 @@ async def post_comment(request: PostCommentRequest):
     """
     jira = JiraClient()
     try:
-        result = await jira.post_comment(request.issue_key, request.comment_text)
+        # Read the version before posting, because the version rides on the
+        # comment's marker line. Posting a regeneration edits the existing
+        # comment, which leaves Jira's `created` at the original date and moves
+        # only `updated` — a watcher sees no new activity and can conclude the
+        # regeneration failed (SK-2325, comments 332346/332347). The marker is
+        # the one line that stays outside the collapsed body, so a version
+        # number there is the difference between "this is the plan I already
+        # read" and "this is v3".
+        #
+        # A version we cannot read costs the note, not the post: the comment is
+        # still correct without it, and `version_note` in the response says
+        # whether one was written rather than leaving the client to assume.
+        version_note: str | None = None
+        if request.plan_id is not None:
+            try:
+                existing = await plan_repository.get_plan_with_cases(
+                    get_db(), plan_id=request.plan_id
+                )
+                if existing:
+                    version_note = plan_version_note(existing[0].version)
+            except Exception:
+                logging.exception(
+                    "Could not read plan %s to version its Jira comment",
+                    request.plan_id,
+                )
+
+        result = await jira.post_comment(
+            request.issue_key, request.comment_text, version_note=version_note
+        )
         comment_id = result.get("id")
         posted_at_iso: str | None = None
         # Tri-state. None: there was no plan to record (no plan_id — the client
@@ -719,6 +750,10 @@ async def post_comment(request: PostCommentRequest):
             "part_comment_ids": result.get("part_comment_ids", []),
             "stale_parts_left": result.get("stale_parts_left", 0),
             "part_error": result.get("part_error"),
+            # The version line written onto the comment's marker, or null when
+            # the plan's version could not be read. Named so the client can say
+            # which version is live on the ticket rather than inferring it.
+            "version_note": result.get("version_note"),
             "plan_id": request.plan_id,
             # Null when the plan was never persisted (no plan_id), so the client
             # can say "not tracked" rather than quietly showing no status at all.
@@ -977,7 +1012,62 @@ async def get_plan_progress_key(plan_id: int):
         "ticket_keys": list(run.ticket_keys or []),
         "progress_key": key,
         "fingerprint": progress_key_service.fingerprint(plan.body),
+        # Cases the planner flagged as already unit-tested. They are optional —
+        # excluded from the checklist denominator — but addressable, under
+        # `covered_by_unit_test:<n>`. Named here so a caller can size that
+        # namespace without re-deriving the rule that produces it.
+        "covered_count": progress_key_service.covered_length(plan.body),
+        # The full id space, so anything writing progress can validate an id
+        # against the plan instead of against a count it worked out by hand.
+        "case_ids": list(progress_key_service.case_index(plan.body)),
     }
+
+
+@app.get("/plans/{plan_id}/mark-carryover")
+async def get_mark_carryover(plan_id: int):
+    """What the tester ticked on the previous shape of this plan, and where each
+    mark lands now.
+
+    A proposal, not a migration. Regenerating moves progress to a new key by
+    design, and `other-shapes` could already say the old marks existed while
+    refusing to move them — which left the tester re-mapping sixteen checks
+    against two Jira comments in two tabs (SK-2325, plan 532 to 536). This names
+    each old mark, the case it matches now, and whether the wording changed;
+    `POST` carries over only what comes back.
+    """
+    db = get_db()
+    result = await mark_carryover.build(db, plan_id=plan_id)
+    if result.get("error") == "plan_not_found":
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if result.get("error") == "run_not_found":
+        raise HTTPException(status_code=404, detail="Plan has no run")
+    return result
+
+
+@app.post("/plans/{plan_id}/mark-carryover")
+async def post_mark_carryover(plan_id: int, request: MarkCarryOverRequest):
+    """Union the confirmed carry-over ids into this plan's progress.
+
+    The ids are the *new* plan's, and every one is checked against the plan's
+    own case index before anything is written. An id naming no case is a 422,
+    not a stored row: a check the UI reads and matches against nothing is the
+    exact invisible-progress failure this area keeps being fixed for.
+    """
+    db = get_db()
+    result = await mark_carryover.apply(db, plan_id=plan_id, ids=request.ids)
+    if result.get("error") == "plan_not_found":
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if result.get("error") == "run_not_found":
+        raise HTTPException(status_code=404, detail="Plan has no run")
+    if result.get("error") == "unknown_ids":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "These ids name no case in this plan: "
+                + ", ".join(result["unknown"])
+            ),
+        )
+    return result
 
 
 @app.post("/tickets/{ticket_key}/adopt-plan")

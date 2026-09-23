@@ -52,9 +52,16 @@ def _para(text: str) -> dict:
     return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
 
 
-def _case_expand(number: int, case: dict, *, with_category: bool) -> dict:
-    """A case as ``_group_test_cases_into_nested_expands`` writes it."""
-    title = f"{number}. {case['title']}"
+def _case_expand(
+    number: int, case: dict, *, with_category: bool, case_id: str | None = None
+) -> dict:
+    """A case as ``_group_test_cases_into_nested_expands`` writes it.
+
+    ``case_id`` omitted renders the pre-2026-09-23 form, with no printed id.
+    Comments posted before ids existed are still on live tickets and still have
+    to adopt, so several tests below deliberately use that form.
+    """
+    title = f"{number}. [{case_id}] {case['title']}" if case_id else f"{number}. {case['title']}"
     if case.get("priority"):
         emoji = {"critical": "🔴", "high": "🟡"}.get(case["priority"], "🟢")
         title += f" {emoji} {case['priority'].upper()}"
@@ -78,48 +85,78 @@ def _case_expand(number: int, case: dict, *, with_category: bool) -> dict:
     return {"type": "nestedExpand", "attrs": {"title": title}, "content": content}
 
 
-def _render_adf(plan: dict, *, include_covered: bool = False) -> dict:
+def _render_adf(plan: dict) -> dict:
     """Build the ADF a plan would be posted as.
 
     Mirrors ``formatTestPlanAsJira``: the four graded sections are rendered with
-    cases flagged ``covered_by_unit_test`` filtered out, and those cases appear
-    only in a trailing section, and only when the poster opted in.
+    cases flagged ``covered_by_unit_test`` filtered out, each case carrying its
+    canonical ``[section:index]`` id, and the lifted cases listed in a trailing
+    section — always, now that they are addressable rather than merely absent.
+
+    A hand-written mirror is a second producer of the comment's shape, which is
+    the failure mode this whole area keeps being fixed for.
+    ``tests/test_comment_case_ids.py`` runs the real ``markdown.js`` renderer
+    through the real ADF conversion and back, which is what actually pins the
+    two together; this mirror stays because it keeps these tests fast and
+    node-free.
     """
     nodes: list[dict] = [_para("🧭 HOW TO TEST THIS — START HERE")]
-    covered: list[dict] = []
+    covered: list[tuple[str, dict]] = []
 
     def _visible(key: str) -> list[dict]:
         out = []
         for case in plan.get(key) or []:
             if case.get("covered_by_unit_test"):
-                covered.append(case)
+                covered.append((key, case))
             else:
                 out.append(case)
         return out
 
-    for key, heading in (
-        ("happy_path", "✅ HAPPY PATH TEST CASES"),
-        ("edge_cases", "🔍 EDGE CASES & ERROR SCENARIOS"),
-        ("integration_tests", "🔗 INTEGRATION & BACKEND TESTS"),
-    ):
-        cases = _visible(key)
+    sections = [
+        (key, heading, _visible(key))
+        for key, heading in (
+            ("happy_path", "✅ HAPPY PATH TEST CASES"),
+            ("edge_cases", "🔍 EDGE CASES & ERROR SCENARIOS"),
+            ("integration_tests", "🔗 INTEGRATION & BACKEND TESTS"),
+        )
+    ]
+    for key, heading, cases in sections:
         if not cases:
             continue
         nodes.append(_para(heading))
         for i, case in enumerate(cases, start=1):
-            nodes.append(_case_expand(i, case, with_category=key == "edge_cases"))
+            nodes.append(
+                _case_expand(
+                    i,
+                    case,
+                    with_category=key == "edge_cases",
+                    case_id=f"{key}:{i - 1}",
+                )
+            )
 
+    # Everything after the regression banner is swallowed into its nestedExpand
+    # by `_collect_until_next_section`, covered list included.
+    trailing: list[dict] = []
     if plan.get("regression_checklist"):
+        trailing.extend(
+            _para(f"• [regression_checklist:{i}] {item}")
+            for i, item in enumerate(plan["regression_checklist"])
+        )
+    if covered:
+        trailing.append(_para(f"🧪 ALREADY COVERED BY UNIT TESTS ({len(covered)})"))
+        for i, (origin, case) in enumerate(covered):
+            ref = f"; covered by {case['unit_test_ref']}" if case.get("unit_test_ref") else ""
+            trailing.append(
+                _para(f"• [covered_by_unit_test:{i}] {case['title']} (from {origin}{ref})")
+            )
+    if trailing:
         nodes.append(
             {
                 "type": "nestedExpand",
                 "attrs": {"title": "🔄 REGRESSION CHECKLIST"},
-                "content": [_para(f"• {item}") for item in plan["regression_checklist"]],
+                "content": trailing,
             }
         )
-
-    if include_covered and covered:
-        nodes.append(_para(f"🧪 ALREADY COVERED BY UNIT TESTS ({len(covered)})"))
 
     return {
         "type": "doc",
@@ -225,14 +262,16 @@ def test_an_adopted_plan_is_marked_as_adopted():
 # --- The covered_by_unit_test rule ----------------------------------------
 
 
-def test_a_covered_case_absent_from_the_comment_does_not_shift_the_key():
+def test_a_covered_case_is_adopted_back_into_the_section_it_was_lifted_from():
     """The rule that broke SK-2642, from the other direction.
 
     ``formatTestPlanAsJira`` renders the graded sections through ``uncovered()``,
-    and ``includeCovered`` is off by default — so a case flagged
-    ``covered_by_unit_test`` is simply not in the comment. That is exactly the
-    case ``progress_key`` also declines to count, so the key adoption derives
-    must equal the key the original plan produces.
+    so a case flagged ``covered_by_unit_test`` is never one of the numbered cases
+    — it is listed once at the end, with the section it came from. Adoption has
+    to put it back there: a covered case does not count towards its own section's
+    size, but it does count towards the fingerprint's fifth component, so losing
+    it makes an adopted plan derive a different key from the plan it was posted
+    from. That is the SK-2642 split reappearing on the recovery path.
     """
     original = {
         "happy_path": [{"title": "a"}, {"title": "b"}],
@@ -248,26 +287,94 @@ def test_a_covered_case_absent_from_the_comment_does_not_shift_the_key():
     assert build_progress_key(["SK-1"], json.dumps(adopted)) == build_progress_key(
         ["SK-1"], json.dumps(original)
     )
-    assert summarize(adopted, ["SK-1"])["progress_key"] == "SK-1:2-1-1-2"
+    assert summarize(adopted, ["SK-1"])["progress_key"] == "SK-1:2-1-1-2-1"
+    assert adopted["integration_tests"][1] == {
+        "title": "unit-tested",
+        "covered_by_unit_test": True,
+    }
 
 
-def test_the_covered_section_banner_is_never_counted_as_a_case():
-    """With ``includeCovered`` on, the comment gains a '🧪 ALREADY COVERED'
-    section. It is a record, not a checklist — counting it would reintroduce the
-    SK-2642 split between what the runner marks and what the UI polls."""
+def test_the_covered_section_banner_is_never_counted_as_a_manual_case():
+    """The '🧪 ALREADY COVERED' banner and its blurb are prose, not cases.
+    Counting either as a checklist entry would reintroduce the SK-2642 split
+    between what the runner marks and what the UI polls."""
     original = {
         "happy_path": [{"title": "a"}],
         "edge_cases": [{"title": "covered", "covered_by_unit_test": True}],
         "regression_checklist": ["r1"],
     }
-    adopted = parse_plan_from_adf(
-        _render_adf(original, include_covered=True), ticket_key="SK-1"
-    )
+    adopted = parse_plan_from_adf(_render_adf(original), ticket_key="SK-1")
 
-    assert summarize(adopted, ["SK-1"])["progress_key"] == "SK-1:1-0-0-1"
+    assert summarize(adopted, ["SK-1"])["progress_key"] == "SK-1:1-0-0-1-1"
     assert build_progress_key(["SK-1"], json.dumps(adopted)) == build_progress_key(
         ["SK-1"], json.dumps(original)
     )
+    assert adopted["edge_cases"] == [
+        {"title": "covered", "covered_by_unit_test": True}
+    ]
+
+
+def test_a_covered_case_keeps_the_unit_test_that_covers_it():
+    """The reference is why the case is optional. Dropping it turns "already
+    asserted by src/save.test.ts" into an unexplained omission."""
+    original = {
+        "happy_path": [
+            {"title": "a"},
+            {
+                "title": "zero is retained",
+                "covered_by_unit_test": True,
+                "unit_test_ref": "src/save.test.ts > keeps zero",
+            },
+        ],
+    }
+    adopted = parse_plan_from_adf(_render_adf(original), ticket_key="SK-1")
+    assert adopted["happy_path"][1]["unit_test_ref"] == "src/save.test.ts > keeps zero"
+
+
+def test_a_case_id_in_the_title_is_an_address_not_part_of_the_title():
+    """Every case now carries its canonical id so a tester never has to map the
+    displayed grouping onto storage. Adoption has to read it as the address it
+    is — leaving it in would make the adopted title differ from the original's,
+    which is the one thing `mark_carryover` matches on."""
+    original = {
+        "happy_path": [{"title": "Saves a property"}],
+        "edge_cases": [{"title": "Rejects a malformed token", "category": "error_handling"}],
+        "regression_checklist": ["Login still works"],
+    }
+    adopted = parse_plan_from_adf(_render_adf(original), ticket_key="SK-1")
+    assert adopted["happy_path"][0]["title"] == "Saves a property"
+    assert adopted["edge_cases"][0]["title"] == "Rejects a malformed token"
+    assert adopted["edge_cases"][0]["category"] == "error_handling"
+    assert adopted["regression_checklist"] == ["Login still works"]
+
+
+def test_a_printed_id_files_a_case_under_the_section_it_names():
+    """The id is stronger evidence than the last banner seen. A part boundary
+    that loses a banner used to drop the cases after it; with an id on every
+    case they still land in the right section."""
+    adf = {
+        "type": "doc",
+        "content": [
+            _para("🤖 Generated Test Plan"),
+            {
+                "type": "expand",
+                "attrs": {"title": "Click to view"},
+                "content": [
+                    _para("✅ HAPPY PATH TEST CASES"),
+                    _case_expand(
+                        1, {"title": "a"}, with_category=False, case_id="happy_path:0"
+                    ),
+                    # No banner before this one — only its id says where it goes.
+                    _case_expand(
+                        1, {"title": "b"}, with_category=False, case_id="edge_cases:0"
+                    ),
+                ],
+            },
+        ],
+    }
+    adopted = parse_plan_from_adf(adf, ticket_key="SK-1")
+    assert [c["title"] for c in adopted["happy_path"]] == ["a"]
+    assert [c["title"] for c in adopted["edge_cases"]] == ["b"]
 
 
 # --- Refusals -------------------------------------------------------------

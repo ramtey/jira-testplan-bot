@@ -9,21 +9,50 @@ const CARD_SECTION_KEYS = ['happy_path', 'edge_cases', 'integration_tests']
 const isCoveredByUnitTest = (test) => !!(test && test.covered_by_unit_test)
 
 // Cases the planner flagged as already exercised by automated tests, pulled out
-// of their original sections so QA isn't asked to re-run them manually.
-const collectCoveredCases = (plan) => {
+// of their original sections so QA isn't asked to re-run them manually. Each
+// keeps the section it came from: the case is addressed as
+// `covered_by_unit_test:<n>` from here on, so where it used to live is
+// otherwise unrecoverable — including by `plan_adoption`, which rebuilds a plan
+// from this very text.
+//
+// The flat order — card sections in `CARD_SECTION_KEYS` order, plan order
+// within each — is the numbering, and `progress_key.case_index` repeats it on
+// the server. Two producers again, which is exactly the shape of the bug this
+// file keeps being fixed for; `tests/test_progress_key.py` pins them together.
+export const collectCoveredCasesWithOrigin = (plan) => {
   const out = []
   CARD_SECTION_KEYS.forEach((key) => {
     const items = Array.isArray(plan?.[key]) ? plan[key] : []
     items.forEach((test) => {
-      if (isCoveredByUnitTest(test)) out.push(test)
+      if (isCoveredByUnitTest(test)) out.push({ test, section: key })
     })
   })
   return out
 }
 
+
 // A section's cases minus the ones already covered by unit tests.
 const uncovered = (items) =>
   Array.isArray(items) ? items.filter((t) => !isCoveredByUnitTest(t)) : []
+
+// The namespace covered cases are addressed in — they are optional, not absent.
+export const COVERED_SECTION_KEY = 'covered_by_unit_test'
+
+/**
+ * The canonical id of a case: `<section>:<zero-based index within section>`.
+ *
+ * This is what `test_plan_progress` stores, what `mark-passed.sh` writes and
+ * what `src/app/services/progress_key.py::case_index` derives on the server.
+ * It is printed beside every case in the exported and posted plan because the
+ * *displayed* grouping does not match it and never did: the plan shows
+ * happy_path, edge [error_handling], edge [boundary], integration
+ * [Cross-project] and integration as five visible groups, while storage has
+ * four sections, and `edge_cases` interleaves the two edge categories by plan
+ * position — so the second boundary case on screen is `edge_cases:3`, not
+ * `edge_cases:1`. Anyone mapping from the visible labels marked the wrong case
+ * (SK-2325). Printing the id removes the mapping step instead of documenting it.
+ */
+export const caseId = (section, index) => `${section}:${index}`
 
 const formatCoversAcs = (test) => {
   const acIds = Array.isArray(test.covers_acs)
@@ -483,7 +512,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
   if (happyPathCases.length > 0) {
     markdown += '## ✅ Happy Path Test Cases\n\n'
     happyPathCases.forEach((test, index) => {
-      markdown += `### ${index + 1}. ${test.title}`
+      markdown += `### ${index + 1}. \`${caseId('happy_path', index)}\` ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
         markdown += ` ${emoji} *${test.priority}*`
@@ -519,7 +548,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
   if (edgeCases.length > 0) {
     markdown += '## 🔍 Edge Cases & Error Scenarios\n\n'
     edgeCases.forEach((test, index) => {
-      markdown += `### ${index + 1}. ${test.title}`
+      markdown += `### ${index + 1}. \`${caseId('edge_cases', index)}\` ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
         markdown += ` ${emoji} *${test.priority}*`
@@ -559,7 +588,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
     markdown += '## 🔗 Integration & Backend Tests\n\n'
     integrationTests.forEach((test, index) => {
       const titlePrefix = test.cross_project ? '[Cross-project] ' : ''
-      markdown += `### ${index + 1}. ${titlePrefix}${test.title}`
+      markdown += `### ${index + 1}. \`${caseId('integration_tests', index)}\` ${titlePrefix}${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
         markdown += ` ${emoji} *${test.priority}*`
@@ -600,8 +629,8 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
 
   if (plan.regression_checklist && plan.regression_checklist.length > 0) {
     markdown += '## 🔄 Regression Checklist\n\n'
-    plan.regression_checklist.forEach(item => {
-      markdown += `- ${item}\n`
+    plan.regression_checklist.forEach((item, index) => {
+      markdown += `- \`${caseId('regression_checklist', index)}\` ${item}\n`
     })
     markdown += '\n'
   }
@@ -610,12 +639,13 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
 
   markdown += formatNeedsSpecMarkdown(plan)
 
-  const coveredCases = collectCoveredCases(plan)
+  const coveredCases = collectCoveredCasesWithOrigin(plan)
   if (coveredCases.length > 0) {
     markdown += `## 🧪 Already Covered by Unit Tests (${coveredCases.length})\n\n`
-    markdown += '_Exercised by existing automated tests — listed for completeness; QA can skip the manual run._\n\n'
-    coveredCases.forEach((test, index) => {
-      markdown += `${index + 1}. **${typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}**`
+    markdown += '_Exercised by existing automated tests, so they are optional — they do not count towards the checklist. They are still addressable: a tester who verifies one live can record it under the id below._\n\n'
+    coveredCases.forEach(({ test, section }, index) => {
+      markdown += `${index + 1}. \`${caseId(COVERED_SECTION_KEY, index)}\` **${typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}**`
+      markdown += ` _(from ${section})_`
       if (test.unit_test_ref) markdown += ` — \`${test.unit_test_ref}\``
       markdown += '\n'
     })
@@ -797,8 +827,7 @@ const formatExpectedVerificationJira = (test) => {
   return ''
 }
 
-export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => {
-  const { includeCovered = false } = options
+export const formatTestPlanAsJira = (plan, walkthrough = null) => {
   if (plan?.no_source) return formatNoSourceJira(plan)
 
   let jira = ''
@@ -810,7 +839,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
   if (happyPathCases.length > 0) {
     jira += '✅ HAPPY PATH TEST CASES\n\n'
     happyPathCases.forEach((test, index) => {
-      let title = `**${index + 1}. ${test.title}`
+      let title = `**${index + 1}. [${caseId('happy_path', index)}] ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
         title += ` ${emoji} ${test.priority.toUpperCase()}`
@@ -848,7 +877,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
   if (edgeCases.length > 0) {
     jira += '🔍 EDGE CASES & ERROR SCENARIOS\n\n'
     edgeCases.forEach((test, index) => {
-      let title = `**${index + 1}. ${test.title}`
+      let title = `**${index + 1}. [${caseId('edge_cases', index)}] ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
         title += ` ${emoji} ${test.priority.toUpperCase()}`
@@ -889,7 +918,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
   if (integrationTests.length > 0) {
     jira += '🔗 INTEGRATION & BACKEND TESTS\n\n'
     integrationTests.forEach((test, index) => {
-      let title = `**${index + 1}. ${test.title}`
+      let title = `**${index + 1}. [${caseId('integration_tests', index)}] ${test.title}`
       if (test.priority) {
         const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
         title += ` ${emoji} ${test.priority.toUpperCase()}`
@@ -925,8 +954,13 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
 
   if (plan.regression_checklist && plan.regression_checklist.length > 0) {
     jira += '🔄 REGRESSION CHECKLIST\n\n'
-    plan.regression_checklist.forEach(item => {
-      jira += `  • ${item}\n`
+    // The id is backticked, not bare. Jira's markdown-to-ADF conversion treats a
+    // lone underscore in plain paragraph text as an emphasis delimiter and drops
+    // it, so `regression_checklist:0` posts as `regressionchecklist:0` — an id
+    // that names nothing, printed for a reader to copy. Inline code is exempt.
+    // Case titles escape this only because they are rendered bold.
+    plan.regression_checklist.forEach((item, index) => {
+      jira += `  • [\`${caseId('regression_checklist', index)}\`] ${item}\n`
     })
     jira += '\n'
   }
@@ -949,17 +983,29 @@ export const formatTestPlanAsJira = (plan, walkthrough = null, options = {}) => 
 
   jira += formatNeedsSpecJira(plan)
 
-  if (includeCovered) {
-    const coveredCases = collectCoveredCases(plan)
-    if (coveredCases.length > 0) {
-      jira += `🧪 ALREADY COVERED BY UNIT TESTS (${coveredCases.length})\n\n`
-      jira += 'Exercised by existing automated tests — QA can skip the manual run.\n\n'
-      coveredCases.forEach((test, index) => {
-        jira += `${index + 1}. ${typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}\n`
-        if (test.unit_test_ref) jira += `   Covered by: ${test.unit_test_ref}\n`
-      })
-      jira += '\n'
-    }
+  // Always listed, never hidden behind a toggle any more. A covered case is
+  // optional, not absent: it has an id (`covered_by_unit_test:<n>`) that a
+  // tester or the UAT runner can mark against, and a comment that omitted it
+  // gave the runner nothing to write to. SK-2325's plan 536 had all four of its
+  // integration cases flagged covered; the section rendered as zero, two of
+  // them were verified live anyway, and mark-passed.sh answered
+  // "'integration_tests:0' is out of range — integration_tests has 0 case(s)".
+  // The list stays last and is labelled optional, which is what the toggle was
+  // really for.
+  const coveredCases = collectCoveredCasesWithOrigin(plan)
+  if (coveredCases.length > 0) {
+    jira += `🧪 ALREADY COVERED BY UNIT TESTS (${coveredCases.length})\n\n`
+    jira += 'Exercised by existing automated tests, so they are optional — they do not count towards the checklist. If you verify one live anyway, it is recordable under the id in brackets.\n\n'
+    // One bullet per case, on one line. A leading "1." would be re-numbered by
+    // the markdown-to-ADF conversion into an ordered list, and the numbers are
+    // load-bearing here — `plan_adoption` reads this section back out of the
+    // posted comment, and a renumber would move every id.
+    coveredCases.forEach(({ test, section }, index) => {
+      const title = typeof test.title === 'string' ? test.title : JSON.stringify(test.title)
+      const ref = test.unit_test_ref ? `; covered by \`${test.unit_test_ref}\`` : ''
+      jira += `  • [\`${caseId(COVERED_SECTION_KEY, index)}\`] ${title} (from \`${section}\`${ref})\n`
+    })
+    jira += '\n'
   }
 
   return jira

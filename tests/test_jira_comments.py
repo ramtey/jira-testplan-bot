@@ -550,3 +550,122 @@ async def test_failure_on_the_first_part_still_raises():
         with patch.object(jira, '_create_comment', side_effect=JiraConnectionError("down")):
             with pytest.raises(JiraConnectionError):
                 await jira.post_comment("TEST-123", _oversized_plan(29))
+
+
+# ---------------------------------------------------------------------------
+# The version marker.
+#
+# Regenerating a plan updates the existing comment rather than adding a new one,
+# which is what keeps a ticket from collecting five copies of the same plan. The
+# cost is that Jira leaves `created` at the original date and moves only
+# `updated`: SK-2325's comments 332346/332347 were regenerated and read as
+# unchanged, and the natural conclusion from the ticket alone was that the
+# regeneration had failed.
+#
+# An edit cannot manufacture activity. It can stop being anonymous. The version
+# rides on the marker paragraph — `_wrap_body_in_expand` leaves exactly that one
+# line outside the collapsed body — so a reader sees "v3" without clicking.
+# ---------------------------------------------------------------------------
+
+
+def test_the_version_note_names_what_it_replaces():
+    from datetime import datetime, timezone
+
+    from src.app.jira_client import plan_version_note
+
+    note = plan_version_note(3, datetime(2026, 9, 23, 14, 2, tzinfo=timezone.utc))
+    assert "v3" in note
+    assert "replaces v2" in note
+    assert "23 Sep 2026" in note
+
+
+def test_a_first_post_is_not_described_as_replacing_anything():
+    from datetime import datetime, timezone
+
+    from src.app.jira_client import plan_version_note
+
+    note = plan_version_note(1, datetime(2026, 9, 23, 14, 2, tzinfo=timezone.utc))
+    assert "v1" in note
+    assert "replaces" not in note
+
+
+def test_no_version_means_no_note_rather_than_a_guess():
+    from src.app.jira_client import plan_version_note
+
+    assert plan_version_note(None) is None
+    assert plan_version_note(0) is None
+
+
+def test_the_version_rides_on_the_line_jira_leaves_visible():
+    """`_wrap_body_in_expand` collapses everything after content[0]. A version
+    line anywhere in the body would be behind "Click to view", which is exactly
+    as invisible as no version line at all."""
+    from src.app.jira_client import _marker_line
+
+    note = "v3 · updated in place 23 Sep 2026 14:02 UTC (replaces v2)"
+    marked = f"{_marker_line(note)}\n\nSome plan body\n\nMore body"
+    doc = _wrap_body_in_expand(markdown_to_adf(marked))
+
+    assert [node["type"] for node in doc["content"]] == ["paragraph", "expand"]
+    assert note in doc["content"][0]["content"][0]["text"]
+
+
+def test_a_versioned_marker_is_still_recognised_as_a_plan_comment():
+    """Comment reuse keys off the marker. A version suffix that broke the match
+    would post a second copy of the plan on every regeneration — the duplicate
+    pile-up that update-in-place exists to prevent."""
+    from src.app.jira_client import _comment_carries_test_plan_marker, _marker_line
+
+    doc = _wrap_body_in_expand(
+        markdown_to_adf(f"{_marker_line('v3 · updated in place')}\n\nBody\n\nMore")
+    )
+    assert _comment_carries_test_plan_marker({"body": doc})
+
+
+def test_a_versioned_plan_still_splits_into_parts_that_fit():
+    """The marker line got longer, and packing measures against it. A probe that
+    still assumed the bare marker would size parts to just under the limit and
+    then push each one over when the version was prepended."""
+    note = "v12 · updated in place 23 Sep 2026 14:02 UTC (replaces v11)"
+    from src.app.jira_client import _marker_line
+
+    body = "\n\n".join(
+        f"**{i}. [happy_path:{i}] A case with a reasonably long title**\n\n"
+        + ("Steps: " + "x" * 400)
+        + "\n\n────────────────────────────────────────────"
+        for i in range(120)
+    )
+    parts, _truncated = _split_marked_text_into_parts(
+        f"{_marker_line(note)}\n\n{body}", note
+    )
+    assert len(parts) > 1
+    for part in parts:
+        assert note in part.splitlines()[0]
+        assert _adf_size(part) <= JIRA_COMMENT_MAX_BYTES
+
+
+@pytest.mark.asyncio
+async def test_an_unversioned_post_is_byte_identical_to_what_it_always_was():
+    """The note is optional everywhere. A caller that has no version must still
+    produce the exact comment it produced before this existed."""
+    jira = JiraClient()
+    with patch.object(jira, "get_comments", return_value=[]):
+        with patch.object(jira, "_create_comment") as create:
+            create.return_value = {"id": "1"}
+            await jira.post_comment("TEST-123", "Test plan content")
+    posted = create.call_args[0][1]
+    assert posted == f"{TEST_PLAN_MARKER}\n\nTest plan content"
+
+
+@pytest.mark.asyncio
+async def test_a_versioned_post_puts_the_version_on_the_first_line():
+    jira = JiraClient()
+    with patch.object(jira, "get_comments", return_value=[]):
+        with patch.object(jira, "_create_comment") as create:
+            create.return_value = {"id": "1"}
+            result = await jira.post_comment(
+                "TEST-123", "Test plan content", version_note="v3 · updated in place"
+            )
+    posted = create.call_args[0][1]
+    assert posted.splitlines()[0] == f"{TEST_PLAN_MARKER} — v3 · updated in place"
+    assert result["version_note"] == "v3 · updated in place"

@@ -8,6 +8,7 @@ import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdow
 import { API_BASE_URL } from '../config'
 import { useTicketWalkthrough } from '../hooks/useTicketWalkthrough'
 import Icon from './Icon'
+import MarkCarryOverModal from './MarkCarryOverModal'
 import { Btn, Chip, ACTag, Pri, Cbx, Alert } from './ui'
 
 const API_BASE = API_BASE_URL
@@ -48,11 +49,55 @@ const SECTIONS = [
 ]
 const SECTION_KEYS = SECTIONS.map((s) => s.key)
 // Card sections whose cases the planner can flag as already covered by an
-// existing unit test. Those cases are pulled into a separate collapsed list.
+// existing unit test. Those cases are pulled into a separate list.
 const COVERABLE_KEYS = ['happy_path', 'edge_cases', 'integration_tests']
+// The namespace those lifted cases are addressed in. They are optional — they
+// do not count towards the checklist — but they are not absent: a tester who
+// verifies one live has an id to record it under. See `progress_key.py`.
+const COVERED_KEY = 'covered_by_unit_test'
 
 function sectionLength(testPlan, key) {
   return Array.isArray(testPlan?.[key]) ? testPlan[key].length : 0
+}
+
+/**
+ * The canonical id of a case, rendered where the tester can read it.
+ *
+ * The visible grouping has never matched storage. This view shows Happy Path,
+ * Edge & Error (with `error_handling` and `boundary` chips), Integration &
+ * Backend (with a Cross-project chip) and Regression — but `edge_cases`
+ * interleaves the two edge categories by plan position, so the second boundary
+ * case on screen is `edge_cases:3`, not `edge_cases:1`. Anyone mapping from the
+ * labels marks a different case than they meant to, silently and plausibly.
+ * SK-2325 is where that was caught.
+ *
+ * Making the grouping match storage would mean splitting `edge_cases` into two
+ * stored sections, which moves every index and orphans every recorded mark.
+ * Printing the id instead costs one badge per card and removes the mapping step
+ * entirely — the tester, the Jira comment and `mark-passed.sh` all quote the
+ * same string.
+ */
+function CaseIdBadge({ id }) {
+  return (
+    <code
+      title={`Canonical id — quote this to mark the case (e.g. mark-passed.sh ${id}). The section headings above are display groupings and do not always match it.`}
+      style={{
+        height: 18,
+        padding: '0 6px',
+        background: 'var(--bg-input)',
+        border: '1px solid var(--line)',
+        color: 'var(--fg-subtle)',
+        borderRadius: 3,
+        fontSize: 10.5,
+        fontFamily: 'var(--font-mono)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        letterSpacing: 0,
+      }}
+    >
+      {id}
+    </code>
+  )
 }
 
 /**
@@ -74,8 +119,14 @@ function sectionLength(testPlan, key) {
  * divergence between this view's filtering and the server's counting rule
  * surfaces as a visible warning instead of silent zeros.
  */
-function localFingerprint(testPlan) {
-  return SECTION_KEYS.map((k) => sectionLength(testPlan, k)).join('-')
+function localFingerprint(displayPlan, coveredCount = 0) {
+  const parts = SECTION_KEYS.map((k) => sectionLength(displayPlan, k))
+  // The fifth component exists only when there are covered cases, so a plan
+  // without any keeps the exact key it had before they became addressable —
+  // and its recorded progress with it. `progress_key.fingerprint` omits it the
+  // same way; these two must agree or the drift warning fires on every plan.
+  if (coveredCount > 0) parts.push(coveredCount)
+  return parts.join('-')
 }
 
 /**
@@ -274,6 +325,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+            <CaseIdBadge id={storedId} />
             {test.priority && <Pri level={test.priority} />}
             {acIds.map((id) => <ACTag key={id}>{shortAcId(id, ticketKeys)}</ACTag>)}
             {showCategory && test.category && (
@@ -540,6 +592,7 @@ function ChecklistSection({ section, items, checkedTests, onToggle }) {
           return (
             <div key={i} style={{ display: 'flex', gap: 'var(--s-4)', padding: '6px 0', borderBottom: i < items.length - 1 ? '1px solid var(--divider)' : 'none', alignItems: 'center' }}>
               <Cbx checked={isChecked} onChange={() => onToggle(section.key, i)} />
+              <CaseIdBadge id={id} />
               <span
                 style={{
                   flex: 1,
@@ -865,53 +918,110 @@ function GroundingWarningRow({ warning, ticketKeys }) {
  * Collapsed by default so QA's manual checklist stays lean — they're shown for
  * completeness (and to prove the coverage was considered, not forgotten).
  */
-function CoveredByUnitTestsSection({ cases }) {
+/**
+ * Cases a unit test already asserts: optional, not absent.
+ *
+ * These are lifted out of the manual sections so the checklist QA actually runs
+ * stays lean, and that was right. Removing them from the *id space* was not: a
+ * covered case had no `section:index` at all, so a tester who verified one live
+ * had nowhere to record it. SK-2325's plan 536 is the case — all four of its
+ * integration cases were flagged covered, the section rendered as 0 of 0, two
+ * were then verified live with real evidence, and `mark-passed.sh` answered
+ * "'integration_tests:0' is out of range — integration_tests has 0 case(s),
+ * valid indexes 0..-1".
+ *
+ * They are now checkable under `covered_by_unit_test:<n>`, and excluded from
+ * the checklist denominator so ticking none of them still reads 100%. Open by
+ * default once any of them is checked, so recorded evidence is never hidden
+ * behind a collapsed header.
+ */
+function CoveredByUnitTestsSection({ cases, checkedTests, onToggle }) {
+  const checkedCount = cases
+    ? cases.reduce((acc, _, i) => acc + (checkedTests.has(`${COVERED_KEY}:${i}`) ? 1 : 0), 0)
+    : 0
   const [open, setOpen] = useState(false)
+  const openNow = open || checkedCount > 0
   if (!cases || cases.length === 0) return null
   return (
     <section id="sect-covered-by-unit-tests" style={{ marginTop: 'var(--s-8)' }}>
       <header
         onClick={() => setOpen((v) => !v)}
-        style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: open ? 'var(--s-4)' : 0, cursor: 'pointer' }}
+        style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: openNow ? 'var(--s-4)' : 0, cursor: 'pointer' }}
       >
-        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} style={{ color: 'var(--fg-muted)' }} />
+        <Icon name={openNow ? 'chevron-down' : 'chevron-right'} size={14} style={{ color: 'var(--fg-muted)' }} />
         <Icon name="beaker" size={16} style={{ color: 'var(--fg-muted)' }} />
         <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-muted)' }}>
           Already covered by unit tests
         </h2>
         <Chip size="sm">{cases.length}</Chip>
+        {checkedCount > 0 && (
+          <Chip
+            size="sm"
+            style={{
+              background: 'rgba(34,197,94,.12)',
+              borderColor: 'rgba(34,197,94,.3)',
+              color: 'var(--success)',
+            }}
+          >
+            {checkedCount} also verified in UAT
+          </Chip>
+        )}
         <span style={{ flex: 1 }} />
-        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Automated · QA can skip</span>
+        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>
+          Optional · not counted in progress
+        </span>
       </header>
-      {open && (
+      {openNow && (
         <div className="card" style={{ padding: 'var(--s-5) var(--s-6)' }}>
-          {cases.map((test, i) => (
-            <div
-              key={i}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 2,
-                padding: '8px 0',
-                borderBottom: i < cases.length - 1 ? '1px solid var(--divider)' : 'none',
-              }}
-            >
-              <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
-                {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
-              </span>
-              {test.unit_test_ref && (
-                <code
-                  style={{
-                    fontSize: 10.5,
-                    color: 'var(--fg-subtle)',
-                    fontFamily: 'var(--font-mono)',
-                  }}
-                >
-                  {test.unit_test_ref}
-                </code>
-              )}
-            </div>
-          ))}
+          <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', paddingBottom: 'var(--s-4)' }}>
+            QA can skip these — an automated test already asserts them. Tick one
+            only if you verified it live anyway; it is recorded like any other
+            case and left out of the checklist total.
+          </div>
+          {cases.map((test, i) => {
+            const id = `${COVERED_KEY}:${i}`
+            const isChecked = checkedTests.has(id)
+            return (
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 'var(--s-4)',
+                  padding: '8px 0',
+                  borderBottom: i < cases.length - 1 ? '1px solid var(--divider)' : 'none',
+                }}
+              >
+                <Cbx checked={isChecked} onChange={() => onToggle(COVERED_KEY, i)} />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                    <CaseIdBadge id={id} />
+                    <span
+                      style={{
+                        fontSize: 'var(--t-sm)',
+                        color: isChecked ? 'var(--fg-muted)' : 'var(--fg)',
+                        textDecoration: isChecked ? 'line-through' : 'none',
+                        textDecorationColor: 'var(--fg-faint)',
+                      }}
+                    >
+                      {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
+                    </span>
+                  </div>
+                  {test.unit_test_ref && (
+                    <code
+                      style={{
+                        fontSize: 10.5,
+                        color: 'var(--fg-subtle)',
+                        fontFamily: 'var(--font-mono)',
+                      }}
+                    >
+                      {test.unit_test_ref}
+                    </code>
+                  )}
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
     </section>
@@ -1170,7 +1280,7 @@ function NoSourcePanel({ plan }) {
  * cases were sitting under the previous plan's shape. Each of those now says
  * which one it is.
  */
-function ProgressTrackingNotice({ status, shapeDrift, storedFingerprint, shownFingerprint, orphans }) {
+function ProgressTrackingNotice({ status, shapeDrift, storedFingerprint, shownFingerprint, orphans, onCarryOver }) {
   if (shapeDrift) {
     return (
       <Alert tone="danger" title="The plan on screen isn't the stored plan">
@@ -1211,6 +1321,13 @@ function ProgressTrackingNotice({ status, shapeDrift, storedFingerprint, shownFi
         regenerating starts it over — those marks are still recorded, they just
         don't map onto the cases below. This plan's own checklist is empty, not
         untested.
+        {onCarryOver && (
+          <div style={{ marginTop: 'var(--s-4)' }}>
+            <Btn variant="ghost" icon="history" onClick={onCarryOver}>
+              Review and carry over
+            </Btn>
+          </div>
+        )}
       </Alert>
     )
   }
@@ -1226,9 +1343,11 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const [postingStates, setPostingStates] = useState({})
 
   // Pull cases the planner flagged as already covered by a unit test out of the
-  // manual QA sections into a separate collapsed list, so the checklist QA
-  // actually runs stays lean. `displayPlan` drives all section rendering and
-  // progress; checkbox indices are relative to this filtered view. Export/post
+  // manual QA sections into their own list, so the checklist QA actually runs
+  // stays lean. `displayPlan` drives the four sections and the progress total;
+  // checkbox indices there are relative to this filtered view. The lifted cases
+  // are not discarded — they keep their own namespace (`covered_by_unit_test:n`,
+  // in exactly this flat order) so evidence for one is recordable. Export/post
   // helpers receive the full `testPlan` — the formatters filter internally.
   const { displayPlan, coveredCases } = useMemo(() => {
     const covered = []
@@ -1246,15 +1365,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     return { displayPlan: dp, coveredCases: covered }
   }, [testPlan])
 
-  // Whether the "already covered by unit tests" cases are included in the Jira
-  // comment. Off by default — QA wants a lean checklist; on writes the full
-  // record. Resets when the plan identity changes.
-  const [includeCovered, setIncludeCovered] = useState(false)
-
   const [isPosting, setIsPosting] = useState(false)
-  useEffect(() => {
-    setIncludeCovered(false)
-  }, [testPlan?.plan_id])
 
   // Walkthrough (Loom / screenshot / notes) is authored inline in the
   // Pass-to-UAT form (WorkflowActions). Here it's read-only — fetched purely
@@ -1334,7 +1445,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const shapeDrift =
     keyState.status === 'ready' &&
     keyState.fingerprint !== null &&
-    keyState.fingerprint !== localFingerprint(displayPlan)
+    keyState.fingerprint !== localFingerprint(displayPlan, coveredCases.length)
 
   // localStorage mirror. Follows the canonical key when there is one; otherwise
   // a `local:` key that is never sent anywhere, so an unrecorded plan still has
@@ -1342,8 +1453,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const storageKey = useMemo(() => {
     if (serverKey) return `${PROGRESS_STORAGE_PREFIX}${serverKey}`
     if (!ticketKeysJoined || keyState.status === 'pending') return null
-    return `${PROGRESS_STORAGE_PREFIX}local:${ticketKeysJoined}:${localFingerprint(displayPlan)}`
-  }, [serverKey, keyState.status, ticketKeysJoined, displayPlan])
+    return `${PROGRESS_STORAGE_PREFIX}local:${ticketKeysJoined}:${localFingerprint(displayPlan, coveredCases.length)}`
+  }, [serverKey, keyState.status, ticketKeysJoined, displayPlan, coveredCases.length])
 
   const [checkedTests, setCheckedTests] = useState(() => {
     if (!storageKey || typeof window === 'undefined') return new Set()
@@ -1437,6 +1548,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   // anything, since which checks still apply to a changed plan is a judgement
   // only a tester can make.
   const [orphanedProgress, setOrphanedProgress] = useState(null)
+  const [carryOverOpen, setCarryOverOpen] = useState(false)
   useEffect(() => {
     setOrphanedProgress(null)
     if (!serverKey) return
@@ -1648,7 +1760,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const handlePostToJira = async () => {
     setIsPosting(true)
     try {
-      const jiraText = formatTestPlanAsJira(testPlan, walkthrough, { includeCovered })
+      const jiraText = formatTestPlanAsJira(testPlan, walkthrough)
       const response = await fetch(`${API_BASE}/jira/post-comment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1679,7 +1791,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const postToKey = async (issueKey, otherKeys = []) => {
     setPostingStates((prev) => ({ ...prev, [issueKey]: 'posting' }))
     try {
-      let jiraText = formatTestPlanAsJira(testPlan, walkthrough, { includeCovered })
+      let jiraText = formatTestPlanAsJira(testPlan, walkthrough)
       if (otherKeys.length > 0) {
         jiraText += `\n\n----\n_Also posted to: ${otherKeys.join(', ')}_`
       }
@@ -2037,9 +2149,24 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         status={keyState.status}
         shapeDrift={shapeDrift}
         storedFingerprint={keyState.fingerprint}
-        shownFingerprint={localFingerprint(displayPlan)}
+        shownFingerprint={localFingerprint(displayPlan, coveredCases.length)}
         orphans={orphanedProgress}
+        onCarryOver={planId ? () => setCarryOverOpen(true) : null}
       />
+
+      {carryOverOpen && planId && (
+        <MarkCarryOverModal
+          planId={planId}
+          onClose={() => setCarryOverOpen(false)}
+          onCarried={(ids) => {
+            // The server has the authoritative set now. Adopt it wholesale
+            // rather than merging locally — a second producer of this set is
+            // how checks end up recorded where nothing renders them.
+            setCheckedTests(new Set(ids))
+            setOrphanedProgress(null)
+          }}
+        />
+      )}
 
       <SourceProvenancePanel provenance={testPlan.source_provenance} />
 
@@ -2083,7 +2210,11 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
 
       <NeedsSpecSection cases={testPlan.needs_spec_cases} />
 
-      <CoveredByUnitTestsSection cases={coveredCases} />
+      <CoveredByUnitTestsSection
+        cases={coveredCases}
+        checkedTests={checkedTests}
+        onToggle={toggleTest}
+      />
 
       {/* Export & post bar */}
       <div className="card" style={{ marginTop: 'var(--s-9)', padding: 'var(--s-6)' }}>
@@ -2122,16 +2253,11 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         </div>
 
         {coveredCases.length > 0 && (
-          <div style={{ marginTop: 'var(--s-4)', paddingTop: 'var(--s-4)', borderTop: '1px solid var(--divider)' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--s-3)', cursor: 'pointer' }}>
-              <Cbx checked={includeCovered} onChange={() => setIncludeCovered((v) => !v)} />
-              <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>
-                Include the {coveredCases.length} unit-tested case{coveredCases.length === 1 ? '' : 's'} in the Jira comment
-              </span>
-            </label>
-            <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', marginTop: 4, marginLeft: 26 }}>
-              Off by default — these are already automated, so the posted checklist stays lean. Turn on to keep the full record.
-            </div>
+          <div style={{ marginTop: 'var(--s-4)', paddingTop: 'var(--s-4)', borderTop: '1px solid var(--divider)', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+            The {coveredCases.length} unit-tested case{coveredCases.length === 1 ? '' : 's'} {coveredCases.length === 1 ? 'is' : 'are'} always listed
+            in the comment, last and marked optional. They used to be omitted by
+            default, which left the UAT runner with no id to record against when
+            one was verified live anyway.
           </div>
         )}
 

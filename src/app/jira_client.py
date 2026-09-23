@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import NamedTuple
 
 import httpx
@@ -276,17 +277,57 @@ _PART_HEADER_PROBE = (
 _CONTINUED_SUFFIX = " (continued)"
 
 
+def plan_version_note(version: int | None, when: datetime | None = None) -> str | None:
+    """The version line that rides on the marker, e.g. ``v3 · updated 23 Sep 2026``.
+
+    Posting a regenerated plan updates the existing comment in place rather than
+    adding a new one — that is what keeps a ticket from collecting five copies of
+    the same plan. The cost is that Jira leaves `created` at the original date and
+    only moves `updated`, so a watcher sees no new activity and can reasonably
+    conclude the regeneration failed. SK-2325's comments 332346/332347 were read
+    exactly that way.
+
+    An edit cannot manufacture activity, but it can stop being anonymous: the
+    version number rides on the marker paragraph, which is the one line
+    `_wrap_body_in_expand` leaves outside the collapsed body, so it is visible
+    without expanding anything. A reader comparing what they remember against
+    `v3` can tell at a glance that the plan moved.
+    """
+    if not version or version < 1:
+        return None
+    stamp = (when or datetime.now(timezone.utc)).strftime("%d %b %Y %H:%M UTC")
+    if version == 1:
+        return f"v1 · posted {stamp}"
+    return f"v{version} · updated in place {stamp} (replaces v{version - 1})"
+
+
+def _marker_line(note: str | None = None) -> str:
+    """The always-visible first line of a plan comment."""
+    return f"{TEST_PLAN_MARKER} — {note}" if note else TEST_PLAN_MARKER
+
+
+def _part_header_probe(note: str | None = None) -> str:
+    if not note:
+        return _PART_HEADER_PROBE
+    return (
+        f"{_marker_line(note)} "
+        f"(part {JIRA_COMMENT_MAX_PARTS} of {JIRA_COMMENT_MAX_PARTS})\n\n"
+    )
+
+
 def _adf_size(text: str) -> int:
     """Bytes of ADF JSON that `text` turns into once wrapped for posting."""
     return len(json.dumps(_wrap_body_in_expand(markdown_to_adf(text))))
 
 
-def _part_header(index: int, total: int) -> str:
-    """Marker line for part `index` of `total`. A single-part post keeps the
-    bare marker so the common case reads exactly as it always has."""
+def _part_header(index: int, total: int, note: str | None = None) -> str:
+    """Marker line for part `index` of `total`. A single-part post with no
+    version note keeps the bare marker so the common case reads exactly as it
+    always has."""
+    line = _marker_line(note)
     if total <= 1:
-        return f"{TEST_PLAN_MARKER}\n\n"
-    return f"{TEST_PLAN_MARKER} (part {index} of {total})\n\n"
+        return f"{line}\n\n"
+    return f"{line} (part {index} of {total})\n\n"
 
 
 def _is_section_heading_line(line: str) -> bool:
@@ -340,19 +381,19 @@ def _largest_prefix_that_fits(header: str, block: str) -> int:
     return max(best, 1)
 
 
-def _split_block_finer(block: str) -> list[str]:
+def _split_block_finer(block: str, probe: str = _PART_HEADER_PROBE) -> list[str]:
     """Break a single over-large block down further: paragraphs first, and a
     hard character slice only when the block is one unbroken paragraph."""
     chunks = [c for c in re.split(r"\n[ \t]*\n", block) if c.strip()]
     if len(chunks) > 1:
         return [c.rstrip() + "\n\n" for c in chunks]
-    kept = _largest_prefix_that_fits(_PART_HEADER_PROBE, block)
+    kept = _largest_prefix_that_fits(probe, block)
     if kept >= len(block):
         return [block]
     return [block[:kept], block[kept:]]
 
 
-def _pack_blocks(blocks: list[str]) -> list[str]:
+def _pack_blocks(blocks: list[str], probe: str = _PART_HEADER_PROBE) -> list[str]:
     """Greedily fill parts with whole blocks, repeating the open section banner
     at the top of each continuation so a part never opens with orphaned cases."""
     parts: list[str] = []
@@ -369,7 +410,7 @@ def _pack_blocks(blocks: list[str]) -> list[str]:
             if carry and not opens_section:
                 current = f"{carry}{_CONTINUED_SUFFIX}\n\n"
         candidate = current + block
-        if _adf_size(_PART_HEADER_PROBE + candidate) <= JIRA_COMMENT_MAX_BYTES:
+        if _adf_size(probe + candidate) <= JIRA_COMMENT_MAX_BYTES:
             current = candidate
             blocks_in_current += 1
             carry = _last_section_heading(block) or carry
@@ -382,7 +423,7 @@ def _pack_blocks(blocks: list[str]) -> list[str]:
             queue.insert(0, block)
             continue
         # The block doesn't fit even on its own — break it down and retry.
-        finer = _split_block_finer(block)
+        finer = _split_block_finer(block, probe)
         if len(finer) == 1 and finer[0] == block:
             # Unsplittable and still too big: take it whole and let the
             # part cap's truncation notice account for the overflow.
@@ -396,7 +437,9 @@ def _pack_blocks(blocks: list[str]) -> list[str]:
     return parts
 
 
-def _split_marked_text_into_parts(marked_text: str) -> tuple[list[str], bool]:
+def _split_marked_text_into_parts(
+    marked_text: str, note: str | None = None
+) -> tuple[list[str], bool]:
     """Return `(parts, truncated)`: the plan laid out over as many Jira comments
     as it needs, and whether anything still had to be dropped.
 
@@ -406,17 +449,18 @@ def _split_marked_text_into_parts(marked_text: str) -> tuple[list[str], bool]:
         return [marked_text], False
 
     body = marked_text
-    prefix = f"{TEST_PLAN_MARKER}\n\n"
+    prefix = f"{_marker_line(note)}\n\n"
     if body.startswith(prefix):
         body = body[len(prefix):]
 
-    bodies = _pack_blocks(_split_into_blocks(body)) or [body]
+    probe = _part_header_probe(note)
+    bodies = _pack_blocks(_split_into_blocks(body), probe) or [body]
     truncated = len(bodies) > JIRA_COMMENT_MAX_PARTS
     if truncated:
         bodies = bodies[:JIRA_COMMENT_MAX_PARTS]
 
     total = len(bodies)
-    parts = [_part_header(i + 1, total) + b.rstrip() for i, b in enumerate(bodies)]
+    parts = [_part_header(i + 1, total, note) + b.rstrip() for i, b in enumerate(bodies)]
 
     if truncated:
         # The notice goes on before the refit, not after: refitting a part that
@@ -3229,7 +3273,12 @@ class JiraClient:
 
         return r.json()
 
-    async def post_comment(self, issue_key: str, comment_text: str) -> dict:
+    async def post_comment(
+        self,
+        issue_key: str,
+        comment_text: str,
+        version_note: str | None = None,
+    ) -> dict:
         """
         Post a test plan to a Jira issue, updating the existing plan comment(s) if found.
 
@@ -3242,6 +3291,11 @@ class JiraClient:
         Args:
             issue_key: The Jira issue key (e.g., "PROJ-123")
             comment_text: Plain text comment to post
+            version_note: Short version line for the marker paragraph, from
+                `plan_version_note`. Riding on the marker keeps it outside the
+                collapsed body, which is the only place a reader sees without
+                clicking — the point being that an update-in-place post is
+                otherwise indistinguishable from the one it replaced.
 
         Returns:
             dict: Jira's response for the FIRST comment, plus:
@@ -3259,9 +3313,8 @@ class JiraClient:
             JiraAuthError: If authentication fails or permissions are insufficient
             JiraConnectionError: If Jira is unreachable
         """
-        marker = TEST_PLAN_MARKER
-        marked_text = f"{marker}\n\n{comment_text}"
-        parts, truncated = _split_marked_text_into_parts(marked_text)
+        marked_text = f"{_marker_line(version_note)}\n\n{comment_text}"
+        parts, truncated = _split_marked_text_into_parts(marked_text, version_note)
         if truncated:
             logger.warning(
                 "Test plan for %s exceeded %d Jira comments and was truncated",
@@ -3337,6 +3390,7 @@ class JiraClient:
         result["part_comment_ids"] = [str(r.get("id")) for r in results if r.get("id")]
         result["stale_parts_left"] = stale_left
         result["part_error"] = part_error
+        result["version_note"] = version_note
         return result
 
     async def upload_attachments(

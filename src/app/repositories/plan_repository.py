@@ -103,6 +103,53 @@ async def find_latest_plan_for_ticket(
     )
 
 
+async def find_plans_for_tickets(
+    db: AsyncIOMotorDatabase,
+    *,
+    ticket_keys: Iterable[str],
+    exclude_plan_id: int | None = None,
+    limit: int = 25,
+) -> list[tuple[GeneratedPlan, list[str]]]:
+    """Every stored test plan that touched any of `ticket_keys`, newest first,
+    paired with its own run's ticket keys.
+
+    The run's keys travel with the plan because `build_progress_key` needs them:
+    a plan's key is its *own* run's ticket order, not the caller's. Used by
+    `mark_carryover` to work out which stored plan a given orphaned progress row
+    was recorded against, which is the only way to say what `edge_cases:3` meant
+    when it was ticked.
+    """
+    keys = [k for k in ticket_keys if k]
+    if not keys:
+        return []
+    runs = await crud.find_many(
+        db,
+        Run,
+        {"ticket_keys": {"$in": keys}, **_SUCCESSFUL_TEST_PLAN_RUN},
+        sort=[("created_at", DESCENDING)],
+    )
+    if not runs:
+        return []
+    runs_by_id = {run.id: run for run in runs}
+    plans = await crud.find_many(
+        db,
+        GeneratedPlan,
+        {"run_id": {"$in": list(runs_by_id)}},
+        sort=[("created_at", DESCENDING)],
+    )
+    out: list[tuple[GeneratedPlan, list[str]]] = []
+    for plan in plans:
+        if exclude_plan_id is not None and plan.id == exclude_plan_id:
+            continue
+        run = runs_by_id.get(plan.run_id)
+        if run is None:
+            continue
+        out.append((plan, list(run.ticket_keys or [])))
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def list_runs_with_plans_by_ticket(
     db: AsyncIOMotorDatabase,
     *,

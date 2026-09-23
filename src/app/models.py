@@ -557,6 +557,17 @@ class TestPlanProgressUpdateRequest(BaseModel):
     checked_ids: list[str] = []
 
 
+class MarkCarryOverRequest(BaseModel):
+    """Request body for carrying QA marks across a regeneration.
+
+    ``ids`` are ids in the *new* plan's space — the targets the tester confirmed,
+    not the old ids they came from. The server unions them into the new plan's
+    progress and refuses any id that names no case, so a carry-over can never
+    write a check that nothing renders."""
+
+    ids: list[str] = []
+
+
 class TicketHoldRequest(BaseModel):
     """Request body for putting a ticket on QA hold.
 
