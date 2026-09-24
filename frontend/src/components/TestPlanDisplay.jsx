@@ -76,14 +76,24 @@ function sectionLength(testPlan, key) {
  * Printing the id instead costs one badge per card and removes the mapping step
  * entirely — the tester, the Jira comment and `mark-passed.sh` all quote the
  * same string.
+ *
+ * `display` overrides the badge text without touching that contract: the
+ * tooltip still spells the id out in full, and the caller is expected to print
+ * the namespace somewhere the reader can see it. Only `regression_checklist`
+ * uses it, being the one section whose heading maps 1:1 to its stored key and
+ * index — so repeating that prefix on all twelve rows buys nothing.
  */
-function CaseIdBadge({ id }) {
+function CaseIdBadge({ id, display }) {
   return (
     <code
       title={`Canonical id — quote this to mark the case (e.g. mark-passed.sh ${id}). The section headings above are display groupings and do not always match it.`}
       style={{
         height: 18,
-        padding: '0 6px',
+        // A numeric badge is one or two digits wide. Padding alone would leave
+        // the two-digit rows wider than the rest, jogging the text column, so
+        // it gets a fixed box and centres inside it instead.
+        padding: display === undefined ? '0 6px' : '0 2px',
+        minWidth: display === undefined ? undefined : 24,
         background: 'var(--bg-input)',
         border: '1px solid var(--line)',
         color: 'var(--fg-subtle)',
@@ -92,10 +102,11 @@ function CaseIdBadge({ id }) {
         fontFamily: 'var(--font-mono)',
         display: 'inline-flex',
         alignItems: 'center',
+        justifyContent: 'center',
         letterSpacing: 0,
       }}
     >
-      {id}
+      {display ?? id}
     </code>
   )
 }
@@ -583,7 +594,10 @@ function ChecklistSection({ section, items, checkedTests, onToggle }) {
         <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-strong)' }}>{section.label}</h2>
         <SectionChip checked={c} total={items.length} />
         <span style={{ flex: 1 }} />
-        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Plain checklist · no metadata</span>
+        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>
+          Plain checklist · no metadata · ids{' '}
+          <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>{section.key}:N</code>
+        </span>
       </header>
       <div className="card" style={{ padding: 'var(--s-5) var(--s-6)' }}>
         {items.map((item, i) => {
@@ -592,7 +606,7 @@ function ChecklistSection({ section, items, checkedTests, onToggle }) {
           return (
             <div key={i} style={{ display: 'flex', gap: 'var(--s-4)', padding: '6px 0', borderBottom: i < items.length - 1 ? '1px solid var(--divider)' : 'none', alignItems: 'center' }}>
               <Cbx checked={isChecked} onChange={() => onToggle(section.key, i)} />
-              <CaseIdBadge id={id} />
+              <CaseIdBadge id={id} display={String(i)} />
               <span
                 style={{
                   flex: 1,
@@ -976,7 +990,10 @@ function CoveredByUnitTestsSection({ cases, checkedTests, onToggle }) {
           <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', paddingBottom: 'var(--s-4)' }}>
             QA can skip these — an automated test already asserts them. Tick one
             only if you verified it live anyway; it is recorded like any other
-            case and left out of the checklist total.
+            case and left out of the checklist total. All {cases.length} are
+            listed in the Jira comment too, last and marked optional: they used
+            to be omitted by default, which left the UAT runner with no id to
+            record against when one was verified live anyway.
           </div>
           {cases.map((test, i) => {
             const id = `${COVERED_KEY}:${i}`
@@ -2040,6 +2057,12 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                   : isMulti
                     ? `Post to selected (${selectedKeys.size})`
                     : 'Post to Jira'
+                // Said here because this is now the only Post control most
+                // plans render — the bar at the foot of the page that used to
+                // carry the sentence is gone for the single-ticket case.
+                const postHint = postNotification
+                  ? null
+                  : 'Updates the existing bot comment instead of duplicating.'
                 const postStyle =
                   postTone === 'error'
                     ? { ...base, background: 'var(--danger-soft)', borderColor: 'rgba(239,68,68,.5)', color: 'var(--danger)' }
@@ -2091,7 +2114,14 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                           <Icon name={postIcon} size={12} />
                         )}
                       </button>
-                      <span className="tip-body">{postLabel}</span>
+                      <span className="tip-body">
+                        {postLabel}
+                        {postHint && (
+                          <span style={{ display: 'block', marginTop: 3, color: 'var(--fg-subtle)' }}>
+                            {postHint}
+                          </span>
+                        )}
+                      </span>
                     </span>
                   </>
                 )
@@ -2216,7 +2246,15 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
         onToggle={toggleTest}
       />
 
-      {/* Export & post bar */}
+      {/* Export & post bar.
+
+          It used to render for every plan, and for the ordinary single-ticket
+          one it was three buttons the sticky bar already carries — duplicated
+          at the foot of a page you have to scroll to reach. What is left here
+          is what the sticky bar cannot show: the per-ticket selector a
+          multi-ticket post is driven from, and a full-size set of controls for
+          a plan with no cases, which renders no sticky bar at all. */}
+      {(isMulti || totalAll === 0) && (
       <div className="card" style={{ marginTop: 'var(--s-9)', padding: 'var(--s-6)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-5)', flexWrap: 'wrap' }}>
           <Icon name="upload" size={14} style={{ color: 'var(--fg-muted)' }} />
@@ -2226,40 +2264,35 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
               Posting to Jira updates the existing bot comment instead of duplicating.
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <Btn variant="ghost" icon="copy" onClick={handleCopyMarkdown}>
-              {copyNotification?.type === 'success' ? `✓ ${copyNotification.message}` : 'Copy markdown'}
-            </Btn>
-            <Btn variant="ghost" icon="download" onClick={handleDownloadMarkdown}>
-              Download .md
-            </Btn>
-            <span style={{ width: 1, height: 18, background: 'var(--line-strong)', alignSelf: 'center', margin: '0 4px' }} />
-            {!isMulti && (
-              <Btn
-                variant="primary"
-                icon="send"
-                onClick={handlePostToJira}
-                disabled={isPosting}
-                loading={isPosting}
-              >
-                {isPosting
-                  ? 'Posting…'
-                  : postNotification?.type === 'success'
-                  ? `✓ ${postNotification.message}`
-                  : 'Post to Jira'}
+          {totalAll === 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <Btn variant="ghost" icon="copy" onClick={handleCopyMarkdown}>
+                {copyNotification?.type === 'success' ? `✓ ${copyNotification.message}` : 'Copy markdown'}
               </Btn>
-            )}
-          </div>
+              <Btn variant="ghost" icon="download" onClick={handleDownloadMarkdown}>
+                Download .md
+              </Btn>
+              {!isMulti && (
+                <>
+                  <span style={{ width: 1, height: 18, background: 'var(--line-strong)', alignSelf: 'center', margin: '0 4px' }} />
+                  <Btn
+                    variant="primary"
+                    icon="send"
+                    onClick={handlePostToJira}
+                    disabled={isPosting}
+                    loading={isPosting}
+                  >
+                    {isPosting
+                      ? 'Posting…'
+                      : postNotification?.type === 'success'
+                      ? `✓ ${postNotification.message}`
+                      : 'Post to Jira'}
+                  </Btn>
+                </>
+              )}
+            </div>
+          )}
         </div>
-
-        {coveredCases.length > 0 && (
-          <div style={{ marginTop: 'var(--s-4)', paddingTop: 'var(--s-4)', borderTop: '1px solid var(--divider)', fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
-            The {coveredCases.length} unit-tested case{coveredCases.length === 1 ? '' : 's'} {coveredCases.length === 1 ? 'is' : 'are'} always listed
-            in the comment, last and marked optional. They used to be omitted by
-            default, which left the UAT runner with no id to record against when
-            one was verified live anyway.
-          </div>
-        )}
 
         {isMulti && (
           <div style={{ marginTop: 'var(--s-5)', paddingTop: 'var(--s-5)', borderTop: '1px solid var(--divider)' }}>
@@ -2358,6 +2391,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           </div>
         )}
       </div>
+      )}
     </div>
   )
 }
