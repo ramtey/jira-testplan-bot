@@ -4,7 +4,17 @@
 
 // The three card sections whose cases can be flagged as already covered by an
 // existing unit test. `regression_checklist` is plain strings and never flagged.
-const CARD_SECTION_KEYS = ['happy_path', 'edge_cases', 'integration_tests']
+const CARD_SECTION_KEYS = [
+  'happy_path',
+  'edge_cases',
+  'integration_tests',
+  // Appended last, and it must stay last: this order IS the
+  // `covered_by_unit_test:<n>` numbering, so inserting the security
+  // section anywhere earlier would renumber the covered cases of every
+  // plan written before it existed. `progress_key.COVERABLE_KEYS`
+  // repeats this order on the server.
+  'security_negative_tests',
+]
 
 const isCoveredByUnitTest = (test) => !!(test && test.covered_by_unit_test)
 
@@ -62,7 +72,7 @@ const formatCoversAcs = (test) => {
 }
 
 const planHasAnyAcs = (plan) =>
-  ['happy_path', 'edge_cases', 'integration_tests'].some((key) => {
+  ['happy_path', 'edge_cases', 'integration_tests', 'security_negative_tests'].some((key) => {
     const items = plan?.[key]
     if (!Array.isArray(items)) return false
     return items.some(
@@ -100,6 +110,45 @@ const SURFACE_LABELS = {
   mobile: 'Mobile',
   cli: 'CLI',
   manual_only: 'Manual only',
+}
+
+// Security cases carry a principal and a concrete request. The request is
+// the whole point of the section being API-level: the runner builds a curl or
+// Postman call from these fields and never opens the app, because no UI can
+// send an absent Authorization header or another sender's draft UUID.
+const PERSONA_LABELS = {
+  anonymous: 'Anonymous (no token)',
+  other_user: 'Another authenticated user (not the owner)',
+  owner: 'The owner — control case, expected to succeed',
+  deleted_user: 'Soft-deleted user, token still valid',
+  guest_capability: 'Capability-link holder, no user session',
+  service: 'Service principal',
+}
+
+const formatPersona = (test) => {
+  if (typeof test.persona !== 'string' || !test.persona.trim()) return ''
+  const label = PERSONA_LABELS[test.persona] || test.persona
+  return `**Runs as:** ${label}\n\n`
+}
+
+const formatRequest = (test) => {
+  const req = test.request
+  if (!req || typeof req !== 'object') return ''
+  const method = typeof req.method === 'string' ? req.method.trim() : ''
+  const route = typeof req.route === 'string' ? req.route.trim() : ''
+  if (!method && !route) return ''
+  let out = `**Request:** \`${[method, route].filter(Boolean).join(' ')}\``
+  if (typeof req.protocol === 'string' && req.protocol.trim()) {
+    out += ` _(${req.protocol.trim()})_`
+  }
+  out += '\n\n'
+  if (typeof req.params === 'string' && req.params.trim()) {
+    out += `**Params:** \`${req.params.trim()}\`\n\n`
+  }
+  if (typeof req.auth === 'string' && req.auth.trim()) {
+    out += `**Auth:** ${req.auth.trim()}\n\n`
+  }
+  return out
 }
 
 // What a runner needs to execute the case: surface, as whom, and where.
@@ -627,6 +676,52 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
     })
   }
 
+  const securityTests = uncovered(plan.security_negative_tests)
+  if (securityTests.length > 0) {
+    markdown += '## 🔐 Security Negative Tests\n\n'
+    markdown += '_API-level. Run these with curl, Postman or a Playwright request context — not through the app UI, which cannot send an absent token or another sender\u2019s record id. One case is one principal on one protocol; they are deliberately not merged._\n\n'
+    securityTests.forEach((test, index) => {
+      markdown += `### ${index + 1}. \`${caseId('security_negative_tests', index)}\` ${test.title}`
+      if (test.priority) {
+        const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
+        markdown += ` ${emoji} *${test.priority}*`
+      }
+      // The raw enum key, trailing — exactly how `edge_cases` prints its
+      // category. A pretty label here would not survive adoption: the parser
+      // strips one trailing bracket token and stores it, and mapping a label
+      // back to its key would mean a second copy of this table on the server.
+      if (test.security_category) {
+        markdown += ` [${test.security_category}]`
+      }
+      markdown += '\n\n'
+      markdown += formatNeedsVerification(test)
+      markdown += formatUnmergedGrounding(test)
+      markdown += formatPersona(test)
+      markdown += formatRequest(test)
+      if (test.preconditions) {
+        markdown += `**Preconditions:** ${test.preconditions}\n\n`
+      }
+      if (test.steps && test.steps.length > 0) {
+        markdown += '**Steps:**\n'
+        test.steps.forEach((step, stepIndex) => {
+          markdown += `${stepIndex + 1}. ${step}\n`
+        })
+        markdown += '\n'
+      }
+      if (test.expected) {
+        markdown += `**Expected Result:** ${test.expected}\n\n`
+      }
+      if (test.test_data) {
+        markdown += `**Test Data:** ${test.test_data}\n\n`
+      }
+      markdown += formatDataShape(test)
+      markdown += formatSurface(test)
+      markdown += formatExpectedVerification(test)
+      markdown += formatCoversAcs(test)
+      markdown += formatGroundedIn(test, hasAcs)
+    })
+  }
+
   if (plan.regression_checklist && plan.regression_checklist.length > 0) {
     markdown += '## 🔄 Regression Checklist\n\n'
     plan.regression_checklist.forEach((item, index) => {
@@ -929,6 +1024,72 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
         jira += '⚠️ Needs manual verification — AC element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n'
       }
       jira += formatUnmergedGroundingJira(test)
+      if (test.preconditions) {
+        jira += `Preconditions: ${test.preconditions}\n\n`
+      }
+      if (test.steps && test.steps.length > 0) {
+        jira += 'Steps:\n'
+        test.steps.forEach((step, stepIndex) => {
+          jira += `${stepIndex + 1}. ${step}\n`
+        })
+        jira += '\n'
+      }
+      if (test.expected) {
+        jira += `Expected Result: ${test.expected}\n\n`
+      }
+      if (test.test_data) {
+        jira += `Test Data: ${test.test_data}\n\n`
+      }
+      jira += formatDataShapeJira(test)
+      jira += formatSurfaceJira(test)
+      jira += formatExpectedVerificationJira(test)
+      jira += '────────────────────────────────────────────\n\n'
+    })
+  }
+
+  const securityTests = uncovered(plan.security_negative_tests)
+  if (securityTests.length > 0) {
+    jira += '🔐 SECURITY NEGATIVE TESTS\n\n'
+    jira += 'API-level — run with curl/Postman/a Playwright request context, not the app UI. One principal and one protocol per case, on purpose.\n\n'
+    securityTests.forEach((test, index) => {
+      let title = `**${index + 1}. [${caseId('security_negative_tests', index)}] ${test.title}`
+      if (test.priority) {
+        const emoji = test.priority === 'critical' ? '🔴' : test.priority === 'high' ? '🟡' : '🟢'
+        title += ` ${emoji} ${test.priority.toUpperCase()}`
+      }
+      if (test.security_category) {
+        title += ` [${test.security_category}]`
+      }
+      title += '**'
+      jira += `${title}\n\n`
+      if (test.needs_manual_verification) {
+        jira += '⚠️ Needs manual verification — element not found in PR diff/testID reference. See UI Grounding Warnings.\n\n'
+      }
+      jira += formatUnmergedGroundingJira(test)
+      if (typeof test.persona === 'string' && test.persona.trim()) {
+        jira += `Runs as: ${PERSONA_LABELS[test.persona] || test.persona}\n\n`
+      }
+      const req = test.request
+      if (req && typeof req === 'object') {
+        const method = typeof req.method === 'string' ? req.method.trim() : ''
+        const route = typeof req.route === 'string' ? req.route.trim() : ''
+        if (method || route) {
+          // Backticked for the same reason the regression ids are: Jira turns a
+          // lone underscore in plain paragraph text into an emphasis delimiter
+          // and eats it, and routes are full of them.
+          jira += `Request: \`${[method, route].filter(Boolean).join(' ')}\``
+          if (typeof req.protocol === 'string' && req.protocol.trim()) {
+            jira += ` (${req.protocol.trim()})`
+          }
+          jira += '\n\n'
+        }
+        if (typeof req.params === 'string' && req.params.trim()) {
+          jira += `Params: \`${req.params.trim()}\`\n\n`
+        }
+        if (typeof req.auth === 'string' && req.auth.trim()) {
+          jira += `Auth: ${req.auth.trim()}\n\n`
+        }
+      }
       if (test.preconditions) {
         jira += `Preconditions: ${test.preconditions}\n\n`
       }

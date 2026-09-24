@@ -29,6 +29,11 @@ from .model_capabilities import (
     supports_temperature,
 )
 from .models import BugAnalysis, TestPlan
+from .security_surfaces import (
+    detect_security_surfaces,
+    merge_development_infos,
+    render_security_guidance,
+)
 from .shared_component_fanout import detect_fanout, render_fanout_guidance
 
 _VALID_FIX_STATUSES = ("not_fixed", "in_testing", "fixed")
@@ -3186,6 +3191,16 @@ TICKET INFORMATION
         if fanout_ctx is not None:
             prompt += render_fanout_guidance(fanout_ctx)
 
+        # Security negative tests. Triggered by the DIFF, never by the AC or
+        # the ticket text — see src/app/security_surfaces.py for why that
+        # distinction is the whole rule. Returns None (and costs nothing) for
+        # the great majority of tickets, which touch no risky surface.
+        security_ctx = detect_security_surfaces(
+            development_info=development_info,
+        )
+        if security_ctx is not None:
+            prompt += render_security_guidance(security_ctx)
+
         prompt += UI_GROUNDING_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
 
@@ -3556,6 +3571,17 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
         if merged_fanout is not None:
             prompt += render_fanout_guidance(merged_fanout)
 
+        # Security negative tests, once for the batch over the union of its
+        # diffs. Same reason the fan-out block is per-batch: it governs the
+        # shape of a section the model emits once for the whole plan.
+        security_ctx = detect_security_surfaces(
+            development_info=merge_development_infos(
+                t.get("development_info") for t in tickets
+            ),
+        )
+        if security_ctx is not None:
+            prompt += render_security_guidance(security_ctx)
+
         prompt += UI_GROUNDING_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
         if cross_project and (cross_project.get("verified_seams") or cross_project.get("suspected_seams")):
@@ -3633,6 +3659,7 @@ class OllamaClient(LLMClient):
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
+                    security_negative_tests=test_plan_data.get("security_negative_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
@@ -3702,6 +3729,7 @@ class OllamaClient(LLMClient):
                     edge_cases=test_plan_data.get("edge_cases", []),
                     regression_checklist=test_plan_data.get("regression_checklist", []),
                     integration_tests=test_plan_data.get("integration_tests", []),
+                    security_negative_tests=test_plan_data.get("security_negative_tests", []),
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
@@ -4116,6 +4144,127 @@ SUBMIT_TEST_PLAN_TOOL = {
             "integration_tests": {
                 "type": "array",
                 "items": TEST_CASE_SCHEMA,
+            },
+            "security_negative_tests": {
+                "type": "array",
+                "description": (
+                    "API-level security negative cases. Emit these ONLY when a "
+                    "'SECURITY NEGATIVE TESTS' block appears in the prompt, and "
+                    "ONLY for the categories that block says fired — it is "
+                    "driven by what the diff touches, so a ticket with no risky "
+                    "surface gets an empty array and a ticket that changes one "
+                    "upload handler gets upload cases and nothing else. One "
+                    "case is ONE (persona x protocol) cell: never merge "
+                    "'anonymous, another user, the owner' into a single "
+                    "parameterized case, and never sweep several routes in one "
+                    "case. Every case is run with curl/Postman/a Playwright "
+                    "request context, so `surface` is always 'backend_http'."
+                ),
+                "items": {
+                    **TEST_CASE_SCHEMA,
+                    "properties": {
+                        **TEST_CASE_SCHEMA["properties"],
+                        "security_category": {
+                            "type": "string",
+                            "enum": [
+                                "authz_matrix",
+                                "client_flag",
+                                "unauth_sweep",
+                                "revoked_account",
+                                "upload_abuse",
+                                "abuse_cost",
+                            ],
+                            "description": (
+                                "Which fired category this case belongs to. "
+                                "'authz_matrix': a protected action exercised as "
+                                "a principal who should not reach it, including "
+                                "a capability link called with a guessed or "
+                                "leaked ID. 'client_flag': a caller-controlled "
+                                "request parameter that widens access "
+                                "(preview, includeRaw, role, isAdmin) sent by a "
+                                "caller who shouldn't have it. 'unauth_sweep': a "
+                                "changed route called with no token or a "
+                                "malformed one. 'revoked_account': a "
+                                "soft-deleted user's still-valid token replayed "
+                                "against one protocol. 'upload_abuse': "
+                                "MIME/signature mismatch, SVG/HTML payload, "
+                                "malformed base64, oversized decoded file, or "
+                                "the headers on the served file. 'abuse_cost': "
+                                "repeated or concurrent calls to a paid "
+                                "AI/TTS/vendor endpoint. Use only a category the "
+                                "prompt block listed as fired."
+                            ),
+                        },
+                        "persona": {
+                            "type": "string",
+                            "enum": [
+                                "anonymous",
+                                "other_user",
+                                "owner",
+                                "deleted_user",
+                                "guest_capability",
+                                "service",
+                            ],
+                            "description": (
+                                "The ONE principal this case runs as. Required "
+                                "on every security case, and the reason the "
+                                "section is not collapsible: 'anonymous', "
+                                "'other_user' and 'owner' have identical steps "
+                                "and different correct outcomes, so a case that "
+                                "claims two of them reports one verdict for two "
+                                "independent controls. 'owner' is the control "
+                                "case and is expected to SUCCEED — a matrix "
+                                "without it cannot distinguish 'the check works' "
+                                "from 'the endpoint is broken for everyone'. "
+                                "'deleted_user' is a soft-deleted account whose "
+                                "token is still cryptographically valid. "
+                                "'guest_capability' is a holder of a share or "
+                                "draft link with no user session."
+                            ),
+                        },
+                        "request": {
+                            "type": "object",
+                            "description": (
+                                "The concrete request this case sends. REQUIRED "
+                                "on every security case: the runner builds a "
+                                "curl/Postman call from this field alone and "
+                                "never opens the app, so anything missing here "
+                                "makes the case unrunnable. Every value must "
+                                "come from the diff — never invent a route or a "
+                                "parameter the code does not accept."
+                            ),
+                            "properties": {
+                                "method": {
+                                    "type": "string",
+                                    "description": "HTTP method, or the tRPC verb ('query' / 'mutation'), or 'CONNECT' for a WebSocket upgrade.",
+                                },
+                                "route": {
+                                    "type": "string",
+                                    "description": "The real path or procedure name from the diff, with a placeholder for each path parameter, e.g. '/api/share-flow/{linkId}/activate' or 'shareFlowRecipient.authenticate'.",
+                                },
+                                "params": {
+                                    "type": "string",
+                                    "description": "Query string and/or body you are sending, including the attack value — e.g. '{\"linkId\": \"<draft UUID belonging to another sender>\", \"preview\": true}'. Omit when the request carries no payload.",
+                                },
+                                "auth": {
+                                    "type": "string",
+                                    "description": "Exactly what goes in the Authorization header (or cookie), in the principal's terms: 'none — no Authorization header', 'Bearer token for a second test user who does not own the record', 'Bearer token minted for a user who was soft-deleted after the token was issued'. Must agree with `persona` and with `credentials`.",
+                                },
+                                "protocol": {
+                                    "type": "string",
+                                    "enum": ["trpc", "http", "rest", "websocket", "sse", "upload", "pdf"],
+                                    "description": "Which protocol this cell covers. The deleted-account and unauthenticated matrices need one case PER protocol — that one protocol enforced while the others did not is the whole finding in SK-2705.",
+                                },
+                            },
+                            "required": ["method", "route", "auth"],
+                        },
+                    },
+                    "required": TEST_CASE_SCHEMA["required"] + [
+                        "security_category",
+                        "persona",
+                        "request",
+                    ],
+                },
             },
             "regression_checklist": {
                 "type": "array",
@@ -4574,6 +4723,7 @@ class ClaudeClient(LLMClient):
                 edge_cases=test_plan_data.get("edge_cases", []),
                 regression_checklist=test_plan_data.get("regression_checklist", []),
                 integration_tests=test_plan_data.get("integration_tests", []),
+                security_negative_tests=test_plan_data.get("security_negative_tests", []),
                 superseded_acs=test_plan_data.get("superseded_acs") or None,
                 grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
@@ -4665,6 +4815,7 @@ class ClaudeClient(LLMClient):
                 edge_cases=test_plan_data.get("edge_cases", []),
                 regression_checklist=test_plan_data.get("regression_checklist", []),
                 integration_tests=test_plan_data.get("integration_tests", []),
+                security_negative_tests=test_plan_data.get("security_negative_tests", []),
                 superseded_acs=test_plan_data.get("superseded_acs") or None,
                 grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,

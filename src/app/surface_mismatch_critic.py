@@ -41,6 +41,10 @@ def _iter_case_sections(test_plan) -> Iterable[tuple[str, int, dict]]:
         ("happy_path", getattr(test_plan, "happy_path", None) or []),
         ("edge_cases", getattr(test_plan, "edge_cases", None) or []),
         ("integration_tests", getattr(test_plan, "integration_tests", None) or []),
+        (
+            "security_negative_tests",
+            getattr(test_plan, "security_negative_tests", None) or [],
+        ),
     )
     for section, cases in buckets:
         for i, case in enumerate(cases):

@@ -343,6 +343,16 @@ class TestPlan:
     edge_cases: list[dict]
     regression_checklist: list[str]
     integration_tests: list[dict] | None = None  # New: Optional integration tests
+    # API-level security negative cases, emitted when the DIFF touches a risky
+    # surface (router/route, auth/middleware, upload/media, share or capability
+    # link, WebSocket/streaming route, vendor/AI call) — see
+    # src/app/security_surfaces.py. Deliberately not driven by the AC: an AC
+    # describes the intended user, which is why SK-2702's `preview=true`
+    # escalation had no case in any plan written for the procedure that shipped
+    # it. Each case carries `persona` and `request` on top of the usual case
+    # fields, and one case is one (persona x protocol) cell — collapsing them is
+    # the defect this section exists to prevent.
+    security_negative_tests: list[dict] | None = None
     # Multi-ticket only: ACs from older tickets that were overridden by a newer
     # ticket's AC about the same observable behaviour. Each entry:
     # {"loser_id": "SK-2138-AC3", "winner_id": "SK-2194-AC1", "reason": "..."}

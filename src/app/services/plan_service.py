@@ -54,6 +54,7 @@ from ..llm_client import LLMError, get_llm_client
 from ..models import GenerateTestPlanRequest, TicketInput
 from ..repositories import bug_analysis_repository
 from ..seam_extractor import build_seam_catalog, classify_multi_ticket_mode
+from ..security_surfaces import audit_persona_split
 from ..slack_client import resolve_slack_messages_in_text
 from ..source_grounding import (
     filter_development_info,
@@ -614,6 +615,18 @@ async def generate_single(
                 "%d case(s) ask for test data without saying whether a real "
                 "record can produce it", len(unactionable),
             )
+        # Same report-only contract again: a security case that names two
+        # principals reports one verdict for two independent controls, and
+        # splitting it here would mean inventing the second case's expected
+        # result. Flagged for the reviewer, never rewritten.
+        collapsed_personas = audit_persona_split(test_plan)
+        if collapsed_personas:
+            provenance["collapsed_security_personas"] = collapsed_personas
+            logger.warning(
+                "%d security case(s) name more than one principal: %s",
+                len(collapsed_personas),
+                [c["case_id"] for c in collapsed_personas],
+            )
         ac_coverage = compute_ac_coverage(test_plan, single_ticket_data)
 
         # Copy-only budget check, on the record. Only present when the model
@@ -641,6 +654,9 @@ async def generate_single(
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
+            "security_negative_tests": (
+                getattr(test_plan, "security_negative_tests", None) or []
+            ),
             "needs_spec_cases": needs_spec_cases,
             "ac_coverage": ac_coverage,
             "grounding_warnings": normalize_grounding_warnings(test_plan),
@@ -911,6 +927,18 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
                 "%d case(s) ask for test data without saying whether a real "
                 "record can produce it", len(unactionable),
             )
+        # Same report-only contract again: a security case that names two
+        # principals reports one verdict for two independent controls, and
+        # splitting it here would mean inventing the second case's expected
+        # result. Flagged for the reviewer, never rewritten.
+        collapsed_personas = audit_persona_split(test_plan)
+        if collapsed_personas:
+            provenance["collapsed_security_personas"] = collapsed_personas
+            logger.warning(
+                "%d security case(s) name more than one principal: %s",
+                len(collapsed_personas),
+                [c["case_id"] for c in collapsed_personas],
+            )
         ac_coverage = compute_ac_coverage(test_plan, tickets_data)
         valid_ac_ids = {
             f"{t['ticket_key']}-AC{i}"
@@ -925,6 +953,9 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             "edge_cases": test_plan.edge_cases,
             "regression_checklist": test_plan.regression_checklist,
             "integration_tests": test_plan.integration_tests or [],
+            "security_negative_tests": (
+                getattr(test_plan, "security_negative_tests", None) or []
+            ),
             "needs_spec_cases": needs_spec_cases,
             "ac_coverage": ac_coverage,
             "superseded_acs": ac_coverage.get("superseded_acs", []),

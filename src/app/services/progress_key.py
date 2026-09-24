@@ -69,6 +69,12 @@ import json
 from typing import Any
 
 # Order matters: the fingerprint is these four counts joined by "-".
+#
+# `security_negative_tests` is deliberately NOT in here. It is a checklist
+# section like the other four, but putting it in this tuple would insert a
+# fifth positional count ahead of the covered count and change the key of
+# every plan ever written. It gets its own trailing component instead — see
+# `fingerprint`.
 SECTION_KEYS = (
     "happy_path",
     "edge_cases",
@@ -76,11 +82,25 @@ SECTION_KEYS = (
     "regression_checklist",
 )
 
+# The API-level security section (src/app/security_surfaces.py). Present only
+# on tickets whose diff touched a risky surface, which is why it is appended
+# rather than positioned: the overwhelming majority of plans have none and
+# must keep the key they already have.
+SECURITY_KEY = "security_negative_tests"
+
+# Every section that counts towards the manual checklist and owns an id
+# namespace. This — not `SECTION_KEYS` — is what "the sections a tester marks"
+# means; `SECTION_KEYS` is specifically the four whose counts hold fixed
+# positions in the fingerprint.
+CHECKLIST_KEYS = SECTION_KEYS + (SECURITY_KEY,)
+
 # Sections whose cases the planner can flag as already covered by a unit test.
 # Those are lifted out of the manual checklist into `COVERED_KEY`, so they must
 # not be counted in their own section's size.
 # `regression_checklist` is deliberately absent — it carries no such flag.
-COVERABLE_KEYS = ("happy_path", "edge_cases", "integration_tests")
+# `security_negative_tests` is appended LAST so that adding it cannot renumber
+# the `covered_by_unit_test:<n>` ids of any plan written before it existed.
+COVERABLE_KEYS = ("happy_path", "edge_cases", "integration_tests", SECURITY_KEY)
 
 # The fifth namespace: cases lifted out of the manual sections because a unit
 # test already asserts them. They are optional — excluded from the "how much of
@@ -90,7 +110,7 @@ COVERED_KEY = "covered_by_unit_test"
 
 # Every id space a checked id may live in. `mark-passed.sh` validates against
 # this list, and anything outside it is a typo, not a case.
-ALL_SECTION_KEYS = SECTION_KEYS + (COVERED_KEY,)
+ALL_SECTION_KEYS = CHECKLIST_KEYS + (COVERED_KEY,)
 
 
 def _as_plan_dict(body: Any) -> dict:
@@ -148,19 +168,40 @@ def covered_length(body: Any) -> int:
     )
 
 
+def security_length(body: Any) -> int:
+    """How many security negative cases a plan carries, covered ones excluded."""
+    plan = _as_plan_dict(body)
+    return _visible_length(plan, SECURITY_KEY)
+
+
 def fingerprint(body: Any) -> str:
     """The section-size fingerprint for a plan body.
 
-    ``h-e-i-r`` for a plan with no unit-tested cases, ``h-e-i-r-c`` when it has
-    ``c`` of them. The fifth component is omitted rather than written as ``-0``
-    so that every plan without covered cases — the great majority — keeps the
-    exact key it already had and its recorded progress with it.
+    Grown twice, both times by appending, because every component that ever
+    moved position orphaned the recorded progress of every plan that had one:
+
+    * ``h-e-i-r`` — the four positional sections. A plan with no unit-tested
+      cases and no security section is exactly this, byte for byte, as it has
+      been since the beginning.
+    * ``h-e-i-r-c`` — plus ``c`` unit-test-covered cases.
+    * ``h-e-i-r-c-s`` — plus ``s`` API-level security cases.
+
+    A trailing component is omitted rather than written as ``-0``, so the two
+    additions cost nothing to the plans that predate them. The one place that
+    rule cannot hold is a plan with security cases and NO covered ones: the
+    covered count is written as an explicit ``0`` there, because otherwise
+    ``h-e-i-r-4`` would mean "four covered" or "four security" depending on
+    which release wrote it. So the count of parts is the discriminator, and it
+    is unambiguous: four parts is neither, five is covered only, six is both.
     """
     plan = _as_plan_dict(body)
     parts = [str(_visible_length(plan, key)) for key in SECTION_KEYS]
     covered = covered_length(plan)
-    if covered:
+    security = _visible_length(plan, SECURITY_KEY)
+    if covered or security:
         parts.append(str(covered))
+    if security:
+        parts.append(str(security))
     return "-".join(parts)
 
 
@@ -193,6 +234,12 @@ def legacy_fingerprints(body: Any) -> list[str]:
     way maps onto the current plan one id at a time.
     """
     plan = _as_plan_dict(body)
+    if _visible_length(plan, SECURITY_KEY):
+        # A plan carrying security cases cannot have been written before the
+        # section existed, so it has no earlier form to trace back to. Handing
+        # back a four-part key here would point at some OTHER plan's progress
+        # row that happens to share those four counts.
+        return []
     if not covered_length(plan):
         return []
     return ["-".join(str(_visible_length(plan, key)) for key in SECTION_KEYS)]
@@ -217,7 +264,7 @@ def case_index(body: Any) -> dict[str, dict]:
     """
     plan = _as_plan_dict(body)
     index: dict[str, dict] = {}
-    for section in SECTION_KEYS:
+    for section in CHECKLIST_KEYS:
         position = 0
         for item in _items(plan, section):
             if section in COVERABLE_KEYS and _is_covered(item):

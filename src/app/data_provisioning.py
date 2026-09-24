@@ -67,7 +67,13 @@ _LIVE_SURFACES = ("web_ui", "mobile")
 
 # Same sections as every other grounding guard: `regression_checklist` is bare
 # strings and carries no metadata to inspect.
-_CASE_SECTIONS = ("happy_path", "edge_cases", "integration_tests", "needs_spec_cases")
+_CASE_SECTIONS = (
+    "happy_path",
+    "edge_cases",
+    "integration_tests",
+    "security_negative_tests",
+    "needs_spec_cases",
+)
 
 
 def _case_text(case: dict) -> str:

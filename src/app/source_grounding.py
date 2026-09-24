@@ -361,6 +361,7 @@ def no_source_result(ticket_key: str, provenance: dict) -> dict:
         "happy_path": [],
         "edge_cases": [],
         "integration_tests": [],
+        "security_negative_tests": [],
         "regression_checklist": [],
         "needs_spec_cases": [],
         "ac_coverage": None,

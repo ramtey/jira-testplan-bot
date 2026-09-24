@@ -68,7 +68,7 @@ from typing import Any
 
 from src.app.services import progress_key as progress_key_service
 
-# The four graded sections, in the order ``progress_key.SECTION_KEYS`` fixes.
+# The graded case sections, in the order ``progress_key.CHECKLIST_KEYS`` fixes.
 # Matched on the full heading text rather than the leading emoji: "🔗 GROUNDED
 # IN" shares its prefix with "🔗 INTEGRATION & BACKEND TESTS" and is not a
 # section.
@@ -76,6 +76,7 @@ _SECTION_HEADINGS: tuple[tuple[str, str], ...] = (
     ("✅ HAPPY PATH TEST CASES", "happy_path"),
     ("🔍 EDGE CASES & ERROR SCENARIOS", "edge_cases"),
     ("🔗 INTEGRATION & BACKEND TESTS", "integration_tests"),
+    ("🔐 SECURITY NEGATIVE TESTS", "security_negative_tests"),
 )
 
 _REGRESSION_HEADING = "🔄 REGRESSION CHECKLIST"
@@ -105,7 +106,7 @@ _CASE_ID_RE = re.compile(r"^\[([a-z_]+):(\d+)\]\s*")
 # "[covered_by_unit_test:0] Title (from integration_tests; covered by src/x.test.ts)"
 _COVERED_CASE_RE = re.compile(
     r"^\[covered_by_unit_test:(\d+)\]\s*(.*?)"
-    r"\s*\(from (happy_path|edge_cases|integration_tests)"
+    r"\s*\(from (happy_path|edge_cases|integration_tests|security_negative_tests)"
     r"(?:;\s*covered by\s*(.+?))?\)$"
 )
 _COVERED_HEADING = "🧪 ALREADY COVERED BY UNIT TESTS"
@@ -206,7 +207,15 @@ def _split_title(raw: str) -> tuple[dict, str | None]:
     if priority:
         case["priority"] = priority
     if category:
-        case["category"] = category
+        # The same trailing bracket token carries two different fields
+        # depending on the section it was printed in: `edge_cases` prints its
+        # `category`, the security section prints its `security_category`.
+        # Filing one under the other's name would put "client_flag" in the
+        # edge-category chip and leave the security chip blank.
+        if id_section == "security_negative_tests":
+            case["security_category"] = category
+        else:
+            case["category"] = category
     return case, id_section
 
 
@@ -369,6 +378,7 @@ def parse_plan_from_parts(adfs: list[dict], *, ticket_key: str) -> dict:
         "happy_path": [],
         "edge_cases": [],
         "integration_tests": [],
+        "security_negative_tests": [],
         "regression_checklist": [],
         "adopted_from_jira": True,
     }
@@ -724,6 +734,14 @@ def _flatten_cases(plan: dict) -> list[tuple[str, str, str | None]]:
         )
     for case in plan.get("integration_tests") or []:
         rows.append((case.get("title", ""), _body(case), "integration"))
+    for case in plan.get("security_negative_tests") or []:
+        rows.append(
+            (
+                case.get("title", ""),
+                _body(case),
+                f"security:{case.get('security_category', 'security')}",
+            )
+        )
     for item in plan.get("regression_checklist") or []:
         rows.append((str(item)[:512], str(item), "regression"))
     return rows

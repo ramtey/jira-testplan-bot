@@ -594,6 +594,14 @@ def _manual_cases(test_plan) -> list[dict]:
     penalise the model for doing exactly what the exclusion list asks.
     ``regression_checklist`` is excluded because it is a list of strings,
     not cases, and rule 3's collapse already bounds it.
+
+    ``security_negative_tests`` is excluded for a different reason: those
+    cases are additive by construction (see src/app/security_surfaces.py)
+    and are triggered by the diff touching a router, an upload handler or a
+    vendor call — none of which a genuinely copy-only diff does. Counting
+    them here would report an overrun against a budget derived from copy
+    variants, and the reviewer would be told to cut security coverage to
+    make room for string variants.
     """
     out: list[dict] = []
     for section in ("happy_path", "edge_cases", "integration_tests"):

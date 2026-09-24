@@ -32,11 +32,13 @@ import re
 import pytest
 
 from src.app.services.progress_key import (
+    ALL_SECTION_KEYS,
     COVERABLE_KEYS,
     SECTION_KEYS,
     build_progress_key,
     case_index,
     fingerprint,
+    legacy_fingerprints,
 )
 
 
@@ -413,3 +415,100 @@ async def test_the_sibling_query_anchors_on_the_whole_ticket_prefix():
     assert not re.match(pattern, "SK-2327:4-5-0-6")
     assert not re.match(pattern, "SK-2327+SK-2328-EXTRA:1-0-0-0")
     assert captured["sort"] == [("updated_at", -1)]
+
+
+# ── The security section's arrival must not move anyone's key ───────────────
+
+
+class TestSecuritySectionFingerprint:
+    """The fingerprint grew a sixth component. The whole risk of that change is
+    that a plan which predates it derives a different key than the one its
+    progress was recorded under — which is SK-2327 and SK-2642 all over again,
+    the browser polling one key while the marks sit under another.
+
+    So the property under test is not "security cases are counted". It is
+    "counting them changed nothing for anyone who has none".
+    """
+
+    @staticmethod
+    def _plan(h=0, e=0, i=0, r=0, s=0, covered=0):
+        case = lambda t, n: [{"title": f"{t}{k}"} for k in range(n)]
+        plan = {
+            "happy_path": case("h", h),
+            "edge_cases": case("e", e),
+            "integration_tests": case("i", i),
+            "regression_checklist": [f"r{k}" for k in range(r)],
+            "security_negative_tests": case("s", s),
+        }
+        for k in range(covered):
+            plan["edge_cases"].append({"title": f"c{k}", "covered_by_unit_test": True})
+        return plan
+
+    def test_a_plan_without_security_keeps_its_exact_key(self):
+        assert fingerprint(self._plan(4, 8, 2, 7)) == "4-8-2-7"
+
+    def test_a_plan_with_covered_cases_keeps_its_exact_key(self):
+        assert fingerprint(self._plan(4, 8, 2, 7, covered=3)) == "4-8-2-7-3"
+
+    def test_a_plan_with_no_such_section_at_all_keeps_its_key(self):
+        """Plans stored before the section existed have no key for it."""
+        legacy_body = {
+            "happy_path": [{"title": "a"}],
+            "edge_cases": [],
+            "integration_tests": [],
+            "regression_checklist": ["x"],
+        }
+        assert fingerprint(legacy_body) == "1-0-0-1"
+
+    def test_security_cases_add_a_sixth_component(self):
+        assert fingerprint(self._plan(4, 8, 2, 7, s=5, covered=3)) == "4-8-2-7-3-5"
+
+    def test_security_without_covered_writes_an_explicit_zero(self):
+        """Otherwise a five-part key means "covered" or "security" depending on
+        which release wrote it, and the count of parts stops being a reading."""
+        assert fingerprint(self._plan(4, 8, 2, 7, s=5)) == "4-8-2-7-0-5"
+
+    def test_part_count_disambiguates_the_trailing_components(self):
+        covered_only = fingerprint(self._plan(1, 1, 1, 1, covered=2))
+        security_only = fingerprint(self._plan(1, 1, 1, 1, s=2))
+        assert covered_only != security_only
+        assert len(covered_only.split("-")) == 5
+        assert len(security_only.split("-")) == 6
+
+    def test_security_cases_are_addressable(self):
+        index = case_index(self._plan(1, 0, 0, 0, s=2))
+        assert index["security_negative_tests:0"]["title"] == "s0"
+        assert index["security_negative_tests:1"]["index"] == 1
+        assert index["security_negative_tests:0"]["optional"] is False
+
+    def test_a_covered_security_case_leaves_the_checklist_but_keeps_an_id(self):
+        plan = self._plan(1, 0, 0, 0, s=1)
+        plan["security_negative_tests"].append(
+            {"title": "already asserted in CI", "covered_by_unit_test": True}
+        )
+        assert fingerprint(plan) == "1-0-0-0-1-1"
+        index = case_index(plan)
+        assert index["covered_by_unit_test:0"]["origin_section"] == "security_negative_tests"
+
+    def test_covered_ids_are_not_renumbered_by_the_new_section(self):
+        """`COVERABLE_KEYS` appends the security section last for this reason:
+        a covered case in an earlier section must keep the id it already had."""
+        plan = self._plan(0, 0, 0, 0, s=0)
+        plan["happy_path"] = [{"title": "hc", "covered_by_unit_test": True}]
+        plan["security_negative_tests"] = [
+            {"title": "sc", "covered_by_unit_test": True}
+        ]
+        index = case_index(plan)
+        assert index["covered_by_unit_test:0"]["title"] == "hc"
+        assert index["covered_by_unit_test:1"]["title"] == "sc"
+
+    def test_a_security_plan_claims_no_legacy_key(self):
+        """A plan with security cases cannot predate the section, so a
+        four-part 'earlier form' would point at some other plan's row."""
+        assert legacy_fingerprints(self._plan(4, 8, 2, 7, s=5, covered=3)) == []
+
+    def test_a_covered_only_plan_still_claims_its_legacy_key(self):
+        assert legacy_fingerprints(self._plan(4, 8, 2, 7, covered=3)) == ["4-8-2-7"]
+
+    def test_the_section_is_a_valid_id_namespace(self):
+        assert "security_negative_tests" in ALL_SECTION_KEYS

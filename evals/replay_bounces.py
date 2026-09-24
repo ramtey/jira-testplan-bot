@@ -463,7 +463,13 @@ def render_plan(plan):
     # on a ticket whose ACs are thin, most of the plan lands there. Leaving
     # the section out hid the bulk of the plan from the judge and scored it
     # as a miss.
-    for section in ("happy_path", "edge_cases", "integration_tests", "needs_spec_cases"):
+    for section in (
+        "happy_path",
+        "edge_cases",
+        "integration_tests",
+        "security_negative_tests",
+        "needs_spec_cases",
+    ):
         for i, case in enumerate(plan.get(section) or []):
             if not isinstance(case, dict):
                 continue

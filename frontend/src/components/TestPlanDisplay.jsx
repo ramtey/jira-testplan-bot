@@ -45,12 +45,27 @@ const SECTIONS = [
   { key: 'happy_path', label: 'Happy Path', icon: 'check-circle', renderer: 'card' },
   { key: 'edge_cases', label: 'Edge & Error', icon: 'alert', renderer: 'card', showCategory: true },
   { key: 'integration_tests', label: 'Integration & Backend', icon: 'circuit', renderer: 'card' },
+  // API-level security negative cases. Present only when the ticket's DIFF
+  // touched a risky surface — see src/app/security_surfaces.py — so most plans
+  // render no such section at all.
+  { key: 'security_negative_tests', label: 'Security Negative Tests', icon: 'alert', renderer: 'card', showSecurity: true },
   { key: 'regression_checklist', label: 'Regression Checklist', icon: 'history', renderer: 'checklist' },
 ]
 const SECTION_KEYS = SECTIONS.map((s) => s.key)
+// The four sections whose counts hold FIXED POSITIONS in the fingerprint.
+// Deliberately not `SECTION_KEYS`: the security section is appended to the
+// fingerprint, not positioned in it, because inserting a fifth positional
+// count would change the key of every plan ever written and orphan its
+// progress. `progress_key.SECTION_KEYS` is the same four, in the same order.
+const FINGERPRINT_SECTION_KEYS = [
+  'happy_path',
+  'edge_cases',
+  'integration_tests',
+  'regression_checklist',
+]
 // Card sections whose cases the planner can flag as already covered by an
 // existing unit test. Those cases are pulled into a separate list.
-const COVERABLE_KEYS = ['happy_path', 'edge_cases', 'integration_tests']
+const COVERABLE_KEYS = ['happy_path', 'edge_cases', 'integration_tests', 'security_negative_tests']
 // The namespace those lifted cases are addressed in. They are optional — they
 // do not count towards the checklist — but they are not absent: a tester who
 // verifies one live has an id to record it under. See `progress_key.py`.
@@ -132,12 +147,18 @@ function CaseIdBadge({ id, display }) {
  * surfaces as a visible warning instead of silent zeros.
  */
 function localFingerprint(displayPlan, coveredCount = 0) {
-  const parts = SECTION_KEYS.map((k) => sectionLength(displayPlan, k))
-  // The fifth component exists only when there are covered cases, so a plan
-  // without any keeps the exact key it had before they became addressable —
-  // and its recorded progress with it. `progress_key.fingerprint` omits it the
-  // same way; these two must agree or the drift warning fires on every plan.
-  if (coveredCount > 0) parts.push(coveredCount)
+  const parts = FINGERPRINT_SECTION_KEYS.map((k) => sectionLength(displayPlan, k))
+  const securityCount = sectionLength(displayPlan, 'security_negative_tests')
+  // Trailing components exist only when they are non-zero, so a plan without
+  // covered cases and without a security section keeps the exact key it had
+  // before either existed — and its recorded progress with it. The one
+  // exception: a plan with security cases and no covered ones writes the
+  // covered count as an explicit 0, because otherwise a five-part key would
+  // mean "covered" or "security" depending on which release wrote it.
+  // `progress_key.fingerprint` does exactly this; these two must agree or the
+  // drift warning fires on every plan.
+  if (coveredCount > 0 || securityCount > 0) parts.push(coveredCount)
+  if (securityCount > 0) parts.push(securityCount)
   return parts.join('-')
 }
 
@@ -211,6 +232,27 @@ const SURFACE_LABELS = {
   manual_only: 'Manual only',
 }
 
+// Short chip text for the security section. The full meaning of each lives in
+// the schema (`security_category` / `persona` in SUBMIT_TEST_PLAN_TOOL); these
+// are the reader-facing names.
+const SECURITY_CATEGORY_LABELS = {
+  authz_matrix: 'Authz matrix',
+  client_flag: 'Client flag',
+  unauth_sweep: 'No auth',
+  revoked_account: 'Deleted account',
+  upload_abuse: 'Upload abuse',
+  abuse_cost: 'Abuse / cost',
+}
+
+const PERSONA_LABELS = {
+  anonymous: 'as anonymous',
+  other_user: 'as another user',
+  owner: 'as owner (control)',
+  deleted_user: 'as deleted user',
+  guest_capability: 'as link holder',
+  service: 'as service',
+}
+
 // Three different asks to three different people: a record someone searches
 // for, a payload someone mocks, and a shape no record can deliver to the code
 // under test. See src/app/data_provisioning.py.
@@ -232,9 +274,32 @@ const dataShapeParts = (test) => {
   return { what, route: PROVISIONING_LABELS[route] || route, obtain, evidence }
 }
 
+// The concrete call a security case sends. Rendered as its own row rather
+// than folded into the steps because the runner builds a curl/Postman request
+// from exactly these fields and never opens the app.
+function requestParts(test) {
+  const req = test && test.request
+  if (!req || typeof req !== 'object') return null
+  const method = typeof req.method === 'string' ? req.method.trim() : ''
+  const route = typeof req.route === 'string' ? req.route.trim() : ''
+  if (!method && !route) return null
+  const protocol = typeof req.protocol === 'string' ? req.protocol.trim() : ''
+  return {
+    call: [method, route].filter(Boolean).join(' ') + (protocol ? `  (${protocol})` : ''),
+    params: typeof req.params === 'string' ? req.params.trim() : '',
+    auth: typeof req.auth === 'string' ? req.auth.trim() : '',
+  }
+}
+
 function formatSingleTestForClipboard(test) {
   const lines = []
   if (test.title) lines.push(typeof test.title === 'string' ? test.title : JSON.stringify(test.title))
+  const req = requestParts(test)
+  if (req) {
+    lines.push('', `Request: ${req.call}`)
+    if (req.params) lines.push(`Params: ${req.params}`)
+    if (req.auth) lines.push(`Auth: ${req.auth}`)
+  }
   if (test.preconditions) lines.push('', 'Preconditions:', String(test.preconditions))
   if (Array.isArray(test.steps) && test.steps.length > 0) {
     lines.push('', 'Steps:')
@@ -340,6 +405,22 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
             <CaseIdBadge id={storedId} display={String(index)} />
             {test.priority && <Pri level={test.priority} />}
             {acIds.map((id) => <ACTag key={id}>{shortAcId(id, ticketKeys)}</ACTag>)}
+            {section.showSecurity && test.security_category && (
+              <span
+                title="Which security category this case belongs to. Only categories the ticket's diff actually triggered appear here."
+                style={{ height: 18, padding: '0 6px', background: 'rgba(244,63,94,.10)', border: '1px solid rgba(244,63,94,.35)', color: '#fda4af', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center' }}
+              >
+                {SECURITY_CATEGORY_LABELS[test.security_category] || test.security_category}
+              </span>
+            )}
+            {section.showSecurity && test.persona && (
+              <span
+                title="The one principal this case runs as. Each principal is its own case on purpose: they share steps and differ in the correct outcome, so a merged case would report one verdict for several independent controls."
+                style={{ height: 18, padding: '0 6px', background: 'rgba(244,63,94,.10)', border: '1px solid rgba(244,63,94,.35)', color: '#fda4af', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center' }}
+              >
+                {PERSONA_LABELS[test.persona] || test.persona}
+              </span>
+            )}
             {showCategory && test.category && (
               <span style={{ height: 18, padding: '0 6px', background: 'rgba(255,255,255,.04)', color: 'var(--fg-muted)', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center' }}>
                 {test.category}
@@ -485,6 +566,22 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
 
       {!checked && (
       <div style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr)', gap: '6px var(--s-6)', padding: '0 var(--s-6) var(--s-6)', alignItems: 'start', overflowWrap: 'anywhere' }}>
+        {requestParts(test) && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Request</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>
+              <code style={{ fontSize: 'var(--t-sm)' }}>{requestParts(test).call}</code>
+              {requestParts(test).params && (
+                <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>
+                  params <code style={{ fontSize: 'var(--t-sm)' }}>{requestParts(test).params}</code>
+                </div>
+              )}
+              {requestParts(test).auth && (
+                <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>auth: {requestParts(test).auth}</div>
+              )}
+            </div>
+          </>
+        )}
         {test.preconditions && (
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Preconditions</span>
@@ -1757,7 +1854,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
 
   const primaryTicketData = ticketData || (ticketsData && ticketsData[0])
 
-  const planHasAcs = ['happy_path', 'edge_cases', 'integration_tests'].some((key) => {
+  const planHasAcs = ['happy_path', 'edge_cases', 'integration_tests', 'security_negative_tests'].some((key) => {
     const items = displayPlan[key]
     if (!Array.isArray(items)) return false
     return items.some(

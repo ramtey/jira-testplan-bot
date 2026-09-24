@@ -307,7 +307,18 @@ def compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
     # ac_id → list of case-text blobs, so a compound AC can be checked PER
     # enumerated action against the cases that actually claim to cover it.
     cases_by_ac: dict[str, list[str]] = {}
-    for bucket in (test_plan.happy_path, test_plan.edge_cases, test_plan.integration_tests):
+    for bucket in (
+        test_plan.happy_path,
+        test_plan.edge_cases,
+        test_plan.integration_tests,
+        # Security cases usually cite no AC at all — the diff is their
+        # grounding, not the AC. They are scanned anyway so that on the rare
+        # ticket whose AC *does* state a security requirement (SK-2702's
+        # "anonymous callers and authenticated non-owners are denied" is
+        # exactly that shape), the case covering it counts as coverage
+        # instead of the AC being reported as dropped.
+        getattr(test_plan, "security_negative_tests", None),
+    ):
         for case in bucket or []:
             if not isinstance(case, dict):
                 continue
@@ -827,6 +838,19 @@ async def run_regression_grounding_critic(
 # `run_regression_grounding_critic` above checks that section instead, and
 # deliberately cannot quarantine: it narrows a line's text and never removes
 # the line, because a checklist's value is the breadth quarantining would cut.
+#
+# `security_negative_tests` is excluded for a different reason, and the
+# distinction is the point of the section. Quarantining exists because an
+# ungrounded case is speculation about what the behaviour is SUPPOSED to be —
+# neither the element nor the outcome traces to anything, so nobody can say
+# whether a failure is a defect. A security negative case is not in that
+# position: what should happen is not in doubt. An anonymous caller must not
+# read another user's draft, whether or not we could find the deny path, and a
+# 200 is a failure whether the code was going to answer 401 or 403. So these
+# cases stay gradeable with `expected_verified: false`, and the unverified
+# status code is carried in the `expected` text as the assumption it is.
+# Moving them to `needs_spec_cases` would file the one case that catches
+# SK-2702 under "not gradeable until a spec confirms the intended behaviour".
 _QUARANTINABLE_SECTIONS = ("happy_path", "edge_cases", "integration_tests")
 
 
@@ -926,6 +950,10 @@ def flatten_cases_for_persistence(test_plan) -> list[tuple[str, str, str | None]
     for item in test_plan.integration_tests or []:
         if isinstance(item, dict):
             category = "integration:cross_project" if item.get("cross_project") else "integration"
+            cases.append((item.get("title", ""), _structured_case_body(item), category))
+    for item in getattr(test_plan, "security_negative_tests", None) or []:
+        if isinstance(item, dict):
+            category = f"security:{item.get('security_category', 'security')}"
             cases.append((item.get("title", ""), _structured_case_body(item), category))
     for item in test_plan.regression_checklist or []:
         if isinstance(item, str):

@@ -55,12 +55,17 @@ def _iter_case_sections(test_plan) -> Iterable[tuple[str, int, dict]]:
     """Yield (section, index, case) for every dict-shaped case in the plan.
 
     Section names match the JSON keys the frontend reads
-    (``happy_path`` / ``edge_cases`` / ``integration_tests``).
+    (``happy_path`` / ``edge_cases`` / ``integration_tests`` /
+    ``security_negative_tests``).
     """
     buckets = (
         ("happy_path", getattr(test_plan, "happy_path", None) or []),
         ("edge_cases", getattr(test_plan, "edge_cases", None) or []),
         ("integration_tests", getattr(test_plan, "integration_tests", None) or []),
+        (
+            "security_negative_tests",
+            getattr(test_plan, "security_negative_tests", None) or [],
+        ),
     )
     for section, cases in buckets:
         for i, case in enumerate(cases):

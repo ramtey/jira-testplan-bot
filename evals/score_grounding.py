@@ -64,7 +64,13 @@ JUDGE_MODEL = os.environ.get("EVAL_GROUNDING_JUDGE", "claude-opus-4-8")
 #: about the citation rather than about the file.
 CONTEXT_LINES = 40
 
-CASE_SECTIONS = ("happy_path", "edge_cases", "integration_tests", "needs_spec_cases")
+CASE_SECTIONS = (
+    "happy_path",
+    "edge_cases",
+    "integration_tests",
+    "security_negative_tests",
+    "needs_spec_cases",
+)
 
 VERDICT_TOOL = {
     "name": "report_grounding",

@@ -47,7 +47,13 @@ _LOOKS_LIKE_PATH = re.compile(r"[/\\]|\.\w{1,5}(?::|$|\s)")
 # Sections whose cases carry grounding metadata at all. `regression_checklist`
 # is bare strings, so there is nothing here to inspect — the same shape
 # asymmetry that exempts it from every other grounding guard.
-_CASE_SECTIONS = ("happy_path", "edge_cases", "integration_tests", "needs_spec_cases")
+_CASE_SECTIONS = (
+    "happy_path",
+    "edge_cases",
+    "integration_tests",
+    "security_negative_tests",
+    "needs_spec_cases",
+)
 
 
 #: An aside is a parenthetical with whitespace before it. A parenthesis welded

@@ -445,6 +445,49 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
             jira += _case_grounding_text(test)
             jira += "────────────────────────────────────────────\n\n"
 
+    if test_plan_dict.get("security_negative_tests"):
+        jira += "🔐 SECURITY NEGATIVE TESTS\n\n"
+        jira += (
+            "API-level — run with curl/Postman/a Playwright request context, "
+            "not the app UI. One principal and one protocol per case, on "
+            "purpose.\n\n"
+        )
+        for index, test in enumerate(test_plan_dict["security_negative_tests"]):
+            title = f"**{index + 1}. {test['title']}"
+            if test.get("priority"):
+                priority = test["priority"]
+                emoji = "🔴" if priority == "critical" else "🟡" if priority == "high" else "🟢"
+                title += f" {emoji} {priority.upper()}"
+            title += "**"
+            jira += f"{title}\n\n"
+            if test.get("persona"):
+                jira += f"Runs as: {test['persona']}\n\n"
+            request = test.get("request")
+            if isinstance(request, dict):
+                call = " ".join(
+                    str(request[k]).strip()
+                    for k in ("method", "route")
+                    if isinstance(request.get(k), str) and request[k].strip()
+                )
+                if call:
+                    jira += f"Request: `{call}`\n\n"
+                if request.get("params"):
+                    jira += f"Params: `{request['params']}`\n\n"
+                if request.get("auth"):
+                    jira += f"Auth: {request['auth']}\n\n"
+            if test.get("preconditions"):
+                jira += f"Preconditions: {test['preconditions']}\n\n"
+            if test.get("steps"):
+                jira += "Steps:\n"
+                for step_index, step in enumerate(test["steps"]):
+                    jira += f"{step_index + 1}. {step}\n"
+                jira += "\n"
+            if test.get("expected"):
+                jira += f"Expected Result: {test['expected']}\n\n"
+            if test.get("test_data"):
+                jira += f"Test Data: {test['test_data']}\n\n"
+            jira += _case_grounding_text(test)
+            jira += "────────────────────────────────────────────\n\n"
     if test_plan_dict.get("regression_checklist"):
         jira += "🔄 REGRESSION CHECKLIST\n\n"
         for item in test_plan_dict["regression_checklist"]:
@@ -540,6 +583,12 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         if test_plan_dict.get("integration_tests"):
             _render_section(
                 "## Integration & Backend Tests", test_plan_dict["integration_tests"]
+            )
+
+        if test_plan_dict.get("security_negative_tests"):
+            _render_section(
+                "## Security Negative Tests",
+                test_plan_dict["security_negative_tests"],
             )
 
         if test_plan_dict.get("regression_checklist"):

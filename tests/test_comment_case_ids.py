@@ -105,6 +105,41 @@ PLAN = {
         },
         {"title": "400 validation on the same route", "covered_by_unit_test": True},
     ],
+    "security_negative_tests": [
+        {
+            "title": "Anonymous caller cannot activate a draft with preview=true",
+            "priority": "critical",
+            "security_category": "client_flag",
+            "persona": "anonymous",
+            "surface": "backend_http",
+            "credentials": "none — no Authorization header",
+            "request": {
+                "method": "POST",
+                "route": "shareFlowRecipient.authenticate",
+                "protocol": "trpc",
+                "params": '{"linkId": "<draft UUID>", "preview": true}',
+                "auth": "none — no Authorization header",
+            },
+            "steps": ["Send the mutation with no Authorization header"],
+            "expected": "401 before lookupLink runs",
+        },
+        {
+            "title": "The draft sender can still preview their own draft",
+            "priority": "high",
+            "security_category": "client_flag",
+            "persona": "owner",
+            "surface": "backend_http",
+            "credentials": "session for the draft sender",
+            "request": {
+                "method": "POST",
+                "route": "shareFlowRecipient.authenticate",
+                "protocol": "trpc",
+                "auth": "Bearer token for the draft sender",
+            },
+            "steps": ["Send the mutation as the sender"],
+            "expected": "Returns the draft payload",
+        },
+    ],
     "regression_checklist": ["Existing search still works", "Login unaffected"],
 }
 
@@ -131,6 +166,7 @@ def test_every_case_id_in_the_comment_exists_in_the_plan(tmp_path):
             "edge_cases",
             "integration_tests",
             "regression_checklist",
+            "security_negative_tests",
             "covered_by_unit_test",
         }
     }
@@ -177,3 +213,53 @@ def test_an_underscore_in_an_id_survives_the_trip_through_jira(tmp_path):
     assert "regressionchecklist" not in rendered
     assert "covered_by_unit_test:0" in rendered
     assert "coveredbyunittest" not in rendered
+
+
+def test_the_security_section_survives_the_round_trip(tmp_path):
+    """The section is new, and a section the ADF builder does not know about is
+    swallowed into the previous one's details range — which is the failure
+    `_SECTION_PREFIXES` exists to prevent for the regression checklist, and
+    which would have hidden every security case inside the last integration
+    case with no error anywhere."""
+    adopted = _adopt(PLAN, tmp_path)
+    titles = [c.get("title") for c in adopted.get("security_negative_tests") or []]
+    assert titles == [
+        "Anonymous caller cannot activate a draft with preview=true",
+        "The draft sender can still preview their own draft",
+    ]
+
+
+def test_the_owner_control_case_is_not_merged_into_the_anonymous_one(tmp_path):
+    """Two principals, two cases, two ids — through the whole round trip.
+
+    A reader who gets one case back for the two the plan wrote would mark one
+    verdict against two independent controls, which is the exact defect the
+    section is shaped to prevent.
+    """
+    text = _render(PLAN, tmp_path)
+    assert "[security_negative_tests:0]" in text
+    assert "[security_negative_tests:1]" in text
+
+
+def test_the_concrete_request_reaches_the_reader(tmp_path):
+    """An API-level case whose request does not survive posting is unrunnable:
+    the runner builds a curl call from these fields and never opens the app."""
+    text = _render(PLAN, tmp_path)
+    assert "POST shareFlowRecipient.authenticate" in text
+    assert '"preview": true' in text
+    assert "no Authorization header" in text
+
+
+def test_the_security_category_comes_back_on_its_own_field(tmp_path):
+    """The trailing bracket token means `category` in one section and
+    `security_category` in another. Filing one under the other's name puts
+    "client_flag" in the edge-category chip and leaves the security chip
+    blank — a silent mislabel, since both fields render as a chip."""
+    adopted = _adopt(PLAN, tmp_path)
+    security = adopted["security_negative_tests"]
+    assert [c.get("security_category") for c in security] == ["client_flag", "client_flag"]
+    assert all("category" not in c for c in security)
+    # And the edge cases still file theirs the old way.
+    assert [c.get("category") for c in adopted["edge_cases"]] == [
+        "error_handling", "boundary", "error_handling", "boundary",
+    ]

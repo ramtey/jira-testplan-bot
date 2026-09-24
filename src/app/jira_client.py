@@ -1016,7 +1016,12 @@ _TEST_CASE_TITLE_RE = re.compile(r'^\s*\d+\.\s')
 # Section banner paragraphs emitted by formatTestPlanAsJira start with one of
 # these emojis. Used to terminate a test case's "details" range so the
 # Regression Checklist doesn't get sucked into the last edge case.
-_SECTION_PREFIXES = ('✅', '🔍', '🔗', '🔄')
+# 🔐 is the security negative section, which the renderer emits between the
+# integration and regression banners. It has to be listed here or the whole
+# security section is swallowed into the last integration case's details
+# range — the exact failure this tuple exists to prevent for the regression
+# checklist.
+_SECTION_PREFIXES = ('✅', '🔍', '🔗', '🔐', '🔄')
 
 
 def _adf_paragraph_text(node: dict) -> str:

@@ -356,7 +356,12 @@ async def sweep_once(
 
         case_count = sum(
             len(plan.get(section) or [])
-            for section in ("happy_path", "edge_cases", "integration_tests")
+            for section in (
+                "happy_path",
+                "edge_cases",
+                "integration_tests",
+                "security_negative_tests",
+            )
         )
         result.outcomes.append(
             TicketOutcome(
