@@ -77,11 +77,12 @@ function sectionLength(testPlan, key) {
  * entirely — the tester, the Jira comment and `mark-passed.sh` all quote the
  * same string.
  *
- * `display` overrides the badge text without touching that contract: the
- * tooltip still spells the id out in full, and the caller is expected to print
- * the namespace somewhere the reader can see it. Only `regression_checklist`
- * uses it, being the one section whose heading maps 1:1 to its stored key and
- * index — so repeating that prefix on all twelve rows buys nothing.
+ * `display` overrides the badge text without touching that contract. Every
+ * section passes the bare index, because the prefix is constant within a
+ * section and printing it per case only crowds the row. What it cannot be is
+ * *gone*: each section header states its namespace via `SectionIdHint`, the
+ * tooltip here spells the id out in full, and the Jira comment prints it on
+ * every case. The reader still never has to infer `edge_cases:3` from a label.
  */
 function CaseIdBadge({ id, display }) {
   return (
@@ -336,7 +337,7 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 6 }}>
-            <CaseIdBadge id={storedId} />
+            <CaseIdBadge id={storedId} display={String(index)} />
             {test.priority && <Pri level={test.priority} />}
             {acIds.map((id) => <ACTag key={id}>{shortAcId(id, ticketKeys)}</ACTag>)}
             {showCategory && test.category && (
@@ -594,10 +595,9 @@ function ChecklistSection({ section, items, checkedTests, onToggle }) {
         <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-strong)' }}>{section.label}</h2>
         <SectionChip checked={c} total={items.length} />
         <span style={{ flex: 1 }} />
-        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>
-          Plain checklist · no metadata · ids{' '}
-          <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>{section.key}:N</code>
-        </span>
+        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>Plain checklist · no metadata</span>
+        <span style={{ color: 'var(--fg-faint)', fontSize: 'var(--t-xs)' }}>·</span>
+        <SectionIdHint prefix={section.key} />
       </header>
       <div className="card" style={{ padding: 'var(--s-5) var(--s-6)' }}>
         {items.map((item, i) => {
@@ -626,6 +626,24 @@ function ChecklistSection({ section, items, checkedTests, onToggle }) {
   )
 }
 
+/**
+ * The namespace the badges below are indices into.
+ *
+ * It belongs in the header rather than on every row: the prefix is constant
+ * for a section, so repeating it per case is noise, but dropping it outright
+ * would leave a bare `3` that nothing maps back to `edge_cases:3`. Stated once
+ * here, spelled out in full in each badge's tooltip, and printed in the Jira
+ * comment besides.
+ */
+function SectionIdHint({ prefix }) {
+  return (
+    <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>
+      ids{' '}
+      <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>{prefix}:N</code>
+    </span>
+  )
+}
+
 function CardSection({ section, items, checkedTests, onToggle, planHasAcs, ticketKeys }) {
   const c = items.reduce((acc, _, i) => acc + (checkedTests.has(`${section.key}:${i}`) ? 1 : 0), 0)
   return (
@@ -634,6 +652,8 @@ function CardSection({ section, items, checkedTests, onToggle, planHasAcs, ticke
         <Icon name={section.icon} size={16} style={{ color: 'var(--accent)' }} />
         <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-strong)' }}>{section.label}</h2>
         <SectionChip checked={c} total={items.length} />
+        <span style={{ flex: 1 }} />
+        <SectionIdHint prefix={section.key} />
       </header>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
         {items.map((test, i) => (
@@ -981,6 +1001,8 @@ function CoveredByUnitTestsSection({ cases, checkedTests, onToggle }) {
           </Chip>
         )}
         <span style={{ flex: 1 }} />
+        <SectionIdHint prefix={COVERED_KEY} />
+        <span style={{ color: 'var(--fg-faint)', fontSize: 'var(--t-xs)' }}>·</span>
         <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>
           Optional · not counted in progress
         </span>
@@ -1012,7 +1034,7 @@ function CoveredByUnitTestsSection({ cases, checkedTests, onToggle }) {
                 <Cbx checked={isChecked} onChange={() => onToggle(COVERED_KEY, i)} />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 1 }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                    <CaseIdBadge id={id} />
+                    <CaseIdBadge id={id} display={String(i)} />
                     <span
                       style={{
                         fontSize: 'var(--t-sm)',
