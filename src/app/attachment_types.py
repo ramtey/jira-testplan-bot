@@ -34,11 +34,11 @@ _TEXT_MIME = {
 
 ALLOWED_ATTACHMENT_MIME = _IMAGE_MIME | {"application/pdf"} | _TEXT_MIME
 
-ALLOWED_ATTACHMENT_LABEL = "PNG, JPEG, GIF, WEBP, PDF, TXT, MD, JSON"
+ALLOWED_ATTACHMENT_LABEL = "PNG, JPEG, GIF, WEBP, PDF, TXT, LOG, MD, JSON"
 
 # Extensions whose attachment has no inline preview — rendered as a
 # `📎 <filename>` callout instead of a media node.
-_TEXT_EXTENSIONS = {".txt", ".md", ".json"}
+_TEXT_EXTENSIONS = {".txt", ".log", ".md", ".json"}
 
 # Browsers disagree about text payloads: Chrome reports `application/json`
 # for a .json file, other sources report `text/plain`, a file dragged out of
@@ -53,6 +53,7 @@ _EXTENSION_MIME = {
     ".webp": "image/webp",
     ".pdf": "application/pdf",
     ".txt": "text/plain",
+    ".log": "text/plain",
     ".md": "text/markdown",
     ".json": "application/json",
 }

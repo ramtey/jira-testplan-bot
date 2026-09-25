@@ -25,6 +25,7 @@ def test_resolve_accepts_text_markdown_and_json_payloads():
     assert resolve_attachment_mime("curl.txt", "text/plain") == "text/plain"
     assert resolve_attachment_mime("repro.md", "text/markdown") == "text/markdown"
     assert resolve_attachment_mime("resp.json", "application/json") == "application/json"
+    assert resolve_attachment_mime("api.log", "text/plain") == "text/plain"
 
 
 def test_resolve_strips_charset_parameter():
@@ -34,6 +35,7 @@ def test_resolve_strips_charset_parameter():
 def test_resolve_normalizes_aliases():
     assert resolve_attachment_mime("resp.json", "text/json") == "application/json"
     assert resolve_attachment_mime("repro.md", "text/x-markdown") == "text/markdown"
+    assert resolve_attachment_mime("api.log", "text/x-log") == "text/plain"
 
 
 def test_resolve_falls_back_to_extension_when_browser_sends_nothing():
@@ -47,6 +49,9 @@ def test_resolve_falls_back_to_extension_when_browser_sends_nothing():
     # A .md is the one that most often arrives mislabelled — Chrome says
     # text/markdown, Finder drags say nothing at all.
     assert resolve_attachment_mime("repro.md", "") == "text/markdown"
+    # A .log carries no registered type, so every browser leaves it blank.
+    assert resolve_attachment_mime("api.log", "") == "text/plain"
+    assert resolve_attachment_mime("api.log", "application/octet-stream") == "text/plain"
 
 
 def test_resolve_rejects_unknown_extension_behind_a_generic_mime():
@@ -65,6 +70,7 @@ def test_inline_preview_only_for_non_text_attachments():
     assert has_inline_preview("resp.JSON") is False
     assert has_inline_preview("curl.txt") is False
     assert has_inline_preview("repro.md") is False
+    assert has_inline_preview("api.LOG") is False
 
 
 def test_attachment_icon_matches_preview_capability():
@@ -107,4 +113,4 @@ async def test_validate_rejects_a_type_outside_the_allow_list():
         await _validate_and_read_images([_upload("bundle.zip", b"PK", "application/zip")])
     assert exc.value.status_code == 400
     assert "application/zip" in exc.value.detail
-    assert "TXT, MD, JSON" in exc.value.detail
+    assert "TXT, LOG, MD, JSON" in exc.value.detail

@@ -213,17 +213,18 @@ function EnvPill({ value, on, onToggle, disabled }) {
 
 // Attachment types the Jira upload accepts. Mirrors ALLOWED_ATTACHMENT_MIME in
 // src/app/attachment_types.py — keep the two in sync. Text payloads (.txt /
-// .md / .json) are here for API/HTTP work: a response body, a curl transcript
-// or a markdown repro is the evidence, and there's no screenshot to take. They attach to the ticket
-// and render as a `📎 <filename>` line in the comment rather than inline.
+// .log / .md / .json) are here for API/HTTP work: a response body, a curl
+// transcript, a log excerpt or a markdown repro is the evidence, and there's no
+// screenshot to take. They attach to the ticket and render as a
+// `📎 <filename>` line in the comment rather than inline.
 const ATTACHMENT_ACCEPT =
-  'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,application/json,.txt,.md,.json'
+  'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,application/json,.txt,.log,.md,.json'
 
 // A .json dragged from Finder or dropped out of an archive can arrive with an
 // empty or generic type, so fall back to the extension the way the server
 // does. Anything still unrecognised is dropped here instead of bouncing off a
 // 400 after the upload starts.
-const TEXT_ATTACHMENT_RE = /\.(txt|md|json)$/i
+const TEXT_ATTACHMENT_RE = /\.(txt|log|md|json)$/i
 
 function isAllowedAttachment(file) {
   if (!file) return false
@@ -231,6 +232,7 @@ function isAllowedAttachment(file) {
   if (type.startsWith('image/') || type === 'application/pdf') return true
   if (
     type === 'text/plain' ||
+    type === 'text/x-log' ||
     type === 'text/markdown' ||
     type === 'text/x-markdown' ||
     type === 'application/json' ||
@@ -302,7 +304,7 @@ function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
         }}
       >
         <Icon name="image" size={13} style={{ marginRight: 6, verticalAlign: '-2px' }} />
-        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF / TXT / MD / JSON, up to 10 MB each.
+        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF / TXT / LOG / MD / JSON, up to 10 MB each.
         <input
           ref={inputRef}
           type="file"
