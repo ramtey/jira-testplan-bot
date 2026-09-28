@@ -1,1149 +1,191 @@
 # jira-testplan-bot
 
+**Turn a Jira ticket into a QA test plan that's grounded in the code that actually changed.**
+
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![React](https://img.shields.io/badge/react-18.3-blue.svg)
 
-Generate structured QA test plans from Jira tickets, and analyze bug tickets to explain root cause, fix, and regression tests — using linked development activity (commits, PRs, code changes).
+Point it at a ticket key. It reads the ticket, its parent, its linked issues,
+the QA discussion in the comments, the merged PR diffs, the Figma file and the
+repo's own test conventions — then writes a test plan, checks its own work
+against the diff, and posts it back to Jira.
 
-## 🔒 Security Notice
+It also analyzes bug tickets ([Bug Lens](docs/FEATURES.md#jira-bug-lens)) for
+root cause, fix explanation and regression coverage, and runs the QA hand-off
+(pull to testing → pass to UAT → fail back) without leaving the app.
 
-**IMPORTANT: Never commit your `.env` file!** It contains sensitive API tokens.
+> [!IMPORTANT]
+> **Never commit your `.env`** — it holds your Jira, Claude, GitHub and Figma
+> tokens. Copy `.env.example` to `.env` and keep `.env` in `.gitignore`. Every
+> user brings their own tokens.
 
-- Copy `.env.example` to `.env` and fill in your credentials
-- The `.env` file is in `.gitignore` - keep it there
-- Each user needs their own API tokens (Jira, Claude, GitHub, Figma)
+---
 
-## Overview
+## How it works
 
-Generate structured QA test plans from Jira tickets by automatically analyzing:
-- Ticket details and development activity (commits, PRs, branches)
-- **Parent ticket context** (for sub-tasks: Epic/Story descriptions, Figma designs, images)
-- **Linked ticket dependencies** (blocks, blocked by, causes, caused by)
-- Jira comments with testing discussions and suggested scenarios
-- GitHub PR code changes, comments, and repository documentation
-- Figma design specifications (when available)
-- Repository test patterns and conventions
+```
+ticket key
+   ↓
+gather context   Jira ticket · parent epic · linked issues · QA comments
+                 GitHub PR diffs · Confluence specs · Figma · repo testIDs
+   ↓
+classify         what is the deliverable, and on what surface is it verified?
+   ↓
+generate         Claude Opus, structured tool-use output (not regex parsing)
+   ↓
+criticize        four post-generation passes re-read the plan against the diff
+                 and flag anything the code doesn't support
+   ↓
+plan             AC coverage matrix · grounding warnings · per-case provenance
+                 → the web UI, a Jira comment, markdown, or JSON
+```
 
-**Features:**
-- Web UI for browser-based workflows
-- CLI tool for terminal-native workflows
-- MCP server for Claude desktop integration
-- **QA-queue watcher** (`testplan watch`) that pre-generates plans for tickets entering the queue, so the plan is waiting before the tester opens the ticket
-- **One pipeline for every caller** — UI, CLI, MCP and watcher all run the same critics and AC coverage, so the same ticket produces the same plan whichever door it came in through
-- Multiple export formats (Markdown, Jira, JSON)
-- Token health monitoring and validation
-- Post test plans directly to Jira comments
-- **Parent ticket awareness** for sub-tasks to understand broader feature context
-- **Multi-ticket mode**: combine 2+ related tickets into one unified test plan (comma-separated input). When the tickets span multiple repositories, the plan switches to cross-project mode and emits integration tests targeting the producer→consumer seam
-- **Jira Bug Lens**: analyze bug tickets for root cause, fix complexity, affected flow, and regression tests
-- **Test plan history**: previous test plans for a ticket are surfaced as a banner with view-side-by-side and diff-against-previous-version actions
-- **Per-AC coverage**: multi-ticket plans extract acceptance criteria from each ticket, tag every test case with the AC IDs it exercises, and surface a per-ticket coverage matrix with uncovered ACs and a hallucinated-ID guard
-- **UI grounding flags**: test steps that reference UI elements not present in the PR diff or simulator `testID` reference are tagged so QA can verify wording before running them
-- **PII scrub**: real customer/employee names and emails from Jira/PR context are replaced with generic test-account placeholders before the plan is rendered
-- **Epic children view**: fetching an Epic lists every child ticket with per-row Generate and Analyze buttons that render results inline beneath the row
-- **Plain-language ticket summary**: collapsible section with a lazy-loaded plain-English explanation of what the ticket does. Clicking Summary triggers the fetch **without** expanding the panel — the preview line carries the loading state and eventual snippet, so a second click expands to the full text (or error)
-- **Description URL linkification**: `http(s)://` URLs in the Jira description render as new-tab links (trailing `.,;:!?` stays as text so `see https://foo.com.` doesn't point at a 404); long URLs word-break inside the pre so they can't overflow horizontally
-- **Story-points chip**: Story-typed tickets render a small `N pts` chip next to the type badge, pulled from Jira's story-points custom field (configurable via `JIRA_STORY_POINTS_FIELD`; defaults to `customfield_10004`) so testers can see effort at a glance without opening the sidebar
-- **Inline UX feedback**: auto-scroll to results, per-test checkmarks, a viewport-pinned overall + per-section progress bar, and a hover-only Copy button on each unchecked test card that yanks the title + Preconditions/Steps/Expected/Test data as plain text (flips to a green check for 1.5s to confirm; hidden until hover/focus so it doesn't compete with card content)
-- **Progressive ticket load**: fetching a ticket paints the header, description, labels, status, assignee, story points, and attachments in ~one Jira round-trip via `GET /issue/{key}/basic`, then continues enriching (dev info, comments, PR analysis, parent, children, linked issues, bounce history) in parallel in the background. The partial view stays on screen while enrichment lands so re-fetches don't blank the ticket — the fetch overlay is scoped to the first paint, not the refresh
-- **Per-test `grounded_in` attribution**: every generated test case carries a `grounded_in` list (e.g. `comments:123`, `PR:456`, `Figma:abc`) rendered as small chips under the test; tests with neither AC coverage nor grounded_in entries get an "Untraced" pill (hidden when the ticket has no ACs at all) so reviewers can spot ungrounded claims at a glance
-- **Linked Confluence specs**: Confluence URLs in the Jira description or comments are fetched and injected into the LLM prompt as a LINKED SPECS section so quoted requirements come from the actual spec page, not just the ticket body. Best-effort — per-page failures don't block plan generation
-- **Live in Jira badge**: Jira posting is update-in-place, so at most one generated version is the one teammates see on the ticket. The run-history drawer tags that version with a pulsing "Live in Jira" chip so users don't double-post or wonder which regeneration is current. The chip is scoped to the latest run — the collapsed banner header always reads as the newest version, so surfacing the chip there when an older version is live read as a second version being live; the chip now only appears on the per-row pill inside the expanded version drawer. A red **Not live in Jira** chip mirrors it (banner header + latest expanded row) when the newest run hasn't been posted yet, so a re-run after prompt changes doesn't quietly leave the stale version live. Posts made from the history banner and from multi-ticket flows now correctly forward `plan_id` so both credit the run in the DB rather than falsely reading as "Not live"
-- **Shareable URLs**: the active ticket key is mirrored into the URL bar via `?key=…`, so every browser tab is a bookmarkable / refresh-safe handle on a ticket (works alongside the existing per-tab sessionStorage)
-- **UAT walkthrough**: every plan is tagged with `uat_complexity` and a plain-language "How to test this" summary. The walkthrough is treated as the UAT hand-off *payload* — not a sibling artifact — so authoring lives inside the Pass-to-UAT form itself (a "Steps to cover in the video" collapsible above the Loom input pulls the plan's happy path, capped at 6). Planners can attach a Loom link, drag-and-drop screenshots (uploaded to Jira as attachments and rendered inline in the comment via `mediaSingle` nodes), and setup/repro notes that persist across regenerations; images and videos already uploaded to the linked PR are surfaced in the same form. A single server-side gate (`uat_readiness`) decides whether the ticket needs walkthrough material — high-complexity + no Loom/upload/notes/PR-attached media returns a 409 `walkthrough_required` before any Jira calls fire, and the UI opens a single override prompt instead of the old two-step client-side nudge
-- **Covered-by-unit-tests flag**: cases whose behavior an existing unit test already exercises are flagged and moved into a collapsed section, and excluded from the Jira comment by default
-- **Shared per-ticket test progress**: per-test checkmarks are persisted server-side so the whole QA team sees the same checked set; `localStorage` remains an offline fallback. The progress key is derived by the backend (`GET /plans/{id}/progress-key`) so external writers and the UI cannot disagree about it
-- **Auto Bug Lens on In Testing**: after the pull-to-testing auto-generate flow lands a test plan for a Bug ticket, Bug Lens is kicked off automatically so the analysis is ready when the tester finishes reading the plan. A nullable `jira_tickets.auto_bug_analysis_dispatched_at` column persists the at-most-once claim so aborted plan generations don't cause a re-fire; manual clicks still work either way. The scroll position is pinned to the test plan when the analysis lands after it, so the view doesn't jump
-- **API-level security negative tests**: acceptance criteria describe the intended user, so a plan derived from them tests the allow path and nothing else — which is how SK-2702's `preview=true` escalation shipped with a passing plan for the very procedure that carried it. `src/app/security_surfaces.py` reads the **diff**, not the AC, and fires when a changed file touches a router or route, auth/middleware, upload or media handling, a share-flow or capability link, a WebSocket/streaming route, or a vendor-backed/paid-AI call. Only the categories the diff justifies are emitted — an upload handler gets MIME/signature, SVG payload, decoded-size and served-header (`Content-Type`, `X-Content-Type-Options`, `Cache-Control`) cases and no rate-limit boilerplate, and a CSS ticket gets no section at all. The client-flag category additionally requires an access-affecting parameter (`preview`, `includeRaw`, `role`, `isAdmin`, …) to actually appear in an added patch line, because a case that cannot name the flag cannot be run. Cases land in their own `security_negative_tests` section, each one **a single principal on a single protocol**: the prompt block explicitly overrides the AVOID REDUNDANCY / PARAMETERIZE rules, because "anonymous, another user, the owner" share their steps and differ in their correct outcome, so a merged case reports one verdict for three independent controls. Every case carries `persona`, `surface: backend_http` and a concrete `request` (method, route, params, auth, protocol) so the UAT runner builds a curl/Postman call and never tries to drive it through the UI or the simulator — no UI can send an absent `Authorization` header or another sender's draft UUID. The grounding rule is unchanged: an expected status code is either read out of the handler with a `file:line` or labelled an assumption. A post-generation audit flags any case that named more than one principal, reporting it in the plan's provenance rather than splitting it, since splitting would mean inventing the second case's expected result
-- **Per-role fanout on shared components**: when a ticket touches a shared component and is silent about role (buyer, seller, agent, etc.), a `src/app/shared_component_fanout.py` detector fires and appends guidance that forces a per-role case with an explicit negative-space assertion for fields the role does not consume. Catches the "field renders when data exists" style plan that lets a misplaced role-specific field ship to production
+The whole pipeline lives in
+[`services/plan_service.py`](src/app/services/plan_service.py), and **every
+caller goes through it** — web UI, CLI, MCP server and queue watcher — so the
+same ticket produces the same plan whichever door it came in through.
 
-## Key Features
+## What makes the plans trustworthy
 
-### Intelligent Context Analysis
-- **Automatic context gathering**: Fetches ticket details, PRs, commits, code changes, and repository docs
-- **Parent ticket awareness**: Automatically fetches parent Epic/Story context for sub-tasks, including:
-  - Parent descriptions and business requirements
-  - Figma designs attached to parent tickets
-  - Design mockups/screenshots from parent
-  - Overall feature context that sub-tasks lack
-- **Linked ticket dependencies**: Automatically fetches blocking and dependency relationships:
-  - Issues this ticket blocks (test thoroughly - others depend on this)
-  - Issues blocking this ticket (prerequisites that must be resolved first)
-  - Root cause issues (for bugs - ensures actual cause is fixed)
-  - Downstream issues this ticket may cause (validate no regressions)
-- **Smart comment analysis**: Extracts testing-related Jira comments (test scenarios, edge cases, QA discussions)
-- **QA/UAT bounce-back history**: Walks the issue changelog for transitions where the ticket reached an advanced state (QA / UAT / Testing / Ready-for-*) and was sent back to To Do, Backlog, Open, Reopened, or In Progress. Reason pairing is two-tier — first the nearest Jira comment within ±6 hours of the transition (slight bonus when authors match), then a fallback that walks the comments posted between when the ticket entered its reviewed state and the bounce, preferring non-dev voices, so older QA/UAT feedback that never got resolved is picked up instead of the dev's "will check" reply. Surfaced to the LLM as a "PRIOR QA / UAT BOUNCE-BACK HISTORY" section that asks for explicit regression coverage of each prior failure mode. In the UI, each bounce card leads with a one-sentence LLM headline (via `POST /bounce/summarize`) and a plain-English transition line ("Kyle moved this back to In Progress from Ready for UAT") with the raw comment tucked behind a "Show full comment" toggle; long comments are trimmed at paragraph / sentence / word boundaries with an ellipsis instead of a hard mid-word cut. Each card is **paired with the PR that shipped its fix** — the earliest PR merged after that specific bounce is shown with a link, merge time, and the changed files (+/− counts, 6 shown by default) — so older bounces pair with earlier fix PRs rather than every card crediting the latest merge
-- **Figma integration**: Extracts actual UI component names from design files for specific test cases
-- **Smart filtering**: Focuses on runtime behavior, ignoring build-time configs (ESLint, TypeScript, etc.)
-- **Priority ordering**: Critical tests first, edge cases last
+A plan that confidently tests behavior nobody shipped is worse than no plan.
+Most of this repo is the machinery that stops that:
 
-### Development Integration
-- **GitHub enrichment**: PR code diffs (actual source changes injected into LLM context), review comments, and repository documentation
-- **Simulator test context**: Automatically pulls testID references and screen guides from `.agents/skills/simulator-testing/references/` in the target repo (when present), so Claude references real UI test IDs in generated test steps
-- **Jira development data**: Commits, branches, and PR statuses with clickable links; merged PRs additionally show the merge date next to repo/author in the Development Activity card
-- **Open-PR handling**: Open (un-merged) PRs are included in the LLM prompt and flagged as open in the UI header so QA can plan coverage for code that hasn't merged yet
-- **Token health monitoring**: Real-time validation with expiration warnings
+| | |
+| --- | --- |
+| **Four critics** | Fix-scope, AC-support, code-grounding and surface-mismatch passes re-read every case against the PR diff, the cited AC text and the repo. Unsupported cases are badged, never silently kept — and a fifth does the same for the regression checklist |
+| **Per-case provenance** | Every case carries `grounded_in` (`PR:456`, `comments:123`, `Figma:abc`) and the AC IDs it covers. Cases with neither get an "Untraced" pill |
+| **Coverage matrix** | ACs are extracted per ticket and every case tags what it exercises, so uncovered ACs and invented AC IDs both surface |
+| **Loud refusals** | A throttled code search, a truncated response or an unreadable diff is reported as "couldn't check", not as "checked and clean" |
+| **Shape rules** | Copy-only diffs get a capped checklist; risky diffs get API-level security negative tests; shared components get a per-role fan-out |
+| **PII scrub** | Real customer and employee names from ticket context never become test subjects |
 
-### Test Plan Generation
-- **Claude Opus**: Defaults to `claude-opus-5`. The default and the per-model request quirks live together in [`model_capabilities.py`](src/app/model_capabilities.py), so `LLM_MODEL` is the only knob to turn: `temperature` is dropped on models that reject it (Opus 4.7+), `output_config.effort` is sent only where it's accepted, and `max_tokens` reserves headroom for thinking on models that think by default (Opus 5+) — an unrecognised model id falls back to the conservative shape rather than a 400. Read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents with many subtasks survive Opus's 16k-token output cap. Transient `529` overload errors from the plain-summary path are retried with exponential backoff so a brief Anthropic capacity blip no longer drops the ticket summary
-- **One pipeline for every caller**: the deliverable classifier, the four post-generation critics, AC coverage and run persistence live in `src/app/services/plan_service.py`, and the web UI, CLI, MCP server and queue watcher all go through it. Previously each non-browser caller assembled its own context and called the LLM directly, so an MCP- or CLI-generated plan silently carried no critic badges, no AC coverage and no run history — the same ticket produced a different plan depending on which door you came in through
-- **Smart comment management**: Updates existing Jira comments instead of creating duplicates
-- **Multiple export formats**: Markdown, Jira-formatted text, or JSON. The markdown export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
-- **Issue type validation**: Generates plans for Story, Bug, Task, and Sub-task; skips Epics and Spikes (Epics open the children view instead)
-- **Epic launcher view**: Fetching an Epic renders its child tickets as a list with per-row Generate (test plan) and Analyze (Bug Lens) buttons; results expand inline so multiple children can be reviewed without navigating away
-- **Multi-ticket AC coverage**: For comma-separated multi-ticket plans, ACs are extracted per ticket, fed to the LLM as a coverage matrix, and each test case must tag the AC IDs it covers. The UI shows per-ticket coverage ratios, lists uncovered ACs, and surfaces a red banner if the model invents AC IDs that don't exist. When two tickets disagree on an AC, the newer ticket's version wins and the older AC is marked superseded
-- **Cross-project multi-ticket plans**: When the supplied tickets span multiple repositories, a seam extractor walks each PR diff for HTTP routes, events, and in-house imports, intersects exports/calls across repos, and feeds the resulting verified + suspected seams to the LLM so it emits real integration tests at the boundary. Cross-project test cases are badged with a producer → consumer line and the same metadata flows into the markdown export
-- **No silent truncation**: Multi-ticket plans detect when Claude hits the max-tokens cap and surface the truncation explicitly instead of returning a partial plan
-- **UI element grounding**: Test steps that name a UI element not present in the PR diff or the target repo's simulator `testID` reference are flagged in the rendered plan so QA can sanity-check the wording before running them
-- **Fix-scope critic**: A post-generation pass (`src/app/fix_scope_critic.py`) snapshots each merged PR (title, body, files changed, key diffs, commit messages) and pairs every test case with its cited ACs; the LLM verifies whether the case asserts behaviour the PR actually changed, and unsupported cases are badged with `needs_manual_verification=True` plus a grounding warning. Catches reporter-diagnostic drift — the classic case is a bug ticket speculating in prose about a default rate the PR body explicitly said it wasn't touching, yet QA still gets an edge case asserting the rate is not auto-applied. The generator prompt also carries a "do not mistake the reporter's diagnosis for the fix's scope" block so the model prefers not to emit these in the first place
-- **AC-support critic**: A second post-generation pass pairs each case's (title, steps, expected) with the verbatim text of every AC it cites in `covers_acs` and asks the LLM whether the AC actually supports the behaviour being tested. Cases the critic marks ungrounded are badged with `needs_manual_verification` and gain a grounding-warnings entry, so a case citing "audit history is viewable in the admin dashboard" for an assertion about **date-range filtering** shows up under the existing "Unverified UI" chip instead of reading as a scope gap
-- **Code-grounding recheck**: Third-pass critic that searches each linked GitHub repo for the case's title, feeds the snippets + case body back to the LLM, and flips confirmed warnings from WARN to INFO with a `code_evidence` anchor. Fixes the false-positive class where the AC text is silent about an implementation detail (empty-buffer guard, streaming latency, cache invalidation) but the code actually implements it. Gated on `GITHUB_TOKEN` + `code_grounding_recheck_enabled`; failure degrades to leaving warnings at WARN. The frontend banner splits by severity — WARN for unconfirmed behaviour, INFO for cases the recheck confirmed in code with file-path anchors QA can jump straight to
-- **Verification-surface anchoring**: Two gated passes (`SURFACE_CLASSIFIER_ENABLED`) keep plans on the ticket's actual deliverable surface — App Store Connect uploads, LaunchDarkly flag flips, doc rewrites, etc. — instead of always defaulting to "launch the app and compare". A pre-plan classifier names the deliverable + verification surface and injects anchor + off-target hints into the generator prompt so cases author against the right target the first time; a post-plan surface-mismatch critic badges cases whose steps still drift onto the wrong surface (same "Unverified UI" chip as the other critics, `source=critic_surface`). Multi-ticket batches classify each ticket in parallel; the surface critic skips entirely when a batch mixes code_behavior with non-code work so a legitimate "launch the app" step on the code ticket doesn't false-positive
-- **Platform-scope rule**: Expo/React Native tickets no longer get auto-generated "App launches on Android emulator" smoke items when the ticket only discussed the Expo layer generically. The prompt requires an explicit platform mention (ticket, ACs, comments, PR, or diff) before a case names a platform, with a platform-neutral fallback when scope is ambiguous
-- **Sibling API caller awareness**: Prompt asks the model to enumerate sibling code paths that hit the same API surface (so a fix on one ViewModel doesn't ship with an identical buggy sibling), with a grounding warning when the model can't verify them from the diff. Integration-test rule requires assertions to check that request params are both *present and non-empty*, catching empty-string regressions
-- **Observability ticket mode**: Logging / alerting / monitoring tickets switch to a QA-runnable test style — Grafana UI inspection, paste-ready LogQL queries against natural traffic, walking every tab of the affected rule, and `[fill in from UI]` placeholders for values the ticket references but doesn't supply. Bans white-box steps QA can't execute (e.g. "deploy the code", "simulate a DB failure")
-- **PII protection**: System prompt forbids naming real customers/employees from ticket context as test subjects; a regex pass scrubs any remaining email-shaped strings from the rendered plan as defense-in-depth
-- **Boundary & test-layer prompt rules**: Numeric-boundary changes must produce concrete inside/outside example values and matching step text; filtered-collection assertions must check identity, not just cardinality; backend logic coverage is pushed into a dedicated `[Backend]` section instead of inflating UI/voice steps; mobile tickets ban browser-DevTools instructions
-- **Derived-field expected values come from spec, not app behavior**: When a test targets a derived value (a computed field, a filtered denominator, an aggregate), the source-of-truth branch decides how strict the assertion is — expected values are derived from the specification, hard-pinned only when the source is confirmed, and flagged for PM with Pass withheld when the source is unconfirmed. On bug tickets this prevents the plan from baking the reported defect in as the pass criterion by matching whatever the app currently renders
-- **Copy-only plan shape**: A ticket whose diff is limited to user-visible strings used to get the generator's default shape — a case per route to the same dialog, a case per retired string, a layout case per variant, and a tail of "does saving still work" cases the PR's own component tests already asserted. `src/app/copy_only.py` scans the diff deterministically (a file is copy when it is an i18n/strings file, or when its changed lines differ only *inside* string literals), and when the evidence holds it injects a rule block carrying the extracted new and retired strings. The model does the classifying — the block leads with the disqualifiers and tells an unsure model to ignore it — and when it agrees, the manual checklist is capped at **(distinct copy variants) + 4**: one case per variant, one retired-copy sweep for the whole screen, one layout check at the narrowest width against the longest variant only, one error/empty state, one keyboard/focus pass. Persistence, mutation payloads, cache invalidation and prop wiring are marked `covered_by_unit_test` rather than shipped as manual cases. The model reports its verdict and variant count back in the plan, so the budget check is audited afterwards and shown in the "Grounded in" panel — including which variants one test account cannot reach. Nothing is auto-cut: the rule says to cut from the exclusion list and never from rule 1, and a mechanical trim would drop whichever case sorted last. A PR whose diff GitHub could not return never triggers the block, for the same reason `REQUIRE_SOURCE_GROUNDING` exists. Gated by `COPY_ONLY_RULE_ENABLED` (on by default); single-ticket plans only, because "(variants) + 4" means nothing across a batch that also carries a backend change
-- **Concurrent pipeline joins**: Generation is mostly waiting, and two joins that never needed to be sequential no longer are. The three pre-generation legs — Jira attachment downloads, Slack link resolution, and the deliverable classifier's own LLM round-trip — run together instead of adding their latencies; and the regression-grounding critic, which touches only `regression_checklist` while the four case critics touch only the case sections, now overlaps that chain instead of following it. The overlap is in the LLM round-trips: GitHub code searches still serialize behind the process-wide pacing limiter either way, which means either critic can now be the one that runs out of search budget — both report that in `critics_unavailable` rather than reporting a clean check. The tests for both joins are written so that reverting the change deadlocks rather than merely running slower
-- **Sticky header quick actions**: Copy / Download / Post-to-Jira are reachable from the sticky test-plan header without scrolling to the end of the test list
+→ Full detail in **[docs/FEATURES.md](docs/FEATURES.md)**
 
-### Jira Browser Side Rail
+## Quick start
 
-A collapsible left rail that lets testers find a ticket without typing a key.
-Three drill-down panels mirror Jira's own structure: **Projects → Status
-columns → Issues**.
+**Prerequisites:** Python 3.11+, Node.js 20+, and `uv` (`pip install uv`).
 
-- **Status columns**: the column list is pulled from the project's agile
-  board configuration and rendered in board order, so the rail mirrors the
-  columns testers already see in Jira instead of exposing every workflow
-  status (e.g. hidden "Ready for Release" statuses no longer surface).
-  Projects without a board fall back to the full workflow. Within each
-  column the statuses are grouped by Jira's `statusCategory` (To Do / In
-  Progress / Done), with anything outside the three known categories under
-  "Other" so nothing is silently hidden
-- **Backlog muting**: for projects that use Jira sprints, issues that aren't on
-  the active sprint come back with `in_active_sprint=False` and render with a
-  soft visual treatment plus a small "Backlog" tag, so the column makes it
-  clear which work is actually in flight. Kanban projects without a Sprint
-  field render normally — the backend probes per project before applying the
-  filter
-- **Issue type badges**: each issue row shows a small color-coded badge
-  (Story / Bug / Task / Spike / Epic / Sub-task) using the same palette as
-  the main ticket header
-- **Pinned + Recent**: pin frequently-used projects with the star icon — they
-  appear in a "Pinned" group at the top of the projects list. Recently visited
-  projects auto-populate a "Recent" group below it (capped at 5, excluding
-  pinned to avoid duplication). Pins and recents are persisted in
-  `localStorage` per browser. Both sections are hidden while the filter input
-  is in use. When exactly one project is pinned, opening the rail skips
-  the project list entirely and drops the tester straight into that
-  project's status columns
-- **Active-project filter**: the project list defaults to the projects
-  Jira has actually seen activity in over the last 30 days (a JQL sweep
-  for issues updated in the window returns the distinct project keys),
-  so dormant projects are hidden by default. "Show all" is one click away
-  and any text filter temporarily disables the active-only cut so a
-  search never looks broken. Pinned and recent still surface regardless
-- **Ticket row detail**: each issue row shows the assignee's avatar (or a
-  muted "Unassigned" placeholder), and right-clicking a row opens a
-  native-style context menu with "Open in new tab", "Copy key", and "Open
-  in Jira" so the rail doesn't force a left-click hijack of the main
-  workspace
-- **Empty column state**: an empty status column renders an icon + title
-  + contextual body naming the current status and project, instead of
-  the earlier "No issues in this column." one-liner that looked like a
-  broken row
-- **Refresh model**: every panel has a manual ↻ button, and the active panel
-  silently re-fetches whenever the tab regains visibility (covers the common
-  "I just changed something in the Jira tab" case). A silent 60s interval
-  also re-runs the active pane's fetch while the tab is visible, so a Jira
-  admin editing a workflow or moving cards on the board shows up in the rail
-  without a manual refresh. The three Jira fetches are marked `no-store`
-  so a stale HTTP-cached response can't linger. Silent refresh keeps the
-  current data on screen while the request is in flight — no spinner flash
-- **Selection**: clicking an issue populates the existing input field and
-  triggers the normal fetch flow, so the rail is purely additive; the
-  paste-a-key input remains the escape hatch for power users
-- **Subtask grouping**: when an actual Sub-task issue type and its parent
-  both live in the same status column, the subtask row is hidden and its
-  parent gets a small `+N sub` pill. Sub-tasks whose parent is in another
-  column still appear, indented with a faint vertical tree-line and a
-  `SUBTASK OF KEY` caption so the relationship reads at a glance.
-  Stories/Tasks under an Epic are *not* affected — they keep their own row
-- **Fetch overlay**: while a ticket is loading the rail and main column are
-  covered by a centered overlay + spinner so the user gets clear feedback
-  instead of a stuck inline button state
-- **Auth note**: the rail surfaces only what the configured `JIRA_USERNAME` /
-  `JIRA_API_TOKEN` can see. Project list is capped at the first 100 results
-  from `/rest/api/3/project/search`
+```bash
+# 1. Backend
+uv sync
+cp .env.example .env     # then fill in your tokens
 
-### QA Workflow Actions
+# 2. Frontend
+cd frontend && npm install && cd ..
+```
 
-One-click status transitions plus reassignment, to remove the "transition →
-pick assignee" two-step from the QA loop. Frontend button visibility is
-config-driven via `WORKFLOW_PROJECT_PREFIXES` (default `["SK"]`) — list
-additional Jira project keys to surface the QA workflow buttons for those
-projects without code changes. The backend endpoint itself still hardcodes
-the SK-only check; widening it (e.g. honouring the same setting or a
-per-project status map) is the next step before non-SK projects can fully
-opt in.
+Minimum `.env`: `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`,
+`ANTHROPIC_API_KEY`, `MONGODB_URI`.
+`GITHUB_TOKEN` is optional but strongly recommended — without it, plans see
+only Jira data and never the code.
 
-- **Pull to Testing**: shown when the ticket is *not* already in *In Testing*.
-  Transitions to *In Testing* and assigns the ticket to the current Jira user
-  (the one whose `JIRA_USERNAME` / `JIRA_API_TOKEN` is configured). If the
-  ticket has no stored test-plan run and none is loaded in the session, a
-  fresh plan is generated automatically — re-pulls and bounce-backs reuse the
-  existing plan rather than re-spending on the LLM
-- **Pass to UAT**: shown when the ticket is in *In Testing*. Opens an inline
-  note form that doubles as the walkthrough authoring surface — a "Steps to
-  cover in the video" checklist inside the Notes block pulls the happy path
-  from the latest generated plan (capped at 6). Ticked steps get appended
-  to the Jira comment as a markdown bullet list; the checklist is silent
-  when nothing is ticked so testers who don't engage with it don't clutter
-  the comment. The form carries a "Tested in" chip row (Integ / Staging
-  / Prod multi-select, preselected by scanning the latest comment +
-  description for the corresponding env name), an optional Loom URL textarea
-  (one per line, validated against the canonical `loom.com/share/…` shape
-  via `models.LOOM_URL_RE` on both the client and the Pydantic request
-  model so a typo can't reach Jira as a broken link — each rendered as its
-  own paragraph above the fold), an optional attachment dropzone
-  (click / drag / paste — PNG / JPEG / GIF / WEBP / PDF / TXT / LOG / MD / JSON,
-  so API and HTTP work can ship a response body, a curl transcript, a log
-  excerpt or a markdown repro as its evidence; files upload directly to the
-  Jira issue as attachments before the transition runs, and render **inline** in the
-  comment via `mediaSingle` ADF nodes with a `📷 <filename>` fallback if the
-  media-services UUID can't be resolved. Text payloads have nothing to
-  preview, so they always render as a `📎 <filename>` callout and are
-  read from the Attachments panel). Each uploaded screenshot can be
-  **paired to a specific ticked bullet**: a small "attach to step"
-  chip on every ticked step lets the tester choose which screenshot lines
-  up with which step; the pairing is rendered in the comment as an
-  indented `mediaSingle` under that bullet so reviewers see the picture
-  right where it belongs. An optional markdown summary is appended
-  **inline** to the comment so any URLs stay one-click clickable (no more
-  collapsed "Test summary" expand block hiding the share link). A PR-Loom
-  discovery panel prefetches `GET /issue/{key}/pr-looms` when the form
-  opens so the tester sees exactly which Loom URLs would be harvested
-  from merged PR descriptions — or a reason (`no_prs` / `no_merged_prs`
-  / `no_looms` / `no_token` / `github_unreachable` / `error`) — before
-  they submit; merge state comes from Jira's dev-status API so declined
-  PRs and transient GitHub 403/rate-limit errors don't masquerade as
-  "nothing merged yet." The same scan also harvests **PR-attached
-  screenshots** (GitHub-hosted image URLs in the PR description); ticked
-  tiles are downloaded server-side via the GitHub token, uploaded as
-  Jira attachments, and inlined in the pass comment the same way
-  tester-uploaded screenshots are. Previews route through a new
-  `/issue/pr-image-proxy` endpoint so private-repo assets render in the
-  browser too, and thumbnails that 404 on load are dropped from the
-  panel entirely (the same URL would fail server-side at submit time).
-  Submitting transitions to *Ready for UAT*, reassigns to the dev who
-  handed it over, and posts a marker-line Jira comment (e.g. `✅ QA
-  Passed (Integ + Staging) — ready for UAT`). The endpoint fans its
-  work out into three parallel phases with `asyncio.gather` (attachment
-  upload / transition lookup / assignee resolution / parent-status read
-  → transition + assign → comment + parent auto-transition + subtask
-  cascade) so a ticket with a couple of attachments comes back in a few
-  seconds instead of the pre-parallel 15–30s that had testers refreshing
-  mid-transition. Each phase logs its own timing so a genuinely slow
-  ticket points at the offending phase. The ticket's saved walkthrough
-  (Loom link, screenshots-as-attachments, notes) is always folded into
-  the comment too. **Walkthrough gate**: a high-complexity ticket with
-  no walkthrough material (Loom, upload, notes, or PR-attached media)
-  is rejected server-side with a 409 `{ error_code:
-  "walkthrough_required" }` before any Jira calls fire; the UI opens a
-  single override prompt (no two-step client-side nudge) and resubmits
-  with `override_missing_walkthrough=true` on confirm. Submitting the
-  form empty with no saved walkthrough preserves the original one-click
-  pass with no comment. If this is the last sibling sub-task to reach
-  Ready for UAT (others already passed or Done), the parent ticket is
-  auto-promoted to Ready for UAT in the same call (Epics excluded;
-  best-effort, won't fail the primary transition)
-- **Fail back**: shown when the ticket is in *In Testing*. Renders as a
-  compact **split button** — a "Fail back to <destination>" trigger that
-  commits the bounce to the currently selected destination, plus a chevron
-  half that opens a small popover to switch between **To Do** and
-  **In Progress**. To Do drops the ticket back into the dev backlog; In
-  Progress keeps it in-flight for immediate rework. Red is reserved for
-  the leading arrow icon and the chevron half while the menu is open, so
-  hover no longer floods the toolbar with color. Opens the same inline
-  form pattern as Pass to UAT — a *required* Reason field (markdown,
-  autofocused, rendered above the fold so devs see *why* without
-  expanding), plus an optional multi-Loom textarea and the same
-  attachment dropzone (files attached to the issue and rendered
-  **inline** in the comment via `mediaSingle` nodes, with the
-  `📷 <filename>` / `📎 <filename>` text callout as fallback). Empty submit is rejected
-  because a fail-back without a reason has no value. The transition still
-  runs even if the comment post fails, matching Pass to UAT. The post-
-  action banner is rendered in a warning tone ("Bounced back to …")
-  instead of the celebratory green check used for UAT pass, so the
-  bounce-back is visually unmistakable
-- **Notify chip picker**: Both forms expose an optional Notify row that
-  @mentions selected users in the posted comment via a real ADF mention node
-  in a trailing `cc:` paragraph (so Jira actually delivers notifications, not
-  just text that looks like a tag). Candidates come from people already on
-  the ticket: current assignee (starred), prior assignees from the changelog,
-  and recent commenters; the configured bot user is filtered out. A
-  **debounced typeahead** above the picker hits `/issue/users/search` so a
-  PM or manager outside the ticket's own history can be looped in without
-  leaving the form — search-added people get merged into the same pill row
-  and can be notified or assigned with the existing one-click UX. The
-  default assignee still comes from the ticket's own history so a
-  search-added person is never silently auto-assigned
-- **Also move all subtasks**: Workflow forms include an "Also move all
-  subtasks" checkbox (hidden when the ticket has no subtasks) that
-  **defaults on** whenever the parent has subtasks — pulling a parent to
-  testing almost always means "and pull its subtasks too," so the default
-  matches the common case (users can still uncheck). The same default now
-  flows through the compact-row Pull button, which had no cascade path at
-  all before. When checked, the backend captures the parent's
-  *pre-transition* status, then re-applies the target status only to
-  subtasks whose current status matches that pre-transition state — so a
-  parent moving out of *Ready to Test* only pulls subtasks that were also
-  in *Ready to Test*, leaving siblings in unrelated states alone. Subtasks
-  whose workflow has no matching transition are skipped silently so a
-  partial workflow doesn't break the primary action
-- **Assignee fallback chain** (Pass to UAT / Fail back): walks the issue
-  changelog for the prior assignee (skipping the bot's own account, since
-  Pull to Testing parks the ticket there). If none is found, falls back to
-  the top contributor across the ticket's linked PRs (highest
-  additions+deletions), mapping GitHub login → Jira account via commit
-  author email, then public profile email/name, then login. If neither
-  resolves, the ticket is left unassigned and the UI toast says so
-- **Assign-to picker on the workflow form**: an "Assign to" pill row is
-  exposed on both Pass-to-UAT and Fail-back so the tester can override
-  the auto-pick without editing the ticket after the fact. Pass-to-UAT
-  opens with the developer (same person the fallback chain would land
-  on) preselected so the common "hand it back to them" case stays one
-  click; Fail-back opens with nothing selected and unassigns if the
-  tester leaves it empty. Candidates come from prior assignees in the
-  changelog, and the resolved PR contributor is slotted in behind them
-  (surfaced via `GET /issue/{key}/resolved-pr-contributor`) so tickets
-  where the tester is the only person in the history still expose the
-  developer the server would auto-assign. When the tester sets an
-  explicit override the payload carries `assignee_override_set` /
-  `_account_id` / `_display_name` and the workflow route honours it
-  verbatim, skipping the auto-pick chain (the bot-safety-net still
-  redirects to unassigned if the bot user is picked)
-- **Available transition guard**: each action looks up the issue's available
-  transitions before acting. If the target status isn't reachable from the
-  current state the API returns 400 with the list of valid transitions, so
-  bad clicks fail loudly instead of silently no-op'ing
-- **Endpoint**: `POST /issue/{issue_key}/workflow/{pull-to-testing|pass-to-uat|fail-to-todo|fail-to-in-progress}`
+```bash
+# 3. Run it — two terminals
+uv run uvicorn src.app.main:app --reload    # → http://localhost:8000
+cd frontend && npm run dev                  # → http://localhost:5173
+```
 
-### Jira Bug Lens
-Analyze bug tickets to go beyond the ticket description and into the code:
-- **Bug summary**: Plain-English explanation of what broke and what the user experienced
-- **Root cause**: Identifies the exact cause in the code, referencing specific files and logic (requires a linked PR with diffs)
-- **Fix explanation**: Describes what the merged PR changed to resolve the bug
-- **Fix complexity estimate**: For unfixed bugs, infers the GitHub repo from the ticket and estimates effort required
-- **Affected flow & scope of impact**: Identifies which user flows are broken and how wide the blast radius is
-- **Test gap analysis**: Highlights what testing was missing that allowed the bug through
-- **Regression tests**: Concrete, actionable test cases to prevent the bug from recurring
-- **Similar patterns**: Classes of related bugs to proactively look for in the codebase
-- **Code evidence**: Deterministic GitHub code search for LLM-suspected symbols — each analysis lists the exact files, line numbers, and code snippets where the suspects appear, with clickable links. Doc files (`.md`/`.rst`) are filtered and zero-hit suspects are hidden.
-- **Blame on suspected defect sites**: The LLM is asked for `{path, line}` anchors alongside the symbol names. Each anchor runs through GitHub's GraphQL blame API to attach the commit and PR that introduced the current line, so a change that never got linked to the ticket can still surface as the likely origin, and the analysis renders a "Introduced in" link straight to the culprit commit/PR
-- **Multi-ticket support**: Analyze multiple related bug tickets together for a combined root cause analysis
-- **Download as .md**: Export the full analysis as a Markdown file
-- **Auto-analyzed on Pull to Testing**: When a Bug ticket goes through Pull to Testing and a plan is auto-generated, Bug Lens is dispatched immediately after so the analysis is waiting when the tester finishes the plan. At-most-once per ticket (persisted via `jira_tickets.auto_bug_analysis_dispatched_at`); manual re-runs still work. The action button and busy label change to signal that the run was automatic
-- **Collapsed by default when it auto-lands**: the report renders as a keyboard-accessible collapsed card so an auto-run analysis doesn't unfold a long report unprompted underneath the plan. Clicking Download no longer expands the card. The Bug Summary section (which duplicated the ticket description already shown above the card) is gone
-- Only shown for `Bug` issue type; automatically uses the same GitHub PR diff pipeline as test plan generation
+→ Every setting, including the four that describe your team:
+**[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 
-### Test Plan History
+## Four ways to use it
 
-Every successful test plan run is persisted to MongoDB so prior versions stay
-recoverable and comparable.
+| | Best for | Start here |
+| --- | --- | --- |
+| **Web UI** | Day-to-day QA — ticket browser, workflow buttons, progress tracking | `http://localhost:5173` |
+| **CLI** | Terminal-native and CI runs | [docs/CLI.md](docs/CLI.md) |
+| **MCP server** | "Generate a test plan for PROJ-456" inside Claude Desktop | [docs/MCP_SERVER.md](docs/MCP_SERVER.md) |
+| **Queue watcher** | Plans waiting *before* the tester opens the ticket | [docs/CLI.md](docs/CLI.md#qa-queue-watcher) |
 
-- **Prior-runs banner**: When a ticket has prior successful test-plan runs, a
-  banner appears above the generate area summarising the latest version and
-  expanding to a list of every version with creation time, model, and case count
-- **Live in Jira badge**: Posting a plan to Jira updates the existing
-  comment in place, so at most one version is the one teammates actually
-  see. That version is tagged "Live in Jira" on the run-history rows and
-  on the plan banner so reviewers don't double-post or wonder which
-  regeneration is current. A red "Not live in Jira" chip mirrors it on
-  the banner header and the latest expanded row when the newest run
-  hasn't been posted, so a fresh generation doesn't quietly leave the
-  stale version live. Posts routed through the history banner and
-  multi-ticket flows now correctly forward `plan_id` so those paths
-  register in the DB instead of misreading as unposted
-- **Side-by-side preview**: Clicking *View* on a row renders the historical
-  plan below the live one in muted gray styling, so versions can be read
-  side-by-side without losing the active output. The preview is read-only —
-  duplicate Post-to-Jira/Copy/Download actions are hidden
-- **Version diff**: Clicking *Diff* opens a unified line-diff of the markdown-
-  formatted plan against its immediate predecessor (`generated_plans.previous_plan_id`)
-- **Auto-chained regenerations**: Single-ticket regenerations automatically set
-  `previous_plan_id` and bump `version`, so the chain forms without any user
-  action
-- The history banner hides while Bug Lens analysis is running or showing, so
-  the two flows don't visually overlap; persisting Bug Lens output (with its
-  own history banner) is a planned follow-up
+The watcher is the one worth calling out: `testplan watch` sweeps your QA queue
+and pre-generates plans (plus Bug Lens for bugs), so the multi-minute Opus run
+happens off the tester's critical path. Unattended spend is fenced by a
+merged-PR gate, a never-regenerate rule, a retry cooldown and a per-sweep cap.
 
-## Tech Stack
+```bash
+testplan health                    # check API tokens
+testplan generate PROJ-123         # generate a plan
+testplan generate PROJ-123 --post-to-jira
+testplan watch --dry-run --once    # show what a sweep would pick up
+```
 
-**Backend:** Python, FastAPI, httpx
-**Frontend:** React, Vite
-**LLM:** Claude API (Anthropic) or Ollama
+## Tech stack
+
+**Backend:** Python, FastAPI, httpx, MongoDB (Motor) ·
+**Frontend:** React, Vite ·
+**LLM:** Claude API (Anthropic) or Ollama ·
 **CLI:** Typer, Rich, PyYAML
 
-## Project Structure
-
-- `src/app/` - Backend (FastAPI routes, Jira/GitHub/Figma clients, LLM integration)
-- `src/app/services/plan_service.py` - **The test-plan pipeline.** Every caller
-  goes through here — web UI, CLI, MCP server, queue watcher — so the same
-  ticket produces the same plan regardless of entry point. Also owns the
-  Jira-issue → prompt-payload assembly
-- `src/app/services/test_plan_generator.py` - The pipeline's stages: AC coverage,
-  warning normalization, and the four post-generation critics
-- `src/app/services/queue_watcher.py` - Sweeps the QA queue and pre-generates plans
-- `src/app/copy_only.py` - Deterministic copy-only diff detection, the plan-shape
-  rule block it injects, and the post-generation budget audit
-- `src/app/security_surfaces.py` - Diff-driven detection of risky surfaces
-  (routes, auth, uploads, capability links, streaming, vendor calls), the
-  security negative-test block it injects, and the persona-collapse audit
-- `src/cli/` - CLI tool (Typer, configuration management)
-- `src/mcp_server/` - MCP server for Claude Desktop
-- `frontend/` - React web UI with Vite
-- `tests/` - Unit and integration tests
-
-## Prerequisites
-
-- Python 3.11+
-- Node.js 20+ (for web UI)
-- `uv` package manager: `pip install uv`
-
-## Setup
-
-### Backend Setup
-
-```bash
-uv sync
-cp .env.example .env
-# Edit .env with your API tokens
-```
-
-Required: `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`, `ANTHROPIC_API_KEY`
-Optional: `GITHUB_TOKEN`, `FIGMA_TOKEN`
-
-### Frontend Setup
-
-```bash
-cd frontend
-npm install
-```
-
-### LLM Setup
-
-**Using Claude API** (recommended):
-1. Get API key from [console.anthropic.com](https://console.anthropic.com/)
-2. Add to `.env`:
-   ```
-   LLM_PROVIDER=claude
-   # LLM_MODEL=claude-opus-5   # optional — this is the default
-   ANTHROPIC_API_KEY=sk-ant-api03-...
-   # Optional: raise from the 600s default when generating plans for
-   # parents with many subtasks (Opus can spend several minutes at the
-   # 16k-token output cap before the read times out).
-   # CLAUDE_API_TIMEOUT_SECONDS=900
-   ```
-
-**Alternative**: Ollama (local, free) - set `LLM_PROVIDER=ollama` and `LLM_MODEL=llama3.1` in `.env`
-
-### GitHub Token Setup (Optional)
-
-Enables PR code diffs, review comments, and repository documentation for better test plans.
-
-1. Go to [GitHub Settings → Tokens](https://github.com/settings/tokens)
-2. Generate new token with `repo` scope
-3. Add to `.env`: `GITHUB_TOKEN=ghp_...`
-4. **If using enterprise**: Authorize SSO for your organization
-
-Without GitHub token, test plans use only Jira data (basic PR titles and commits).
-
-### Tell it about your team (Optional)
-
-Four settings describe whoever is running the bot. They are config rather than
-code on purpose: a clone that inherited another team's Jira projects,
-coworkers and repos could only ever be wrong for everyone else, and none of it
-belongs in a public repo. All four are JSON, all four are optional, and
-`.env.example` carries a worked example of each.
-
-| Setting | What it does | Without it |
-|---|---|---|
-| `WORKFLOW_PROJECT_PREFIXES` | Which Jira projects get the QA workflow buttons (Pull to Testing, Pass to UAT, Fail back) | No workflow buttons anywhere — the hand-off UI stays hidden |
-| `TEAM_GITHUB_LOGIN_TO_JIRA` | GitHub login → `[Jira accountId, display name]`, for choosing who a fail-back returns to | Falls back to searching Jira by commit email → profile name → login; misses anyone whose GitHub name differs from their Jira name, or who commits via a GitHub noreply address. Logged once at startup of the first lookup |
-| `BOT_DISPLAY_NAMES` | Jira display names of service accounts that must never be left holding a ticket | Only the accountId-based check guards the hand-off |
-| `BUG_LENS_REPO_HINTS` | Product keyword regex → repos to code-search when a bug ticket has no linked PR | Bug Lens searches only repos the ticket actually links |
-
-Finding a Jira accountId: it appears in any user object the Jira API returns,
-or query `/rest/api/3/user/search?query=<email>` on your instance.
-
-Note that `.env` is read at process start and uvicorn's `--reload` does not
-watch it, so restart the backend after changing any of these — a stale process
-will serve the old values (including an empty `WORKFLOW_PROJECT_PREFIXES`,
-which reads as "the buttons disappeared").
-
-## Run the Application
-
-### Start Backend (Terminal 1)
-
-```bash
-uv run uvicorn src.app.main:app --reload
-```
-
-Backend runs on: `http://localhost:8000`
-
-### Start Frontend (Terminal 2)
-
-```bash
-cd frontend
-npm run dev
-```
-
-Frontend runs on: `http://localhost:5173`
-
-## CLI Usage (Alternative to Web UI)
-
-The CLI provides a fast, terminal-native way to generate test plans without
-running the web server — and hosts `testplan watch`, the background sweep that
-pre-generates plans for the QA queue.
-
-### Installation
-
-**For teams** (one-liner install):
-```bash
-curl -sSL https://raw.githubusercontent.com/your-org/jira-testplan-bot/main/install.sh | bash
-```
-
-**Or install directly** (if you have `uv`):
-```bash
-uv tool install git+https://github.com/your-org/jira-testplan-bot.git
-```
-
-**For local development**:
-```bash
-git clone https://github.com/your-org/jira-testplan-bot.git
-cd jira-testplan-bot
-uv sync
-uv run testplan --help
-```
-
-**Update later**: `uv tool upgrade testplan`
-
-### Configuration
-
-**Interactive setup** (recommended):
-```bash
-testplan setup
-```
-
-**Import from .env file**:
-```bash
-testplan config import .env
-```
-
-**Or use environment variables** (for CI/CD):
-```bash
-export JIRA_URL="https://your-company.atlassian.net"
-export JIRA_USERNAME="your-email@company.com"
-export JIRA_API_TOKEN="your-token"
-export ANTHROPIC_API_KEY="sk-ant-api03-..."
-export GITHUB_TOKEN="ghp_..."  # optional
-export FIGMA_TOKEN="figd_..."  # optional
-```
-
-Config is stored at `~/.config/jira-testplan/config.yaml` with environment variable fallback.
-
-### Usage
-
-```bash
-# Check API token health
-testplan health
-
-# Generate test plan
-testplan generate PROJ-123
-
-# Post directly to Jira
-testplan generate PROJ-123 --post-to-jira
-
-# Save to file or copy to clipboard
-testplan generate PROJ-123 -o plan.md
-testplan generate PROJ-123 --copy
-
-# Batch processing
-testplan generate PROJ-123 PROJ-124 PROJ-125
-
-# Output formats: markdown (default), jira, json
-testplan generate PROJ-123 --format json
-
-# Pre-generate plans for everything sitting in the QA queue
-testplan watch --dry-run --once   # show what a sweep would pick up
-testplan watch --once             # one sweep, then exit
-testplan watch                    # loop on the configured interval
-```
-
-### QA-queue watcher
-
-`testplan watch` sweeps the configured Jira projects for tickets in the
-queue status (default `Ready to Test`) and pre-generates a test plan for
-any that don't have one — plus Bug Lens for Bug tickets. The point is lead
-time: the tester opens a ticket whose plan, critic verdicts and analysis
-are already waiting, instead of starting a multi-minute Opus run at the
-moment they wanted to start testing. Pull-to-Testing already auto-generates,
-but only *after* the click, which puts the whole latency on the critical path.
-
-It runs as its own process, never from the API — so it can be restarted
-independently and never spends money just because the backend is up.
-
-Every sweep makes real Opus calls with nobody watching, so each guard is
-separately configurable (all via env):
-
-| Setting | Default | What it does |
-| --- | --- | --- |
-| `WATCH_PROJECTS` | falls back to `WORKFLOW_PROJECT_PREFIXES` | Projects to sweep |
-| `WATCH_STATUS` | `Ready to Test` | The status that means "in the QA queue" |
-| `WATCH_INTERVAL_SECONDS` | `300` | Seconds between sweeps |
-| `WATCH_MAX_PER_CYCLE` | `5` | Cap on plans per sweep — bounds a surprise when a sprint's worth of tickets moves at once |
-| `WATCH_REQUIRE_MERGED_PR` | `true` | Require at least one **merged** PR. Merge state, not just existence — a plan written against an open PR describes code that is still changing, and the watcher never regenerates, so that plan would outlive the code it came from |
-| `WATCH_RETRY_COOLDOWN_HOURS` | `6` | Don't re-attempt a ticket attempted this recently, so one that fails every cycle doesn't burn a call every interval |
-
-**What the tester sees.** Opening a watcher-prepared ticket loads the stored
-plan as the live plan, and a stored Bug Lens analysis with it. Pull-to-Testing
-still auto-generates only when no run exists, so it correctly reuses the
-watcher's plan rather than paying twice — and now *shows* it, instead of
-leaving a collapsed history banner where the plan used to appear. The banner
-keeps its real job: older versions.
-
-**Held tickets are always skipped**, whatever the hold reason. A hold is a
-human saying the ticket isn't ready to be worked on, and `code-review`
-literally means the PR is still in review — a plan written then describes
-code that will change, and never-regenerate would make it permanent.
-Skipping costs nothing: the ticket stays in the watch status, so the sweep
-after the hold clears still writes the plan before the tester opens it.
-
-A ticket that already has a stored plan is never regenerated — regeneration
-stays a human decision. Checks run cheapest-first: the DB dedupe is free,
-the Jira fetch costs a few hundred ms, and only what survives both reaches
-the LLM. `--dry-run` runs every guard and stops short of generating, so the
-skips it reports are the ones a real sweep would produce.
-
-One watcher process is assumed; the dedupe is a read rather than a claim, so
-two would race. A claim column (following
-`jira_tickets.auto_bug_analysis_dispatched_at`) is the fix before this is
-deployed anywhere shared.
-
-#### Running it unattended (macOS)
-
-A sweep is only useful if it happens without you. `ops/launchd/` installs the
-watcher as a user LaunchAgent that runs one sweep every 5 minutes:
-
-```bash
-./ops/launchd/install.sh     # load it (idempotent — re-run after editing the template)
-./ops/launchd/uninstall.sh   # stop and remove it
-tail -f ~/Library/Logs/jira-testplan-watch.log
-```
-
-Each launch runs `testplan watch --once --quiet` rather than the CLI's own
-loop, so nothing stays resident and launchd restarts a crashed sweep for free.
-A shorter interval buys nothing: plans are never regenerated and a retry
-cooldown applies, so cost tracks tickets entering the queue, not how often we
-look.
-
-Two limits worth knowing. `StartInterval` does not fire while the Mac is
-asleep — launchd runs a single catch-up sweep on wake — so this is a
-convenience, not infrastructure. And the sweep needs `MONGODB_URI`, which
-settings read from `.env` relative to the working directory; that is why the
-runner `cd`s into the repo before anything else.
-
-### Continuous integration
-
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
-`main` and every pull request: `pytest` for the backend, `npm run lint` plus
-`npm run build` for the frontend.
-
-It needs **no repository secrets**. The suite is hermetic — no network, no real
-credentials — with one wrinkle: `init_client` refuses to guess a database, so a
-handful of tests fail without `MONGODB_URI` even though every query is mocked.
-CI sets a throwaway URI, which satisfies the check without a database — Motor
-connects lazily, so nothing dials out. The repository tests go further and run
-against an in-memory Mongo (`mongomock-motor`), so the query layer is exercised
-for real without CI needing a server. Keep it that way; this repo is public.
-
-`pyproject.toml` pins `testpaths = ["tests"]`. Without it a bare `pytest`
-walks `src/` and tries to import `test_plan_progress` and
-`test_plan_generator` — domain modules about test *plans*, not tests — as test
-modules, which aborts collection before a single test runs.
-
-### CLI in CI/CD
-
-The CLI supports environment variables for automation. Example GitHub Actions workflow:
-
-```yaml
-- name: Generate test plan
-  run: testplan generate $TICKET --post-to-jira
-  env:
-    JIRA_URL: ${{ secrets.JIRA_URL }}
-    JIRA_USERNAME: ${{ secrets.JIRA_USERNAME }}
-    JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-## MCP Server - Claude Skill Integration
-
-Use the test plan generator directly within Claude desktop app using natural language. The MCP path runs the **same pipeline** as the web UI — it calls `plan_service.generate_for_ticket`, so a plan generated from Claude Desktop gets the deliverable classifier, all four post-generation critics, AC coverage and a persisted run, and the output surfaces grounding warnings and uncovered ACs. Before that it assembled its own context and called the LLM directly, so MCP plans silently carried none of those.
-
-### Quick Setup
-
-1. **Add to Claude desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "jira-testplan-bot": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/jira-testplan-bot", "run", "testplan-mcp"],
-      "env": {
-        "JIRA_URL": "https://company.atlassian.net",
-        "JIRA_USERNAME": "your-email@company.com",
-        "JIRA_API_TOKEN": "your-token",
-        "ANTHROPIC_API_KEY": "sk-ant-api03-...",
-        "GITHUB_TOKEN": "ghp_...",
-        "FIGMA_TOKEN": "figd_..."
-      }
-    }
-  }
-}
-```
-
-2. **Restart Claude desktop**
-
-### Usage
-
-Once configured, use natural language in Claude:
-- "Fetch PROJ-123 from Jira"
-- "Generate a test plan for PROJ-456"
-- "Generate a test plan for PROJ-456 and post it to Jira"
-- "Check my API token health"
-
-See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for detailed setup and troubleshooting.
-
-## Web UI API Endpoints
-
-- **Health check**: `GET /health`
-- **API docs**: `/docs` (Swagger UI)
-- **Token health**: `GET /health/tokens` - Validates all API tokens
-- **Fetch issue**: `GET /issue/{issue_key}` - Returns ticket with development info
-- **List Epic children**: `GET /issue/{epic_key}/children` - Lightweight list (key, summary, issue_type, status) of tickets directly under an Epic; powers the Epic launcher view
-- **Generate plan**: `POST /generate-test-plan` - Returns structured test plan JSON. Takes an already-assembled ticket payload, which is what the browser posts back from its `GET /issue/{key}` fetch
-- **Generate plan from a key**: `POST /tickets/{ticket_key}/plan` - Fetches the ticket's context server-side and runs the identical pipeline. Comma-separate keys for a unified multi-ticket plan. This is the door for anything without a browser — CLI, MCP, the queue watcher, CI
-- **Generate multi-ticket plan**: `POST /generate-test-plan/multi` - Unified plan from 2+ related tickets. Switches between *single_repo* mode (shared repo / overlapping files) and *cross_project* mode (tickets span repos — seams extracted from the PR diffs drive integration-test generation)
-- **Analyze bug**: `POST /bug-lens/analyze` - Root cause, fix explanation, and regression tests for a bug ticket
-- **Summarize bounce reason**: `POST /bounce/summarize` - Takes `{from_status, to_status, reason}` and returns a one-sentence plain-English headline for the bounce card, or `{headline: null}` when the picked comment doesn't actually explain the bounce (UI then falls back to the raw comment)
-- **Analyze bugs (multi)**: `POST /bug-lens/analyze/multi` - Combined analysis for multiple related bug tickets
-- **Read a stored analysis**: `GET /bug-lens/by-ticket/{key}` - The newest persisted Bug Lens analysis for a ticket, in the same shape `analyze` returns (plus `created_at` / `run_id` so the UI can label it as stored). Returns `{"analysis": null}` when there is none — an absent analysis is a normal state, not an error. Analyses were persisted from the start but had no read path, so one produced by the queue watcher or a teammate was invisible and got re-run
-- **List runs by ticket**: `GET /runs/by-ticket/{key}` - Successful test-plan runs for a ticket, newest first; powers the history banner
-- **Fetch stored plan**: `GET /plans/{plan_id}` - Full plan body and ordered test cases for a stored generation; powers View and Diff
-- **QA workflow action**: `POST /issue/{issue_key}/workflow/{action}` - Transition + reassignment (`pull-to-testing`, `pass-to-uat`, `fail-to-todo`, `fail-to-in-progress`); backend still rejects non-`SK-` keys with 400 (frontend visibility is the config-driven layer). Accepts `multipart/form-data` with optional comment fields (envs, `loom_urls` list, summary, reason, screenshot file uploads), `mention_account_ids` for ADF @mentions, `cascade_to_subtasks` to re-apply the transition to each direct subtask whose status matched the parent's *pre-transition* status, and `override_missing_walkthrough` to bypass the server-side walkthrough gate. When the walkthrough gate rejects the request, the response is 409 `{ error_code: "walkthrough_required", … }` so the UI can prompt the tester before retrying with the override
-- **PR-Loom discovery**: `GET /issue/{issue_key}/pr-looms` - Scans the ticket's merged PR descriptions for `loom.com` share URLs, returning either the harvested URLs or a reason (`no_prs` / `no_merged_prs` / `no_looms` / `no_token` / `github_unreachable` / `error`). Merge state comes from Jira's dev-status API (source of truth for MERGED / DECLINED / OPEN), so declined PRs and transient GitHub 403/rate-limit errors don't masquerade as "nothing merged yet." Powers the Pass-to-UAT preview panel. PR-sourced URLs are routed on their own field end-to-end and rendered in the posted comment with a "📹 Loom (from merged PR):" prefix (deduped against typed URLs) so reviewers can tell tester-attached recordings from ones scraped off a PR description. The same response also includes GitHub-hosted **screenshot** URLs harvested from the PR descriptions
-- **PR image proxy**: `GET /issue/pr-image-proxy?url=…` - Streams a GitHub-hosted image through the configured `GITHUB_TOKEN` so the Pass-to-UAT preview thumbnails render even when the PR asset lives in a private repo; used only for previewing PR-attached screenshots the tester might tick into the comment
-- **Jira user search**: `GET /issue/users/search?query=…` - Debounced typeahead behind the Notify / Assign-to pickers on the QA workflow forms; lets testers loop in a PM or manager who isn't already on the ticket's history
-- **Ticket walkthrough**: `GET/PUT /tickets/{ticket_key}/walkthrough` - Human-authored Loom link, screenshots (uploaded to Jira as attachments), and setup/repro notes for the ticket; folded into the Pass-to-UAT comment automatically. GET also returns the server-computed readiness triple (`walkthrough_present` / `walkthrough_sources` / `needs_walkthrough`) alongside the latest known `uat_complexity`, so the workflow UI and the server gate share one definition of "walkthrough covered"
-- **Test-plan progress**: `GET/PUT /test-plan-progress/{progress_key}` - Shared per-ticket checkmark state (which test cases QA has ticked off), keyed by ticket + plan fingerprint so the whole team converges on the same set. An unknown key is **404**, not an empty set — it used to return `{"checked_ids": []}` for any string at all, which made a stale or mistyped key indistinguishable from a real plan nobody had checked yet. Checked ids are `"<section>:<index>"` (`happy_path:0`), indexed against what the UI *displays*; `tc-happy_path-0` is the DOM element id for card anchoring and is not a stored id
-- **Canonical progress key**: `GET /plans/{plan_id}/progress-key` - The one correct progress key for a stored plan, derived server-side. Exists so the key has a single producer: the fingerprint counts only cases the manual checklist shows, which means dropping any flagged `covered_by_unit_test`, and that rule is easy to miss when counting sections by hand. Anything writing progress — the UAT runner and the browser both — asks for the key rather than building one
-- **Progress under other plan shapes**: `GET /test-plan-progress/{progress_key}/other-shapes` - Progress recorded for the same ticket(s) under a *different* fingerprint. Because the key encodes section sizes, regenerating a plan into a different shape moves progress to a fresh key and leaves the old marks behind; the current key then 404s and the header renders 0%, which reads as "nobody tested this". This is what lets the UI say "progress exists under a previous plan shape" instead. Read-only — it never migrates anything, since which checks still apply to a changed plan is a judgement only a tester can make
-
-See `/docs` for detailed API documentation and schemas.
-
-## Team Deployment
-
-### Security Requirements
-
-**Current state:** No built-in authentication. For team deployment:
-- Add authentication (OAuth, SSO) to protect the application
-- Each user should use their own API tokens (never share)
-- Use HTTPS in production
-- Update CORS settings in `src/app/main.py` for production domains
-- Consider using a secrets manager (AWS Secrets Manager, HashiCorp Vault)
-
-### Deployment Options
-
-1. **Personal Use**: Run locally with your own tokens
-2. **Internal Team**: Deploy on internal server with SSO + network restrictions
-3. **Public SaaS**: Requires multi-tenant architecture, encrypted token storage, and payment integration
-
-### Cost Monitoring
-
-Monitor Claude API usage (pay-per-token). GitHub API has rate limits (5,000/hour). Jira and Figma are typically included with subscriptions.
-
-## Secrets Management
-
-- Never commit `.env` - it's in `.gitignore`
-- Use `.env.example` as a template
-- Rotate tokens before making the repository public
-- For production, use a secrets manager (AWS Secrets Manager, Vault, etc.)
+## Project structure
+
+| Path | What's in it |
+| --- | --- |
+| [`src/app/`](src/app/) | FastAPI routes, Jira/GitHub/Figma/Confluence clients, LLM integration |
+| [`src/app/services/plan_service.py`](src/app/services/plan_service.py) | **The test-plan pipeline.** Every caller goes through here; also owns Jira-issue → prompt-payload assembly |
+| [`src/app/services/test_plan_generator.py`](src/app/services/test_plan_generator.py) | Pipeline stages: AC coverage, warning normalization, the four critics |
+| [`src/app/services/queue_watcher.py`](src/app/services/queue_watcher.py) | Sweeps the QA queue and pre-generates plans |
+| [`src/app/copy_only.py`](src/app/copy_only.py) | Copy-only diff detection, its plan-shape rule, and the budget audit |
+| [`src/app/security_surfaces.py`](src/app/security_surfaces.py) | Diff-driven risky-surface detection and the security negative-test block |
+| [`src/cli/`](src/cli/) · [`src/mcp_server/`](src/mcp_server/) | CLI tool and MCP server |
+| [`frontend/`](frontend/) | React web UI |
+| [`tests/`](tests/) | Unit and integration tests |
 
 ## Testing
 
 ```bash
-# Unit tests
-uv run python tests/run_tests.py
-
-# LLM integration
-uv run python tests/test_llm.py
-
-# Full test suite
-uv run pytest tests/ -q
-
-# Entry-point parity — every caller runs the same pipeline, and the server-side
-# payload assembly stays field-for-field identical to the frontend's builder
-uv run pytest tests/test_plan_service.py -q
-
-# Queue-watcher guards — the refusals that keep unattended sweeps from
-# overspending (no-PR skip, never-regenerate, retry cooldown, per-sweep cap)
-uv run pytest tests/test_queue_watcher.py -q
-
-# Code-search throttling — a rate-limit 403 must not read as "no hits"
-uv run pytest tests/test_github_search_throttle.py -q
-
-# Bounce history reaches both prompt builders, not just the single-ticket one
-uv run pytest tests/test_bounce_in_prompts.py -q
-
-# Stored plans and analyses are reusable rather than re-bought
-uv run pytest tests/test_stored_artifact_reuse.py -q
+uv run pytest tests/ -q              # full suite
+uv run python tests/run_tests.py     # unit tests
+uv run python tests/test_llm.py      # LLM integration
 ```
 
-## Status
+Several suites pin a *refusal* rather than a happy path, because this codebase's
+recurring bug is a transient failure that reads as a clean result:
 
-**Current:** The loop is being pulled out from under the UI. Test-plan
-generation no longer lives in a route handler: `services/plan_service.py`
-owns the whole pipeline (deliverable classifier → generation → four critics
-→ AC coverage → persistence) plus the Jira-issue → payload assembly, and the
-web UI, CLI, MCP server and a new queue watcher all go through it — so the
-same ticket stops producing a different plan depending on which door you came
-in through, and `POST /tickets/{key}/plan` generates from a ticket key alone.
-On top of that, `testplan watch` sweeps the QA queue and pre-generates plans
-(plus Bug Lens for Bugs) before anyone opens the ticket, which takes the
-multi-minute Opus run off the tester's critical path; its unattended spend is
-fenced by a linked-PR gate, a never-regenerate rule, a retry cooldown and a
-per-sweep cap.
+| Suite | What it pins |
+| --- | --- |
+| `test_plan_service.py` | Every caller runs the same pipeline, field for field |
+| `test_queue_watcher.py` | The guards that stop unattended sweeps overspending |
+| `test_github_search_throttle.py` | A rate-limit 403 must not read as "no hits" |
+| `test_bounce_in_prompts.py` | Bounce history reaches *both* prompt builders |
+| `test_stored_artifact_reuse.py` | Stored plans are reused, not re-bought |
 
-Before that, the QA hand-off itself kept compressing: Pass-to-UAT pulls Loom
-URLs **and** screenshots off merged PR descriptions (with a
-`/issue/pr-image-proxy` shim so private-repo previews render), each ticked
-video-step bullet can be paired to a specific uploaded screenshot in the
-posted comment, Loom URLs are validated on both client and server, and the
-workflow endpoint fans its Jira calls across three `asyncio.gather` phases so
-transitions return in seconds. Bug Lens auto-runs (at most once) after a Bug
-ticket's first Pull-to-Testing plan lands, collapsed by default. The Jira
-sidebar picked up assignee avatars, row right-click actions, a 30-day activity
-filter and a sole-pinned auto-open. Plan quality gained the shared-component
-per-role fanout and the verification-surface anchor pass, on top of the
-per-test `grounded_in` / Confluence-specs / walkthrough-gated / three-critic
-baseline; prompt quality hardening ongoing.
+Run one with `uv run pytest tests/<file> -q`.
 
-**Recently closed — two silent degradations.** Both failed by producing a
-quietly worse plan rather than an error, which is why each now has tests
-pinning the *refusal* rather than the happy path:
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs pytest plus
+frontend lint and build on every push and PR, and needs **no repository
+secrets** — see [docs/CLI.md](docs/CLI.md#continuous-integration) for why.
 
-- **Code-grounding critic was losing its evidence to rate limits.** GitHub
-  caps code search at 10 requests/minute (plus a secondary limit on bursts)
-  and refuses with 403 — the same status a permissions failure uses.
-  `search_relevant_files` treated every non-200 as "no hits", so a throttled
-  search was indistinguishable from "the code doesn't implement this": the
-  critic concluded there was no evidence when it had never been allowed to
-  look, and left the warning at WARN with nothing saying the pass hadn't run.
-  Now the client tells a rate refusal from a permissions refusal
-  (`retry-after`, `x-ratelimit-remaining`, or the secondary-limit message),
-  backs off once and retries — which recovers most calls, since the window is
-  a minute wide — raises `GitHubSearchThrottled` if still refused, and
-  memoizes per `(repo, query)` so a repeated search costs nothing. A
-  throttled recheck is now recorded on the warning
-  (`recheck_status: "unavailable"`, plus a note in the `explanation` the
-  warnings panel already renders) so an unverified WARN reads differently
-  from one that was checked and not found. Severity deliberately stays WARN:
-  downgrading would assert a confirmation that never happened.
-- **Multi-ticket plans never saw bounce history.** `TicketInput` carried
-  `bounce_history`, but `plan_service.generate_multi` didn't copy it into
-  `tickets_data` and `_build_multi_ticket_prompt` rendered no bounce block —
-  so the `PRIOR QA / UAT BOUNCE-BACK HISTORY` section that makes single-ticket
-  plans cover prior failure modes was absent from exactly the plans covering
-  the most code. Both prompt builders now share one `_render_bounce_entries`
-  helper (the drift was possible because the rendering existed inline in one
-  builder only), and the multi prompt pools the entries into one section with
-  each still labelled by ticket key, since a bounce reason is only meaningful
-  attached to the ticket that bounced.
+## Deploying for a team
 
-## Roadmap
+There is **no built-in authentication.** Before more than one person uses it:
+put SSO or OAuth in front, restrict the network, serve over HTTPS, update CORS
+in [`src/app/main.py`](src/app/main.py), and give each user their own tokens.
+Watch Claude spend (pay-per-token) and the GitHub rate limit (5,000/hour).
 
-### Completed
-- ✅ Jira integration with development activity tracking
-- ✅ GitHub PR code diffs, comments, and repository docs
-- ✅ Figma design context integration
-- ✅ Token health monitoring
-- ✅ Smart comment management in Jira
-- ✅ Priority-based test ordering
-- ✅ **Parent ticket context**: Sub-tasks now include parent Epic/Story context with design resources
-- ✅ **Linked ticket dependencies**: Automatically fetches blocking/blocked-by relationships for dependency-aware testing
-- ✅ **PR repo label**: Each PR in Development Activity shows which repo it belongs to (`owner/repo`)
-- ✅ **PR author**: Each PR displays the GitHub author login
-- ✅ **Assignee history**: All unique people ever assigned to a ticket (from Jira changelog), with current assignee highlighted
-- ✅ **Multi-ticket test plans**: Enter comma-separated ticket keys (e.g. `PROJ-123, PROJ-456`) to generate one unified plan; requires shared repo or overlapping file changes
-- ✅ **Jira Bug Lens**: Analyze bug tickets to explain root cause, fix, and suggest regression tests; supports multi-ticket analysis
-- ✅ **Bug Lens v2**: Fix complexity estimate, affected flow, scope of impact, test gap analysis, download as .md
-- ✅ **Bug Lens Code Evidence**: Grep-based grounding section showing where LLM-suspected symbols actually exist in the repo, with clickable links per hit
-- ✅ **Plain-language ticket summary**: Lazy-loaded collapsible explanation of what the ticket does
-- ✅ **Prompt caching**: Static system prompt cached via Claude API for lower latency and cost
-- ✅ **Structured tool-use output**: Claude tool use enforces JSON schema on test plan output (replaces regex parsing)
-- ✅ **Formatted Jira comments**: Test plans posted as rich ADF (Atlassian Document Format) instead of plain text
-- ✅ **UX polish**: Auto-scroll to results, inline button-state feedback, red ticket badge in Bug Lens
-- ✅ **Test plan history**: Persist every test-plan run to the database; surface prior versions in a banner with side-by-side view and diff against the previous version; regenerations auto-chain via `previous_plan_id`
-- ✅ **Jira browser side rail**: Collapsible Projects → Status → Issues drill-down with status-category grouping, type badges, pinned + recent project shortcuts, and silent refresh on tab focus
-- ✅ **QA workflow buttons**: One-click *Pull to Testing* / *Pass to UAT* / *Fail back to To Do* for the SK project, with automatic reassignment (current user on pull, prior assignee on pass/fail)
-- ✅ **Sub-task test plans**: Sub-tasks are now a testable issue type and flow through the same generation path as Story/Task/Bug, while still inheriting parent Epic/Story design context
-- ✅ **MCP context parity**: MCP `generate_test_plan` mirrors CLI/REST context assembly (parent, comments, linked issues, images), so Claude Desktop sub-task plans no longer miss parent design resources. _(Superseded — the three paths each kept their own assembly and drifted; all of them now share `plan_service`, see **One pipeline for every caller** below.)_
-- ✅ **Workflow assignee fallback**: Pass to UAT / Fail back to To Do fall back from changelog prior-assignee → top PR contributor → unassigned, skipping the bot's own account in the changelog
-- ✅ **Hotfix-aware prompt filter**: Open hotfix PRs (title/branch contains `hotfix`) stay in the LLM prompt while other open PRs are excluded
-- ✅ **QA/UAT bounce-back awareness**: Changelog walker detects prior QA/UAT failures, pairs each with the nearest Jira comment, and feeds them into the LLM prompt so regenerated plans cover the prior failure modes
-- ✅ **Auto test plan after Pull to Testing**: First *Pull to Testing* on a ticket with no stored run kicks off a generation automatically; subsequent re-pulls/bounce-backs reuse the existing plan
-- ✅ **Pass-to-UAT note form**: Inline form on Pass to UAT with env chips (Integ/Staging, preselected by scanning the latest comment / description), optional Loom URL, and markdown summary; posts a marker-line + collapsible-block Jira comment, or stays one-click when submitted empty
-- ✅ **Fail back to To Do**: Renamed from *Fail back to In Progress* and retargeted at *To Do* so failing QA drops the ticket back into the dev queue
-- ✅ **Fail-back form**: Reason (required, autofocused, markdown) + optional Loom + image URL list, mirroring the Pass-to-UAT pattern
-- ✅ **Pass-to-UAT Image URLs**: Optional textarea for screenshot links, rendered as clickable 🖼️ entries above the test-summary expand block
-- ✅ **Prod env chip**: Pass-to-UAT now offers Integ / Staging / Prod with auto-selection from the ticket text and clearer selected/unselected styling
-- ✅ **Notify @mentions**: Optional chip picker on both QA workflow forms emits real ADF mention nodes so Jira sends notifications to selected ticket participants
-- ✅ **Cascade to subtasks**: Opt-in "Also move all subtasks" checkbox on workflow actions re-applies the parent's transition to each direct subtask
-- ✅ **Parent auto-promotion**: Passing the last sibling sub-task to Ready for UAT also moves the parent (Epics excluded), removing the manual follow-up
-- ✅ **Per-AC coverage (multi-ticket)**: Acceptance criteria are extracted per ticket, fed to the LLM as a coverage matrix, and each test case must tag the AC IDs it covers; the UI surfaces ratios, uncovered ACs, and a hallucinated-ID guard
-- ✅ **AC conflict resolution**: When two tickets in a multi-ticket plan disagree on the same AC, the newer ticket wins and the older AC is shown as superseded in the UI and markdown export
-- ✅ **No-truncation guard**: Multi-ticket plans detect Claude's max-tokens cap and surface truncation instead of silently returning a partial plan
-- ✅ **UI element grounding**: Test steps that reference UI elements not present in the PR diff or the target repo's `testID` reference are flagged in the rendered plan
-- ✅ **Sibling API caller / non-empty param rules**: Prompt asks for sibling code paths hitting the same API surface, with grounding warnings for unverifiable callers, and integration-test rule requires present-AND-non-empty assertions on request params
-- ✅ **Observability ticket reframing**: Logging/alerting/monitoring tickets switch to QA-runnable Grafana-UI steps with paste-ready LogQL queries, full-rule walks, and `[fill in]` placeholders instead of white-box infrastructure tampering
-- ✅ **PII scrub**: System-prompt guardrail plus regex pass replaces real customer/employee emails in rendered test plans with `<test-account>` placeholders
-- ✅ **Open PRs back in prompt**: Open (un-merged) PRs are again included in the LLM context (still flagged as open in the UI header), replacing the earlier hotfix-only carve-out
-- ✅ **Per-test progress UI**: Per-test checkmarks plus a gradient overall + per-section progress bar pinned to the top of the viewport while scrolling
-- ✅ **Gaps-only description panel**: Replaced the description-quality metrics + Weak/Good label with a panel that lists concrete gaps (missing AC for stories, missing repro / expected-vs-actual for bugs) and hides itself entirely when nothing is missing
-- ✅ **Markdown export parity**: Export includes superseded ACs and any grounding warnings so reviewers see the same caveats they would in the UI
-- ✅ **Historical-plan export buttons**: Copy/Download show on the historical plan view when no live plan exists, so reviewers can still get markdown out of an older run
-- ✅ **Cross-project multi-ticket plans**: Tickets spanning multiple repos no longer 422; a seam extractor reads each PR diff and feeds verified + suspected producer→consumer seams to the LLM so it emits integration tests at the boundary
-- ✅ **Screenshot uploads on QA workflow**: Pass to UAT / Fail back replaced the "Image URLs" textarea with a click/drag/paste dropzone that attaches files to the Jira issue directly (multipart upload before the transition, so a Jira-side failure aborts cleanly)
-- ✅ **Multi-Loom on QA workflow**: Pass to UAT / Fail back now accept multiple Loom URLs (one per line); each renders as its own paragraph above the fold of the posted comment
-- ✅ **Cascade-to-subtasks pre-transition filter**: The "Also move all subtasks" checkbox now restricts cascade targets to subtasks whose current status matches the parent's pre-transition status, so unrelated siblings aren't dragged along
-- ✅ **Workflow project gate via config (frontend)**: Replaced the hardcoded SK-only check in `WorkflowActions` with a `WORKFLOW_PROJECT_PREFIXES` setting (frontend reads it via the existing `/config` endpoint) so additional Jira projects can surface the buttons without code changes; the backend endpoint still gates on `SK-` and is the next step before non-SK projects fully opt in
-- ✅ **Rail subtask grouping + fetch overlay**: The Jira browser rail collapses Sub-tasks under their visible parent with a `+N sub` pill, and badges orphan Sub-tasks (parent in another column) with an indented `SUBTASK OF KEY` caption. A full-screen overlay covers the app while a ticket is loading
-- ✅ **Workbench frontend redesign**: Frontend refactored around a workbench-style design system; App state extracted into dedicated hooks and TestPlanDisplay sections collapsed into one config-driven map
-- ✅ **Opus 4.7 readiness**: Claude calls drop the `temperature` parameter automatically for Opus 4.7 (the API rejects it), and the read timeout is configurable via `CLAUDE_API_TIMEOUT_SECONDS` (default 600s) so worst-case parents survive the 16k-token output cap
-- ✅ **URL deep linking**: `?key=…` seeds the fetch on first paint and the active ticket is mirrored back into the URL via `replaceState`, so every browser tab is a bookmarkable / refresh-safe handle on a ticket (and the loaded key now also appears in the browser tab title)
-- ✅ **Per-test `grounded_in` attribution**: Each generated test case carries a `grounded_in` list (e.g. `comments:123`, `PR:456`, `Figma:abc`) rendered as chips under the test; tests with neither AC coverage nor grounded_in get an "Untraced" pill (hidden when the ticket has no ACs)
-- ✅ **Linked Confluence specs**: Confluence URLs in the Jira description or comments are fetched (reusing Atlassian Cloud Basic auth) and injected into the LLM prompt as a LINKED SPECS section so quoted requirements come from the actual spec page. Best-effort — per-page fetch failures don't block plan generation
-- ✅ **Live in Jira badge**: A `posted_to_jira` marker tracks which generated plan is the one currently in the Jira comment (posting is update-in-place, so at most one); the badge is surfaced both on the active plan banner and on every matching run-history row
-- ✅ **Sticky-header quick actions**: Copy / Download / Post-to-Jira are reachable from the sticky test-plan header, not just from the end of the test list
-- ✅ **Rail backlog muting**: For sprint-using projects, issues outside the active sprint render with a soft visual treatment and a "Backlog" tag; Kanban projects without a Sprint field render normally
-- ✅ **Boundary & test-layer prompt rules**: Numeric-boundary changes force inside/outside examples and matching step text; filtered-collection assertions check identity not cardinality; backend logic gets its own `[Backend]` section; mobile tickets ban browser-DevTools instructions
-- ✅ **Fail-back distinct from pass banner**: Fail back to To Do now renders a warning-tone "Bounced back to …" banner instead of the green check used for UAT pass, so the bounce-back reads as a return-to-dev rather than progress
-- ✅ **Transient 529 retry on summarization**: The plain-summary Claude call retries Anthropic `529` overload errors with exponential backoff so a brief capacity blip doesn't drop the ticket summary
-- ✅ **Workflow routes module**: QA workflow endpoint, its constants, and the parent/subtask cascade helpers moved out of `main.py` into a dedicated `workflow_routes.py`, matching `bug_lens_routes` / `runs_routes` (same URLs, same behavior)
-- ✅ **Scannable bounce-back card**: `/bounce/summarize` returns a one-sentence LLM headline for each bounce; the card leads with that headline plus a plain-English transition line ("Kyle moved this back to In Progress from Ready for UAT") and tucks the raw comment behind "Show full comment." Long reasons are trimmed at paragraph / sentence / word boundaries with an ellipsis instead of a hard mid-word cut
-- ✅ **Older reviewer feedback as bounce reason**: When no comment lands within ±6h of a bounce transition, fall back to comments posted between when the ticket entered its reviewed state and the bounce, preferring non-dev voices — captures QA/UAT feedback raised days or weeks earlier that never got resolved. Changelog is now sorted chronologically so state-entry tracking works against Jira's newest-first API order
-- ✅ **PR merged date in Development Activity**: GitHub's `merged_at` threads through `PRDetails → PullRequest → API payload` so merged PRs display "merged <date>" next to repo/author in the dev-activity row
-- ✅ **Walkthrough screenshots as plain-text callouts**: Workflow comments enumerate each screenshot as a `📷 <filename>` paragraph instead of linking Jira's binary-download `content` URL (which dead-ended at auth or forced a download). Jira's Attachments panel already renders the actual images right under the comment
-- ✅ **Walkthrough refetch before UAT gate check**: The Pass-to-UAT gate re-reads walkthrough state right before the "hard to UAT" nudge, so a walkthrough saved from the plan section after `WorkflowActions` mounted no longer nags for material already attached
-- ✅ **Derived-field expected values from spec, not app behavior**: The source-of-value coverage rule now branches on whether the source is confirmed — expected values are derived from the spec, hard-pinned only when confirmed, and flagged for PM with Pass withheld when unconfirmed, so bug-ticket plans stop baking the reported defect in as the pass criterion
-- ✅ **AC-support critic**: Post-generation LLM check pairs each case's (title, steps, expected) with the verbatim text of every AC it cites and asks whether the AC actually supports the behaviour being tested; ungrounded cases are badged with `needs_manual_verification` and a grounding-warnings entry so they surface under the existing "Unverified UI" chip
-- ✅ **Fix-scope critic**: New `src/app/fix_scope_critic.py` snapshots each merged PR (title, body, files changed, key diffs, commit messages) and verifies whether each case asserts behaviour the PR actually changed. Catches reporter-diagnostic drift where a ticket's speculation about a value becomes a test even though the PR body punts on that concern. Generator prompt also carries a matching "do not mistake the reporter's diagnosis for the fix's scope" block
-- ✅ **Code-grounding recheck**: Third-pass critic searches each linked GitHub repo for the case title, feeds snippets + case body back to the LLM, and downgrades confirmed warnings from WARN to INFO with a `code_evidence` anchor. Frontend banner splits by severity so QA can jump straight to the file path for INFO cases and only chase truly unconfirmed WARN cases. Gated on `GITHUB_TOKEN` + `code_grounding_recheck_enabled`
-- ✅ **Platform-scope rule**: Prompt now requires an explicit platform mention (ticket, ACs, comments, PR, or diff) before a case names a platform; Expo/React Native tickets no longer get invented "App launches on Android emulator" smoke items
-- ✅ **Pass-to-UAT walkthrough unification**: Walkthrough authoring folded into the Pass-to-UAT form (Steps-to-cover collapsible sourced from the plan's happy_path, cap 6); standalone walkthrough card retired. Server-side `uat_readiness` gate (409 `walkthrough_required`) replaces the two-step client-side nudge, with a single override prompt. Gate now counts notes and PR-attached media as walkthrough material too, matching the walkthrough card's own definition of "present"
-- ✅ **PR-Loom discovery**: `GET /issue/{key}/pr-looms` prefetches when Pass-to-UAT opens, showing the tester exactly which Loom URLs would be harvested from merged PR descriptions — or a reason (`no_prs` / `no_merged_prs` / `no_looms` / `no_token` / `github_unreachable` / `error`). Merge state comes from Jira's dev-status API instead of GitHub's `merged` flag so declined siblings and transient GitHub 403s no longer masquerade as "nothing merged yet"
-- ✅ **Inline screenshots in workflow comments**: Pass-to-UAT and Fail-back attachments render inline in the posted comment via `mediaSingle` ADF nodes (media-services UUID resolved by following the 303 from `/rest/api/3/attachment/content/{id}`). Legacy walkthrough screenshots re-resolve the UUID from their stored URL so old walkthroughs render inline too; any resolution failure falls back to the previous `📷 <filename>` text callout so the comment still posts
-- ✅ **Inline Pass-to-UAT summary**: The freeform summary is now appended inline to the comment body instead of wrapped in a collapsed "Test summary" expand block, so any share links inside stay one-click clickable
-- ✅ **Fail-back split button**: The two same-verb bounce destinations (To Do / In Progress) collapse into a single split button — trigger commits to the current destination, chevron opens a popover to switch. Red is reserved for the leading arrow icon and the chevron half while the menu is open
-- ✅ **Default subtask cascade on parent moves**: "Also move all subtasks" pre-checks whenever the parent has subtasks (users can still uncheck). Compact-row Pull button now honours the same default
-- ✅ **PR pairing on bounce cards**: Each send-back card is paired with the earliest PR merged after that specific bounce (link, merge time, changed files with +/− counts) so older bounces credit their actual fix PR instead of every card pointing at the latest merge
-- ✅ **Live-in-Jira chip scoped + pulsing**: The chip only surfaces on the per-row pill inside the expanded version drawer (the collapsed banner header always labels the latest run, so an older live version there read as a second version being live). Chip now pulses to draw the eye
-- ✅ **Sidebar 60s poll**: Active pane silently re-runs every 60 seconds while the tab is visible, and the three Jira fetches are marked `no-store` so a Jira admin's workflow edits or board moves show up without a manual refresh
-- ✅ **Description URL linkification**: `http(s)://` URLs in the Jira description render as new-tab links; trailing `.,;:!?` stays as text so `see https://foo.com.` doesn't point at a 404
-- ✅ **Hover-only Copy button per test card**: Yanks title + Preconditions/Steps/Expected/Test data as plain text; hidden until hover/focus, flips to a green check for 1.5s
-- ✅ **Status pill demotion**: Ticket-header status renders as a colored dot plus muted label instead of a filled uppercase rectangle, so it stops reading as a peer control to the adjacent Pull-to-Testing button
-- ✅ **Summary click doesn't expand**: Clicking Summary triggers the plain-English fetch but leaves the panel collapsed — the preview line carries the loading state and eventual snippet; a second click expands to the full text (or error)
-- ✅ **Deep-link auto-fetch + real model recording**: Fixed a race where the URL-writer effect fired first with empty `ticketsData` and cleared `?key=` before the auto-fetch could see it, so `?key=…` bookmarks now reliably load. Runs also record the LLM model that actually produced them instead of the configured default
-- ✅ **Auto Bug Lens on In Testing**: The pull-to-testing auto-generate flow now dispatches Bug Lens right after a Bug ticket's plan lands, keyed by a new nullable `jira_tickets.auto_bug_analysis_dispatched_at` column so the at-most-once claim survives aborted plan runs. Version banner keeps showing when Bug Lens is on-screen next to a plan, and the scroll position pins to the test plan when the analysis arrives so the view doesn't jump
-- ✅ **Bug Lens collapsed by default**: Auto-landed reports render as a keyboard-accessible collapsed card so an unprompted long report doesn't unfold underneath the plan. Bug Summary section (a dupe of the ticket description already shown above) removed
-- ✅ **Per-role fanout for shared components**: `src/app/shared_component_fanout.py` detector fires when a ticket implicates a shared component AND is silent about role, appending guidance that forces a per-role case with an explicit negative-space assertion for fields the role does not consume — catches the class where a misplaced role-specific field shipped because the plan only verified "field renders when data exists"
-- ✅ **PR-attached screenshots in Pass-to-UAT**: The PR-Loom scan now also harvests GitHub-hosted image URLs from merged PR descriptions and renders them as a thumbnail grid. Ticked tiles are downloaded server-side via the GitHub token, uploaded as Jira attachments, and inlined in the comment. Previews route through `/issue/pr-image-proxy` so private-repo assets render; thumbnails that 404 on load are dropped from the panel entirely so a "no real screenshots" ticket doesn't show a wall of broken tiles
-- ✅ **Screenshot-to-bullet pairing**: Testers can pair each uploaded screenshot with a specific ticked "Steps to cover" bullet; the comment renders the picture as an indented `mediaSingle` under that bullet so reviewers see the shot right where it belongs instead of hunting through a flat attachment strip
-- ✅ **Jira user-search typeahead**: `/issue/users/search` debounced typeahead behind the Notify / Assign-to pickers so a PM or manager outside the ticket's own history can be looped into a Pass-to-UAT or Fail-back comment. Search-added people merge into the existing pill row; the default assignee still comes from the ticket's own history so a search-added person is never silently auto-assigned
-- ✅ **Video-steps checklist folded into Notes**: The "Steps to cover in the video" checklist moved from an ephemeral scratch widget above the Loom input into the Notes block, and ticked bullets are now appended to the posted Jira comment as a markdown list. Silent when nothing is ticked, so the comment stays clean for testers who don't engage
-- ✅ **Loom URL validation**: A single `LOOM_URL_RE` in `models.py` gates the Loom URL textarea on both `WorkflowActions.jsx` and the `WorkflowActionRequest` Pydantic model so a typoed share URL can't reach Jira as a broken link
-- ✅ **Parallelized workflow endpoint**: `pass-to-uat` and friends split into three `asyncio.gather` phases (attachment upload / transition lookup / assignee resolution / parent-status read → transition + assign → comment + parent auto-transition + subtask cascade), with per-phase timing logs. A ticket with a couple of attachments now returns in a few seconds instead of the 15–30s that had testers refreshing mid-transition
-- ✅ **Workflow handler + generation split out of `main.py`**: `run_workflow_action` decomposed into 8 single-concern helpers (walkthrough gate, image validation, assignee resolution, walkthrough folding, comment posting) and the test-plan generation pipeline moved into `services/test_plan_generator.py`. `main.py` drops ~520 lines; underscored aliases keep existing test imports working. 12 new `TestClient` tests cover the SK gate, 3-tier assignee chain, 409 walkthrough gate, override flag, bot safety net, and comment-failure isolation
-- ✅ **Sidebar 30-day activity filter**: Project list defaults to projects Jira has seen activity in over the last 30 days; "Show all" is one click away, any text filter temporarily disables the cut so search never looks broken, and pinned / recent still surface regardless
-- ✅ **Sidebar assignee avatars + right-click menu**: Ticket rows show the assignee's avatar (muted "Unassigned" placeholder otherwise), and right-clicking a row opens an "Open in new tab", "Copy key", "Open in Jira" context menu so the rail doesn't force a left-click hijack of the main workspace
-- ✅ **Sole-pinned auto-open**: When exactly one project is pinned, opening the rail skips the project list and drops the tester straight into that project's status columns
-- ✅ **Empty-column state**: Empty status columns render an icon + title + contextual body naming the current status and project, replacing the earlier "No issues in this column." one-liner that looked like a broken row
-- ✅ **Verification-surface anchoring**: Two `SURFACE_CLASSIFIER_ENABLED`-gated passes keep plans on the ticket's actual deliverable surface (App Store Connect, LaunchDarkly, docs, etc.) — a pre-plan classifier injects anchor + off-target hints into the generator prompt, and a post-plan surface-mismatch critic (`source=critic_surface`) badges cases that still drift onto the wrong surface. Multi-ticket batches classify each ticket in parallel; the critic skips when a batch mixes code_behavior with non-code work so a legitimate "launch the app" step doesn't false-positive
-- ✅ **Ticket-key copy from header**: A hover-revealed copy button on the ticket-key badge yanks the key to clipboard in one click, so grabbing an SK-key to paste into Slack no longer needs a URL edit or a double-click drag-select
-- ✅ **Fail-back header names the actual target column**: The Jira comment marker line now reads "back to In Progress" when the tester used *Fail back to In Progress*; it was hardcoded to "back to To Do" before, so devs saw the wrong destination on any In-Progress bounce
+Three shapes this takes:
 
-- ✅ **One pipeline for every caller**: the deliverable classifier, four critics, AC coverage and run persistence moved out of the route handler into `services/plan_service.py`, and the web UI, CLI, MCP server and queue watcher all call it. Previously each non-browser caller hand-assembled its context and called `llm_client.generate_test_plan` directly, so MCP- and CLI-generated plans had no critic badges, no AC coverage and no run history — the same ticket produced a different plan depending on which door you came in through. `POST /tickets/{key}/plan` generates from a ticket key alone, and the `GET /issue/{key}` serializer moved into the service so a key-only generate rebuilds the exact payload the browser posts (a test pins that shape field-for-field against the frontend's `buildTicketPayload`)
-- ✅ **QA-queue watcher**: `testplan watch` sweeps the configured projects for tickets in the queue status (default *Ready to Test*) and pre-generates a plan — plus Bug Lens for Bugs — so the tester opens a ticket whose plan and critic verdicts are already waiting instead of starting a multi-minute Opus run by hand. Runs as its own process, never off API startup. Guards are individually configurable and each has a test: skip tickets with no linked PR, never regenerate an existing plan, cooldown so a reliably-failing ticket can't burn a call every interval, and a per-sweep cap. Checks run cheapest-first (free DB dedupe → Jira fetch → LLM), and `--dry-run` runs every guard while stopping short of generating
-
-- ✅ **Code-search throttling told apart from "no hits"**: GitHub's 10/min code-search cap refuses with 403, the same status as a permissions failure, and the client used to read every non-200 as an empty result — so the code-grounding critic reported false negatives whenever a generation exhausted the budget (test-file discovery per repo during the fetch, then one search per recheckable warning per repo). The client now discriminates via `retry-after` / `x-ratelimit-remaining` / the secondary-limit message, backs off and retries once, raises `GitHubSearchThrottled` when still refused, and caches per `(repo, query)`. Warnings whose recheck couldn't run are marked `recheck_status: "unavailable"` and say so in their explanation, staying at WARN rather than claiming a confirmation that never happened
-- ✅ **Bounce history reaches multi-ticket plans**: the section that forces explicit coverage of prior QA/UAT failure modes existed in the single-ticket prompt only — `generate_multi` dropped the field and the multi prompt builder rendered nothing. Both builders now share one renderer, and the multi prompt pools entries into one section with per-ticket attribution
-
-- ✅ **Pre-generated work is shown, not just saved**: the watcher made stored plans the common case, which broke an assumption the run-history banner was built on — when plans only came from clicking Generate in-session, a stored run genuinely *was* history; now the newest one is *the* plan. Opening a ticket loads it as the live plan instead of hiding it behind an expand plus a View click and a muted "history preview" panel. Bug Lens got the read path it never had (`GET /bug-lens/by-ticket/{key}`): analyses were always persisted but unfetchable, so the watcher paid for one nothing could display and the tester paid again by clicking Analyze. The watcher also stamps `auto_bug_analysis_dispatched_at` now, so it and the UI's auto-dispatch agree on what's been analysed
-
-- ✅ **A plan that says when it's older than the code**: the watcher writes plans early and never regenerates them, and its two write-side guards (skip held tickets, require a merged PR) can't help once a plan exists — a PR reopened and re-merged, or a second PR landing later, moves the diff out from under a plan that still reads as authoritative. Opening a ticket now compares the stored plan's `created_at` against each PR's `merged_at` and warns above the plan when anything merged since, naming the PR and offering Regenerate. Merge time only, deliberately: an open PR is code in flight and says nothing about the plan. A plan generated in the current session carries no timestamp and so can never warn about itself
-- ✅ **The epic view reuses plans instead of re-buying them**: clicking Generate on an epic child checks `runs/by-ticket` + `plans/{id}` first and shows "Existing plan v1, written 2 days ago — reused rather than regenerated" with an explicit Regenerate, where it used to pay for a fresh generation every time. That row also stopped carrying its own copy of the generate payload — a third hand-maintained builder the parity test never covered — in favour of `POST /tickets/{key}/plan`, which also removed the separate `GET /issue/{key}` fetch it needed
-- ✅ **Every check runs on its own**: `.github/workflows/ci.yml` runs pytest plus frontend lint and build on every push and PR, with no repository secrets — the suite proved hermetic apart from `init_client` refusing to guess a database, which a throwaway `MONGODB_URI` satisfies. `pyproject.toml` pins `testpaths` so a bare `pytest` stops trying to import `test_plan_*` domain modules as test modules and aborting collection. `ops/launchd/` installs the watcher as a LaunchAgent sweeping every 5 minutes, one `--once` sweep per launch so nothing stays resident
-- ✅ **This team's specifics moved out of the code**: the repo is public so other QA teams can run it, and a clone used to inherit five hardcoded coworkers, two repo names and one project prefix. `TEAM_GITHUB_LOGIN_TO_JIRA`, `BOT_DISPLAY_NAMES`, `BUG_LENS_REPO_HINTS` and `WORKFLOW_PROJECT_PREFIXES` now carry all of it from `.env`, each with a worked example in `.env.example`. The login map warns once when unset, because an unconfigured install and "this PR author isn't on the team" otherwise produce the same silent miss
-- ✅ **The progress key has one producer, and a wrong one is loud**: per-test checkmarks are keyed by ticket plus a fingerprint of the plan's section sizes, and that key had two producers that disagreed. The frontend counts sections *after* removing cases the planner flagged `covered_by_unit_test` (they're lifted out of the manual checklist); `uat-runner/scripts/mark-passed.sh` built the key from four numbers typed by whoever ran it. The commit that introduced the filtering never touched the script, so from that day the two disagreed for any plan containing a covered case — SK-2642 had ten cases marked under `SK-2642:4-8-2-7` while the UI polled `SK-2642:4-8-1-7` and rendered 0/20. Nothing errored, because `GET /test-plan-progress/{key}` returned 200 and an empty set for *every* string, `TOTALLY-MADE-UP:1-1-1-1` included, so the script's only stated guard ("a non-200 GET means the key is wrong") could never fire. The backend now derives the key (`GET /plans/{id}/progress-key`), the script asks for it instead of guessing, and an unknown key is a 404. The frontend was left deriving its own key from whatever plan it had on screen — self-consistent, but still a second producer — and that survivor cost SK-2327: a leftover cached plan shut out the ticket's stored one, the key followed the leftover to `SK-2327:3-4-0-7`, and the header read 0/14 while eleven cases sat passed under `SK-2327:4-5-0-6`. The browser now asks for the key too and uses it verbatim, counting its own sections only to warn when they disagree with the stored plan's; a plan with no stored run is called untracked and keeps its checks in the browser rather than inventing a key nothing reads. The same investigation turned up a second way to write invisible checks — `tc-happy_path-0` is the DOM element id the UI puts on a card for anchoring, while what it *stores* is `happy_path:0`, and the runner's own report examples used the `tc-` spelling — so the script now rejects that form with the correction
-
-- ✅ **A unit-tested case is optional, not unrecordable**: the planner can flag a case `covered_by_unit_test`, and those were lifted out of the manual checklist so QA isn't asked to re-run what CI already asserts. That was right. Lifting them out of the *id space* was not — a covered case had no `section:index`, so a tester who verified one live had nowhere to record it. SK-2325's plan 536 is the case: all four of its `integration_tests` cases were flagged, the section rendered as 0 of 0 while the header read "22 displayed of 26", two of them were then verified live with solid evidence (`POST /api/spoke/property` returning the native payload while staying out of the tracker request logs, and the same route's 400 validation), and `mark-passed.sh` answered `'integration_tests:0' is out of range — integration_tests has 0 case(s), valid indexes 0..-1`. They are now addressed under their own namespace, `covered_by_unit_test:<n>`, listed in a section that says *optional · not counted in progress*, checkable, and left out of the checklist denominator so ticking none of them still reads 100%. The fingerprint had to grow to match — a namespace nothing counts is a namespace whose marks silently survive a regeneration onto different cases — so it is now `h-e-i-r-c`, with the fifth component **omitted when there are no covered cases**. That is the whole migration story: a plan without covered cases keeps the key it already had, byte for byte, and only the plans that could not record this evidence anyway move. The ones that do move are traced back by `legacy_progress_keys`, so SK-2325's seventeen existing marks resolve as exact matches rather than becoming unreadable — the fix for unrecordable evidence must not cost recorded evidence. The posted Jira comment also stopped hiding the list behind an off-by-default toggle: a comment that omits these cases is a comment the UAT runner has no id to write against
-
-- ✅ **The canonical case id is printed where the tester reads it**: the displayed grouping has never matched storage, and nothing said so. A plan presents happy_path / edge `[error_handling]` / edge `[boundary]` / integration `[Cross-project]` / integration / regression as six visible groups; storage has four sections, and `edge_cases` interleaves the two edge categories by plan position — so the second boundary case on screen is `edge_cases:3`, not `edge_cases:1`. Anyone mapping from the displayed labels marked a different case than they meant to, plausibly and without an error anywhere. Making the grouping match storage would mean splitting `edge_cases` into two stored sections, which moves every index and orphans every recorded mark on every ticket. Printing the id costs one badge per card: each case now carries `edge_cases:3` in the UI, in the markdown export, and — the one that matters, because that is what the UAT runner reads — in brackets beside its title in the Jira comment. `mark-passed.sh` validates against the plan's own `case_ids` list rather than against section arithmetic, so a wrong id names what the section actually holds instead of an off-by-one. The ids in plain paragraph text are backticked, because Jira's markdown-to-ADF conversion treats a lone underscore as an emphasis delimiter and drops it — a bare `regression_checklist:0` posts as `regressionchecklist:0`, an id naming nothing, printed for a reader to copy. `tests/test_comment_case_ids.py` runs the real renderer through the real ADF conversion and the real adoption parser and asserts the comment names every case the plan has and no case it doesn't
-
-- ✅ **Marks can cross a regeneration, one case at a time**: progress is keyed to a plan's section sizes, so regenerating a changed plan starts it over. That is deliberate — a stale check landing on a different case is the worst thing this app can do — and `other-shapes` already said the old marks existed while pointedly refusing to move them, on the grounds that which checks still apply is a judgement only a tester can make. Right about the judgement, wrong about the conclusion: the tester was left making it against two Jira comments in two browser tabs. SK-2325 regenerated from `SK-2325:4-6-2-10` (plan 532) to `SK-2325:5-8-0-9-4` (plan 536) and stranded sixteen marks; some cases had moved section (the zero/false-retention checks went from `edge_cases` to `happy_path`), some were reworded, two had no equivalent at all. `GET /plans/{id}/mark-carryover` now resolves each old mark against **the plan it was recorded against** — found by recomputing every stored plan's key from the one producer, since the progress row holds nothing but the string — and proposes where it lands: `same`, `reworded` (shown with both wordings, and deliberately *not* pre-ticked), or `gone`. The POST writes only the ids handed back, and refuses any that name no case in the current plan, because a carry-over is the operation most likely to write a check that nothing renders
-
-- ✅ **A regenerated plan says which version it is**: posting a regeneration updates the existing comment rather than adding a new one, which is what keeps a ticket from collecting five copies of the same plan. The cost is that Jira leaves `created` at the original date and moves only `updated` — SK-2325's comments 332346/332347 were regenerated and read as untouched, and the honest conclusion from the ticket alone was that the regeneration had failed. An edit cannot manufacture activity; it can stop being anonymous. The marker paragraph now carries `v3 · updated in place 23 Sep 2026 14:02 UTC (replaces v2)`, and it rides on the marker specifically because `_wrap_body_in_expand` leaves exactly that one line outside the collapsed body — a version line anywhere else is as invisible as no version line at all. The comment-reuse check still matches (it looks for the marker as a substring, so a version suffix can't split the plan into duplicates), part packing measures against the longer header rather than the bare one, and a post with no version reads byte-identical to what it always produced
-
-- ✅ **Persistence moved from Neon Postgres to MongoDB**: the nine repositories, their models and every query behind them now run on Motor, and Alembic is gone — Mongo creates collections on first write, so idempotent index creation at startup replaces `alembic upgrade head`. Ids stayed integers rather than becoming ObjectIds, because the API routes, the frontend's URLs and the `previous_plan_id` version chains all pass them as ints; a counters collection reproduces SERIAL with an atomic `$inc`, which also let the data migration keep every original key. Test cases stayed their own collection rather than embedding into the plan — the idiomatic Mongo shape — because `feedback_events.target_id` addresses individual cases and that reference has nowhere to point inside a subdocument. The joins became two-step lookups (resolve run ids, then filter by them) since Mongo has no join, and the two raw-SQL queries leaning on `jsonb_array_length`/`ANY()` became three indexed steps each; array membership is the one thing that got simpler, `{"ticket_keys": key}` replacing the `@>` operator. Timestamps are now truncated to milliseconds when created, because BSON stores datetimes at that precision and a microsecond value silently stopped comparing equal to its own reloaded copy. `tests/test_mongo_repositories.py` runs every repository against an in-memory Mongo, which matters more here than it did on Postgres: a mistranslated filter matches nothing rather than erroring the way bad SQL would, and `has_successful_test_plan` quietly returning False would turn the watcher's never-regenerate guard into "regenerate forever"
-
-- ✅ **Dead walkthrough UI removed**: folding walkthrough authoring into the Pass-to-UAT hand-off (July) removed the only render site for the plan-view walkthrough card and left ~490 lines behind, including four helpers the lint config's capitalised-name exemption hid. Rollup emitted a byte-identical bundle before and after, confirming none of it was reachable
-
-### Future Enhancements
-
-**Next on the automation track** (in order — each one shortens the QA loop or makes the review checkpoint reviewable):
-- **Jobs table**: generation is currently a minutes-long synchronous HTTP call, so a browser refresh loses it and the watcher can't survive a restart mid-generation. `POST /jobs` / `GET /jobs/{id}` makes it resumable and lets the UI, CLI, MCP and watcher watch the same run
-- **Per-case results with evidence**: `test_plan_progress.checked_ids` is a bare set of `"happy_path:0"` strings — no pass/fail, no actor, no timestamp, no evidence link. So when an automated runner marks 14 cases, the reviewing QA can't tell machine-verified checks from hand-ticked ones or see the screenshot behind any of them. Per-case `{result, actor, evidence_urls, observed_at, note}` is what makes the human checkpoint a review rather than a re-do — and lets the Pass-to-UAT comment be assembled from the records instead of retyped
-- **Capture the runner's "Not Run" reasons**: the UAT runner already emits structured reasons (SKIPPED with the missing fixture named, BLOCKED, DEFERRED TO CI, NOT INDEPENDENTLY VERIFIED). Nothing stores them. Persisted per case category, they show which case *shapes* are never automatable here — so the generator can stop emitting them as UAT cases
-- **Risk-ranked checkpoint**: every signal needed to triage already exists (`needs_manual_verification` from four critics, grounding-warning severity, `uat_complexity`, bounce history, AC gaps). Turn them into a per-case confidence: auto-sign-off high-confidence agent passes with evidence, mandate human review for the rest, instead of asking the tester to read all 39 cases with equal care
-- **Promote stable cases into repo tests**: a case that passes cleanly several runs running should be emitted as a durable Playwright/detox spec and dropped from the UAT plan for good. The only item here where the manual queue shrinks permanently rather than just running faster
-- **Plan-quality eval harness**: `tests/` covers the deterministic helpers well but nothing scores plan quality against real tickets, so a prompt edit can degrade plans silently. The ground truth already exists — replay archived tickets whose bounce/no-bounce outcome is known and score whether the plan would have caught the actual bounce reason. Worth treating as a prerequisite before widening unattended generation
-
-**Other**
-- **Screenshot Analysis**: Claude vision API for UI mockup testing
-- **Bug Lens history**: Persist and surface prior Bug Lens analyses the same way test plans are surfaced
-- **Quality Feedback**: Thumbs up/down to improve prompts
-- **Test Tool Integration**: TestRail, Zephyr, etc.
-- **Custom Templates**: Per-team or per-project prompt templates
-
-## Usage Tips
-
-- **Automatic generation**: Just enter a ticket key - the system fetches all context automatically
-- **Multi-ticket mode**: Enter comma-separated keys (`PROJ-123, PROJ-456`) to combine related tickets into one plan; tickets must share a repository or overlapping changed files
-- **Bug Lens**: For `Bug` tickets, an "Analyze Bug" button appears alongside "Generate Test Plan" — use it to get root cause, fix explanation, and regression tests grounded in the actual PR diff
-- **Sub-tasks get parent context**: Design specs (Figma, images) from parent Epics/Stories are automatically included
-- **Export formats**: Use Jira format for comments, Markdown for GitHub/Slack, JSON for programmatic use
-- **GitHub token recommended**: Adds project-specific terminology and implementation details to test plans
-
-## Parent Ticket Context (Phase 6)
-
-When generating test plans for sub-tasks, the system automatically fetches context from the parent Epic or Story. This is especially valuable because design resources are often attached to parent tickets rather than individual sub-tasks.
-
-### What Gets Fetched from Parent Tickets
-
-- **Parent description**: Business requirements and acceptance criteria
-- **Figma designs**: Design specifications linked in parent descriptions
-- **Image attachments**: Mockups, screenshots, and design images attached to parent
-- **Parent metadata**: Issue type, labels, and summary for broader context
-
-### How It Works
-
-1. System detects if ticket is a sub-task with a parent
-2. Fetches full parent ticket data (one additional API call)
-3. Extracts Figma URLs from parent description
-4. Downloads Figma design context if available
-5. Includes parent images (up to 2 from parent, 2 from sub-task = max 4 total)
-6. LLM receives both sub-task AND parent context
-
-### Benefits
-
-- **Better context**: Sub-tasks tested with full feature understanding
-- **Design access**: Parent-level Figma links and mockups now available
-- **Business alignment**: Test plans validate parent-level requirements
-- **No extra config**: Works automatically when parent exists
-
-### Example
-
-**Without Parent Context:**
-- Sub-task: "Add email validation to form"
-- Test plan: Only validates technical implementation
-
-**With Parent Context:**
-- Sub-task: "Add email validation to form"
-- Parent: "Redesign registration flow" (with Figma designs)
-- Test plan: Validates technical implementation AND design requirements from parent Figma
-
-## Linked Ticket Dependencies (Phase 7)
-
-When generating test plans, the system automatically fetches and analyzes linked tickets to understand dependencies. This provides horizontal dependency context to complement the vertical parent hierarchy.
-
-### What Link Types Are Fetched
-
-The system focuses on high-value link types that directly impact testing:
-
-1. **"Blocks"**: Issues this ticket blocks
-   - Downstream work depends on this being correct
-   - Test thoroughly to prevent breaking dependent tickets
-
-2. **"Is Blocked By"**: Issues blocking this ticket
-   - Prerequisites that must be resolved first
-   - Understand API contracts and dependencies
-
-3. **"Causes"**: Issues this ticket may cause
-   - Validate fixes don't introduce regressions
-   - Test related areas carefully
-
-4. **"Is Caused By"**: Root cause issues
-   - Ensure the actual cause is fixed, not just symptoms
-   - Particularly valuable for bug tickets
-
-### How It Works
-
-1. System fetches issue links from Jira API
-2. Parses link types and directions (inward vs outward)
-3. Filters for relevant link types (blocks, causes)
-4. Fetches basic details for each linked issue (max 5 per type)
-5. LLM receives linked context with clear relationship labels
-
-### Benefits
-
-- **Dependency awareness**: Know what must be done first
-- **Impact analysis**: Understand what depends on this work
-- **Better prioritization**: Test critical paths more thoroughly
-- **Root cause validation**: Ensure bugs are truly fixed
-- **Regression prevention**: Validate fixes don't break related tickets
-
-### Example
-
-**Scenario:**
-- PROJ-101: "Implement Stripe integration" (Status: Done)
-- PROJ-102: "Add payment UI" (blocked by PROJ-101)
-
-**When testing PROJ-102:**
-- System detects "blocked by PROJ-101"
-- Fetches PROJ-101 details (API endpoints, data models)
-- LLM generates test plan that validates integration with PROJ-101's API
-- Test plan includes prerequisites: "Verify PROJ-101 Stripe API is available"
-
-**Another Scenario:**
-- Bug PROJ-200: "Login fails on mobile"
-- Root cause: PROJ-150 "Session timeout too short"
-
-**When testing the fix:**
-- System detects "caused by PROJ-150"
-- Fetches root cause context
-- Test plan validates both symptom AND root cause are fixed
-- Includes test: "Verify session timeout increased (root cause from PROJ-150)"
+1. **Personal use** — run locally with your own tokens
+2. **Internal team** — internal server behind SSO + network restrictions
+3. **Public SaaS** — needs multi-tenant architecture, encrypted token storage and billing
 
 ## Documentation
 
-See [`docs/PROMPT_IMPROVEMENTS.md`](docs/PROMPT_IMPROVEMENTS.md) for LLM prompt engineering details.
+| | |
+| --- | --- |
+| [Features](docs/FEATURES.md) | Every capability in detail |
+| [Configuration](docs/CONFIGURATION.md) | Every environment variable |
+| [CLI & watcher](docs/CLI.md) | Terminal usage, unattended sweeps, CI |
+| [HTTP API](docs/API.md) | Endpoint reference |
+| [MCP server](docs/MCP_SERVER.md) | Claude Desktop setup and troubleshooting |
+| [Roadmap & history](docs/ROADMAP.md) | Where it stands, what's next, what shipped |
+| [Prompt improvements](docs/PROMPT_IMPROVEMENTS.md) | Why the prompt looks the way it does |
+| [Testing complex features](docs/TESTING_GUIDE.md) | Getting good plans out of large tickets |
+
+**Next on the automation track:** a jobs table so generation survives a
+refresh, per-case results with evidence instead of a bare checked-set, and a
+risk-ranked review checkpoint. See [docs/ROADMAP.md](docs/ROADMAP.md#next-up).
 
 ## License
 
-See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

@@ -215,4 +215,4 @@ Get-Content -Path "$env:APPDATA\Claude\logs\mcp*.log" -Wait
 
 - **Learn more about MCP**: https://modelcontextprotocol.io
 - **Browse MCP servers**: https://github.com/modelcontextprotocol/servers
-- **Report issues**: https://github.com/your-org/jira-testplan-bot/issues
+- **Report issues**: https://github.com/ramtey/jira-testplan-bot/issues
