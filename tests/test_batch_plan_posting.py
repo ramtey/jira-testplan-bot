@@ -480,9 +480,12 @@ async def test_a_dropped_host_has_its_plan_replaced_with_a_pointer():
     posted: list = []
     deleted: list = []
     jira = _fake_jira(posted)
-    jira.get_comments = AsyncMock(
-        return_value=[_comment("batch-old", BATCH_TEST_PLAN_MARKER)]
-    )
+    # Only the dropped host carries the old plan; the tickets still in the
+    # batch have none, which is what makes this the out-of-selection case
+    # rather than the demotion one.
+    jira.get_comments = AsyncMock(side_effect=lambda key: (
+        [_comment("batch-old", BATCH_TEST_PLAN_MARKER)] if key == "SK-2665" else []
+    ))
     jira.delete_comment = AsyncMock(side_effect=lambda key, cid: deleted.append((key, cid)))
 
     run = MagicMock()
@@ -624,3 +627,62 @@ def test_candidates_read_both_counts_off_a_ticket():
     c = candidate_from_ticket(ticket)
     assert c.parent_key == "SK-2620", "parent keys are normalised for comparison"
     assert c.linked_work == 3
+
+
+@pytest.mark.asyncio
+async def test_a_host_demoted_while_still_selected_loses_its_plan():
+    """The recorded host can change while every ticket stays in the batch —
+    backfilling `batch_host_key` does exactly that. `_retire_previous_host`
+    does not cover it (it only looks at tickets dropped from the batch), so
+    without this the old host carries a full plan *and* a pointer saying the
+    plan is elsewhere."""
+    posted: list = []
+    deleted: list = []
+    jira = _fake_jira(posted)
+    jira.get_comments = AsyncMock(side_effect=lambda key: (
+        [_comment("batch-old", BATCH_TEST_PLAN_MARKER)] if key == "SK-2623" else []
+    ))
+    jira.delete_comment = AsyncMock(side_effect=lambda key, cid: deleted.append((key, cid)))
+
+    run = MagicMock()
+    run.batch_host_key = "SK-2630"
+    repo = MagicMock()
+    repo.get_run_for_plan = AsyncMock(return_value=run)
+    repo.get_plan_with_cases = AsyncMock(return_value=None)
+    repo.mark_plan_posted_to_jira = AsyncMock()
+
+    with (
+        patch("src.app.services.plan_posting.plan_repository", repo),
+        patch("src.app.services.plan_posting.get_db", return_value=MagicMock()),
+    ):
+        result = await plan_posting.post_batch(
+            jira, plan_id=7, comment_text="the plan",
+            ticket_keys=["SK-2623", "SK-2630", "SK-2627"],
+        )
+
+    assert result["host_key"] == "SK-2630"
+    assert result["demoted"] == ["SK-2623"]
+    assert deleted == [("SK-2623", "batch-old")]
+    # And it does carry the pointer, so the old host is not a dead end.
+    assert ("SK-2623", PlanCommentKind.pointer) in [(k, kind) for k, kind, _ in posted]
+
+
+@pytest.mark.asyncio
+async def test_a_ticket_that_never_hosted_is_not_touched_by_the_sweep():
+    posted: list = []
+    jira = _fake_jira(posted)
+    jira.get_comments = AsyncMock(return_value=[_comment("own", TEST_PLAN_MARKER)])
+    jira.delete_comment = AsyncMock(side_effect=AssertionError("must not delete"))
+    repo = MagicMock()
+    repo.get_run_for_plan = AsyncMock(return_value=None)
+
+    with (
+        patch("src.app.services.plan_posting.plan_repository", repo),
+        patch("src.app.services.plan_posting.get_db", return_value=MagicMock()),
+    ):
+        result = await plan_posting.post_batch(
+            jira, plan_id=None, comment_text="the plan",
+            ticket_keys=["SK-2623", "SK-2630"],
+        )
+
+    assert result["demoted"] == []

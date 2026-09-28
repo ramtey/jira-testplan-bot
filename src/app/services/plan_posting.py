@@ -207,6 +207,29 @@ async def resolve_batch_host(
     return fallback, (recorded_host.upper() if recorded_host else None)
 
 
+async def _clear_batch_comments(jira: JiraClient, issue_key: str) -> int:
+    """Delete any batch plan comments on `issue_key`. Returns how many went.
+
+    Used wherever a ticket stops being the host. The plan comment and the
+    pointer live in different slots, so posting a pointer does not displace a
+    plan that is already there — without this the ticket ends up carrying both,
+    a full plan and a note saying the plan is somewhere else.
+
+    Raises if a delete fails, so the caller can leave the pointer unwritten
+    rather than add a signpost beside a plan that is still there and still
+    looks current.
+    """
+    comments = await jira.get_comments(issue_key)
+    stale_ids = [
+        str(c.get("id"))
+        for c in comments
+        if _comment_marker_kind(c) is PlanCommentKind.batch and c.get("id")
+    ]
+    for stale_id in stale_ids:
+        await jira.delete_comment(issue_key, stale_id)
+    return len(stale_ids)
+
+
 async def post_batch(
     jira: JiraClient,
     *,
@@ -244,12 +267,20 @@ async def post_batch(
 
     pointers: list[dict] = []
     pointer_errors: list[dict] = []
+    demoted: list[str] = []
     if host_result.get("posted_parts", 0) > 0:
         body = _pointer_text(host_key, keys)
         for key in keys:
             if key == host_key:
                 continue
             try:
+                # This ticket may be the previous host — the recorded host can
+                # change while every ticket stays selected, which
+                # `_retire_previous_host` does not cover because it only looks
+                # at tickets dropped from the batch. Its plan comes down before
+                # its pointer goes up, or it would carry both.
+                if await _clear_batch_comments(jira, key):
+                    demoted.append(key)
                 pointers.append(
                     await post_one(
                         jira,
@@ -287,10 +318,14 @@ async def post_batch(
         "pointers": pointers,
         "pointer_errors": pointer_errors,
         "ticket_keys": keys,
-        # Set when the plan moved off the ticket that used to host it, so the
-        # client can say where it went rather than leaving the tester to find
-        # a pointer where a plan used to be.
+        # Set when the plan moved off a ticket that was dropped from the batch
+        # entirely, so the client can say where it went rather than leaving the
+        # tester to find a pointer where a plan used to be.
         "moved_from": moved_from,
+        # Tickets still in the batch that were carrying the plan and are now
+        # carrying a pointer instead. Reported for the same reason: someone
+        # reading the old host needs to be told the plan moved.
+        "demoted": demoted,
     }
 
 
@@ -318,35 +353,15 @@ async def _retire_previous_host(
     if recorded_host in {k.upper() for k in selected_keys}:
         return None
     try:
-        comments = await jira.get_comments(recorded_host)
+        if not await _clear_batch_comments(jira, recorded_host):
+            return None
     except Exception as exc:
+        # Leave the pointer unwritten rather than add a signpost next to a full
+        # plan that is still there and still looks current.
         logger.warning(
-            "Could not check %s for a batch comment to retire: %s", recorded_host, exc
+            "Could not retire the batch comment on %s: %s", recorded_host, exc
         )
         return None
-
-    stale_ids = [
-        str(c.get("id"))
-        for c in comments
-        if _comment_marker_kind(c) is PlanCommentKind.batch and c.get("id")
-    ]
-    if not stale_ids:
-        return None
-
-    # The pointer occupies a different slot from the plan, so posting one would
-    # leave the old plan sitting underneath it — two comments disagreeing about
-    # where the plan is. The plan comment goes first.
-    for stale_id in stale_ids:
-        try:
-            await jira.delete_comment(recorded_host, stale_id)
-        except Exception as exc:
-            # Leave the pointer unwritten rather than add a signpost next to a
-            # full plan that is still there and still looks current.
-            logger.warning(
-                "Could not delete the stale batch comment %s on %s: %s",
-                stale_id, recorded_host, exc,
-            )
-            return None
 
     try:
         await post_one(
