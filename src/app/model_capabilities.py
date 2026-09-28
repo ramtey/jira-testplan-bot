@@ -20,7 +20,7 @@ That is the direction a stale file should fail in.
 import re
 
 # The model every Claude call uses unless LLM_MODEL says otherwise.
-DEFAULT_CLAUDE_MODEL = "claude-opus-5"
+DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 
 # Cheapest current model. Only ever asked to say "hi" — it exists to prove an
 # API key is live, so capability doesn't matter and price does.
