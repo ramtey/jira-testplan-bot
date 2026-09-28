@@ -234,7 +234,7 @@ BATCH_TEST_PLAN_MARKER = "🤖 Generated Batch Test Plan"
 # Left on every non-host ticket in a batch, pointing at the one that carries
 # the plan. Deliberately not a plan marker: it is a signpost, and a reader has
 # to see it without expanding anything.
-BATCH_POINTER_MARKER = "🤖 Batch test plan lives on"
+BATCH_POINTER_MARKER = "🤖 Batch test plan is on another ticket"
 TEST_PLAN_EXPAND_TITLE = "Click to view"
 
 

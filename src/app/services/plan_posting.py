@@ -40,11 +40,12 @@ def _pointer_text(host_key: str, covered_keys: list[str]) -> str:
     """
     others = ", ".join(covered_keys)
     return (
-        f"This ticket is covered by a test plan written across {others}.\n\n"
-        f"The plan lives on {host_key} so there is one copy to work through and "
-        f"check off, rather than an identical copy on every ticket in the batch. "
-        f"This ticket still has its own test plan comment, if one was generated "
-        f"for it separately — that one is unaffected."
+        f"**The plan for this ticket is on {host_key}.**\n\n"
+        f"It covers {others} together, and is posted once so there is one copy "
+        f"to work through and check off rather than an identical copy on every "
+        f"ticket in the batch.\n\n"
+        f"If this ticket also has its own test plan comment, that one is "
+        f"separate and unaffected."
     )
 
 
