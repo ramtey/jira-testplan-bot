@@ -200,18 +200,70 @@ async def list_runs_with_plans_by_ticket(
     return rows
 
 
+async def get_run_for_plan(
+    db: AsyncIOMotorDatabase, *, plan_id: int
+) -> Run | None:
+    """The run that produced `plan_id`, or None if either is missing.
+
+    The caller needs two things off it that only the run knows: how many
+    tickets the plan covers (so it can tell a batch plan from a single-ticket
+    one without being told by the client) and which ticket was chosen to host
+    the batch comment.
+    """
+    plan = await crud.get_by_id(db, GeneratedPlan, plan_id)
+    if plan is None:
+        return None
+    return await crud.get_by_id(db, Run, plan.run_id)
+
+
+async def _run_ids_for_ticket_in_scope(
+    db: AsyncIOMotorDatabase,
+    ticket_key: str,
+    *,
+    batch: bool,
+) -> list[int]:
+    """Run ids touching `ticket_key` whose breadth matches `batch`.
+
+    A run covering several tickets produced a batch plan; a run covering one
+    produced that ticket's own plan. The two now occupy different Jira comment
+    slots, so "which plan is live here" has to be answered per slot — see
+    `mark_plan_posted_to_jira`.
+
+    Derived from `ticket_keys` rather than `run_type`, because the multi-ticket
+    path records `RunType.test_plan` too: `test_plan_multi` exists in the enum
+    but `generate_multi` does not use it, so run_type would misclassify every
+    batch run ever recorded.
+    """
+    filter_: dict = {
+        "ticket_keys": ticket_key,
+        "run_type": {"$in": [t.value for t in _TEST_PLAN_RUN_TYPES]},
+    }
+    # `ticket_keys.1` exists exactly when the array has a second element.
+    filter_["ticket_keys.1"] = {"$exists": batch}
+    cursor = db[Run.__collection__].find(filter_, {"_id": 1})
+    return [d["_id"] for d in await cursor.to_list(length=None)]
+
+
 async def mark_plan_posted_to_jira(
     db: AsyncIOMotorDatabase,
     *,
     plan_id: int,
     ticket_key: str,
     jira_comment_id: str,
+    batch: bool = False,
 ) -> None:
     """Mark `plan_id` as the version currently live in Jira for `ticket_key`,
-    and clear the same fields on every other plan whose run touched that ticket.
+    and clear the same fields on every other plan in the same comment slot.
 
-    Posting is update-in-place on Jira's side, so at most one plan per ticket
-    can be "live" at a time — superseded versions must be cleared, not kept.
+    Posting is update-in-place on Jira's side, so at most one plan per slot can
+    be "live" at a time — superseded versions must be cleared, not kept.
+
+    `batch` says which slot. It matters because a ticket can now carry both its
+    own plan and a batch plan covering it, in two separate comments. Clearing
+    across both — which is what this did when every plan shared one slot —
+    would blank the single-ticket plan's `jira_comment_id` the moment a batch
+    plan was posted, so its badge would read "Not live in Jira" while its
+    comment sat on the ticket, unchanged and perfectly live.
 
     The clear and the set run in one transaction where the deployment supports it
     (Atlas does). On a standalone dev Mongo they are two statements, and a crash
@@ -219,7 +271,7 @@ async def mark_plan_posted_to_jira(
     re-posting, and the reason the local dev target is a replica set too.
     """
     now = utcnow()
-    run_ids = await _run_ids_for_ticket(db, ticket_key, successful_only=False)
+    run_ids = await _run_ids_for_ticket_in_scope(db, ticket_key, batch=batch)
 
     async with transaction() as session:
         if run_ids:

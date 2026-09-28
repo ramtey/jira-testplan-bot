@@ -102,8 +102,11 @@ def _post_with_plan(jira_result, *, mark=None, readback=None, plan_id=7):
     )
     with (
         patch("src.app.main.JiraClient", return_value=jira),
-        patch("src.app.main.plan_repository", repo),
-        patch("src.app.main.get_db", return_value=MagicMock()),
+        # The recording half of a post lives in services.plan_posting, which
+        # the endpoint delegates to — patching main's names would leave the
+        # real repository and a real get_db in the path.
+        patch("src.app.services.plan_posting.plan_repository", repo),
+        patch("src.app.services.plan_posting.get_db", return_value=MagicMock()),
     ):
         return client.post(
             "/jira/post-comment",

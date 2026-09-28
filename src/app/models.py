@@ -500,6 +500,25 @@ class MultiTicketGenerateRequest(BaseModel):
     tickets: list[TicketInput]
 
 
+class PostPlanRequest(BaseModel):
+    """Request body for posting a generated plan to the tickets it covers.
+
+    ``ticket_keys`` is the tester's selection, not a declaration of scope. The
+    server decides whether this is a batch, from how many keys arrive and which
+    of them the plan's run recorded as the host. A client that got that wrong
+    would post a multi-ticket plan into a ticket's own plan slot and overwrite
+    the plan written for that ticket alone, which is the failure this endpoint
+    exists to prevent.
+    """
+
+    ticket_keys: list[str]
+    comment_text: str
+    # The plan's DB id, when it has one. Carries two things the server cannot
+    # infer from the text: which version is being posted, and which ticket the
+    # run chose to host the batch comment.
+    plan_id: int | None = None
+
+
 class PostCommentRequest(BaseModel):
     """Request body for posting a comment to Jira."""
 

@@ -63,6 +63,7 @@ from ..source_grounding import (
     no_source_result,
 )
 from . import run_tracker
+from .batch_plan_host import choose_batch_host_for_tickets
 from .test_plan_generator import (
     classify_deliverable,
     compute_ac_coverage,
@@ -743,12 +744,23 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         aggregated_flags["pr_count"] += flags["pr_count"]
         aggregated_flags["comment_count"] += flags["comment_count"]
 
+    # Decide the host now, while the ticket payloads are in hand, and record it
+    # on the run. Post time only reads it back: the branch counts behind the
+    # choice keep growing, so recomputing later would eventually move the plan
+    # to a different ticket and leave the copy on the old one behind.
+    # Computed from the state-filtered tickets so it counts the same branches
+    # the plan is actually grounded in.
+    batch_host_key = (
+        choose_batch_host_for_tickets(tickets) if len(tickets) > 1 else None
+    )
+
     run_ctx = await run_tracker.start_run(
         run_type=RunType.test_plan,
         ticket_keys=[t.ticket_key for t in tickets],
         model=settings.llm_model,
         llm_provider=settings.llm_provider,
         source_provenance=provenance,
+        batch_host_key=batch_host_key,
         **aggregated_flags,
     )
 
@@ -967,6 +979,10 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
             "source_provenance": provenance,
+            # Which ticket will carry the plan comment. Sent so the browser can
+            # say where it is going before anyone posts, rather than the tester
+            # finding out from the result.
+            "batch_host_key": batch_host_key,
         }
         if cross_project_payload is not None:
             response["cross_project_summary"] = (

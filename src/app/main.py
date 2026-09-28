@@ -24,6 +24,7 @@ from .jira_client import (
     JiraConnectionError,
     JiraContentLimitError,
     JiraNotFoundError,
+    PlanCommentKind,
     plan_version_note,
 )
 from .llm_client import LLMError, get_llm_client
@@ -33,6 +34,7 @@ from .models import (
     MarkCarryOverRequest,
     MultiTicketGenerateRequest,
     PostCommentRequest,
+    PostPlanRequest,
     TestPlanProgressUpdateRequest,
     TicketHoldRequest,
     WalkthroughUpdateRequest,
@@ -44,7 +46,7 @@ from .repositories import (
     walkthrough_repository,
 )
 from .runs_routes import router as runs_router
-from .services import plan_adoption, plan_service
+from .services import plan_adoption, plan_posting, plan_service
 from .services import mark_carryover
 from .services import progress_key as progress_key_service
 from .services.plan_service import NonTestableIssueError, SourceLookupUnavailableError
@@ -646,127 +648,21 @@ async def post_comment(request: PostCommentRequest):
     """
     Post a comment to a Jira issue.
 
-    This endpoint posts the provided text as a comment on the specified Jira issue.
-    Typically used to post generated test plans back to the ticket.
+    This endpoint posts the provided text as a comment on the specified Jira
+    issue, in that ticket's own test plan slot. A multi-ticket plan does not go
+    through here — see `/jira/post-plan`, which puts the plan on one host
+    ticket and leaves pointers on the rest rather than overwriting each
+    ticket's own plan with the batch.
     """
     jira = JiraClient()
     try:
-        # Read the version before posting, because the version rides on the
-        # comment's marker line. Posting a regeneration edits the existing
-        # comment, which leaves Jira's `created` at the original date and moves
-        # only `updated` — a watcher sees no new activity and can conclude the
-        # regeneration failed (SK-2325, comments 332346/332347). The marker is
-        # the one line that stays outside the collapsed body, so a version
-        # number there is the difference between "this is the plan I already
-        # read" and "this is v3".
-        #
-        # A version we cannot read costs the note, not the post: the comment is
-        # still correct without it, and `version_note` in the response says
-        # whether one was written rather than leaving the client to assume.
-        version_note: str | None = None
-        if request.plan_id is not None:
-            try:
-                existing = await plan_repository.get_plan_with_cases(
-                    get_db(), plan_id=request.plan_id
-                )
-                if existing:
-                    version_note = plan_version_note(existing[0].version)
-            except Exception:
-                logging.exception(
-                    "Could not read plan %s to version its Jira comment",
-                    request.plan_id,
-                )
-
-        result = await jira.post_comment(
-            request.issue_key, request.comment_text, version_note=version_note
+        return await plan_posting.post_one(
+            jira,
+            issue_key=request.issue_key,
+            comment_text=request.comment_text,
+            plan_id=request.plan_id,
+            kind=PlanCommentKind.single,
         )
-        comment_id = result.get("id")
-        posted_at_iso: str | None = None
-        # Tri-state. None: there was no plan to record (no plan_id — the client
-        # already says "not tracked" for that). True: this version is now marked
-        # as the one live in Jira. False: the comment landed but the mark did
-        # not — the plan is on the ticket while the version badge still reads
-        # "Not live in Jira", and re-posting repeats it identically because the
-        # write fails the same way every time. That third case is the silent
-        # success this endpoint keeps being fixed for; it is reported, not
-        # swallowed.
-        recorded: bool | None = None
-        record_error: str | None = None
-        if request.plan_id is not None:
-            if not comment_id:
-                recorded = False
-                record_error = "Jira did not return a comment id"
-            else:
-                db = None
-                try:
-                    db = get_db()
-                    await plan_repository.mark_plan_posted_to_jira(
-                        db,
-                        plan_id=request.plan_id,
-                        ticket_key=request.issue_key.upper(),
-                        jira_comment_id=str(comment_id),
-                    )
-                    recorded = True
-                except Exception:
-                    # Posting succeeded; failing to record the mark shouldn't
-                    # fail the request. The tester keeps their posted plan —
-                    # they are told the app could not record it.
-                    recorded = False
-                    record_error = "the app could not reach its database"
-                    logging.exception(
-                        "Failed to mark plan %s posted on %s",
-                        request.plan_id,
-                        request.issue_key,
-                    )
-                if recorded:
-                    # Read-back only, for the timestamp. The mark is what makes
-                    # this version live; losing its timestamp here does not
-                    # unmake it, so this failure must never flip `recorded`.
-                    try:
-                        plan_with_cases = await plan_repository.get_plan_with_cases(
-                            db, plan_id=request.plan_id
-                        )
-                        if plan_with_cases and plan_with_cases[0].posted_at:
-                            posted_at_iso = plan_with_cases[0].posted_at.isoformat()
-                    except Exception:
-                        logging.exception(
-                            "Marked plan %s posted on %s but could not read it back",
-                            request.plan_id,
-                            request.issue_key,
-                        )
-        return {
-            "success": True,
-            "comment_id": comment_id,
-            "issue_key": request.issue_key,
-            "updated": result.get("updated", False),
-            "truncated": result.get("truncated", False),
-            # A plan too big for one Jira comment is posted across several. The
-            # response is an explicit allowlist, so every field the client needs
-            # to describe a partial or split post has to be named here — left
-            # out, they default to "one comment, all of it landed", which is the
-            # silent success this endpoint keeps being fixed for.
-            "parts": result.get("parts", 1),
-            "posted_parts": result.get("posted_parts", 1),
-            "part_comment_ids": result.get("part_comment_ids", []),
-            "stale_parts_left": result.get("stale_parts_left", 0),
-            "part_error": result.get("part_error"),
-            # The version line written onto the comment's marker, or null when
-            # the plan's version could not be read. Named so the client can say
-            # which version is live on the ticket rather than inferring it.
-            "version_note": result.get("version_note"),
-            "plan_id": request.plan_id,
-            # Null when the plan was never persisted (no plan_id), so the client
-            # can say "not tracked" rather than quietly showing no status at all.
-            "posted_at": posted_at_iso,
-            # Whether this version was recorded as the one live in Jira. False
-            # means the comment is on the ticket but the version badge will not
-            # reflect it — the client has to say so, because retrying does not
-            # help while the cause persists. `record_error` is a reason fragment
-            # ("the app could not reach its database"), not a sentence: the
-            # client composes it into one.
-            "recorded": recorded,
-            "record_error": record_error,
-        }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except JiraAuthError as e:
@@ -784,6 +680,58 @@ async def post_comment(request: PostCommentRequest):
         raise HTTPException(
             status_code=500,
             detail="An unexpected error occurred while posting the comment"
+        )
+
+
+@app.post("/jira/post-plan")
+async def post_plan(request: PostPlanRequest):
+    """Post a generated plan to the ticket(s) it covers.
+
+    One ticket behaves exactly as `/jira/post-comment` does. Several tickets
+    means a batch plan: the plan itself goes to one host ticket and every other
+    ticket gets a short pointer to it.
+
+    The host is whichever ticket was chosen when the plan was generated and
+    recorded on its run, so re-posting lands where the last post did. Each
+    ticket's own single-ticket plan comment is a separate slot and is never
+    touched by any of this.
+    """
+    keys = [k.strip().upper() for k in request.ticket_keys if k and k.strip()]
+    if not keys:
+        raise HTTPException(status_code=400, detail="No ticket key supplied.")
+    jira = JiraClient()
+    try:
+        if len(keys) == 1:
+            result = await plan_posting.post_one(
+                jira,
+                issue_key=keys[0],
+                comment_text=request.comment_text,
+                plan_id=request.plan_id,
+                kind=PlanCommentKind.single,
+            )
+            result["scope"] = "single"
+            return result
+        return await plan_posting.post_batch(
+            jira,
+            plan_id=request.plan_id,
+            comment_text=request.comment_text,
+            ticket_keys=keys,
+        )
+    except JiraNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except JiraAuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    except JiraConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except JiraContentLimitError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except Exception as e:
+        logging.exception(
+            f"Unexpected error posting plan to {keys}: {type(e).__name__}: {e}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while posting the plan"
         )
 
 

@@ -33,6 +33,15 @@ class Run(DocumentBase):
 
     ticket_keys: list[str] = []
 
+    # For a run covering several tickets: which of them carries the batch plan
+    # comment, the others getting a pointer to it. Decided once, when the plan
+    # is generated, and reused by every later post — the signals behind the
+    # choice drift as work proceeds, so recomputing it would eventually move
+    # the plan and strand the copy already on the old host. Empty on
+    # single-ticket runs and on multi-ticket runs recorded before the batch
+    # plan had a comment slot of its own.
+    batch_host_key: str | None = None
+
     model: str
     llm_provider: str
 

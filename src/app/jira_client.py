@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from enum import Enum
 from typing import NamedTuple
 
 import httpx
@@ -222,7 +223,59 @@ def markdown_to_adf(markdown_text: str) -> dict:
 
 
 TEST_PLAN_MARKER = "🤖 Generated Test Plan"
+# A plan covering several tickets at once. It sits *beside* the single-ticket
+# plan rather than replacing it, so it needs a marker of its own — and one that
+# is not a superstring of TEST_PLAN_MARKER, because comment matching is a
+# substring test. "Generated Batch Test Plan" does not contain "Generated Test
+# Plan" (the word "Batch" lands exactly where "Test" would), so neither marker
+# can ever match the other's comments. Changing either string means rechecking
+# that property; `test_no_marker_is_a_substring_of_another` holds the line.
+BATCH_TEST_PLAN_MARKER = "🤖 Generated Batch Test Plan"
+# Left on every non-host ticket in a batch, pointing at the one that carries
+# the plan. Deliberately not a plan marker: it is a signpost, and a reader has
+# to see it without expanding anything.
+BATCH_POINTER_MARKER = "🤖 Batch test plan lives on"
 TEST_PLAN_EXPAND_TITLE = "Click to view"
+
+
+class PlanCommentKind(str, Enum):
+    """Which of the bot's comment slots a post is aiming at.
+
+    A ticket can hold one of each at the same time. That is the whole point:
+    a batch plan posted to a ticket must not overwrite the plan written for
+    that ticket alone.
+    """
+
+    single = "single"
+    batch = "batch"
+    pointer = "pointer"
+
+
+_KIND_MARKERS: dict["PlanCommentKind", str] = {
+    PlanCommentKind.single: TEST_PLAN_MARKER,
+    PlanCommentKind.batch: BATCH_TEST_PLAN_MARKER,
+    PlanCommentKind.pointer: BATCH_POINTER_MARKER,
+}
+
+# The pointer is two lines. Collapsing it behind "Click to view" would hide the
+# only thing it says, so it is the one kind posted flat.
+_COLLAPSED_KINDS = frozenset({PlanCommentKind.single, PlanCommentKind.batch})
+
+
+def marker_for(kind: "PlanCommentKind") -> str:
+    return _KIND_MARKERS[kind]
+
+
+def carries_bot_plan_marker(text: str) -> bool:
+    """True if `text` opens one of the bot's own comments, of any kind.
+
+    Used by the readers that must not feed the bot its own output back — bounce
+    detection and the "comments not written by this tool" filter. Those checks
+    predate the batch markers and tested TEST_PLAN_MARKER alone; leaving them
+    that way would let a batch plan be quoted back as the reason a ticket
+    bounced, which is the failure TEST_PLAN_MARKER was excluded to prevent.
+    """
+    return any(marker in text for marker in _KIND_MARKERS.values())
 
 # Jira Cloud rejects comments larger than ~32KB of ADF JSON with
 # CONTENT_LIMIT_EXCEEDED. Cap below that to leave headroom for the
@@ -234,7 +287,9 @@ _TRUNCATED_NOTICE = (
 )
 
 
-def _fit_to_jira_comment_limit(marked_text: str) -> tuple[str, bool]:
+def _fit_to_jira_comment_limit(
+    marked_text: str, kind: PlanCommentKind = PlanCommentKind.single
+) -> tuple[str, bool]:
     """Return `(text, truncated)` where `text` is `marked_text` shortened so the
     resulting ADF JSON fits Jira's comment limit. Uses a binary search over input
     length, falling back to the original text when it already fits. A clear notice
@@ -246,14 +301,14 @@ def _fit_to_jira_comment_limit(marked_text: str) -> tuple[str, bool]:
     text so the caller can tell the poster that content was dropped. Without it the
     UI reports a plain success and the only record of the loss is inside the Jira
     comment."""
-    if _adf_size(marked_text) <= JIRA_COMMENT_MAX_BYTES:
+    if _adf_size(marked_text, kind) <= JIRA_COMMENT_MAX_BYTES:
         return marked_text, False
     lo, hi = 1000, len(marked_text)
     best = marked_text[:lo] + _TRUNCATED_NOTICE
     while lo <= hi:
         mid = (lo + hi) // 2
         candidate = marked_text[:mid].rstrip() + _TRUNCATED_NOTICE
-        if _adf_size(candidate) <= JIRA_COMMENT_MAX_BYTES:
+        if _adf_size(candidate, kind) <= JIRA_COMMENT_MAX_BYTES:
             best = candidate
             lo = mid + 1
         else:
@@ -301,30 +356,63 @@ def plan_version_note(version: int | None, when: datetime | None = None) -> str 
     return f"v{version} · updated in place {stamp} (replaces v{version - 1})"
 
 
-def _marker_line(note: str | None = None) -> str:
+def _marker_line(
+    note: str | None = None, kind: PlanCommentKind = PlanCommentKind.single
+) -> str:
     """The always-visible first line of a plan comment."""
-    return f"{TEST_PLAN_MARKER} — {note}" if note else TEST_PLAN_MARKER
+    marker = marker_for(kind)
+    return f"{marker} — {note}" if note else marker
 
 
-def _part_header_probe(note: str | None = None) -> str:
-    if not note:
+def _part_header_probe(
+    note: str | None = None, kind: PlanCommentKind = PlanCommentKind.single
+) -> str:
+    if not note and kind is PlanCommentKind.single:
         return _PART_HEADER_PROBE
     return (
-        f"{_marker_line(note)} "
+        f"{_marker_line(note, kind)} "
         f"(part {JIRA_COMMENT_MAX_PARTS} of {JIRA_COMMENT_MAX_PARTS})\n\n"
     )
 
 
-def _adf_size(text: str) -> int:
-    """Bytes of ADF JSON that `text` turns into once wrapped for posting."""
-    return len(json.dumps(_wrap_body_in_expand(markdown_to_adf(text))))
+def _comment_body_adf(
+    text: str, kind: PlanCommentKind = PlanCommentKind.single
+) -> dict:
+    """`text` as the ADF body of a comment of this kind.
+
+    Sizing and posting both go through here. Splitting that decision across two
+    call sites is how a body gets measured without the expand wrapper and then
+    posted with it, which reads as a Jira-side rejection for a plan that the
+    app was sure would fit.
+    """
+    adf = markdown_to_adf(text)
+    if kind not in _COLLAPSED_KINDS:
+        return adf
+    return _wrap_body_in_expand(adf, marker_for(kind))
 
 
-def _part_header(index: int, total: int, note: str | None = None) -> str:
+def _adf_size(text: str, kind: PlanCommentKind = PlanCommentKind.single) -> int:
+    """Bytes of ADF JSON that `text` turns into once wrapped for posting.
+
+    The kind has to be threaded through because `_wrap_body_in_expand` only
+    wraps a body whose first line carries the marker it was given. Sizing batch
+    text against the single-ticket marker would skip the wrap, and the expand
+    node is pure overhead — the estimate would come in under the real payload
+    and the post would be rejected at the Jira end for exceeding the limit.
+    """
+    return len(json.dumps(_comment_body_adf(text, kind)))
+
+
+def _part_header(
+    index: int,
+    total: int,
+    note: str | None = None,
+    kind: PlanCommentKind = PlanCommentKind.single,
+) -> str:
     """Marker line for part `index` of `total`. A single-part post with no
     version note keeps the bare marker so the common case reads exactly as it
     always has."""
-    line = _marker_line(note)
+    line = _marker_line(note, kind)
     if total <= 1:
         return f"{line}\n\n"
     return f"{line} (part {index} of {total})\n\n"
@@ -438,65 +526,125 @@ def _pack_blocks(blocks: list[str], probe: str = _PART_HEADER_PROBE) -> list[str
 
 
 def _split_marked_text_into_parts(
-    marked_text: str, note: str | None = None
+    marked_text: str,
+    note: str | None = None,
+    kind: PlanCommentKind = PlanCommentKind.single,
 ) -> tuple[list[str], bool]:
     """Return `(parts, truncated)`: the plan laid out over as many Jira comments
     as it needs, and whether anything still had to be dropped.
 
     One comment stays the norm — a plan that fits comes back as a single part,
     byte-identical to what a single post produced before."""
-    if _adf_size(marked_text) <= JIRA_COMMENT_MAX_BYTES:
+    if _adf_size(marked_text, kind) <= JIRA_COMMENT_MAX_BYTES:
         return [marked_text], False
 
     body = marked_text
-    prefix = f"{_marker_line(note)}\n\n"
+    prefix = f"{_marker_line(note, kind)}\n\n"
     if body.startswith(prefix):
         body = body[len(prefix):]
 
-    probe = _part_header_probe(note)
+    probe = _part_header_probe(note, kind)
     bodies = _pack_blocks(_split_into_blocks(body), probe) or [body]
     truncated = len(bodies) > JIRA_COMMENT_MAX_PARTS
     if truncated:
         bodies = bodies[:JIRA_COMMENT_MAX_PARTS]
 
     total = len(bodies)
-    parts = [_part_header(i + 1, total, note) + b.rstrip() for i, b in enumerate(bodies)]
+    parts = [
+        _part_header(i + 1, total, note, kind) + b.rstrip()
+        for i, b in enumerate(bodies)
+    ]
 
     if truncated:
         # The notice goes on before the refit, not after: refitting a part that
         # already fits is a no-op, which would leave the last part looking like
         # a clean end to the plan.
         with_notice = parts[-1] + _TRUNCATED_NOTICE
-        if _adf_size(with_notice) <= JIRA_COMMENT_MAX_BYTES:
+        if _adf_size(with_notice, kind) <= JIRA_COMMENT_MAX_BYTES:
             parts[-1] = with_notice
         else:
-            parts[-1], _ = _fit_to_jira_comment_limit(with_notice)
+            parts[-1], _ = _fit_to_jira_comment_limit(with_notice, kind)
 
     # A part that somehow still overflows is cut rather than posted to a
     # rejection; without this a mis-sized part fails the whole post.
     for i, part in enumerate(parts):
-        if _adf_size(part) > JIRA_COMMENT_MAX_BYTES:
-            parts[i], cut = _fit_to_jira_comment_limit(part)
+        if _adf_size(part, kind) > JIRA_COMMENT_MAX_BYTES:
+            parts[i], cut = _fit_to_jira_comment_limit(part, kind)
             truncated = truncated or cut
 
     return parts, truncated
 
 
-def _comment_carries_test_plan_marker(comment: dict) -> bool:
-    """True if `comment` is one of our test plan comments (or one of its parts)."""
+def _comment_marker_text(comment: dict) -> str | None:
+    """The text of `comment`'s marker paragraph, or None if it has no marker
+    paragraph at all. That paragraph is content[0] by construction — see
+    `_wrap_body_in_expand`, which keeps it outside the collapsed body."""
     body = comment.get("body", {})
     if body.get("type") != "doc":
-        return False
+        return None
     content = body.get("content", [])
     if not content:
-        return False
+        return None
     first_para = content[0]
     if first_para.get("type") != "paragraph":
-        return False
+        return None
     para_content = first_para.get("content", [])
     if not para_content:
+        return None
+    return para_content[0].get("text") or ""
+
+
+def _comment_marker_kind(comment: dict) -> PlanCommentKind | None:
+    """Which slot `comment` occupies, or None if it is not one of ours.
+
+    Matching is by kind, not by "is this a plan": a batch post must reuse only
+    batch comments and a single post only single ones, or the two would take
+    turns overwriting each other — the exact behaviour this split exists to
+    stop. The markers are chosen so no two can match the same text, so the
+    order of these tests does not change the answer.
+    """
+    text = _comment_marker_text(comment)
+    if text is None:
+        return None
+    for kind, marker in _KIND_MARKERS.items():
+        if marker in text:
+            return kind
+    return None
+
+
+# The footer the browser used to append when one plan went to several tickets.
+# It is the only durable trace that a plain-marked comment was a batch plan
+# rather than a single-ticket one, and so the only way to adopt the comments
+# left behind by the all-tickets-get-a-copy behaviour instead of stranding
+# them under the single-ticket marker. Matched without the surrounding
+# underscores because the italics are consumed when the text becomes ADF.
+_LEGACY_BATCH_FOOTER = "Also posted to:"
+
+
+def _is_legacy_batch_comment(comment: dict) -> bool:
+    """True for a pre-split batch plan: single marker, multi-ticket footer.
+
+    A batch plan that only ever went to one selected ticket carries no footer
+    and is indistinguishable from a single-ticket plan. Those stay where they
+    are — guessing would risk overwriting a real single-ticket plan, which is
+    the loss this whole change is about.
+    """
+    if _comment_marker_kind(comment) is not PlanCommentKind.single:
         return False
-    return TEST_PLAN_MARKER in (para_content[0].get("text") or "")
+    return _LEGACY_BATCH_FOOTER in extract_text_from_adf(comment.get("body"))
+
+
+# The kinds that actually contain a plan. A pointer carries no test cases — it
+# is a signpost at the ticket hosting the batch plan — so anything asking "is
+# there a plan in this comment" has to exclude it. `plan_adoption` is the
+# caller that matters: adopting a pointer would persist a two-line signpost as
+# a ticket's test plan.
+_PLAN_BEARING_KINDS = frozenset({PlanCommentKind.single, PlanCommentKind.batch})
+
+
+def _comment_carries_test_plan_marker(comment: dict) -> bool:
+    """True if `comment` holds one of our test plans (or one of its parts)."""
+    return _comment_marker_kind(comment) in _PLAN_BEARING_KINDS
 
 
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
@@ -1314,7 +1462,7 @@ def _find_bounce_reason(
         # the nearest-comment heuristic would otherwise hand the generator its
         # own plan as "why QA sent this back" — and that text goes straight
         # into the next prompt via _render_bounce_entries.
-        if TEST_PLAN_MARKER in extract_text_from_adf(c.get("body")):
+        if carries_bot_plan_marker(extract_text_from_adf(c.get("body"))):
             continue
         author = ((c.get("author") or {}).get("displayName")
                   or (c.get("author") or {}).get("emailAddress"))
@@ -1972,8 +2120,6 @@ class JiraClient:
         """
         LIMIT = 5
 
-        # Marker used to identify comments created by this tool
-        BOT_MARKER = "🤖 Generated Test Plan"
 
         # Phrases that indicate a formal manual test plan — prioritized above all others
         FORMAL_TEST_PLAN_MARKERS = [
@@ -2043,8 +2189,10 @@ class JiraClient:
             if not body_text:
                 continue
 
-            # Skip comments created by this tool (to avoid circular references)
-            if BOT_MARKER in body_text:
+            # Skip comments created by this tool (to avoid circular references).
+            # Every kind, not just the single-ticket plan: a batch plan or a
+            # batch pointer fed back in here is the same circular reference.
+            if carries_bot_plan_marker(body_text):
                 continue
 
             # Extract timestamps
@@ -3275,12 +3423,17 @@ class JiraClient:
             story_points=story_points,
         )
 
-    async def _create_comment(self, issue_key: str, comment_text: str) -> dict:
+    async def _create_comment(
+        self,
+        issue_key: str,
+        comment_text: str,
+        kind: PlanCommentKind = PlanCommentKind.single,
+    ) -> dict:
         """POST one comment body to Jira and return the created comment."""
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
 
         payload = {
-            "body": _wrap_body_in_expand(markdown_to_adf(comment_text))
+            "body": _comment_body_adf(comment_text, kind)
         }
 
         headers = {
@@ -3320,6 +3473,8 @@ class JiraClient:
         issue_key: str,
         comment_text: str,
         version_note: str | None = None,
+        kind: PlanCommentKind = PlanCommentKind.single,
+        adopt_legacy_batch: bool = False,
     ) -> dict:
         """
         Post a test plan to a Jira issue, updating the existing plan comment(s) if found.
@@ -3338,6 +3493,17 @@ class JiraClient:
                 collapsed body, which is the only place a reader sees without
                 clicking — the point being that an update-in-place post is
                 otherwise indistinguishable from the one it replaced.
+            kind: Which comment slot to write. A ticket holds one slot per
+                kind, so a batch plan posted here leaves the ticket's own
+                single-ticket plan untouched, and vice versa. Reuse is scoped
+                to the same kind for the same reason.
+            adopt_legacy_batch: Let a batch or pointer post take over a
+                plain-marked comment that carries the old multi-ticket footer.
+                Those were written before batch plans had a marker of their
+                own, so they sit in the single-ticket slot and would otherwise
+                be overwritten by the next single-ticket post. Off by default:
+                adoption rewrites the comment, so it happens only where the
+                caller knows the plan is going somewhere.
 
         Returns:
             dict: Jira's response for the FIRST comment, plus:
@@ -3349,14 +3515,16 @@ class JiraClient:
                   "stale_parts_left": leftover parts from a longer previous
                       plan that could not be deleted
                   "part_error": why posting stopped early, if it did
+                  "adopted_legacy": true if this post took over a pre-split
+                      batch comment instead of writing a new one
 
         Raises:
             JiraNotFoundError: If the issue doesn't exist
             JiraAuthError: If authentication fails or permissions are insufficient
             JiraConnectionError: If Jira is unreachable
         """
-        marked_text = f"{_marker_line(version_note)}\n\n{comment_text}"
-        parts, truncated = _split_marked_text_into_parts(marked_text, version_note)
+        marked_text = f"{_marker_line(version_note, kind)}\n\n{comment_text}"
+        parts, truncated = _split_marked_text_into_parts(marked_text, version_note, kind)
         if truncated:
             logger.warning(
                 "Test plan for %s exceeded %d Jira comments and was truncated",
@@ -3370,19 +3538,42 @@ class JiraClient:
                 len(parts),
             )
 
-        # Reuse the existing plan comments, in the order Jira returns them, so a
-        # regenerated plan lands where the last one did instead of alongside it.
+        # Reuse the existing comments of this kind, in the order Jira returns
+        # them, so a regenerated plan lands where the last one did instead of
+        # alongside it. Scoped to the kind: a batch post that reused the
+        # single-ticket comments would destroy the plan written for this ticket
+        # alone, which is the whole reason the kinds are separate.
         existing_ids: list[str] = []
+        adopted_legacy = False
         try:
-            for comment in await self.get_comments(issue_key):
-                if _comment_carries_test_plan_marker(comment):
+            comments = await self.get_comments(issue_key)
+            for comment in comments:
+                if _comment_marker_kind(comment) is kind:
                     comment_id = comment.get("id")
                     if comment_id:
                         existing_ids.append(str(comment_id))
+            if not existing_ids and adopt_legacy_batch and kind is not PlanCommentKind.single:
+                # Nothing in this kind's slot yet, but the ticket may still be
+                # carrying a batch plan from before the split — plain marker,
+                # multi-ticket footer. Taking it over converts it in place; the
+                # alternative is leaving it under the single-ticket marker for
+                # the next single-ticket post to overwrite.
+                for comment in comments:
+                    if _is_legacy_batch_comment(comment):
+                        comment_id = comment.get("id")
+                        if comment_id:
+                            existing_ids.append(str(comment_id))
+                if existing_ids:
+                    adopted_legacy = True
+                    logger.info(
+                        "Adopting %d pre-split batch comment(s) on %s as the %s slot",
+                        len(existing_ids), issue_key, kind.value,
+                    )
         except Exception as e:
             # If fetching/checking existing comments fails, fall back to creating new
             logger.warning(f"Failed to check for existing comments on {issue_key}: {e}")
             existing_ids = []
+            adopted_legacy = False
 
         results: list[dict] = []
         part_error: str | None = None
@@ -3394,9 +3585,11 @@ class JiraClient:
                         existing_ids[index],
                         issue_key,
                     )
-                    results.append(await self.update_comment(issue_key, existing_ids[index], part))
+                    results.append(
+                        await self.update_comment(issue_key, existing_ids[index], part, kind)
+                    )
                 else:
-                    results.append(await self._create_comment(issue_key, part))
+                    results.append(await self._create_comment(issue_key, part, kind))
             except Exception as e:
                 if not results:
                     # Nothing landed — this is a plain failed post, report it as one.
@@ -3433,6 +3626,8 @@ class JiraClient:
         result["stale_parts_left"] = stale_left
         result["part_error"] = part_error
         result["version_note"] = version_note
+        result["kind"] = kind.value
+        result["adopted_legacy"] = adopted_legacy
         return result
 
     async def upload_attachments(
@@ -3708,7 +3903,13 @@ class JiraClient:
         response_data = r.json()
         return response_data.get("comments", [])
 
-    async def update_comment(self, issue_key: str, comment_id: str, comment_text: str) -> dict:
+    async def update_comment(
+        self,
+        issue_key: str,
+        comment_id: str,
+        comment_text: str,
+        kind: PlanCommentKind = PlanCommentKind.single,
+    ) -> dict:
         """
         Update an existing comment on a Jira issue.
 
@@ -3728,7 +3929,7 @@ class JiraClient:
         url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment/{comment_id}"
 
         payload = {
-            "body": _wrap_body_in_expand(markdown_to_adf(comment_text))
+            "body": _comment_body_adf(comment_text, kind)
         }
 
         headers = {

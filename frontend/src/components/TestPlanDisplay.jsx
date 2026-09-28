@@ -37,9 +37,13 @@ function recallProgressKey(planId) {
   }
 }
 
-// Post states that mean the plan reached the ticket, cleanly or with a caveat.
-// A ticket in any of them stays locked so a second click can't re-post it.
-const POSTED_STATES = new Set(['done', 'split', 'truncated', 'partial', 'stale', 'unrecorded'])
+// Post states that mean this ticket has been dealt with, cleanly or with a
+// caveat — the plan reached it, or (`pointed`) it now carries a pointer to the
+// ticket hosting the batch plan. A ticket in any of them stays locked so a
+// second click can't re-post it.
+const POSTED_STATES = new Set([
+  'done', 'split', 'truncated', 'partial', 'stale', 'unrecorded', 'pointed',
+])
 
 const SECTIONS = [
   { key: 'happy_path', label: 'Happy Path', icon: 'check-circle', renderer: 'card' },
@@ -1924,19 +1928,28 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
     }
   }
 
-  const postToKey = async (issueKey, otherKeys = []) => {
-    setPostingStates((prev) => ({ ...prev, [issueKey]: 'posting' }))
+  // One call, not one per ticket. The server decides which ticket hosts the
+  // plan and which get a pointer to it, because that decision has to match the
+  // host recorded when the plan was generated — a browser working it out again
+  // from the selection would eventually disagree and post a second copy of the
+  // plan to a different ticket.
+  const handlePostSelected = async () => {
+    const keys = [...selectedKeys]
+    if (keys.length === 0) {
+      showNotification(setPostNotification, postTimerRef, 'error', 'Select at least one ticket')
+      return
+    }
+    setPostingStates(Object.fromEntries(keys.map((k) => [k, 'posting'])))
     try {
-      let jiraText = formatTestPlanAsJira(testPlan, walkthrough)
-      if (otherKeys.length > 0) {
-        jiraText += `\n\n----\n_Also posted to: ${otherKeys.join(', ')}_`
-      }
-      const response = await fetch(`${API_BASE}/jira/post-comment`, {
+      const response = await fetch(`${API_BASE}/jira/post-plan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          issue_key: issueKey,
-          comment_text: jiraText,
+          ticket_keys: keys,
+          // No "also posted to" footer any more: the other tickets get a real
+          // pointer comment naming the host, rather than each copy of the plan
+          // listing where its duplicates went.
+          comment_text: formatTestPlanAsJira(testPlan, walkthrough),
           plan_id: testPlan?.plan_id ?? null,
         }),
       })
@@ -1947,57 +1960,73 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
       }
 
       const result = await response.json()
-      const outcome = describePostResult(result, issueKey, result.updated ? 'updated' : 'posted')
-      postOutcomesRef.current[issueKey] = outcome
-      setPostingStates((prev) => ({ ...prev, [issueKey]: outcome.state }))
-    } catch (error) {
-      setPostingStates((prev) => ({ ...prev, [issueKey]: 'error' }))
-      showNotification(setPostNotification, postTimerRef, 'error', `${issueKey}: ${error.message}`)
-    }
-  }
-
-  const handlePostSelected = async () => {
-    const keys = [...selectedKeys]
-    if (keys.length === 0) {
-      showNotification(setPostNotification, postTimerRef, 'error', 'Select at least one ticket')
-      return
-    }
-    for (const key of keys) {
-      const otherKeys = keys.filter((k) => k !== key)
-      await postToKey(key, otherKeys)
-    }
-    setPostingStates((prev) => {
-      const anyError = keys.some((k) => prev[k] === 'error')
-      if (anyError) {
-        // Per-ticket errors already raised their own notification in postToKey.
-        return prev
+      if (result.scope !== 'batch') {
+        // One ticket selected: the server posted it as that ticket's own plan.
+        const outcome = describePostResult(
+          result,
+          result.issue_key,
+          result.updated ? 'updated' : 'posted'
+        )
+        postOutcomesRef.current[result.issue_key] = outcome
+        setPostingStates({ [result.issue_key]: outcome.state })
+        if (onPosted) {
+          onPosted({ ticketKey: result.issue_key, planId: testPlan?.plan_id ?? null })
+        }
+        showNotification(setPostNotification, postTimerRef, outcome.type, outcome.message)
+        return
       }
-      const flagged = keys.filter((k) => postOutcomesRef.current[k]?.type === 'warning')
-      if (flagged.length > 0) {
-        // One line per flagged ticket: "cut short" and "only 1 of 3 landed" are
-        // different problems and a lumped summary hides which ticket has which.
-        const detail = flagged
-          .map((k) => postOutcomesRef.current[k].message)
-          .join(' ')
+
+      const hostKey = result.host_key
+      const hostOutcome = describePostResult(
+        result.host,
+        hostKey,
+        result.host?.updated ? 'updated' : 'posted'
+      )
+      postOutcomesRef.current[hostKey] = hostOutcome
+
+      const failedPointers = new Set((result.pointer_errors || []).map((p) => p.issue_key))
+      setPostingStates(
+        Object.fromEntries(
+          keys.map((k) => [
+            k,
+            k === hostKey ? hostOutcome.state : failedPointers.has(k) ? 'error' : 'pointed',
+          ])
+        )
+      )
+      if (onPosted) onPosted({ ticketKey: hostKey, planId: testPlan?.plan_id ?? null })
+
+      const others = keys.filter((k) => k !== hostKey)
+      const moved = result.moved_from
+        ? ` The plan moved off ${result.moved_from}, which is no longer in this batch — its copy was replaced with a pointer.`
+        : ''
+      const pointerNote = failedPointers.size > 0
+        ? ` Could not leave a pointer on ${[...failedPointers].join(', ')} — those tickets do not say where the plan is.`
+        : others.length > 0
+          ? ` ${others.join(', ')} now point at it.`
+          : ''
+      const adopted = result.host?.adopted_legacy
+        ? ' It took over the batch comment left by an earlier run rather than adding another.'
+        : ''
+
+      if (hostOutcome.type === 'warning' || failedPointers.size > 0) {
         showNotification(
           setPostNotification,
           postTimerRef,
           'warning',
-          `Posted to ${keys.join(', ')}. ${detail}`
+          `${hostOutcome.message}${pointerNote}${moved}${adopted}`
         )
       } else {
-        const split = keys.filter((k) => prev[k] === 'split')
         showNotification(
           setPostNotification,
           postTimerRef,
           'success',
-          split.length > 0
-            ? `Posted to ${keys.join(', ')} — ${split.join(', ')} needed more than one Jira comment.`
-            : `Posted to ${keys.join(', ')}`
+          `Test plan posted on ${hostKey}.${pointerNote}${moved}${adopted}`
         )
       }
-      return prev
-    })
+    } catch (error) {
+      setPostingStates(Object.fromEntries(keys.map((k) => [k, 'error'])))
+      showNotification(setPostNotification, postTimerRef, 'error', error.message)
+    }
   }
 
   const toggleKeySelection = (key) => {
@@ -2010,6 +2039,18 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   }
 
   const isAnyPosting = Object.values(postingStates).includes('posting')
+
+  // Where a batch post will put the plan. Named by the server when the plan was
+  // generated; the browser only displays it, so what the tester is told and
+  // where the plan actually goes cannot drift apart. Falls back to the lowest
+  // selected key, which is the same tie-break the server applies when the
+  // recorded host is not in the selection.
+  const selectedList = [...selectedKeys]
+  const plannedHostKey = isMulti && selectedList.length > 0
+    ? (selectedKeys.has(testPlan?.batch_host_key)
+        ? testPlan.batch_host_key
+        : [...selectedList].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))[0])
+    : null
 
   // Overall progress
   const totals = SECTION_KEYS.map((k) => sectionLength(displayPlan, k))
@@ -2174,14 +2215,20 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                 const postLabel = postNotification
                   ? postNotification.message
                   : isMulti
-                    ? `Post to selected (${selectedKeys.size})`
+                    ? `Post plan to ${plannedHostKey || 'selected'}${
+                        selectedKeys.size > 1
+                          ? `, pointer on ${selectedKeys.size - 1} more`
+                          : ''
+                      }`
                     : 'Post to Jira'
                 // Said here because this is now the only Post control most
                 // plans render — the bar at the foot of the page that used to
                 // carry the sentence is gone for the single-ticket case.
                 const postHint = postNotification
                   ? null
-                  : 'Updates the existing bot comment instead of duplicating.'
+                  : isMulti
+                    ? `The plan goes on ${plannedHostKey} once; the other tickets get a short pointer to it. Each ticket's own test plan comment is a separate comment and is left alone.`
+                    : 'Updates the existing bot comment instead of duplicating.'
                 const postStyle =
                   postTone === 'error'
                     ? { ...base, background: 'var(--danger-soft)', borderColor: 'rgba(239,68,68,.5)', color: 'var(--danger)' }
@@ -2380,7 +2427,9 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)' }}>Export this plan</div>
             <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
-              Posting to Jira updates the existing bot comment instead of duplicating.
+              {isMulti
+                ? 'Posting puts the plan on one ticket and a pointer on the rest. It updates the comments a previous post made instead of duplicating, and never touches a ticket\u2019s own test plan comment.'
+                : 'Posting to Jira updates the existing bot comment instead of duplicating.'}
             </div>
           </div>
           {totalAll === 0 && (
@@ -2418,6 +2467,15 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
             <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: '.04em', fontWeight: 600, marginBottom: 'var(--s-3)' }}>
               Post to selected tickets
             </div>
+            <div style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', marginBottom: 'var(--s-4)' }}>
+              The plan is posted once, on{' '}
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg)' }}>
+                {plannedHostKey}
+              </span>
+              . The rest get a pointer to it, so there is one copy to work
+              through instead of an identical plan on every ticket. This does
+              not touch any ticket's own test plan comment.
+            </div>
             <div style={{ display: 'flex', gap: 'var(--s-4)', flexWrap: 'wrap', alignItems: 'center' }}>
               {ticketsData.map((td) => {
                 const state = postingStates[td.key]
@@ -2436,7 +2494,27 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                       }
                     />
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>{td.key}</span>
+                    {checked && !state && td.key === plannedHostKey && (
+                      <span className="tip">
+                        <Chip size="sm">Hosts the plan</Chip>
+                        <span className="tip-body">
+                          The batch plan comment goes here. Chosen when the plan
+                          was generated and reused on every re-post, so the plan
+                          does not migrate between tickets.
+                        </span>
+                      </span>
+                    )}
                     {state === 'posting' && <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>Posting…</span>}
+                    {state === 'pointed' && (
+                      <span className="tip">
+                        <Chip size="sm" dot dotColor="var(--success)">Pointer left</Chip>
+                        <span className="tip-body">
+                          This ticket now carries a short comment saying the
+                          batch plan is on {plannedHostKey}. Its own test plan
+                          comment, if it has one, is untouched.
+                        </span>
+                      </span>
+                    )}
                     {state === 'done' && <Chip size="sm" dot dotColor="var(--success)">Posted</Chip>}
                     {state === 'split' && (
                       <span className="tip">
@@ -2490,7 +2568,11 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                 disabled={isAnyPosting || selectedKeys.size === 0}
                 loading={isAnyPosting}
               >
-                {isAnyPosting ? 'Posting…' : `Post to selected (${selectedKeys.size})`}
+                {isAnyPosting
+                  ? 'Posting…'
+                  : `Post plan to ${plannedHostKey || 'selected'}${
+                      selectedKeys.size > 1 ? ` + ${selectedKeys.size - 1} pointers` : ''
+                    }`}
               </Btn>
             </div>
           </div>

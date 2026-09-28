@@ -436,7 +436,7 @@ async def test_post_comment_creates_one_comment_per_part():
     jira = JiraClient()
     created: list[str] = []
 
-    async def fake_create(issue_key, text):
+    async def fake_create(issue_key, text, kind=None):
         created.append(text)
         return {"id": f"c{len(created)}"}
 
@@ -471,7 +471,7 @@ async def test_regenerating_reuses_existing_part_comments_in_order():
     jira = JiraClient()
     updated: list[str] = []
 
-    async def fake_update(issue_key, comment_id, text):
+    async def fake_update(issue_key, comment_id, text, kind=None):
         updated.append(comment_id)
         return {"id": comment_id}
 
@@ -526,7 +526,7 @@ async def test_failure_partway_through_reports_what_landed():
     jira = JiraClient()
     calls = {"n": 0}
 
-    async def flaky_create(issue_key, text):
+    async def flaky_create(issue_key, text, kind=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return {"id": "c1"}
