@@ -28,9 +28,24 @@ class BatchHostCandidate:
     # The key of this ticket's parent/epic, when it has one. Used to spot a
     # parent that is itself part of the batch.
     parent_key: str | None = None
-    # How many branches Jira's development panel links to this ticket. The
-    # stand-in for "where the work actually landed".
+    # How much linked development work Jira's panel shows against this ticket —
+    # the stand-in for "where the work actually landed".
+    #
+    # Both counts, not just branches, because branches alone do not
+    # discriminate here: across SK-2623..SK-2665 every ticket reported zero
+    # branches while their PR counts ran from 1 to 18. `_extract_branches`
+    # reads the `repository` dev-status detail, which this Jira does not
+    # populate; the `pullrequest` detail is the one that carries the work. A
+    # rule that always scores zero is not a tie-break, it is no rule at all.
     branch_count: int = 0
+    pr_count: int = 0
+
+    @property
+    def linked_work(self) -> int:
+        """What rule 2 ranks on. A PR normally implies a branch, so where both
+        are populated this double-counts — equally for every candidate, which
+        leaves the ordering untouched."""
+        return self.branch_count + self.pr_count
 
 
 _KEY_PATTERN = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)-(\d+)$")
@@ -58,8 +73,8 @@ def choose_batch_host(candidates: Sequence[BatchHostCandidate]) -> str:
     1. A parent/epic that is itself in the batch wins. It is the ticket a
        reader already treats as the home of the group, and it outlives the
        children — a plan hosted on a child is stranded when that child closes.
-    2. Otherwise the ticket with the most linked branches, as the best
-       available proxy for where the work is.
+    2. Otherwise the ticket with the most linked development work — branches
+       plus pull requests — as the best available proxy for where the work is.
     3. Ties break on the lowest ticket key, which is stable across runs.
        Anything drawn from the batch's own ordering would not be: the browser
        sends whatever order the keys were typed in.
@@ -83,7 +98,7 @@ def choose_batch_host(candidates: Sequence[BatchHostCandidate]) -> str:
         topmost = [c for c in pool if not (c.parent_key and c.parent_key in keys)]
         pool = topmost or pool
 
-    return min(pool, key=lambda c: (-c.branch_count, _key_sort_value(c.key))).key
+    return min(pool, key=lambda c: (-c.linked_work, _key_sort_value(c.key))).key
 
 
 def candidate_from_ticket(ticket) -> BatchHostCandidate:
@@ -97,13 +112,21 @@ def candidate_from_ticket(ticket) -> BatchHostCandidate:
     parent_key = parent_info.get("key") if isinstance(parent_info, dict) else None
 
     dev_info = getattr(ticket, "development_info", None) or {}
-    branches = dev_info.get("branches") if isinstance(dev_info, dict) else None
-    branch_count = len(branches) if isinstance(branches, (list, tuple)) else 0
+    if not isinstance(dev_info, dict):
+        dev_info = {}
+
+    def _count(field: str) -> int:
+        value = dev_info.get(field)
+        return len(value) if isinstance(value, (list, tuple)) else 0
 
     return BatchHostCandidate(
         key=ticket.ticket_key,
         parent_key=parent_key.strip().upper() if isinstance(parent_key, str) else None,
-        branch_count=branch_count,
+        branch_count=_count("branches"),
+        # Counted after `filter_development_info` has run, so a PR that was
+        # closed without merging does not argue for hosting the plan on the
+        # ticket that abandoned it.
+        pr_count=_count("pull_requests"),
     )
 
 

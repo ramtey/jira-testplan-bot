@@ -590,3 +590,37 @@ async def test_a_pointer_is_not_a_plan_comment():
         _comment("3", f"{BATCH_POINTER_MARKER} SK-2630")
     )
     assert not _comment_carries_test_plan_marker(_comment("4", "a human comment"))
+
+
+def test_pull_requests_count_towards_hosting_when_branches_do_not():
+    """Branches were the rule as stated, but this Jira reports zero branches on
+    every ticket while PR counts run 1..18 — `_extract_branches` reads the
+    `repository` dev-status detail, which is not populated here. Ranking on
+    branches alone would silently degrade to the lowest-key tie-break."""
+    host = choose_batch_host([
+        BatchHostCandidate("SK-2623", branch_count=0, pr_count=5),
+        BatchHostCandidate("SK-2630", branch_count=0, pr_count=18),
+        BatchHostCandidate("SK-2627", branch_count=0, pr_count=1),
+    ])
+    assert host == "SK-2630"
+
+
+def test_a_parent_in_the_batch_still_outranks_every_pr():
+    host = choose_batch_host([
+        BatchHostCandidate("SK-2620", pr_count=0),
+        BatchHostCandidate("SK-2630", parent_key="SK-2620", pr_count=18),
+    ])
+    assert host == "SK-2620"
+
+
+def test_candidates_read_both_counts_off_a_ticket():
+    from src.app.services.batch_plan_host import candidate_from_ticket
+
+    ticket = MagicMock()
+    ticket.ticket_key = "SK-2630"
+    ticket.parent_info = {"key": "sk-2620"}
+    ticket.development_info = {"branches": [], "pull_requests": [{}, {}, {}]}
+
+    c = candidate_from_ticket(ticket)
+    assert c.parent_key == "SK-2620", "parent keys are normalised for comparison"
+    assert c.linked_work == 3
