@@ -215,21 +215,39 @@ function EnvPill({ value, on, onToggle, disabled }) {
 // src/app/attachment_types.py — keep the two in sync. Text payloads (.txt /
 // .log / .md / .json) are here for API/HTTP work: a response body, a curl
 // transcript, a log excerpt or a markdown repro is the evidence, and there's no
-// screenshot to take. They attach to the ticket and render as a
-// `📎 <filename>` line in the comment rather than inline.
+// screenshot to take. An .mp3 is here for the tester who would rather talk
+// through the run than write it up. Neither has a preview, so they attach to
+// the ticket and render as a `📎`/`🎧 <filename>` line in the comment rather
+// than inline.
 const ATTACHMENT_ACCEPT =
-  'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,application/json,.txt,.log,.md,.json'
+  'image/png,image/jpeg,image/gif,image/webp,application/pdf,audio/mpeg,text/plain,text/markdown,application/json,.mp3,.txt,.log,.md,.json'
 
 // A .json dragged from Finder or dropped out of an archive can arrive with an
 // empty or generic type, so fall back to the extension the way the server
 // does. Anything still unrecognised is dropped here instead of bouncing off a
 // 400 after the upload starts.
 const TEXT_ATTACHMENT_RE = /\.(txt|log|md|json)$/i
+const AUDIO_ATTACHMENT_RE = /\.mp3$/i
+
+// Everything that renders as a filename callout rather than a media node.
+const NO_PREVIEW_ATTACHMENT_RE = /\.(txt|log|md|json|mp3)$/i
 
 function isAllowedAttachment(file) {
   if (!file) return false
   const type = (file.type || '').split(';')[0].trim().toLowerCase()
   if (type.startsWith('image/') || type === 'application/pdf') return true
+  // Safari and older recorders spell an MP3 several other ways; the server
+  // normalizes the same set.
+  if (
+    type === 'audio/mpeg' ||
+    type === 'audio/mp3' ||
+    type === 'audio/x-mp3' ||
+    type === 'audio/mpeg3' ||
+    type === 'audio/x-mpeg-3' ||
+    type === 'audio/mpg'
+  ) {
+    return true
+  }
   if (
     type === 'text/plain' ||
     type === 'text/x-log' ||
@@ -241,13 +259,15 @@ function isAllowedAttachment(file) {
     return true
   }
   if (type === '' || type === 'application/octet-stream') {
-    return TEXT_ATTACHMENT_RE.test(file.name || '')
+    return NO_PREVIEW_ATTACHMENT_RE.test(file.name || '')
   }
   return false
 }
 
-// Chip icon: a picture for previewable attachments, a document for text ones.
+// Chip icon: a picture for previewable attachments, a speaker for audio, a
+// document for text ones.
 function attachmentIconName(filename) {
+  if (AUDIO_ATTACHMENT_RE.test(filename || '')) return 'volume'
   return TEXT_ATTACHMENT_RE.test(filename || '') ? 'file-text' : 'image'
 }
 
@@ -304,7 +324,7 @@ function ImageDropzone({ files, onAdd, onRemove, disabled, onInsertToken }) {
         }}
       >
         <Icon name="image" size={13} style={{ marginRight: 6, verticalAlign: '-2px' }} />
-        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF / TXT / LOG / MD / JSON, up to 10 MB each.
+        Click, drag, or paste files here. PNG / JPEG / GIF / WEBP / PDF / MP3 / TXT / LOG / MD / JSON, up to 10 MB each.
         <input
           ref={inputRef}
           type="file"

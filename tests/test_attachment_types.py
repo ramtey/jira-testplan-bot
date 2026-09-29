@@ -28,6 +28,33 @@ def test_resolve_accepts_text_markdown_and_json_payloads():
     assert resolve_attachment_mime("api.log", "text/plain") == "text/plain"
 
 
+def test_resolve_accepts_an_mp3_voice_note():
+    assert resolve_attachment_mime("uat-notes.mp3", "audio/mpeg") == "audio/mpeg"
+
+
+def test_resolve_normalizes_the_mp3_spellings_browsers_actually_send():
+    # Safari says audio/mp3; older recorders still emit the mpeg3 spellings.
+    assert resolve_attachment_mime("notes.mp3", "audio/mp3") == "audio/mpeg"
+    assert resolve_attachment_mime("notes.mp3", "audio/x-mp3") == "audio/mpeg"
+    assert resolve_attachment_mime("notes.mp3", "audio/mpeg3") == "audio/mpeg"
+    assert resolve_attachment_mime("notes.mp3", "audio/x-mpeg-3") == "audio/mpeg"
+    assert resolve_attachment_mime("notes.mp3", "audio/mpg") == "audio/mpeg"
+
+
+def test_resolve_falls_back_to_the_extension_for_an_mp3_with_no_type():
+    # A file dragged out of Finder or an archive arrives untyped.
+    assert resolve_attachment_mime("notes.mp3", "") == "audio/mpeg"
+    assert resolve_attachment_mime("notes.mp3", None) == "audio/mpeg"
+    assert resolve_attachment_mime("notes.mp3", "application/octet-stream") == "audio/mpeg"
+
+
+def test_resolve_rejects_audio_formats_outside_the_allow_list():
+    # Only MP3 is allowed — a .m4a or .wav still bounces.
+    assert resolve_attachment_mime("notes.m4a", "audio/mp4") is None
+    assert resolve_attachment_mime("notes.wav", "audio/wav") is None
+    assert resolve_attachment_mime("notes.m4a", "application/octet-stream") is None
+
+
 def test_resolve_strips_charset_parameter():
     assert resolve_attachment_mime("curl.txt", "text/plain; charset=utf-8") == "text/plain"
 
@@ -71,12 +98,19 @@ def test_inline_preview_only_for_non_text_attachments():
     assert has_inline_preview("curl.txt") is False
     assert has_inline_preview("repro.md") is False
     assert has_inline_preview("api.LOG") is False
+    # An mp3 has no still frame, so it takes the callout path too.
+    assert has_inline_preview("notes.MP3") is False
 
 
 def test_attachment_icon_matches_preview_capability():
     assert attachment_icon("shot.png") == "📷"
     assert attachment_icon("resp.json") == "📎"
     assert attachment_icon("repro.md") == "📎"
+
+
+def test_attachment_icon_marks_audio_as_something_to_listen_to():
+    assert attachment_icon("uat-notes.mp3") == "🎧"
+    assert attachment_icon("UAT-NOTES.MP3") == "🎧"
 
 
 # ---------- the workflow route's upload validator ----------
@@ -108,9 +142,24 @@ async def test_validate_reads_text_attachments_with_resolved_mime():
 
 
 @pytest.mark.asyncio
+async def test_validate_reads_an_mp3_voice_note():
+    files = await _validate_and_read_images([
+        _upload("uat-notes.mp3", b"ID3\x03", "audio/mpeg"),
+        # Safari's spelling, and a Finder drag with no type at all.
+        _upload("take-2.mp3", b"ID3\x03", "audio/mp3"),
+        _upload("take-3.mp3", b"ID3\x03", None),
+    ])
+    assert [(name, mime) for name, _, mime in files] == [
+        ("uat-notes.mp3", "audio/mpeg"),
+        ("take-2.mp3", "audio/mpeg"),
+        ("take-3.mp3", "audio/mpeg"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_validate_rejects_a_type_outside_the_allow_list():
     with pytest.raises(HTTPException) as exc:
         await _validate_and_read_images([_upload("bundle.zip", b"PK", "application/zip")])
     assert exc.value.status_code == 400
     assert "application/zip" in exc.value.detail
-    assert "TXT, LOG, MD, JSON" in exc.value.detail
+    assert "MP3, TXT, LOG, MD, JSON" in exc.value.detail

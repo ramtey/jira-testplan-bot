@@ -69,6 +69,7 @@ function Icon({ name, size = 16, stroke = 1.75, className, style }) {
     case 'x-circle':       return <svg {...props}><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>
     case 'square':         return <svg {...props}><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
     case 'play':           return <svg {...props}><path d="m6 4 14 8-14 8V4Z"/></svg>
+    case 'volume':         return <svg {...props}><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
     case 'stop':           return <svg {...props}><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
     case 'key':            return <svg {...props}><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 9-9M18 5l3 3M15 8l3 3"/></svg>
     case 'lock':           return <svg {...props}><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
