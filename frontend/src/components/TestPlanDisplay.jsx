@@ -201,6 +201,29 @@ function renderInline(value) {
   return parts
 }
 
+// Overall-progress colour: red at 0%, amber at 50%, green at 100%, mixed
+// linearly between those stops. The three stops are --danger / --warning /
+// --success, repeated here as literals because the mix happens in JS, where
+// the CSS custom properties aren't resolved.
+const PROGRESS_STOPS = [
+  [0, [239, 68, 68]],   // --danger  #ef4444
+  [50, [245, 158, 11]], // --warning #f59e0b
+  [100, [34, 197, 94]], // --success #22c55e
+]
+
+function progressColor(pct) {
+  const p = Math.max(0, Math.min(100, pct))
+  for (let i = 1; i < PROGRESS_STOPS.length; i++) {
+    const [hi, hiRgb] = PROGRESS_STOPS[i]
+    if (p > hi) continue
+    const [lo, loRgb] = PROGRESS_STOPS[i - 1]
+    const t = hi === lo ? 0 : (p - lo) / (hi - lo)
+    const [r, g, b] = loRgb.map((c, j) => Math.round(c + (hiRgb[j] - c) * t))
+    return `rgb(${r}, ${g}, ${b})`
+  }
+  return `rgb(${PROGRESS_STOPS[PROGRESS_STOPS.length - 1][1].join(', ')})`
+}
+
 function SectionChip({ checked, total }) {
   if (total === 0) return null
   const allDone = checked === total
@@ -2088,7 +2111,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-5)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', flexShrink: 0 }}>
               <Icon name="beaker" size={14} style={{ color: 'var(--accent)' }} />
               <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)' }}>
                 Test plan
@@ -2102,46 +2125,21 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                   <span className="tip-body">{allKeys.join(', ')}</span>
                 </span>
               )}
-            </div>
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 'var(--s-4)' }}>
-              <div style={{ position: 'relative', flex: 1, height: 18, borderRadius: 999, overflow: 'hidden', background: 'var(--bg-input)' }}>
-                <div style={{ display: 'flex', gap: 2, width: '100%', height: '100%' }}>
-                  {SECTIONS.map((s, i) => {
-                    const t = totals[i]
-                    if (t === 0) return null
-                    const c = countSectionChecks(s.key, t)
-                    const segPct = (c / t) * 100
-                    const widthPct = (t / totalAll) * 100
-                    return (
-                      <div key={s.key} style={{ width: widthPct + '%', height: '100%', background: 'var(--bg-input)' }} title={`${s.label} ${c}/${t}`}>
-                        <div style={{ width: segPct + '%', height: '100%', background: 'var(--accent)', transition: 'width var(--d-base) var(--ease-out)' }} />
-                      </div>
-                    )
-                  })}
-                </div>
-                <span
-                  className="tnum"
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 'var(--t-xs)',
-                    fontWeight: 600,
-                    color: 'var(--fg-strong)',
-                    textShadow: '0 1px 2px rgba(0,0,0,.45)',
-                    pointerEvents: 'none',
-                  }}
-                >
-                  {pctAll}%
-                </span>
-              </div>
-              <span className="tnum" style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)', minWidth: 56, textAlign: 'right' }}>
+              <span
+                className="tnum"
+                style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: 'var(--fg-strong)' }}
+              >
                 {checkedAll} / {totalAll}
               </span>
             </div>
-            <div className="tp-section-chips" style={{ display: 'flex', gap: 6 }}>
+            {/* The section chips fill the middle of the top row now. The
+                progress bar used to share it, which left both cramped once a
+                plan carried five sections — see the bar row below. They are a
+                single scrolling line, never a wrapping block: wrapping turned
+                the sticky bar into a three-line tower at 700px, which is worse
+                than the crowding it was meant to fix. `.tp-section-chips`
+                carries the overflow rules. */}
+            <div className="tp-section-chips">
               {SECTIONS.map((s, i) => {
                 const t = totals[i]
                 if (t === 0) return null
@@ -2164,6 +2162,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                       fontSize: 'var(--t-xs)',
                       fontWeight: 500,
                       textDecoration: 'none',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     <span className="tnum">{c}/{t}</span>
@@ -2292,6 +2291,62 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                   </>
                 )
               })()}
+            </div>
+          </div>
+
+          {/* The bar gets a line of its own. Sharing the top row with the
+              section chips squeezed it to a stub on a five-section plan and
+              off the row entirely on a narrow window — which is also why the
+              chips used to be hidden under 1024px. Full width, the segments
+              stay proportional and readable at any size. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginTop: 8 }}>
+            <span
+              className="tnum"
+              style={{
+                fontSize: 'var(--t-sm)',
+                fontWeight: 700,
+                color: progressColor(pctAll),
+                minWidth: 38,
+                flexShrink: 0,
+              }}
+            >
+              {pctAll}%
+            </span>
+            <div
+              style={{
+                display: 'flex',
+                gap: 2,
+                flex: 1,
+                minWidth: 0,
+                height: 8,
+                borderRadius: 999,
+                overflow: 'hidden',
+                background: 'var(--line)',
+              }}
+            >
+              {SECTIONS.map((s, i) => {
+                const t = totals[i]
+                if (t === 0) return null
+                const c = countSectionChecks(s.key, t)
+                const segPct = (c / t) * 100
+                const widthPct = (t / totalAll) * 100
+                return (
+                  <div
+                    key={s.key}
+                    style={{ width: widthPct + '%', height: '100%', background: 'var(--line)' }}
+                    title={`${s.label} ${c}/${t}`}
+                  >
+                    <div
+                      style={{
+                        width: segPct + '%',
+                        height: '100%',
+                        background: 'var(--accent)',
+                        transition: 'width var(--d-base) var(--ease-out)',
+                      }}
+                    />
+                  </div>
+                )
+              })}
             </div>
           </div>
 

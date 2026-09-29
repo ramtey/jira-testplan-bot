@@ -3312,6 +3312,25 @@ button:disabled {
   .jira-browser--collapsed { width: 100%; height: 36px; }
 }
 
-@media (max-width: 1024px) {
-  .tp-section-chips { display: none !important; }
+/* Section chips in the sticky test-plan bar. They used to vanish under
+   1024px — a reader on a laptop lost the per-section counts entirely. Now the
+   progress bar has its own line below the row, so the chips get the middle of
+   the row and keep it at every width: one line that scrolls sideways when it
+   runs out of room, never a wrapping stack (wrapping made the sticky bar three
+   rows tall at 700px). A half-visible chip at the edge is the scroll hint. */
+.tp-section-chips {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  /* Fades the right edge so a cut-off chip reads as "more this way" rather
+     than as a chip that happens to be clipped. The chips are left-aligned, so
+     when they all fit the fade lands on empty space and shows nothing. */
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
 }
+.tp-section-chips::-webkit-scrollbar { display: none; }
