@@ -311,6 +311,23 @@ const formatGroundingWarnings = (plan) => {
   return md
 }
 
+// Every flagged case in the comment says "See UI Grounding Warnings." — so the
+// comment has to carry the section, or the pointer leads nowhere. It used to be
+// rendered only in the markdown export (plans 544, 548 and 550 posted 11, 4 and
+// 3 warnings that no Jira reader ever saw). A ⚠️ heading, not the markdown's 🔍:
+// the ADF builder splits sections on 🔍, and this is not a case section.
+const formatGroundingWarningsJira = (plan) => {
+  const list = Array.isArray(plan.grounding_warnings) ? plan.grounding_warnings : []
+  if (list.length === 0) return ''
+  let jira = `⚠️ UI GROUNDING WARNINGS (${list.length})\n\n`
+  jira += 'Test steps reference these UI elements, but they could not be verified in the PR diff or testID reference. Confirm they exist before running the cases that name them.\n\n'
+  list.forEach((w) => {
+    jira += `  • \`${w.ac_id}\` — ${w.missing_element}: ${w.explanation}\n`
+  })
+  jira += '\n'
+  return jira
+}
+
 // Pull together the LLM's "how to see it" orientation and the planner's
 // walkthrough (Loom / screenshot / notes) into one normalized shape. Returns
 // null when there's nothing worth showing, so callers can skip the section.
@@ -929,6 +946,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
 
   jira += formatUatGuideJira(plan, walkthrough)
   jira += formatProvenanceJira(plan)
+  jira += formatGroundingWarningsJira(plan)
 
   const happyPathCases = uncovered(plan.happy_path)
   if (happyPathCases.length > 0) {

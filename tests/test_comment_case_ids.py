@@ -263,3 +263,56 @@ def test_the_security_category_comes_back_on_its_own_field(tmp_path):
     assert [c.get("category") for c in adopted["edge_cases"]] == [
         "error_handling", "boundary", "error_handling", "boundary",
     ]
+
+
+# SK-2630 / plan 545: covered cases in the *middle* of a section, uncovered ones
+# after them. PLAN above only has covered cases at section ends, so it could not
+# tell "index among uncovered cases" from "raw position in the body" — and the
+# raw reading is what put `edge_cases:12` into plan 545's progress row.
+SK_2630_PLAN = {
+    "happy_path": [{"title": "Owner shares a file"}],
+    "edge_cases": [
+        {"title": "Empty OwnerId is rejected", "category": "error_handling"},
+        {"title": "Invite rejects blank OwnerId", "covered_by_unit_test": True},
+        {"title": "Share list with many recipients resolves", "category": "boundary"},
+    ],
+    "integration_tests": [
+        {"title": "Authorizer admits a scoped grantee", "covered_by_unit_test": True},
+        {"title": "Revoked grantee gets 403"},
+    ],
+    "regression_checklist": ["Existing shares still open"],
+    "security_negative_tests": [{"title": "Anonymous caller cannot list shares"}],
+    "grounding_warnings": [
+        {
+            "ac_id": "AC-2",
+            "missing_element": "Share recipients panel",
+            "explanation": "No testID for the panel appears in the PR diff.",
+        }
+    ],
+}
+
+
+def test_a_case_after_a_covered_one_is_printed_with_its_uncovered_index(tmp_path):
+    text = _render(SK_2630_PLAN, tmp_path)
+    line = next(l for l in text.splitlines() if "many recipients" in l)
+    assert "[edge_cases:1]" in line, "raw position 2, but the second uncovered case"
+    line = next(l for l in text.splitlines() if "Revoked grantee" in l)
+    assert "[integration_tests:0]" in line
+
+
+def test_the_sk_2630_shape_round_trips_to_the_same_key(tmp_path):
+    adopted = _adopt(SK_2630_PLAN, tmp_path)
+    assert build_progress_key(["SK-2630"], json.dumps(adopted)) == build_progress_key(
+        ["SK-2630"], json.dumps(SK_2630_PLAN)
+    )
+
+
+def test_the_grounding_warnings_a_case_points_to_are_in_the_comment(tmp_path):
+    """Flagged cases say "See UI Grounding Warnings." The section has to exist."""
+    plan = json.loads(json.dumps(SK_2630_PLAN))
+    plan["happy_path"][0]["needs_manual_verification"] = True
+    text = _render(plan, tmp_path)
+    assert "See UI Grounding Warnings" in text
+    assert "UI GROUNDING WARNINGS (1)" in text
+    assert "Share recipients panel" in text
+    assert text.index("UI GROUNDING WARNINGS") < text.index("HAPPY PATH")

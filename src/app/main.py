@@ -1057,8 +1057,40 @@ async def put_test_plan_progress(
     progress_key: str, request: TestPlanProgressUpdateRequest
 ):
     """Create or replace the shared checked-case set for a plan. The client sends
-    the full set each save, so an empty list clears all checks."""
+    the full set each save, so an empty list clears all checks.
+
+    An id outside the key's id space is refused with 422 and named, rather than
+    stored where nothing renders it (SK-2630: raw body indices were written and
+    accepted). Ids the row *already* holds are let through: the browser echoes
+    the whole stored set on every toggle, so refusing an old stray would make
+    the row unsaveable from the UI — and deleting it would destroy the only
+    record of what the tester meant to mark.
+    """
     db = get_db()
+    space = progress_key_service.id_space_for_key(progress_key)
+    if space is not None:
+        requested = {c for c in request.checked_ids if isinstance(c, str)}
+        unknown = requested - space
+        if unknown:
+            existing = await test_plan_progress_repository.get_progress(
+                db, progress_key=progress_key
+            )
+            try:
+                stored = set(json.loads(existing.checked_ids)) if existing else set()
+            except (TypeError, ValueError):
+                stored = set()
+            unknown -= stored
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "unknown_case_ids",
+                    "message": "These ids name no case in a plan of this shape. "
+                    "Use the id printed beside each case, or the case_ids from "
+                    "GET /plans/{id}/progress-key — not a position in the plan body.",
+                    "unknown_ids": sorted(unknown),
+                },
+            )
     row = await test_plan_progress_repository.upsert_progress(
         db,
         progress_key=progress_key,

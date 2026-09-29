@@ -38,6 +38,7 @@ from src.app.services.progress_key import (
     build_progress_key,
     case_index,
     fingerprint,
+    id_space_for_key,
     legacy_fingerprints,
 )
 
@@ -512,3 +513,147 @@ class TestSecuritySectionFingerprint:
 
     def test_the_section_is_a_valid_id_namespace(self):
         assert "security_negative_tests" in ALL_SECTION_KEYS
+
+
+# ---------------------------------------------------------------------------
+# SK-2630, plan 545: raw body indices written as case ids.
+#
+# The canonical id is the index among a section's *uncovered* cases (covered
+# ones move to `covered_by_unit_test:<n>`). Plan 545 had covered cases at raw
+# `edge_cases[5]`, `[10]` and `integration_tests[10]`, so raw `edge_cases[12]`
+# is `edge_cases:10`. Something marked by raw position anyway, wrote
+# `edge_cases:12`, `:13` and `integration_tests:10` — names no case has — and
+# PUT stored them. A bug report then read `case_ids` against the raw arrays and
+# called the *id list* wrong. These pin the id rule against both readings.
+# ---------------------------------------------------------------------------
+
+
+def _sk_2630_shape() -> dict:
+    """Plan 545 reduced to its shape: 6/14/11/12/12 raw, covered at e5, e10, i10."""
+    def cases(prefix, n, covered=()):
+        return [
+            {"title": f"{prefix} {i}", **({"covered_by_unit_test": True} if i in covered else {})}
+            for i in range(n)
+        ]
+    return {
+        "happy_path": cases("happy", 6),
+        "edge_cases": cases("edge", 14, covered={5, 10}),
+        "integration_tests": cases("integration", 11, covered={10}),
+        "regression_checklist": [f"regression {i}" for i in range(12)],
+        "security_negative_tests": cases("security", 12),
+    }
+
+
+def test_the_sk_2630_fingerprint_is_uncovered_counts_then_covered_then_security():
+    assert fingerprint(_sk_2630_shape()) == "6-12-10-12-3-12"
+
+
+def test_a_case_after_a_covered_one_takes_its_uncovered_index_not_its_raw_one():
+    index = case_index(_sk_2630_shape())
+    assert index["edge_cases:10"]["title"] == "edge 12"
+    assert index["edge_cases:11"]["title"] == "edge 13"
+    assert index["integration_tests:9"]["title"] == "integration 9"
+    for raw_id in ("edge_cases:12", "edge_cases:13", "integration_tests:10"):
+        assert raw_id not in index, f"{raw_id} is a raw position, not a case id"
+
+
+def test_covered_cases_are_addressed_once_and_name_where_they_came_from():
+    """They sit in a namespace of their own and nowhere else — the same case is
+    never reachable under two ids."""
+    index = case_index(_sk_2630_shape())
+    covered = {k: v for k, v in index.items() if k.startswith("covered_by_unit_test:")}
+    assert [(v["title"], v["origin_section"]) for v in covered.values()] == [
+        ("edge 5", "edge_cases"),
+        ("edge 10", "edge_cases"),
+        ("integration 10", "integration_tests"),
+    ]
+    titles = [v["title"] for v in index.values()]
+    assert len(titles) == len(set(titles))
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        _sk_2630_shape(),
+        {"happy_path": [{"title": "a"}], "edge_cases": [{"title": "b"}]},
+        {"integration_tests": [{"title": "c", "covered_by_unit_test": True}]},
+        {"security_negative_tests": [{"title": "d"}]},
+        {"happy_path": [{"title": "e", "covered_by_unit_test": True}],
+         "security_negative_tests": [{"title": "f"}, {"title": "g"}]},
+    ],
+)
+def test_the_key_alone_yields_exactly_the_plans_id_space(plan):
+    """PUT validates from the key, the UI and comment print from `case_index`;
+    if these ever disagree, a valid mark is refused or a bogus one stored."""
+    key = build_progress_key(["SK-1"], plan)
+    assert id_space_for_key(key) == set(case_index(plan))
+
+
+def test_a_key_with_no_fingerprint_has_no_id_space():
+    assert id_space_for_key("SK-1:not-a-shape") is None
+
+
+def _put_client(monkeypatch, stored):
+    from fastapi.testclient import TestClient
+    from src.app import main
+
+    class _Row:
+        def __init__(self, key, ids):
+            self.progress_key = key
+            self.checked_ids = json.dumps(ids)
+            self.updated_at = None
+
+    async def fake_get_progress(_db, *, progress_key):
+        k = progress_key.upper()
+        return _Row(k, stored[k]) if k in stored else None
+
+    async def fake_upsert(_db, *, progress_key, checked_ids):
+        stored[progress_key.upper()] = sorted(set(checked_ids))
+        return _Row(progress_key.upper(), stored[progress_key.upper()])
+
+    monkeypatch.setattr(main.test_plan_progress_repository, "get_progress", fake_get_progress)
+    monkeypatch.setattr(main.test_plan_progress_repository, "upsert_progress", fake_upsert)
+    monkeypatch.setattr(main, "get_db", lambda: object())
+    return TestClient(main.app)
+
+
+SK_2630_KEY = "SK-2630:6-12-10-12-3-12"
+
+
+def test_put_refuses_raw_positions_and_names_them(monkeypatch):
+    stored: dict = {}
+    c = _put_client(monkeypatch, stored)
+    r = c.put(
+        f"/test-plan-progress/{SK_2630_KEY}",
+        json={"checked_ids": ["edge_cases:11", "edge_cases:12", "integration_tests:10"]},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["unknown_ids"] == ["edge_cases:12", "integration_tests:10"]
+    assert stored == {}, "a refused save must write nothing, not the valid half"
+
+
+def test_put_accepts_every_canonical_id(monkeypatch):
+    stored: dict = {}
+    c = _put_client(monkeypatch, stored)
+    ids = sorted(case_index(_sk_2630_shape()))
+    r = c.put(f"/test-plan-progress/{SK_2630_KEY}", json={"checked_ids": ids})
+    assert r.status_code == 200
+    assert stored[SK_2630_KEY] == ids
+
+
+def test_put_lets_an_already_stored_stray_through(monkeypatch):
+    """The browser echoes the whole stored set on every toggle. Refusing the
+    strays SK-2630 already holds would make that row unsaveable from the UI."""
+    stored = {SK_2630_KEY: ["edge_cases:12", "happy_path:0"]}
+    c = _put_client(monkeypatch, stored)
+    r = c.put(
+        f"/test-plan-progress/{SK_2630_KEY}",
+        json={"checked_ids": ["edge_cases:12", "happy_path:0", "happy_path:1"]},
+    )
+    assert r.status_code == 200
+    r = c.put(
+        f"/test-plan-progress/{SK_2630_KEY}",
+        json={"checked_ids": ["edge_cases:12", "edge_cases:13"]},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["unknown_ids"] == ["edge_cases:13"]

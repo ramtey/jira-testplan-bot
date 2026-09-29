@@ -66,6 +66,7 @@ land on a different set of cases — but it is no longer silent, and
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 # Order matters: the fingerprint is these four counts joined by "-".
@@ -213,6 +214,40 @@ def build_progress_key(ticket_keys: list[str], body: Any) -> str:
     """
     tickets = "+".join(k.upper() for k in ticket_keys if k)
     return f"{tickets}:{fingerprint(body)}"
+
+
+# The order the fingerprint's parts appear in — NOT the render order. Covered
+# precedes security because it was appended first; see `fingerprint`.
+_FINGERPRINT_PARTS = SECTION_KEYS + (COVERED_KEY, SECURITY_KEY)
+_FINGERPRINT_RE = re.compile(r"^\d+(?:-\d+){3,5}$")
+
+
+def id_space_for_key(progress_key: str) -> frozenset[str] | None:
+    """Every case id a progress row under ``progress_key`` can meaningfully hold.
+
+    The fingerprint is the section sizes, so the id space follows from the key
+    alone — no plan lookup, and it is the same answer ``case_index`` gives for
+    any plan with that shape. This is what lets ``PUT /test-plan-progress``
+    refuse an id that names no case.
+
+    SK-2630 is why it exists. Plan 545 had covered cases at raw positions
+    ``edge_cases[5]``, ``[10]`` and ``integration_tests[10]``; something marked
+    it by raw body index instead of by the printed id, wrote ``edge_cases:12``,
+    ``edge_cases:13`` and ``integration_tests:10``, and the endpoint stored all
+    three without complaint. Those names exist nowhere in the plan, and every
+    in-range raw index past a covered case lands one slot off.
+
+    Returns None for a key with no parseable fingerprint.
+    """
+    fp = progress_key.rsplit(":", 1)[-1]
+    if not _FINGERPRINT_RE.match(fp):
+        return None
+    counts = [int(n) for n in fp.split("-")]
+    return frozenset(
+        f"{section}:{i}"
+        for section, n in zip(_FINGERPRINT_PARTS, counts)
+        for i in range(n)
+    )
 
 
 def legacy_fingerprints(body: Any) -> list[str]:
