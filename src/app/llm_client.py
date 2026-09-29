@@ -22,6 +22,7 @@ from .config import settings
 from .confluence_client import ConfluenceClient, ConfluencePage
 from .copy_only import detect_copy_only, render_copy_only_guidance
 from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
+from .diff_budget import allocate_patch_budget, omitted_note
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
     output_budget,
@@ -2196,23 +2197,26 @@ class LLMClient(ABC):
 
         files_summary_lines: list[str] = []
         patch_blocks: list[str] = []
-        remaining_budget = total_patch_char_budget
         for fc in files_changed or []:
             filename = (fc.get("filename") or "").strip() or "?"
             status = (fc.get("status") or "").strip() or "modified"
             adds = fc.get("additions") or 0
             dels = fc.get("deletions") or 0
             files_summary_lines.append(f"- [{status}] {filename} (+{adds} / −{dels})")
-            patch = fc.get("patch")
-            if not patch or remaining_budget <= 0:
-                continue
-            snippet = patch.strip()
-            if len(snippet) > per_patch_char_budget:
-                snippet = snippet[:per_patch_char_budget] + "\n… (patch truncated)"
-            if len(snippet) > remaining_budget:
-                snippet = snippet[:remaining_budget] + "\n… (patch truncated)"
-            remaining_budget -= len(snippet)
-            patch_blocks.append(f"--- {filename} ---\n{snippet}")
+        # Patches are budgeted together, below, so every changed file gets a
+        # slice rather than the first few taking all of it.
+
+        budgeted = allocate_patch_budget(
+            files_changed or [],
+            total_budget=total_patch_char_budget,
+            per_file_cap=per_patch_char_budget,
+        )
+        for filename, snippet, was_cut in budgeted:
+            body = snippet.strip() + ("\n… (patch truncated)" if was_cut else "")
+            patch_blocks.append(f"--- {filename} ---\n{body}")
+        note = omitted_note(files_changed or [], budgeted)
+        if note:
+            patch_blocks.append(note)
 
         patch_section = "\n\n".join(patch_blocks) if patch_blocks else "(no source diffs were captured for this PR)"
 
@@ -2354,23 +2358,17 @@ class LLMClient(ABC):
                             files_with_patches = [f for f in sorted_files if f.get("patch")]
                             if files_with_patches:
                                 prompt += "\nCode diffs (use these to identify root cause and explain the fix):\n"
-                                total_chars = 0
-                                MAX_TOTAL = 16000
-                                MAX_PER_FILE = 4000
-                                for fc in files_with_patches:
-                                    if total_chars >= MAX_TOTAL:
-                                        break
-                                    patch = fc.get("patch", "")
-                                    fname = fc.get("filename", "unknown")
-                                    if len(patch) > MAX_PER_FILE:
-                                        patch = patch[:MAX_PER_FILE] + "\n...(truncated)"
-                                    remaining = MAX_TOTAL - total_chars
-                                    if len(patch) > remaining:
-                                        patch = patch[:remaining] + "\n...(truncated)"
+                                budgeted = allocate_patch_budget(
+                                    files_with_patches, total_budget=16000, per_file_cap=4000)
+                                for fname, patch, was_cut in budgeted:
+                                    if was_cut:
+                                        patch += "\n...(truncated)"
                                     prompt += f"\n--- {fname} ---\n"
                                     for line in patch.split("\n"):
                                         prompt += f"  {line}\n"
-                                    total_chars += len(patch)
+                                note = omitted_note(files_with_patches, budgeted)
+                                if note:
+                                    prompt += f"\n{note}\n"
 
                         pr_comments = pr.get("comments")
                         if pr_comments:
@@ -3069,23 +3067,17 @@ TICKET INFORMATION
                         files_with_patches = [f for f in sorted_files if f.get('patch')]
                         if files_with_patches:
                             prompt += "\n  📋 Key Code Changes (runtime files only):\n"
-                            total_patch_chars = 0
-                            MAX_TOTAL = 16000
-                            MAX_PER_FILE = 4000
-                            for fc in files_with_patches:
-                                if total_patch_chars >= MAX_TOTAL:
-                                    break
-                                patch = fc.get('patch', '')
-                                fname = fc.get('filename', 'unknown')
-                                if len(patch) > MAX_PER_FILE:
-                                    patch = patch[:MAX_PER_FILE] + "\n     ...(truncated)"
-                                remaining = MAX_TOTAL - total_patch_chars
-                                if len(patch) > remaining:
-                                    patch = patch[:remaining] + "\n     ...(truncated)"
+                            budgeted = allocate_patch_budget(
+                                files_with_patches, total_budget=16000, per_file_cap=4000)
+                            for fname, patch, was_cut in budgeted:
+                                if was_cut:
+                                    patch += "\n     ...(truncated)"
                                 prompt += f"\n  --- {fname} ---\n"
                                 for line in patch.split('\n'):
                                     prompt += f"  {line}\n"
-                                total_patch_chars += len(patch)
+                            note = omitted_note(files_with_patches, budgeted)
+                            if note:
+                                prompt += f"\n  {note}\n"
                             prompt += "\n  ⚠️ REQUIRED: Read these diffs carefully and generate test cases for every new behaviour they introduce — especially new data sources, new fields, new API calls, and new conditional logic.\n"
                             prompt += "  ⚠️ REQUIRED: For every API endpoint, handler, or shared helper modified above, enumerate OTHER plausible callers/surfaces that hit the same code (see 'API SURFACE PARITY' below). A diff-only view will not show sibling callers in unmodified files — name them explicitly and generate a test per surface. If a sibling surface is plausible but unverifiable in the diff, write the test against the user-facing flow AND add a `grounding_warning` entry.\n"
 
@@ -3412,22 +3404,17 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                         if files_with_patches:
                             prompt += "\n  📋 Key Code Changes:\n"
                             total_patch_chars = 0
-                            MAX_TOTAL = 8000
-                            MAX_PER_FILE = 2000
-                            for fc in files_with_patches:
-                                if total_patch_chars >= MAX_TOTAL:
-                                    break
-                                patch = fc.get("patch", "")
-                                fname = fc.get("filename", "unknown")
-                                if len(patch) > MAX_PER_FILE:
-                                    patch = patch[:MAX_PER_FILE] + "\n     ...(truncated)"
-                                remaining = MAX_TOTAL - total_patch_chars
-                                if len(patch) > remaining:
-                                    patch = patch[:remaining] + "\n     ...(truncated)"
+                            budgeted = allocate_patch_budget(
+                                files_with_patches, total_budget=8000, per_file_cap=2000)
+                            for fname, patch, was_cut in budgeted:
+                                if was_cut:
+                                    patch += "\n     ...(truncated)"
                                 prompt += f"\n  --- {fname} ---\n"
                                 for line in patch.split("\n"):
                                     prompt += f"  {line}\n"
-                                total_patch_chars += len(patch)
+                            note = omitted_note(files_with_patches, budgeted)
+                            if note:
+                                prompt += f"\n  {note}\n"
                             prompt += "\n  ⚠️ REQUIRED: Read these diffs and generate test cases for every new behaviour introduced.\n"
                             prompt += "  ⚠️ REQUIRED: For every API endpoint or shared helper modified above, enumerate OTHER plausible callers/surfaces (see 'API SURFACE PARITY' below) and generate a test per surface. Sibling callers in unmodified files will NOT appear in the diff — name them explicitly. If a sibling is plausible but unverifiable, add a `grounding_warning` entry.\n"
 
