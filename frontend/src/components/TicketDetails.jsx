@@ -425,15 +425,17 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
   const [isDescriptionOpen, setIsDescriptionOpen] = useState(false)
   const [keyCopied, setKeyCopied] = useState(false)
 
-  const copyTicketKey = async () => {
-    const key = ticketData.key
+  const copyTicketLink = async () => {
+    // The link is what people paste into Slack or a PR; fall back to the bare
+    // key only when no Jira base URL is configured.
+    const text = jiraTicketUrl || ticketData.key
     try {
-      await navigator.clipboard.writeText(key)
+      await navigator.clipboard.writeText(text)
     } catch {
       // Clipboard API blocked (insecure context / permissions) — fall back
       // to an off-screen textarea so the copy still lands.
       const ta = document.createElement('textarea')
-      ta.value = key
+      ta.value = text
       ta.setAttribute('readonly', '')
       ta.style.position = 'fixed'
       ta.style.opacity = '0'
@@ -545,9 +547,9 @@ function TicketDetails({ ticketData, isDescriptionExpanded, onToggleDescription,
             <button
               type="button"
               className="tc-copy-btn"
-              onClick={copyTicketKey}
-              title={keyCopied ? 'Copied' : 'Copy ticket number'}
-              aria-label={keyCopied ? 'Copied ticket number' : 'Copy ticket number'}
+              onClick={copyTicketLink}
+              title={keyCopied ? 'Copied' : 'Copy ticket link'}
+              aria-label={keyCopied ? 'Copied ticket link' : 'Copy ticket link'}
               data-copied={keyCopied ? 'true' : 'false'}
               style={{ width: 14, height: 14 }}
             >
