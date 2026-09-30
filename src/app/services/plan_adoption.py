@@ -660,10 +660,28 @@ async def _select(
         else None
     )
     named_is_pointer = named is not None and _kind(named) is PlanCommentKind.pointer
-    has_own_plan = any(_is_plan_comment(c) for c in comments)
+    hosted_batch = [c for c in comments if _kind(c) is PlanCommentKind.batch]
+    # The batch plan this ticket hosts is not its own plan. Adopted from here it
+    # would become a one-ticket run over a plan written for several, recorded
+    # in the single slot — and the batch comment does not name the tickets it
+    # covers, so there is no way to build the right run from the host alone.
+    # The pointers on the covered tickets do name them.
+    if (named is not None and _kind(named) is PlanCommentKind.batch) or (
+        comment_id is None
+        and hosted_batch
+        and not any(_is_plan_comment(c) for c in comments if c not in hosted_batch)
+        and not any(_kind(c) is PlanCommentKind.pointer for c in comments)
+    ):
+        raise PlanAdoptionError(
+            f"Comment {(named or hosted_batch[-1]).get('id')} is the batch test plan "
+            f"{key} hosts, not {key}'s own plan — adopt it from one of the other "
+            "tickets it covers, whose pointer names the whole batch"
+        )
+    own_comments = [c for c in comments if c not in hosted_batch]
+    has_own_plan = any(_is_plan_comment(c) for c in own_comments)
 
     if (named is not None and not named_is_pointer) or (comment_id is None and has_own_plan):
-        return _own_selection(comments, comment_id, key, allow_incomplete)
+        return _own_selection(own_comments, comment_id, key, allow_incomplete)
 
     pointers = [named] if named_is_pointer else [
         c for c in comments if _kind(c) is PlanCommentKind.pointer

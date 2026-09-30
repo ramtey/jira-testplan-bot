@@ -941,3 +941,43 @@ async def test_a_batch_is_adopted_once(batched_tickets, db):
     await plan_adoption.commit("SK-2332")
     with pytest.raises(PlanAdoptionError, match="already has a stored plan"):
         await plan_adoption.commit("SK-2332")
+
+
+# --- The host's own adoption ------------------------------------------------
+#
+# On the host, `{}` used to take the newest plan-bearing comment. When the host
+# had no plan of its own stored, that was the batch comment, adopted as a
+# one-ticket run in the single slot: a plan for several tickets checked off
+# against one. The batch comment names none of its tickets, so the host cannot
+# build the right run itself.
+
+
+@pytest.mark.asyncio
+async def test_the_host_adopts_its_own_plan_not_the_newer_batch(batched_tickets):
+    from src.app.services import plan_adoption
+
+    result = await plan_adoption.preview("SK-2331")
+
+    assert result["comment_ids"] == ["334107"]
+    assert result["ticket_keys"] == ["SK-2331"]
+
+
+@pytest.mark.asyncio
+async def test_a_host_with_only_the_batch_plan_is_sent_to_a_covered_ticket(
+    batched_tickets,
+):
+    from src.app.services import plan_adoption
+
+    _TicketStubJira.by_ticket["SK-2331"] = [
+        c for c in _TicketStubJira.by_ticket["SK-2331"] if c["id"] == "334109"
+    ]
+    with pytest.raises(PlanAdoptionError, match="batch test plan SK-2331 hosts"):
+        await plan_adoption.preview("SK-2331")
+
+
+@pytest.mark.asyncio
+async def test_naming_the_hosted_batch_on_the_host_is_refused(batched_tickets):
+    from src.app.services import plan_adoption
+
+    with pytest.raises(PlanAdoptionError, match="batch test plan SK-2331 hosts"):
+        await plan_adoption.preview("SK-2331", "334109")
