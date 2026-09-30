@@ -101,16 +101,32 @@ function App() {
   const testPlan = useTestPlan(restoringKeys)
   const bugLens = useBugLens()
 
-  // Titles of the main-change cases surfaced as a "steps to cover in the video"
-  // dropdown inside the Pass-to-UAT form (WorkflowActions). Sourced from the
-  // plan's happy_path (the flows that make the change observable), capped so
-  // the dropdown stays a scannable checklist, not a wall of text.
+  // Titles of the cases the UAT screen recording covers, surfaced as a "steps
+  // to cover in the video" checklist inside the Pass-to-UAT form
+  // (WorkflowActions).
+  //
+  // The server owns this selection now (src/app/video_walkthrough.py) and
+  // ships it on the plan as `video_walkthrough`. It used to be derived right
+  // here from happy_path titles capped at six, which meant the UAT runner — a
+  // separate agent on the other side of the API — could not read it and would
+  // have had to re-derive the rule from scratch. Same failure the progress key
+  // had. The server caps by a ~40-step budget rather than a case count,
+  // because cases run 1-16 steps so a count does not bound video length.
+  //
+  // The happy_path branch is only for plans generated before the field existed
+  // and reloaded out of run history; anything generated now takes the first.
   const videoChecklistSteps = useMemo(() => {
+    const chapters = testPlan.plan?.video_walkthrough?.chapters
+    if (Array.isArray(chapters)) {
+      return chapters
+        .map((c) => (c && typeof c.title === 'string' ? c.title.trim() : ''))
+        .filter(Boolean)
+    }
     const items = Array.isArray(testPlan.plan?.happy_path) ? testPlan.plan.happy_path : []
-    const titles = items
+    return items
       .map((t) => (t && typeof t.title === 'string' ? t.title.trim() : ''))
       .filter(Boolean)
-    return titles.slice(0, 6)
+      .slice(0, 6)
   }, [testPlan.plan])
 
   // Scroll refs for auto-scrolling to results

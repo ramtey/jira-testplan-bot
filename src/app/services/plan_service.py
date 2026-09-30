@@ -79,6 +79,7 @@ from .test_plan_generator import (
 )
 from src.app.citation_integrity import flag_unconfirmed_citations
 from src.app.data_provisioning import flag_unactionable_data_asks
+from src.app.video_walkthrough import build_walkthrough
 
 logger = logging.getLogger(__name__)
 
@@ -667,6 +668,11 @@ async def generate_single(
             "risks_and_gaps": test_plan.risks_and_gaps or [],
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
+            # Which happy-path cases the UAT screen recording covers, and where
+            # its chapters fall. Computed here so the plan carries one answer:
+            # the Pass-to-UAT checklist used to derive its own in the browser,
+            # which the UAT runner (a separate agent on this API) could not see.
+            "video_walkthrough": build_walkthrough(test_plan.happy_path),
             "source_provenance": provenance,
         }
 
@@ -978,6 +984,11 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             "risks_and_gaps": test_plan.risks_and_gaps or [],
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
+            # Which happy-path cases the UAT screen recording covers, and where
+            # its chapters fall. Computed here so the plan carries one answer:
+            # the Pass-to-UAT checklist used to derive its own in the browser,
+            # which the UAT runner (a separate agent on this API) could not see.
+            "video_walkthrough": build_walkthrough(test_plan.happy_path),
             "source_provenance": provenance,
             # Which ticket will carry the plan comment. Sent so the browser can
             # say where it is going before anyone posts, rather than the tester

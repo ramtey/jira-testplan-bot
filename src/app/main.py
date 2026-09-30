@@ -63,6 +63,7 @@ from .services.test_plan_generator import (
 )
 from .token_service import token_health_service
 from . import uat_readiness
+from . import video_walkthrough
 from .workflow_routes import router as workflow_router
 
 # Backward-compat aliases — tests import these underscored names from
@@ -968,6 +969,40 @@ async def get_plan_progress_key(plan_id: int):
         # The full id space, so anything writing progress can validate an id
         # against the plan instead of against a count it worked out by hand.
         "case_ids": list(progress_key_service.case_index(plan.body)),
+    }
+
+
+@app.get("/plans/{plan_id}/video-walkthrough")
+async def get_plan_video_walkthrough(plan_id: int):
+    """Which happy-path cases the UAT screen recording should cover.
+
+    Same reason the progress key has an endpoint: one producer. The
+    Pass-to-UAT form used to derive this list in the browser from
+    ``plan.happy_path``, which meant the UAT runner — a separate agent on the
+    other side of this API — had no way to read it and would have had to
+    re-derive the rule. Two derivations of the same rule drift, and nothing
+    catches it.
+
+    Plans generated before the field existed are recomputed from their stored
+    ``happy_path`` rather than reported as having no walkthrough.
+    """
+    db = get_db()
+    result = await plan_repository.get_plan_with_cases(db, plan_id=plan_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    plan, _cases = result
+    try:
+        body = json.loads(plan.body) if plan.body else None
+    except (ValueError, TypeError):
+        body = None
+    walkthrough = video_walkthrough.walkthrough_from_plan_body(body)
+    return {
+        "plan_id": plan.id,
+        # The plain-language orientation the planner already generates for a
+        # tester who will not read the plan. It is the video's intro line.
+        "how_to_see_it": (body or {}).get("how_to_see_it"),
+        "uat_complexity": (body or {}).get("uat_complexity"),
+        **walkthrough,
     }
 
 

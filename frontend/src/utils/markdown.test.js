@@ -92,3 +92,78 @@ test('an empty data_shape object is treated as absent', () => {
   const md = formatTestPlanAsMarkdown(planWith({ data_shape: {} }), TICKET)
   assert.ok(!md.includes('Data shape'))
 })
+
+/**
+ * The UAT video plan, as it reaches a reader.
+ *
+ * The PM watches the recording and does not read the plan, so the comment has
+ * to say what the video covers. Two things are load-bearing and pinned here:
+ * the chapter markers (a chapter starts where the precondition changes — only
+ * 47 of 297 plans share one setup across every happy case, so an unmarked
+ * state reset reads as a glitch), and the truncation notice (silently dropping
+ * the tail would leave a reader thinking the video covered the whole flow).
+ *
+ * The selection itself is the server's (src/app/video_walkthrough.py); these
+ * tests cover the rendering only.
+ */
+
+const videoPlan = (overrides = {}) => ({
+  happy_path: [], edge_cases: [], regression_checklist: [],
+  video_walkthrough: {
+    chapters: [
+      { case_id: 'happy_path:0', title: 'Agent upgrades', steps: 3, starts_chapter: true },
+      { case_id: 'happy_path:1', title: 'Receipt updates', steps: 2, starts_chapter: false },
+      { case_id: 'happy_path:2', title: 'Broker sees it', steps: 3, starts_chapter: true },
+    ],
+    estimated_seconds: 20,
+    truncated: false,
+    ...overrides,
+  },
+})
+
+test('the Jira comment lists what the video should cover', () => {
+  const jira = formatTestPlanAsJira(videoPlan())
+  assert.ok(jira.includes('VIDEO SHOULD COVER'))
+  assert.ok(jira.includes('Agent upgrades'))
+  assert.ok(jira.includes('Broker sees it'))
+})
+
+test('a precondition change is marked as a new chapter, a continuation is not', () => {
+  const jira = formatTestPlanAsJira(videoPlan())
+  assert.ok(jira.includes('▸ Agent upgrades'))
+  assert.ok(jira.includes('▸ Broker sees it'))
+  // The middle case shares the previous setup, so it must not claim a reset.
+  assert.ok(!jira.includes('▸ Receipt updates'))
+  assert.ok(jira.includes('Receipt updates'))
+})
+
+test('truncation is stated rather than left silent', () => {
+  const jira = formatTestPlanAsJira(videoPlan({ truncated: true }))
+  assert.ok(jira.includes('past the recording budget'))
+  assert.ok(!formatTestPlanAsJira(videoPlan()).includes('past the recording budget'))
+})
+
+test('the markdown export carries the same plan', () => {
+  const md = formatTestPlanAsMarkdown(videoPlan(), TICKET)
+  assert.ok(md.includes('Video should cover'))
+  assert.ok(md.includes('▸ Agent upgrades'))
+})
+
+test('a plan with no walkthrough renders no video section', () => {
+  const bare = { happy_path: [], edge_cases: [], regression_checklist: [] }
+  assert.ok(!formatTestPlanAsJira(bare).includes('VIDEO SHOULD COVER'))
+})
+
+test('an empty chapter list renders no video section', () => {
+  const jira = formatTestPlanAsJira(videoPlan({ chapters: [] }))
+  assert.ok(!jira.includes('VIDEO SHOULD COVER'))
+})
+
+test('a malformed walkthrough does not break the comment', () => {
+  for (const wt of [null, 'nope', 42, { chapters: 'not a list' }, { chapters: [null, {}] }]) {
+    const jira = formatTestPlanAsJira({
+      happy_path: [], edge_cases: [], regression_checklist: [], video_walkthrough: wt,
+    })
+    assert.ok(!jira.includes('VIDEO SHOULD COVER'))
+  }
+})

@@ -343,8 +343,44 @@ const collectUatGuide = (plan, walkthrough) => {
     }))
     .filter((s) => s.url)
   const notes = walkthrough?.notes?.trim() || ''
-  if (!summary && !reason && !loom && screenshots.length === 0 && !notes) return null
-  return { complexity, summary, reason, loom, screenshots, notes }
+  // What the UAT screen recording covers. Server-owned
+  // (src/app/video_walkthrough.py) so the Pass-to-UAT checklist, this comment
+  // and the UAT runner all describe the same recording.
+  const wt = plan?.video_walkthrough
+  const chapters = (Array.isArray(wt?.chapters) ? wt.chapters : [])
+    .map((c) => ({
+      title: typeof c?.title === 'string' ? c.title.trim() : '',
+      startsChapter: c?.starts_chapter === true,
+    }))
+    .filter((c) => c.title)
+  const videoSeconds = Number.isFinite(wt?.estimated_seconds) ? wt.estimated_seconds : 0
+  const videoTruncated = wt?.truncated === true
+  if (
+    !summary && !reason && !loom && screenshots.length === 0 && !notes &&
+    chapters.length === 0
+  ) return null
+  return {
+    complexity, summary, reason, loom, screenshots, notes,
+    chapters, videoSeconds, videoTruncated,
+  }
+}
+
+// The recording's running order. Chapter starts are the cases whose
+// precondition differs from the one before — that is where the app resets to a
+// different starting state on screen, and a viewer who is not told reads it as
+// a glitch. Only 47 of 297 plans share one precondition across every happy
+// case, so this is the normal shape, not an edge case.
+const formatVideoPlan = (g, { bullet, indent }) => {
+  if (g.chapters.length === 0) return ''
+  const mins = g.videoSeconds ? ` (~${Math.max(1, Math.round(g.videoSeconds / 60))} min)` : ''
+  let out = `🎬 ${bullet ? '**Video should cover**' : 'VIDEO SHOULD COVER'}${mins}:\n`
+  g.chapters.forEach((c) => {
+    out += c.startsChapter ? `${indent}▸ ${c.title}\n` : `${indent}  ${c.title}\n`
+  })
+  if (g.videoTruncated) {
+    out += `${indent}… later happy-path cases are past the recording budget — screenshots only.\n`
+  }
+  return `${out}\n`
 }
 
 // Markdown variant — prepended to the exported/downloaded plan.
@@ -357,6 +393,7 @@ const formatUatGuideMarkdown = (plan, walkthrough) => {
   if (g.summary) md += `${g.summary}\n\n`
   if (g.reason) md += `*Why it's tricky: ${g.reason}*\n\n`
   if (g.loom) md += `🎥 **Walkthrough:** ${g.loom}\n\n`
+  md += formatVideoPlan(g, { bullet: true, indent: '' })
   if (g.screenshots.length > 0) {
     const label = g.screenshots.length === 1 ? 'Screenshot' : 'Screenshots'
     md += `📷 **${label}:**\n`
@@ -385,6 +422,7 @@ const formatUatGuideJira = (plan, walkthrough) => {
   if (g.summary) jira += `${g.summary}\n\n`
   if (g.reason) jira += `Why it's tricky: ${g.reason}\n\n`
   if (g.loom) jira += `🎥 Walkthrough: ${g.loom}\n\n`
+  jira += formatVideoPlan(g, { bullet: false, indent: '  ' })
   if (g.screenshots.length > 0) {
     const label = g.screenshots.length === 1 ? 'Screenshot' : 'Screenshots'
     jira += `📷 ${label}:\n`
