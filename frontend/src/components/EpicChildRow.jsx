@@ -10,6 +10,7 @@ import TestPlanDisplay from './TestPlanDisplay'
 import BugAnalysisDisplay from './BugAnalysisDisplay'
 import Icon from './Icon'
 import { Btn, ItChip, StatPill, Alert } from './ui'
+import { pickStoredRun } from '../utils/planState'
 
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
 
@@ -74,8 +75,7 @@ function EpicChildRow({ child }) {
     if (!res.ok) return null
     const data = await res.json()
     const runs = Array.isArray(data.runs) ? data.runs : []
-    // Newest first, and Bug Lens runs share the table without a plan_id.
-    const latest = runs.find((r) => r.plan_id)
+    const latest = pickStoredRun(child.key, runs)
     if (!latest) return null
     const planRes = await fetch(`${API_BASE_URL}/plans/${latest.plan_id}`)
     if (!planRes.ok) return null

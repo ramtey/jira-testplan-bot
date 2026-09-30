@@ -578,6 +578,185 @@ def select_comment(comments: list[dict], comment_id: str | None) -> dict:
     return select_comments(comments, comment_id)[0]
 
 
+# --- Batch plans reached through a pointer --------------------------------
+#
+# A batch plan is posted once, to a host ticket, and every other ticket in the
+# batch gets a pointer (``plan_posting._pointer_text``). A pointer-only ticket
+# therefore has no plan comment of its own to adopt, and often cannot be
+# regenerated alone either: SK-2332's code shipped in SK-2331's PR, which is why
+# the two were batched. The pointer is the only durable record of which tickets
+# the batch covered — the batch comment itself names none — so it is read for
+# the host and the covered set, and the plan is taken from the host.
+
+_POINTER_HOST_RE = re.compile(r"plan for this ticket is on ([A-Za-z][A-Za-z0-9_]*-\d+)")
+_POINTER_COVERS_RE = re.compile(r"It covers (.+?) together")
+_TICKET_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*-\d+")
+
+
+def parse_pointer(comment: dict) -> tuple[str, list[str]] | None:
+    """``(host_key, covered_keys)`` from a pointer comment, or None if it does
+    not read as one. Covered keys keep the order the pointer lists them in,
+    which is the order the batch was posted with — and ticket order is part of
+    the progress key."""
+    from src.app.jira_client import extract_text_from_adf
+
+    text = extract_text_from_adf(comment.get("body"))
+    host = _POINTER_HOST_RE.search(text)
+    covers = _POINTER_COVERS_RE.search(text)
+    if not host or not covers:
+        return None
+    host_key = host.group(1).upper()
+    covered = [k.upper() for k in _TICKET_KEY_RE.findall(covers.group(1))]
+    if host_key not in covered:
+        return None
+    return host_key, covered
+
+
+class _Selection:
+    """The comments to adopt and the run they belong to."""
+
+    def __init__(
+        self,
+        parts: list[dict],
+        ticket_keys: list[str],
+        host_key: str | None = None,
+        complete: bool = True,
+        warnings: list[str] | None = None,
+    ):
+        self.parts = parts
+        self.ticket_keys = ticket_keys
+        # Set only for a batch: the ticket the plan's comment lives on.
+        self.host_key = host_key
+        self.complete = complete
+        self.warnings = warnings or []
+
+    @property
+    def is_batch(self) -> bool:
+        return self.host_key is not None
+
+
+def _kind(comment: dict):
+    from src.app.jira_client import _comment_marker_kind
+
+    return _comment_marker_kind(comment)
+
+
+async def _select(
+    jira, key: str, comment_id: str | None, *, allow_incomplete: bool
+) -> _Selection:
+    """Find the plan `key` should adopt: its own, or the batch its pointer names.
+
+    The ticket's own plan comment wins whenever it has one — a batch plan sits
+    beside a ticket's plan, never in place of it. The pointer is followed only
+    when the ticket has no plan of its own, or when `comment_id` names the
+    pointer or a comment on the host it points at.
+    """
+    from src.app.jira_client import PlanCommentKind
+
+    comments = await jira.get_comments(key)
+    named = (
+        next((c for c in comments if str(c.get("id")) == str(comment_id)), None)
+        if comment_id
+        else None
+    )
+    named_is_pointer = named is not None and _kind(named) is PlanCommentKind.pointer
+    has_own_plan = any(_is_plan_comment(c) for c in comments)
+
+    if (named is not None and not named_is_pointer) or (comment_id is None and has_own_plan):
+        return _own_selection(comments, comment_id, key, allow_incomplete)
+
+    pointers = [named] if named_is_pointer else [
+        c for c in comments if _kind(c) is PlanCommentKind.pointer
+    ]
+    if not pointers:
+        # Nothing to follow — the ticket's own errors are the right ones.
+        return _own_selection(comments, comment_id, key, allow_incomplete)
+
+    refusals: list[str] = []
+    # Newest pointer first: a ticket re-batched is pointed at its latest batch.
+    for pointer in reversed(pointers):
+        parsed = parse_pointer(pointer)
+        if parsed is None:
+            refusals.append(f"pointer comment {pointer.get('id')} does not name a host ticket")
+            continue
+        host_key, covered = parsed
+        if key not in covered:
+            refusals.append(
+                f"{key} is not one of the tickets the batch plan on {host_key} covers "
+                f"({', '.join(covered)})"
+            )
+            continue
+
+        host_comments = await jira.get_comments(host_key)
+        batch_comments = [c for c in host_comments if _kind(c) is PlanCommentKind.batch]
+        wanted = None if named_is_pointer else comment_id
+        if wanted is not None:
+            target = next(
+                (c for c in host_comments if str(c.get("id")) == str(wanted)), None
+            )
+            if target is None:
+                refusals.append(f"comment {wanted} is not on {host_key} either")
+                continue
+            if _kind(target) is not PlanCommentKind.batch:
+                # SK-2331's own plan named from SK-2332 would be adopted as the
+                # batch's — a plan for one ticket checked off against two.
+                raise PlanAdoptionError(
+                    f"Comment {wanted} on {host_key} is not the batch test plan — "
+                    f"only the batch plan covering {key} can be adopted from another ticket"
+                )
+        if not batch_comments:
+            refusals.append(f"{host_key} carries no batch test plan comment")
+            continue
+
+        try:
+            parts = select_comments(batch_comments, wanted)
+        except IncompletePlanParts as exc:
+            if not allow_incomplete:
+                raise
+            return _Selection(exc.parts, covered, host_key, complete=False, warnings=[str(exc)])
+        return _Selection(parts, covered, host_key)
+
+    raise PlanAdoptionError(
+        f"No test plan could be adopted for {key}: " + "; ".join(refusals)
+    )
+
+
+def _own_selection(
+    comments: list[dict], comment_id: str | None, key: str, allow_incomplete: bool
+) -> _Selection:
+    try:
+        return _Selection(select_comments(comments, comment_id), [key])
+    except IncompletePlanParts as exc:
+        if not allow_incomplete:
+            raise
+        return _Selection(exc.parts, [key], complete=False, warnings=[str(exc)])
+
+
+def _parse_selection(selection: _Selection, key: str) -> dict:
+    plan = parse_plan_from_parts(
+        [c.get("body") or {} for c in selection.parts], ticket_key=key
+    )
+    if selection.is_batch:
+        # Shaped like ``generate_multi``'s body, which names its tickets as a
+        # list and carries no single ``ticket_key``.
+        plan.pop("ticket_key", None)
+        plan["ticket_keys"] = list(selection.ticket_keys)
+        plan["batch_host_key"] = selection.host_key
+    return plan
+
+
+def _selection_fields(selection: _Selection) -> dict:
+    return {
+        "comment_id": str(selection.parts[0].get("id")),
+        "comment_ids": [str(c.get("id")) for c in selection.parts],
+        "comment_created": selection.parts[0].get("created"),
+        "ticket_keys": list(selection.ticket_keys),
+        # Where the comment was read from. Differs from `ticket_key` exactly
+        # when the plan was reached through a pointer.
+        "batch_host_key": selection.host_key,
+    }
+
+
 async def preview(ticket_key: str, comment_id: str | None = None) -> dict:
     """Parse the comment and report what adopting it would produce. Writes nothing.
 
@@ -589,32 +768,22 @@ async def preview(ticket_key: str, comment_id: str | None = None) -> dict:
     from src.app.jira_client import JiraClient
 
     key = ticket_key.upper()
-    comments = await JiraClient().get_comments(key)
     # A short set is reported rather than refused: preview writes nothing, and
     # seeing the counts next to "part 2 is missing" is what tells an operator
     # which comment to repost. ``commit`` refuses the same set.
-    selection_warnings: list[str] = []
-    try:
-        parts = select_comments(comments, comment_id)
-        complete = True
-    except IncompletePlanParts as exc:
-        parts = exc.parts
-        selection_warnings.append(str(exc))
-        complete = False
+    selection = await _select(JiraClient(), key, comment_id, allow_incomplete=True)
 
-    plan = parse_plan_from_parts([c.get("body") or {} for c in parts], ticket_key=key)
-    summary = summarize(plan, [key])
+    plan = _parse_selection(selection, key)
+    summary = summarize(plan, selection.ticket_keys)
     summary.update(
         {
             "ticket_key": key,
-            "comment_id": str(parts[0].get("id")),
-            "comment_ids": [str(c.get("id")) for c in parts],
-            "comment_created": parts[0].get("created"),
+            **_selection_fields(selection),
             "committed": False,
             # False means the counts above are a fragment, and committing this
             # selection will be refused.
-            "complete": complete,
-            "warnings": [*selection_warnings, *(summary.get("warnings") or [])],
+            "complete": selection.complete,
+            "warnings": [*selection.warnings, *(summary.get("warnings") or [])],
         }
     )
     return summary
@@ -651,27 +820,40 @@ async def commit(ticket_key: str, comment_id: str | None = None) -> dict:
     from src.app.services.run_tracker import _actor_email
 
     key = ticket_key.upper()
-    comments = await JiraClient().get_comments(key)
-    parts = select_comments(comments, comment_id)
-    plan = parse_plan_from_parts([c.get("body") or {} for c in parts], ticket_key=key)
+    selection = await _select(JiraClient(), key, comment_id, allow_incomplete=False)
+    parts = selection.parts
+    plan = _parse_selection(selection, key)
 
     db = get_db()
-    if await plan_repository.has_successful_test_plan(db, ticket_key=key):
+    if selection.is_batch:
+        # Asked of the batch, not of `key`: the host usually has its own plan
+        # (SK-2331's plan 553), and that must neither block this nor be touched
+        # by it. The batch run is a separate run in a separate comment slot.
+        if await plan_repository.has_successful_batch_plan(
+            db, ticket_keys=selection.ticket_keys
+        ):
+            raise PlanAdoptionError(
+                f"The batch {', '.join(selection.ticket_keys)} already has a stored "
+                "plan — adoption is only for plans that were never persisted"
+            )
+    elif await plan_repository.has_successful_test_plan(db, ticket_key=key):
         raise PlanAdoptionError(
             f"{key} already has a stored plan — adoption is only for plans that "
             "were never persisted"
         )
 
     user = await user_repository.get_or_create_by_email(db, email=_actor_email())
-    await jira_ticket_repository.upsert_snapshot(db, ticket_key=key)
+    for covered_key in selection.ticket_keys:
+        await jira_ticket_repository.upsert_snapshot(db, ticket_key=covered_key)
     run = await run_repository.create(
         db,
         user_id=user.id,
         run_type=RunType.test_plan,
-        ticket_keys=[key],
+        ticket_keys=list(selection.ticket_keys),
         model=ADOPTED_MODEL,
         llm_provider=ADOPTED_PROVIDER,
         status=RunStatus.ok,
+        batch_host_key=selection.host_key,
     )
 
     body = _json.dumps(plan)
@@ -684,19 +866,22 @@ async def commit(ticket_key: str, comment_id: str | None = None) -> dict:
     )
     # The plan demonstrably is live on the ticket — that comment is where it
     # came from — so record it rather than leaving the UI to report it untracked.
+    #
+    # A batch is recorded against its host's batch slot. That slot is cleared
+    # and set on its own, so the host's single-ticket plan stays live.
     await plan_repository.mark_plan_posted_to_jira(
         db,
         plan_id=saved.id,
-        ticket_key=key,
+        ticket_key=selection.host_key or key,
         jira_comment_id=str(parts[0].get("id")),
+        batch=selection.is_batch,
     )
 
     summary = summarize(plan, list(run.ticket_keys or []))
     summary.update(
         {
             "ticket_key": key,
-            "comment_id": str(parts[0].get("id")),
-            "comment_ids": [str(c.get("id")) for c in parts],
+            **_selection_fields(selection),
             "run_id": run.id,
             "plan_id": saved.id,
             "committed": True,

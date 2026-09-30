@@ -364,3 +364,32 @@ async def has_successful_test_plan(
         {"run_id": {"$in": run_ids}, "case_count": {"$gt": 0}}, {"_id": 1}
     )
     return doc is not None
+
+
+async def has_successful_batch_plan(
+    db: AsyncIOMotorDatabase,
+    *,
+    ticket_keys: list[str],
+) -> bool:
+    """Whether a stored plan already covers exactly this set of tickets.
+
+    The batch counterpart of `has_successful_test_plan`. That one asks about a
+    ticket, and a ticket in a batch usually has its own plan too — asking it
+    would refuse every batch whose host was ever planned alone. This asks about
+    the batch: a multi-ticket run over the same keys, in any order.
+    """
+    keys = [k.upper() for k in ticket_keys]
+    cursor = db[Run.__collection__].find(
+        {
+            "ticket_keys": {"$all": keys, "$size": len(keys)},
+            **_SUCCESSFUL_TEST_PLAN_RUN,
+        },
+        {"_id": 1},
+    )
+    run_ids = [d["_id"] for d in await cursor.to_list(length=None)]
+    if not run_ids:
+        return False
+    doc = await db[GeneratedPlan.__collection__].find_one(
+        {"run_id": {"$in": run_ids}, "case_count": {"$gt": 0}}, {"_id": 1}
+    )
+    return doc is not None

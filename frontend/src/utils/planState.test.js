@@ -24,6 +24,7 @@ import {
   EMPTY_PLAN_STATE,
   ORIGIN,
   nextPlanState,
+  pickStoredRun,
   planOwner,
   readStoredPlan,
   writeStoredPlan,
@@ -131,4 +132,22 @@ test('corrupt cache entries degrade to empty rather than throwing', () => {
 test('planOwner normalizes a bare string and drops blanks', () => {
   assert.deepEqual(planOwner('sk-2327'), ['SK-2327'])
   assert.deepEqual(planOwner(['SK-1', '', null, '  ']), ['SK-1'])
+})
+
+// A batch plan sits beside a ticket's own plan. SK-2331 hosts the SK-2331+2332
+// batch and has its own plan 553; the batch run is newer, and opening it would
+// hide the plan written for SK-2331 alone.
+const batchRun = { run_id: 2, plan_id: 900, ticket_keys: ['SK-2331', 'SK-2332'] }
+const ownRun = { run_id: 1, plan_id: 553, ticket_keys: ['SK-2331'] }
+
+test('a ticket opens its own plan even when a newer batch covers it', () => {
+  assert.equal(pickStoredRun('SK-2331', [batchRun, ownRun]).plan_id, 553)
+})
+
+test('a pointer-only ticket opens the batch it is covered by', () => {
+  assert.equal(pickStoredRun('SK-2332', [batchRun]).plan_id, 900)
+})
+
+test('runs without a plan are never picked', () => {
+  assert.equal(pickStoredRun('SK-1', [{ run_id: 3, ticket_keys: ['SK-1'] }]), null)
 })

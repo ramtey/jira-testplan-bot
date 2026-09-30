@@ -25,6 +25,7 @@ import BatchSummary from './components/BatchSummary'
 import JiraBrowser from './components/JiraBrowser'
 import Icon from './components/Icon'
 import { Alert, ErrNote } from './components/ui'
+import { pickStoredRun } from './utils/planState'
 
 // Issue types that don't require test plans
 const NON_TESTABLE_ISSUE_TYPES = new Set(['Epic', 'Spike'])
@@ -274,7 +275,7 @@ function App() {
    * regardless of how the two fetches interleave.
    */
   const hydrateStoredArtifacts = async (key, runs) => {
-    const latest = runs?.[0]
+    const latest = pickStoredRun(key, runs)
     if (latest?.plan_id) {
       try {
         const res = await fetch(`${API_BASE_URL}/plans/${latest.plan_id}`)

@@ -91,3 +91,23 @@ export function writeStoredPlan(state) {
   if (owner.length === 0) return null
   return { ticketKeys: owner, plan: state.plan }
 }
+
+/**
+ * Which stored run a ticket's view should open, from `/runs/by-ticket/<key>`.
+ *
+ * Newest first is right until a batch is involved. A batch plan sits beside a
+ * ticket's own plan, never on top of it, but it is usually the newer of the
+ * two — so "newest" would open the batch on its host and hide the plan written
+ * for that ticket alone. Its own plan wins; a ticket that has only the batch
+ * (a pointer-only ticket like SK-2332) opens the batch.
+ *
+ * Runs without a `plan_id` are skipped: Bug Lens runs share the table.
+ */
+export function pickStoredRun(key, runs) {
+  const withPlan = (runs || []).filter((r) => r?.plan_id)
+  const own = withPlan.find(
+    (r) => Array.isArray(r.ticket_keys) && r.ticket_keys.length === 1 &&
+      String(r.ticket_keys[0]).toUpperCase() === String(key).toUpperCase()
+  )
+  return own || withPlan[0] || null
+}

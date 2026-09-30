@@ -701,3 +701,243 @@ async def test_preview_of_a_whole_split_plan_is_complete_and_unwarned(monkeypatc
     assert result["complete"] is True
     assert result["warnings"] == []
     assert result["case_count"] == 29
+
+
+# --- Batch plans reached through a pointer ---------------------------------
+#
+# SK-2331 and SK-2332 were planned together. The batch plan went to SK-2331
+# (comment 334109) beside SK-2331's own plan (334107, stored as plan 553), and
+# SK-2332 got only a pointer. SK-2332 could not adopt — its pointer is not a
+# plan and 334109 is not on it — and could not regenerate either, because its
+# code shipped in SK-2331's PR. So UAT progress had nowhere to go.
+
+
+def _batch_adf(plan: dict) -> dict:
+    """`plan` rendered as a batch comment: same body, the batch marker."""
+    from src.app.jira_client import BATCH_TEST_PLAN_MARKER
+
+    adf = _render_adf(plan)
+    adf["content"][0] = _para(BATCH_TEST_PLAN_MARKER)
+    return adf
+
+
+def _pointer_adf(host: str, covered: list[str]) -> dict:
+    """The pointer exactly as ``post_batch`` writes it, through the real
+    builders, so the parser is pinned to what Jira is actually sent."""
+    from src.app.jira_client import PlanCommentKind, _comment_body_adf, _marker_line
+    from src.app.services.plan_posting import _pointer_text
+
+    text = f"{_marker_line(kind=PlanCommentKind.pointer)}\n\n{_pointer_text(host, covered)}"
+    return _comment_body_adf(text, PlanCommentKind.pointer)
+
+
+def _own_plan() -> dict:
+    return {
+        "happy_path": [{"title": "Own case", "steps": ["Do"], "expected": "Done"}],
+        "regression_checklist": ["Own regression"],
+    }
+
+
+def _shared_plan() -> dict:
+    return {
+        "happy_path": [
+            {"title": f"Shared case {i}", "steps": ["Do"], "expected": "Done"}
+            for i in range(3)
+        ],
+        "edge_cases": [{"title": "Shared edge", "category": "error_handling"}],
+        "regression_checklist": ["Shared regression 1", "Shared regression 2"],
+    }
+
+
+class _TicketStubJira:
+    """``JiraClient`` stand-in that answers per ticket, because resolving a
+    pointer reads two tickets' comments."""
+
+    by_ticket: dict[str, list[dict]] = {}
+
+    async def get_comments(self, key: str) -> list[dict]:
+        return list(type(self).by_ticket.get(key, []))
+
+
+@pytest.fixture
+def batched_tickets(monkeypatch):
+    from src.app import jira_client as jira_client_module
+
+    _TicketStubJira.by_ticket = {
+        "SK-2331": [
+            _comment("334107", _render_adf(_own_plan())),
+            _comment("334109", _batch_adf(_shared_plan())),
+        ],
+        "SK-2332": [_comment("334110", _pointer_adf("SK-2331", ["SK-2331", "SK-2332"]))],
+        # Pointed at SK-2331 but not among the tickets it lists — a pointer
+        # left behind by an earlier batch, say.
+        "SK-2399": [_comment("334200", _pointer_adf("SK-2331", ["SK-2331", "SK-2332"]))],
+        "SK-2400": [],
+    }
+    monkeypatch.setattr(jira_client_module, "JiraClient", _TicketStubJira)
+
+
+def test_the_pointer_parses_back_to_its_host_and_batch():
+    from src.app.services.plan_adoption import parse_pointer
+
+    assert parse_pointer({"body": _pointer_adf("SK-2331", ["SK-2331", "SK-2332"])}) == (
+        "SK-2331",
+        ["SK-2331", "SK-2332"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_pointer_only_ticket_adopts_the_batch_plan_from_its_host(batched_tickets):
+    """Preview only — the conftest guard proves nothing is written."""
+    from src.app.services import plan_adoption
+
+    result = await plan_adoption.preview("SK-2332")
+
+    assert result["comment_ids"] == ["334109"], "the batch plan, not the pointer"
+    assert result["batch_host_key"] == "SK-2331"
+    assert result["ticket_keys"] == ["SK-2331", "SK-2332"]
+    # The batch's shape, not SK-2331's own plan's.
+    assert result["section_counts"]["happy_path"] == 3
+    assert result["progress_key"] == build_progress_key(
+        ["SK-2331", "SK-2332"],
+        json.dumps(parse_plan_from_adf(_batch_adf(_shared_plan()), ticket_key="SK-2331")),
+    )
+    assert result["committed"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_host_batch_comment_id_is_accepted_for_a_ticket_in_the_batch(
+    batched_tickets,
+):
+    from src.app.services import plan_adoption
+
+    result = await plan_adoption.preview("SK-2332", "334109")
+
+    assert result["comment_ids"] == ["334109"]
+    assert result["ticket_keys"] == ["SK-2331", "SK-2332"]
+
+
+@pytest.mark.asyncio
+async def test_naming_the_pointer_itself_adopts_the_plan_it_points_at(batched_tickets):
+    """Parsing the two-line signpost as a plan is what the pointer exclusion
+    exists to prevent; naming it is taken to mean the plan it names."""
+    from src.app.services import plan_adoption
+
+    result = await plan_adoption.preview("SK-2332", "334110")
+
+    assert result["comment_ids"] == ["334109"]
+
+
+@pytest.mark.asyncio
+async def test_the_hosts_own_plan_is_not_adopted_as_the_batch(batched_tickets):
+    """334107 is SK-2331's plan alone. Adopted from SK-2332 it would be checked
+    off against two tickets it was never written for."""
+    from src.app.services import plan_adoption
+
+    with pytest.raises(PlanAdoptionError, match="not the batch test plan"):
+        await plan_adoption.preview("SK-2332", "334107")
+
+
+@pytest.mark.asyncio
+async def test_a_ticket_not_named_in_the_batch_is_refused(batched_tickets):
+    from src.app.services import plan_adoption
+
+    with pytest.raises(PlanAdoptionError, match="SK-2399 is not one of the tickets"):
+        await plan_adoption.preview("SK-2399")
+    with pytest.raises(PlanAdoptionError, match="SK-2399 is not one of the tickets"):
+        await plan_adoption.preview("SK-2399", "334109")
+
+
+@pytest.mark.asyncio
+async def test_a_host_comment_named_from_an_unrelated_ticket_is_refused(batched_tickets):
+    """No pointer means no claim on the host's batch, however the id is known."""
+    from src.app.services import plan_adoption
+
+    with pytest.raises(PlanAdoptionError, match="not found on this ticket"):
+        await plan_adoption.preview("SK-2400", "334109")
+
+
+@pytest.mark.asyncio
+async def test_a_ticket_with_its_own_plan_keeps_adopting_it(batched_tickets):
+    """The host's own plan still wins on the host. The pointer path is for a
+    ticket with nothing of its own."""
+    from src.app.services import plan_adoption
+
+    result = await plan_adoption.preview("SK-2331", "334107")
+
+    assert result["ticket_keys"] == ["SK-2331"]
+    assert result["batch_host_key"] is None
+
+
+@pytest.fixture
+def db(monkeypatch):
+    from mongomock_motor import AsyncMongoMockClient
+
+    from src.app.db import mongo as db_mongo
+
+    client = AsyncMongoMockClient()
+    database = client["testplan_test"]
+    monkeypatch.setattr(db_mongo, "_client", client)
+    monkeypatch.setattr(db_mongo, "_db", database)
+    monkeypatch.setattr(db_mongo, "_supports_transactions", False)
+    monkeypatch.setenv("JIRA_USERNAME", "qa@example.com")
+    return database
+
+
+@pytest.mark.asyncio
+async def test_committing_the_batch_is_one_run_beside_the_hosts_own_plan(
+    batched_tickets, db
+):
+    """One run covering both tickets, found under either key, and the host's
+    own run and its live comment left exactly as they were."""
+    from src.app.db.models.plan import PlanFormat
+    from src.app.db.models.run import RunType
+    from src.app.repositories import plan_repository, run_repository
+    from src.app.services import plan_adoption
+
+    own_run = await run_repository.create(
+        db, user_id=1, run_type=RunType.test_plan, ticket_keys=["SK-2331"],
+        model="m", llm_provider="p",
+    )
+    own_plan = await plan_repository.save_with_cases(
+        db, run_id=own_run.id, format=PlanFormat.json, body=json.dumps(_own_plan()),
+        cases=[("Own case", "", "happy_path")],
+    )
+    await plan_repository.mark_plan_posted_to_jira(
+        db, plan_id=own_plan.id, ticket_key="SK-2331", jira_comment_id="334107"
+    )
+
+    result = await plan_adoption.commit("SK-2332")
+
+    assert result["committed"] is True
+    for key in ("SK-2331", "SK-2332"):
+        rows = await plan_repository.list_runs_with_plans_by_ticket(db, ticket_key=key)
+        assert result["run_id"] in [r["run_id"] for r in rows], key
+    batch_rows = [
+        r for r in await plan_repository.list_runs_with_plans_by_ticket(db, ticket_key="SK-2332")
+    ]
+    assert batch_rows[0]["ticket_keys"] == ["SK-2331", "SK-2332"]
+    assert batch_rows[0]["jira_comment_id"] == "334109"
+
+    stored, _cases = await plan_repository.get_plan_with_cases(db, plan_id=result["plan_id"])
+    body = json.loads(stored.body)
+    assert body["ticket_keys"] == ["SK-2331", "SK-2332"]
+    assert body["batch_host_key"] == "SK-2331"
+    assert len(body["happy_path"]) == 3, "the batch plan was stored, not the pointer"
+
+    kept, _ = await plan_repository.get_plan_with_cases(db, plan_id=own_plan.id)
+    assert kept.jira_comment_id == "334107", "the host's own plan must stay live"
+
+    # And the key the progress endpoint will derive is the one previewed.
+    assert result["progress_key"] == build_progress_key(
+        ["SK-2331", "SK-2332"], stored.body
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_batch_is_adopted_once(batched_tickets, db):
+    from src.app.services import plan_adoption
+
+    await plan_adoption.commit("SK-2332")
+    with pytest.raises(PlanAdoptionError, match="already has a stored plan"):
+        await plan_adoption.commit("SK-2332")
