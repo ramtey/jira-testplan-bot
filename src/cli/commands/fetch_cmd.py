@@ -134,5 +134,5 @@ def fetch(
             console.print(f"\n[bold]Branches:[/bold] {', '.join(dev_info.branches[:3])}")
 
     console.print(
-        f"\n[dim]View in Jira: {config.jira_url}/browse/{issue.key}[/dim]"
+        f"\n[dim]View in Jira: {(config.jira_url or '').rstrip('/')}/browse/{issue.key}[/dim]"
     )

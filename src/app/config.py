@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .model_capabilities import DEFAULT_CLAUDE_MODEL
@@ -14,6 +15,13 @@ class Settings(BaseSettings):
     # customfield_10004; others (esp. newer Jira Cloud) use customfield_10016.
     # Check /rest/api/3/field on your instance and override via env.
     jira_story_points_field: str = "customfield_10004"
+
+    # Every consumer builds URLs as f"{jira_url}/...", so a trailing slash in
+    # .env would yield "//browse/KEY" in the copied ticket link.
+    @field_validator("jira_url")
+    @classmethod
+    def _strip_trailing_slash(cls, v: str) -> str:
+        return v.strip().rstrip("/")
 
     # LLM configuration
     llm_provider: str = "claude"  # "claude" (recommended) or "ollama"
