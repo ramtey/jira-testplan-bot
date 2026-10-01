@@ -24,7 +24,7 @@ async def insert(
     """
     collection = doc.__collection__
     if doc.id is None:
-        doc.id = await next_id(collection, session=session)
+        doc.id = await next_id(collection)
     payload = doc.to_doc()
     await db[collection].insert_one(payload, session=session)
     return doc

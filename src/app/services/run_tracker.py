@@ -180,6 +180,21 @@ async def complete_with_plan(
     except Exception as exc:
         logger.exception("run_tracker.complete_with_plan failed")
         ctx.failure = f"{type(exc).__name__}: {exc}"
+        # The run was already marked completed above, so without this it reads
+        # ``ok`` with no plan behind it — SK-2646's run 982 sat that way. Best
+        # effort: if the database itself is gone this write fails too, and the
+        # cause already recorded on ``ctx`` is the one worth keeping.
+        try:
+            run = await crud.get_by_id(get_db(), _run_type(), ctx.run_id)
+            if run is not None:
+                await run_repository.mark_failed(
+                    get_db(),
+                    run=run,
+                    error_code="plan_not_persisted",
+                    latency_ms=ctx.elapsed_ms(),
+                )
+        except Exception:
+            logger.exception("run_tracker.complete_with_plan: could not mark run %s failed", ctx.run_id)
         return None
 
 

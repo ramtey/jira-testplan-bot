@@ -90,3 +90,34 @@ async def test_a_plan_write_that_fails_late_is_also_recorded():
     assert saved is None
     assert ctx.failure is not None
     assert "connection reset" in ctx.failure
+
+
+@pytest.mark.asyncio
+async def test_a_plan_save_that_fails_marks_the_run_failed():
+    """The run is marked completed before its plan is written, so a save that
+    then fails left it ``ok`` with nothing behind it — SK-2646's run 982, whose
+    save lost a WriteConflict to a concurrent batch run's."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    run = SimpleNamespace(ticket_keys=["SK-1", "SK-2"])
+    ctx = run_tracker.RunContext(run_id=42)
+    mark_failed = AsyncMock()
+    with patch.object(run_tracker, "get_db", return_value=object()), \
+         patch.object(run_tracker.crud, "get_by_id", AsyncMock(return_value=run)), \
+         patch.object(run_tracker.run_repository, "mark_completed", AsyncMock()), \
+         patch.object(run_tracker.run_repository, "mark_failed", mark_failed), \
+         patch.object(
+             run_tracker.plan_repository,
+             "save_with_cases",
+             AsyncMock(side_effect=RuntimeError("Write conflict during plan execution")),
+         ):
+        saved = await run_tracker.complete_with_plan(
+            ctx, plan_body="{}", plan_format=PlanFormat.json, cases=[]
+        )
+
+    assert saved is None
+    assert "Write conflict" in ctx.failure
+    mark_failed.assert_awaited_once()
+    assert mark_failed.await_args.kwargs["run"] is run
+    assert mark_failed.await_args.kwargs["error_code"] == "plan_not_persisted"

@@ -141,7 +141,7 @@ async def transaction() -> AsyncIterator[AsyncIOMotorClientSession | None]:
             yield session
 
 
-async def next_id(collection: str, session: AsyncIOMotorClientSession | None = None) -> int:
+async def next_id(collection: str) -> int:
     """Allocate the next integer id for `collection`.
 
     The app's ids are integers end to end — API routes, the frontend's URLs, and
@@ -149,13 +149,21 @@ async def next_id(collection: str, session: AsyncIOMotorClientSession | None = N
     ObjectIds would have broken every one of those contracts and made the Neon
     backfill a renumbering exercise, so this reproduces Postgres' SERIAL with an
     atomic ``$inc`` on a counters document instead.
+
+    Deliberately takes no session, the way ``nextval`` ignores the surrounding
+    transaction. Every writer to a collection shares its one counter document, so
+    an ``$inc`` inside a transaction holds a write lock on it until commit, and a
+    second transaction touching it aborts with a WriteConflict. That is how
+    SK-2646's single-ticket plan was lost on 2026-09-30: its save overlapped the
+    batch run's by 24 ms, conflicted on ``counters.generated_plans``, and the plan
+    went to Jira with no record. The atomic ``$inc`` needs no transaction to be
+    safe; the cost is a gap in the ids when a transaction aborts, as with SERIAL.
     """
     doc = await get_db().counters.find_one_and_update(
         {"_id": collection},
         {"$inc": {"seq": 1}},
         upsert=True,
         return_document=ReturnDocument.AFTER,
-        session=session,
     )
     return int(doc["seq"])
 
