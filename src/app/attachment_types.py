@@ -28,11 +28,12 @@ _IMAGE_MIME = {
 }
 
 # Non-image payloads a tester attaches as evidence for API/HTTP work:
-# a response body, a request transcript, a log excerpt.
+# a response body, a request transcript, a log excerpt, a CSV export.
 _TEXT_MIME = {
     "text/plain",
     "text/markdown",
     "application/json",
+    "text/csv",
 }
 
 # A spoken walkthrough of the UAT run, attached instead of typed out.
@@ -40,9 +41,9 @@ _AUDIO_MIME = {"audio/mpeg"}
 
 ALLOWED_ATTACHMENT_MIME = _IMAGE_MIME | {"application/pdf"} | _TEXT_MIME | _AUDIO_MIME
 
-ALLOWED_ATTACHMENT_LABEL = "PNG, JPEG, GIF, WEBP, PDF, MP3, TXT, LOG, MD, JSON"
+ALLOWED_ATTACHMENT_LABEL = "PNG, JPEG, GIF, WEBP, PDF, MP3, TXT, LOG, MD, JSON, CSV"
 
-_TEXT_EXTENSIONS = {".txt", ".log", ".md", ".json"}
+_TEXT_EXTENSIONS = {".txt", ".log", ".md", ".json", ".csv"}
 
 _AUDIO_EXTENSIONS = {".mp3"}
 
@@ -69,6 +70,7 @@ _EXTENSION_MIME = {
     ".log": "text/plain",
     ".md": "text/markdown",
     ".json": "application/json",
+    ".csv": "text/csv",
 }
 
 # Types that say nothing about the file's contents — trust the extension.
@@ -92,6 +94,16 @@ _MIME_ALIASES = {
     "application/x-json": "application/json",
     "text/x-log": "text/plain",
     "text/x-markdown": "text/markdown",
+    "application/csv": "text/csv",
+    "text/x-csv": "text/csv",
+    "text/comma-separated-values": "text/csv",
+}
+
+# Spellings that mean an allowed type only for one extension. Windows
+# browsers with Excel installed label a .csv `application/vnd.ms-excel` —
+# the .xls type — so that type is a CSV only when the name says so.
+_EXTENSION_SCOPED_ALIASES = {
+    ("application/vnd.ms-excel", ".csv"): "text/csv",
 }
 
 
@@ -108,6 +120,7 @@ def resolve_attachment_mime(filename: str, declared_mime: str | None) -> str | N
     """
     mime = (declared_mime or "").split(";")[0].strip().lower()
     mime = _MIME_ALIASES.get(mime, mime)
+    mime = _EXTENSION_SCOPED_ALIASES.get((mime, _extension(filename)), mime)
     if mime in ALLOWED_ATTACHMENT_MIME:
         return mime
     if mime in _UNINFORMATIVE_MIME:

@@ -213,24 +213,24 @@ function EnvPill({ value, on, onToggle, disabled }) {
 
 // Attachment types the Jira upload accepts. Mirrors ALLOWED_ATTACHMENT_MIME in
 // src/app/attachment_types.py — keep the two in sync. Text payloads (.txt /
-// .log / .md / .json) are here for API/HTTP work: a response body, a curl
-// transcript, a log excerpt or a markdown repro is the evidence, and there's no
+// .log / .md / .json / .csv) are here for API/HTTP work: a response body, a curl
+// transcript, a log excerpt, a CSV export or a markdown repro is the evidence, and there's no
 // screenshot to take. An .mp3 is here for the tester who would rather talk
 // through the run than write it up. Neither has a preview, so they attach to
 // the ticket and render as a `📎`/`🎧 <filename>` line in the comment rather
 // than inline.
 const ATTACHMENT_ACCEPT =
-  'image/png,image/jpeg,image/gif,image/webp,application/pdf,audio/mpeg,text/plain,text/markdown,application/json,.mp3,.txt,.log,.md,.json'
+  'image/png,image/jpeg,image/gif,image/webp,application/pdf,audio/mpeg,text/plain,text/markdown,application/json,text/csv,.mp3,.txt,.log,.md,.json,.csv'
 
 // A .json dragged from Finder or dropped out of an archive can arrive with an
 // empty or generic type, so fall back to the extension the way the server
 // does. Anything still unrecognised is dropped here instead of bouncing off a
 // 400 after the upload starts.
-const TEXT_ATTACHMENT_RE = /\.(txt|log|md|json)$/i
+const TEXT_ATTACHMENT_RE = /\.(txt|log|md|json|csv)$/i
 const AUDIO_ATTACHMENT_RE = /\.mp3$/i
 
 // Everything that renders as a filename callout rather than a media node.
-const NO_PREVIEW_ATTACHMENT_RE = /\.(txt|log|md|json|mp3)$/i
+const NO_PREVIEW_ATTACHMENT_RE = /\.(txt|log|md|json|csv|mp3)$/i
 
 function isAllowedAttachment(file) {
   if (!file) return false
@@ -254,9 +254,17 @@ function isAllowedAttachment(file) {
     type === 'text/markdown' ||
     type === 'text/x-markdown' ||
     type === 'application/json' ||
-    type === 'text/json'
+    type === 'text/json' ||
+    type === 'text/csv' ||
+    type === 'application/csv' ||
+    type === 'text/x-csv' ||
+    type === 'text/comma-separated-values'
   ) {
     return true
+  }
+  // Windows browsers with Excel installed label a .csv as the .xls type.
+  if (type === 'application/vnd.ms-excel') {
+    return /\.csv$/i.test(file.name || '')
   }
   if (type === '' || type === 'application/octet-stream') {
     return NO_PREVIEW_ATTACHMENT_RE.test(file.name || '')

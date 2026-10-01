@@ -65,6 +65,19 @@ def test_resolve_normalizes_aliases():
     assert resolve_attachment_mime("api.log", "text/x-log") == "text/plain"
 
 
+def test_resolve_accepts_csv_under_every_browser_spelling():
+    assert resolve_attachment_mime("export.csv", "text/csv") == "text/csv"
+    assert resolve_attachment_mime("export.csv", "application/csv") == "text/csv"
+    assert resolve_attachment_mime("export.csv", "text/x-csv") == "text/csv"
+    assert resolve_attachment_mime("export.csv", "") == "text/csv"
+    # Windows + Excel labels a .csv with the .xls type.
+    assert resolve_attachment_mime("export.CSV", "application/vnd.ms-excel") == "text/csv"
+    # ...which must not let a real .xls through.
+    assert resolve_attachment_mime("book.xls", "application/vnd.ms-excel") is None
+    assert has_inline_preview("export.csv") is False
+    assert attachment_icon("export.csv") == "📎"
+
+
 def test_resolve_falls_back_to_extension_when_browser_sends_nothing():
     # Dragging a .json out of Finder or an archive can arrive with an empty
     # or generic type; the extension decides rather than a 400.
@@ -162,4 +175,4 @@ async def test_validate_rejects_a_type_outside_the_allow_list():
         await _validate_and_read_images([_upload("bundle.zip", b"PK", "application/zip")])
     assert exc.value.status_code == 400
     assert "application/zip" in exc.value.detail
-    assert "MP3, TXT, LOG, MD, JSON" in exc.value.detail
+    assert "MP3, TXT, LOG, MD, JSON, CSV" in exc.value.detail
