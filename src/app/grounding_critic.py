@@ -262,6 +262,10 @@ def apply_verdicts(
             continue
 
         case["needs_manual_verification"] = True
+        # Distinguishes "the critic says the cited AC does not describe this"
+        # from the generator's own "could not find it in source". Only the
+        # second leaves the AC as a pass condition a tester can grade by.
+        case["ac_grounding_disputed"] = True
 
         reason = (verdict.get("reason") or "").strip() or (
             "The cited AC does not describe the behaviour this test asserts."

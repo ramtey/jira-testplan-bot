@@ -91,6 +91,7 @@ _AC_HEADING_RE = re.compile(
     r"""^                       # start
         (?:\#{1,6}\s+)?         # optional markdown heading hashes
         \**\s*                  # optional bold markers
+        (?:[a-z][\w/&-]{0,11}\s+){0,2}  # optional qualifier: "UX", "Functional", "Design"
         (?:acceptance\s+criteria|ac)   # heading text
         \s*\**                  # trailing bold markers
         \s*:?\s*                # optional trailing colon
@@ -326,6 +327,39 @@ def _next_nonblank_is_bullet(lines: list[str], start: int) -> bool:
     return bool(_BULLET_RE.match(line) or _BARE_BULLET_RE.match(line.strip()))
 
 
+def _bullet_follows_within(lines: list[str], start: int, max_text_lines: int = 4) -> bool:
+    """True if another bullet appears within a few text lines of ``start``.
+
+    Inside an AC block, a non-bullet line is usually one of: a lead-in ("When
+    I click Save ... I see…"), a grouping sub-label ("Forms user email"), or
+    the second line of a multi-line bullet (a signature block, a second
+    paragraph of email copy). All three are followed shortly by more bullets
+    and must not end the block. SK-2627 lost every AC to the first of these;
+    its signature bullet would have cut the rest off at the second.
+    """
+    seen = 0
+    for j in range(start, len(lines)):
+        line = lines[j]
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _BULLET_RE.match(line) or _BARE_BULLET_RE.match(stripped):
+            return True
+        bare = re.sub(r"^\#{1,6}\s+", "", stripped)
+        bare = re.sub(r"^\*\*\s*", "", bare)
+        bare = re.sub(r"\s*\*\*\s*:?\s*$", "", bare).strip().rstrip(":").strip()
+        if _TERMINAL_AC_SECTION_RE.match(bare) or _STALE_AC_RE.search(stripped):
+            return False
+        seen += 1
+        if seen > max_text_lines:
+            return False
+    return False
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
 def extract_acceptance_criteria(description: str | None) -> list[str]:
     """Pull the AC bullets out of a Jira description.
 
@@ -338,6 +372,11 @@ def extract_acceptance_criteria(description: str | None) -> list[str]:
 
     Headings under ``OG AC`` / ``Old AC`` / ``Previous AC`` / etc. are skipped
     to match the existing SYSTEM_PROMPT rule about superseded requirements.
+
+    A nested bullet is returned with its immediate parent in front of it,
+    ``"Primary button “Check It Out” → Clicking this will ..."``. A sub-bullet
+    usually qualifies its parent ("this", "it"), and once it is a standalone
+    AC string nothing says which control it describes.
     """
     if not description:
         return []
@@ -346,6 +385,15 @@ def extract_acceptance_criteria(description: str | None) -> list[str]:
     i = 0
     in_ac_block = False
     bullets: list[str] = []
+    # (marker indent, bullet text) of the open ancestors of the next bullet.
+    parents: list[tuple[int, str]] = []
+
+    def _add_bullet(marker_line: str, text: str) -> None:
+        depth = _indent(marker_line)
+        while parents and parents[-1][0] >= depth:
+            parents.pop()
+        bullets.append(f"{parents[-1][1]} → {text}" if parents else text)
+        parents.append((depth, text))
 
     while i < len(lines):
         raw = lines[i]
@@ -390,7 +438,7 @@ def extract_acceptance_criteria(description: str | None) -> list[str]:
         if bullet_match:
             text = bullet_match.group(1).strip()
             if text:
-                bullets.append(text)
+                _add_bullet(raw, text)
             i += 1
             continue
 
@@ -413,7 +461,7 @@ def extract_acceptance_criteria(description: str | None) -> list[str]:
                     and not _BULLET_RE.match(lines[j])
                     and not _URL_LINE_RE.match(next_line)
                 ):
-                    bullets.append(next_line)
+                    _add_bullet(raw, next_line)
                     i = j + 1
                     continue
             i += 1
@@ -448,10 +496,13 @@ def extract_acceptance_criteria(description: str | None) -> list[str]:
         # well-known post-AC section names. Anything else stops the block —
         # free-form prose mid-AC-block is uncommon enough that "stop early" is
         # safer than "capture noise".
-        if (
-            not _TERMINAL_AC_SECTION_RE.match(bare)
-            and _looks_like_section_heading(stripped)
-            and _next_nonblank_is_bullet(lines, i + 1)
+        #
+        #   (c) A prose lead-in ("When I click Save ... I see…") or a second
+        #       line of a multi-line bullet. Both are followed by more bullets
+        #       within a few lines; treating them as the end of the block cost
+        #       SK-2627 every AC it had.
+        if not _TERMINAL_AC_SECTION_RE.match(bare) and _bullet_follows_within(
+            lines, i + 1
         ):
             i += 1
             continue
@@ -467,3 +518,59 @@ def extract_acceptance_criteria(description: str | None) -> list[str]:
         seen.add(key)
         deduped.append(b)
     return deduped
+
+
+
+# ─── destination ACs ─────────────────────────────────────────────────────────
+#
+# An AC that says where using a control takes the user is a claim about the
+# DESTINATION, and only a case that follows the control and checks where it
+# landed can satisfy it. SK-2627's "Clicking this will open up a new tab ...
+# and land them directly inside the Forms file" was signed off by signing in
+# as the recipient and opening the file — proof of access, not of where the
+# button goes. Both buttons linked to the bare app root.
+#
+# Detection is phrase-based and deliberately narrow: a subject-less "opens"
+# ("opens the share modal") is left alone unless it names a tab, window,
+# page, screen or flow, because nearly every interaction "opens" something.
+
+_WHO = r"(?:them|him|her|you|the\s+user|users?|the\s+recipient|recipients?|the\s+agent|agents?)"
+_WHERE = r"(?:directly\s+)?(?:in|on|inside|into|at|to|onto|back\s+to)\s+\S.*"
+
+_DESTINATION_RES = (
+    # "land them directly inside the Forms file", "lands on the checklist"
+    re.compile(rf"\b(?:lands?|landing|landed)\s+(?:{_WHO}\s+)?({_WHERE})", re.IGNORECASE),
+    # "takes them to the billing page", "brings the user back to ..."
+    re.compile(
+        rf"\b(?:takes?|taking|took|brings?|bringing|sends?|sending|routes?|routing|directs?|directing)\s+{_WHO}\s+({_WHERE})",
+        re.IGNORECASE,
+    ),
+    # "redirects to /dashboard", "navigates to the summary screen"
+    re.compile(
+        rf"\b(?:redirect(?:s|ed|ing)?|navigat(?:es?|ed|ing))\s+(?:{_WHO}\s+)?((?:directly\s+)?(?:to|into|back\s+to)\s+\S.*)",
+        re.IGNORECASE,
+    ),
+    # "opens the file in a new tab", "opens the pricing page"
+    re.compile(
+        r"\bopens?\s+(?:up\s+)?((?:the|a|an|their)\s+.*?\b(?:in\s+a\s+new\s+(?:tab|window)|page|screen|view|flow|url)\b.*)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def extract_ac_destination(ac_text: str) -> str | None:
+    """The place an AC says a control takes the user, or None.
+
+    Returns the destination phrase as written ("directly inside the Forms
+    file"), for use as the assertion a covering case must make.
+    """
+    if not ac_text:
+        return None
+    # A parent-qualified AC ("Primary button → Clicking this will ...") is
+    # judged on its own clause; the parent is context, not the claim.
+    clause = ac_text.rsplit(" → ", 1)[-1]
+    for pattern in _DESTINATION_RES:
+        m = pattern.search(clause)
+        if m:
+            return m.group(1).strip().rstrip(".;,")
+    return None

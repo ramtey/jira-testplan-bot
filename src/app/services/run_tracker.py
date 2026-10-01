@@ -270,6 +270,25 @@ async def complete_with_bug_analysis(
         ctx.failure = f"{type(exc).__name__}: {exc}"
 
 
+async def skip(ctx: RunContext, *, reason: str) -> None:
+    """Mark a run that deliberately produced no output, and say why."""
+    if ctx.run_id is None:
+        return
+    try:
+        db = get_db()
+        run = await crud.get_by_id(db, _run_type(), ctx.run_id)
+        if run is None:
+            logger.warning("run_tracker.skip: run_id=%s vanished", ctx.run_id)
+            ctx.failure = f"run {ctx.run_id} vanished before it could be marked skipped"
+            return
+        await run_repository.mark_skipped(
+            db, run=run, reason=reason, latency_ms=ctx.elapsed_ms()
+        )
+    except Exception as exc:
+        logger.exception("run_tracker.skip failed")
+        ctx.failure = f"{type(exc).__name__}: {exc}"
+
+
 async def fail(ctx: RunContext, *, error_code: str) -> None:
     if ctx.run_id is None:
         return

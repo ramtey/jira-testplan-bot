@@ -21,6 +21,10 @@ class RunType(str, Enum):
 class RunStatus(str, Enum):
     ok = "ok"
     error = "error"
+    # The run deliberately produced nothing (``error_code`` says why). Kept
+    # apart from ``ok`` because SK-2627's no-source skip was recorded as an
+    # ok run in 660ms with no plan, indistinguishable from a success.
+    skipped = "skipped"
 
 
 class Run(DocumentBase):

@@ -370,6 +370,7 @@ async def test_run_grounding_critic_badges_sk2290_case():
     await _run_grounding_critic(_FakeLLM(), plan, tickets)
 
     assert plan.edge_cases[0]["needs_manual_verification"] is True
+    assert plan.edge_cases[0]["ac_grounding_disputed"] is True
     assert plan.happy_path[0].get("needs_manual_verification") is not True
 
     warnings = plan.grounding_warnings or []

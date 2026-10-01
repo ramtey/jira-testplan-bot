@@ -16,6 +16,7 @@ replaced the plan written for that ticket alone.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from src.app.db.mongo import get_db
@@ -31,22 +32,95 @@ from src.app.services.batch_plan_host import BatchHostCandidate, choose_batch_ho
 logger = logging.getLogger(__name__)
 
 
-def _pointer_text(host_key: str, covered_keys: list[str]) -> str:
+# Sentinel for "the plan's coverage could not be read", as distinct from a
+# plan that recorded none for this ticket.
+COVERAGE_UNREADABLE = object()
+
+
+def _coverage_line(coverage) -> str | None:
+    """What the batch plan checked about this ticket's own ACs.
+
+    A pointer that only says "the plan is over there" reads as coverage. On
+    SK-2627 it was posted on a ticket whose ACs the batch plan never
+    extracted, so nothing had checked that a single one of them was tested —
+    and two of them shipped broken.
+    """
+    if coverage is None:
+        return None
+    if coverage is COVERAGE_UNREADABLE:
+        return (
+            "The batch plan's coverage of this ticket's acceptance criteria "
+            "could not be loaded, so it is not summarised here."
+        )
+    total = int(coverage.get("total") or 0)
+    if total == 0:
+        return (
+            "**No acceptance criteria could be read from this ticket, so nothing "
+            "checked that the batch plan covers it.** Review the plan against "
+            "this ticket's description by hand before signing it off."
+        )
+    uncovered = coverage.get("uncovered") or []
+    under = coverage.get("under_covered") or []
+    covered = total - len(uncovered)
+    line = f"The batch plan covers {covered} of this ticket's {total} acceptance criteria."
+    gaps = [f"{u.get('id')} (not covered)" for u in uncovered] + [
+        f"{u.get('id')} ("
+        + (
+            f"no case asserts where it lands: {u['missing_destination']}"
+            if u.get("missing_destination")
+            else "partly covered: " + ", ".join(u.get("missing_actions") or [])
+        )
+        + ")"
+        for u in under
+    ]
+    if gaps:
+        line += " **Gaps:** " + "; ".join(gaps) + "."
+    return line
+
+
+def _pointer_text(host_key: str, covered_keys: list[str], coverage=None) -> str:
     """The body of a non-host ticket's signpost comment.
 
     Short on purpose. It is not a plan and must not read like one — the tester
     needs to know where the plan is and why it is not here, in the two lines
-    Jira shows without expanding anything.
+    Jira shows without expanding anything. ``coverage`` is this ticket's entry
+    in the batch plan's ``ac_coverage``, so the pointer says what was checked
+    rather than implying everything was.
     """
     others = ", ".join(covered_keys)
-    return (
+    text = (
         f"**The plan for this ticket is on {host_key}.**\n\n"
         f"It covers {others} together, and is posted once so there is one copy "
         f"to work through and check off rather than an identical copy on every "
         f"ticket in the batch.\n\n"
-        f"If this ticket also has its own test plan comment, that one is "
-        f"separate and unaffected."
     )
+    coverage_line = _coverage_line(coverage)
+    if coverage_line:
+        text += coverage_line + "\n\n"
+    return text + (
+        "If this ticket also has its own test plan comment, that one is "
+        "separate and unaffected."
+    )
+
+
+async def _load_ticket_coverage(plan_id: int | None) -> dict | None:
+    """``ac_coverage['tickets']`` of a stored batch plan, keyed by ticket.
+
+    Returns ``{}`` when there is no stored plan to read, and None when the
+    read failed — a lookup that failed is not a plan with no ACs.
+    """
+    if plan_id is None:
+        return {}
+    try:
+        found = await plan_repository.get_plan_with_cases(get_db(), plan_id=plan_id)
+        if found is None:
+            return {}
+        plan, _cases = found
+        tickets = (json.loads(plan.body).get("ac_coverage") or {}).get("tickets") or {}
+        return {k.upper(): v for k, v in tickets.items()}
+    except Exception:
+        logger.exception("Could not read ac_coverage for plan %s", plan_id)
+        return None
 
 
 async def post_one(
@@ -269,7 +343,7 @@ async def post_batch(
     pointer_errors: list[dict] = []
     demoted: list[str] = []
     if host_result.get("posted_parts", 0) > 0:
-        body = _pointer_text(host_key, keys)
+        coverage_by_key = await _load_ticket_coverage(plan_id)
         for key in keys:
             if key == host_key:
                 continue
@@ -285,7 +359,13 @@ async def post_batch(
                     await post_one(
                         jira,
                         issue_key=key,
-                        comment_text=body,
+                        comment_text=_pointer_text(
+                            host_key,
+                            keys,
+                            COVERAGE_UNREADABLE
+                            if coverage_by_key is None
+                            else coverage_by_key.get(key),
+                        ),
                         plan_id=plan_id,
                         kind=PlanCommentKind.pointer,
                         # Converts this ticket's copy of the old all-tickets

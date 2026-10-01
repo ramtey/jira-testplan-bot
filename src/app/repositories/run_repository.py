@@ -62,6 +62,19 @@ async def mark_completed(
     return await crud.save(db, run)
 
 
+async def mark_skipped(
+    db: AsyncIOMotorDatabase,
+    *,
+    run: Run,
+    reason: str,
+    latency_ms: int,
+) -> Run:
+    run.status = RunStatus.skipped
+    run.error_code = reason[:128]
+    run.latency_ms = latency_ms
+    return await crud.save(db, run)
+
+
 async def mark_failed(
     db: AsyncIOMotorDatabase,
     *,

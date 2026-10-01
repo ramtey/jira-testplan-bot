@@ -57,10 +57,12 @@ from ..seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from ..security_surfaces import audit_persona_split
 from ..slack_client import resolve_slack_messages_in_text
 from ..source_grounding import (
+    build_provenance,
     filter_development_info,
     has_grounding_source,
     merge_provenance,
     no_source_result,
+    spec_only_notice,
 )
 from . import run_tracker
 from .batch_plan_host import choose_batch_host_for_tickets
@@ -143,30 +145,29 @@ class NonTestableIssueError(Exception):
 # --------------------------------------------------------------------------
 
 
+def development_info_to_dict(info) -> dict | None:
+    """A ``DevelopmentInfo`` in the generate-request shape."""
+    if not info:
+        return None
+    return {
+        "commits": [asdict(commit) for commit in info.commits],
+        "pull_requests": [asdict(pr) for pr in info.pull_requests],
+        "branches": info.branches,
+        "repository_context": (
+            asdict(info.repository_context) if info.repository_context else None
+        ),
+        "figma_context": (
+            asdict(info.figma_context) if info.figma_context else None
+        ),
+    }
+
+
 def serialize_issue(issue) -> dict:
     """Serialize a ``JiraClient.get_issue()`` result into the ticket dict the
     frontend consumes. Extracted from the ``GET /issue/{key}`` handler so the
     server can rebuild a generate payload without a browser round-trip.
     """
-    development_info_dict = None
-    if issue.development_info:
-        development_info_dict = {
-            "commits": [asdict(commit) for commit in issue.development_info.commits],
-            "pull_requests": [
-                asdict(pr) for pr in issue.development_info.pull_requests
-            ],
-            "branches": issue.development_info.branches,
-            "repository_context": (
-                asdict(issue.development_info.repository_context)
-                if issue.development_info.repository_context
-                else None
-            ),
-            "figma_context": (
-                asdict(issue.development_info.figma_context)
-                if issue.development_info.figma_context
-                else None
-            ),
-        }
+    development_info_dict = development_info_to_dict(issue.development_info)
 
     attachments_list = None
     if issue.attachments:
@@ -344,6 +345,96 @@ async def _load_seed_regressions(ticket_key: str, parent_key: str) -> list[dict]
         return []
 
 
+async def _borrow_sibling_sources(ticket_key: str, parent_key: str | None) -> dict:
+    """Usable PRs from the other children of ``parent_key``, each tagged with
+    the sibling it belongs to.
+
+    ``lookup_failed`` is kept apart from "no sibling has a PR": the plan
+    tells the tester which one happened, and only the second is a finding.
+    """
+    out: dict = {
+        "pull_requests": [],
+        "borrowed_from": [],
+        "dev_status_unavailable": [],
+        "lookup_failed": False,
+    }
+    if not parent_key:
+        return out
+    try:
+        siblings = await JiraClient().get_sibling_development_info(
+            parent_key, ticket_key
+        )
+    except Exception:
+        logger.exception(
+            "sibling source lookup failed for %s under %s", ticket_key, parent_key
+        )
+        out["lookup_failed"] = True
+        return out
+    for key, info, unavailable in siblings:
+        if unavailable:
+            out["dev_status_unavailable"].append(key)
+        filtered, _ = filter_development_info(development_info_to_dict(info))
+        prs = (filtered or {}).get("pull_requests") or []
+        if prs:
+            out["borrowed_from"].append(key)
+            out["pull_requests"].extend({**pr, "borrowed_from": key} for pr in prs)
+    return out
+
+
+async def _write_from_acs(
+    request: GenerateTestPlanRequest,
+    original_dev_info: dict | None,
+    provenance: dict,
+    *,
+    ac_count: int,
+    parent_key: str | None,
+) -> tuple[GenerateTestPlanRequest, dict, dict]:
+    """Switch a PR-less ticket with ACs into spec-only mode.
+
+    Returns the request (with any borrowed sibling PRs in its
+    development_info), the provenance (with those PRs recorded against the
+    sibling they came from), and the ``spec_only`` record that the prompt and
+    the rendered plan both read.
+    """
+    borrowed = await _borrow_sibling_sources(request.ticket_key, parent_key)
+    spec_only = {
+        "ac_count": ac_count,
+        "parent_key": parent_key,
+        "borrowed_from": borrowed["borrowed_from"],
+        "sibling_lookup_failed": borrowed["lookup_failed"],
+        "siblings_dev_status_unavailable": borrowed["dev_status_unavailable"],
+    }
+    dev = dict(request.development_info or {})
+    if borrowed["pull_requests"]:
+        dev["pull_requests"] = list(dev.get("pull_requests") or []) + borrowed[
+            "pull_requests"
+        ]
+        own_prs = list((original_dev_info or {}).get("pull_requests") or [])
+        provenance = build_provenance(
+            {
+                **(original_dev_info or {}),
+                "pull_requests": own_prs + borrowed["pull_requests"],
+            }
+        )
+        own_count = sum(1 for pr in own_prs if isinstance(pr, dict))
+        for entry, pr in zip(
+            provenance["pull_requests"][own_count:], borrowed["pull_requests"]
+        ):
+            entry["ticket_key"] = pr["borrowed_from"]
+            entry["borrowed"] = True
+    dev["spec_only"] = spec_only
+    provenance["spec_only"] = spec_only_notice(spec_only)
+    logger.info(
+        "spec_only: %s has no PR of its own; writing from %d AC(s), borrowing "
+        "PRs from %s%s",
+        request.ticket_key,
+        ac_count,
+        borrowed["borrowed_from"] or "no sibling",
+        " (sibling lookup failed)" if borrowed["lookup_failed"] else "",
+    )
+    return request.model_copy(update={"development_info": dev}), provenance, spec_only
+
+
 async def generate_single(
     request: GenerateTestPlanRequest, *, llm=None
 ) -> dict:
@@ -359,16 +450,38 @@ async def generate_single(
     # reads development_info. Closed-unmerged PRs are dropped here and never
     # reach the prompt or the critics; provenance keeps a record of them so
     # the plan can say what was skipped and why.
-    filtered_dev_info, provenance = filter_development_info(
-        request.development_info
-    )
+    original_dev_info = request.development_info
+    filtered_dev_info, provenance = filter_development_info(original_dev_info)
     request = request.model_copy(update={"development_info": filtered_dev_info})
 
-    flags = derive_context_flags(request)
     parent_key = (request.parent_info or {}).get("key")
     parent_key_clean = (
         parent_key if isinstance(parent_key, str) and parent_key.strip() else None
     )
+
+    # No PR of its own, but acceptance criteria: the ACs are the spec, so
+    # write the plan from them. SK-2627 (a QA-only ticket whose email was
+    # built under a sibling) got no plan at all here, and the two broken
+    # email buttons its ACs described were never tested. Where the
+    # implementation landed under a sibling, its PRs are borrowed so cases can
+    # still be checked against code.
+    spec_only: dict | None = None
+    if (
+        settings.require_source_grounding
+        and not has_grounding_source(provenance)
+        and not request.dev_status_unavailable
+    ):
+        own_acs = extract_acceptance_criteria(request.description)
+        if own_acs:
+            request, provenance, spec_only = await _write_from_acs(
+                request,
+                original_dev_info,
+                provenance,
+                ac_count=len(own_acs),
+                parent_key=parent_key_clean,
+            )
+
+    flags = derive_context_flags(request)
     run_ctx = await run_tracker.start_run(
         run_type=RunType.test_plan,
         ticket_keys=[request.ticket_key],
@@ -385,7 +498,11 @@ async def generate_single(
     # against. Emitting a plan anyway is the SK-2609 failure: ten cases of
     # speculation that read as authoritative and cost a tester a cycle
     # each. Say what was searched instead, and ask for a PR or a spec.
-    if settings.require_source_grounding and not has_grounding_source(provenance):
+    if (
+        settings.require_source_grounding
+        and not has_grounding_source(provenance)
+        and spec_only is None
+    ):
         if request.dev_status_unavailable:
             provenance["dev_status_unavailable"] = True
             logger.warning(
@@ -396,12 +513,13 @@ async def generate_single(
             await run_tracker.fail(run_ctx, error_code="dev_status_unavailable")
             raise SourceLookupUnavailableError(request.ticket_key)
         logger.info(
-            "no_source: %s has no merged or open PR (%d closed-unmerged skipped); "
-            "returning a no-implementation result instead of a plan",
+            "no_source: %s has no merged or open PR (%d closed-unmerged skipped) "
+            "and no acceptance criteria; returning a no-implementation result "
+            "instead of a plan",
             request.ticket_key,
             provenance.get("excluded_pr_count", 0),
         )
-        await run_tracker.complete(run_ctx)
+        await run_tracker.skip(run_ctx, reason="no_source")
         return no_source_result(request.ticket_key, provenance)
 
     seed_regressions: list[dict] = []
@@ -593,7 +711,9 @@ async def generate_single(
         # Quarantine last: the code-grounding critic un-badges cases whose
         # behaviour it found in the repo, and those rescues have to land
         # before we decide what is ungrounded.
-        needs_spec_cases = quarantine_ungrounded_cases(test_plan)
+        needs_spec_cases = quarantine_ungrounded_cases(
+            test_plan, spec_is_source=spec_only is not None
+        )
         # Audit the promise, after quarantining so both the cases that stayed
         # and the ones that moved are covered. This only marks a citation as
         # unconfirmed — it never changes expected_verified, because doing so
@@ -675,6 +795,8 @@ async def generate_single(
             "video_walkthrough": build_walkthrough(test_plan.happy_path),
             "source_provenance": provenance,
         }
+        if spec_only is not None:
+            response["source_notice"] = provenance["spec_only"]
 
         saved = await run_tracker.complete_with_plan(
             run_ctx,
@@ -791,7 +913,7 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             "returning a no-implementation result instead of a plan",
             [t.ticket_key for t in tickets],
         )
-        await run_tracker.complete(run_ctx)
+        await run_tracker.skip(run_ctx, reason="no_source")
         result = no_source_result(tickets[0].ticket_key, provenance)
         result["ticket_keys"] = [t.ticket_key for t in tickets]
         return result

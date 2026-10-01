@@ -33,7 +33,9 @@ def extract_text_from_adf(adf_content: dict | str | None) -> str:
     return "\n".join(text_parts).strip()
 
 
-def _extract_text_recursive(node: dict | list | str, text_parts: list[str]) -> None:
+def _extract_text_recursive(
+    node: dict | list | str, text_parts: list[str], list_depth: int = 0
+) -> None:
     """
     Recursively traverse ADF structure and extract text content.
 
@@ -43,6 +45,13 @@ def _extract_text_recursive(node: dict | list | str, text_parts: list[str]) -> N
     Args:
         node: Current ADF node (dict, list, or string)
         text_parts: Accumulator list for extracted text
+        list_depth: How many bullet/ordered lists enclose ``node``. A nested
+            list item's marker is indented two spaces per level so the
+            parent-child relationship survives into plain text. Without it a
+            sub-bullet reads as a sibling of the item it qualifies: SK-2627's
+            "Clicking this will ... land them directly inside the Forms file"
+            arrived beside "Primary button 'Check It Out'" rather than under
+            it, and the generator had no way to tell which button it meant.
     """
     if isinstance(node, str):
         text_parts.append(node)
@@ -50,7 +59,7 @@ def _extract_text_recursive(node: dict | list | str, text_parts: list[str]) -> N
 
     if isinstance(node, list):
         for item in node:
-            _extract_text_recursive(item, text_parts)
+            _extract_text_recursive(item, text_parts, list_depth)
         return
 
     if not isinstance(node, dict):
@@ -82,22 +91,22 @@ def _extract_text_recursive(node: dict | list | str, text_parts: list[str]) -> N
     if node_type in ("paragraph", "heading", "codeBlock"):
         # Process content first
         if "content" in node:
-            _extract_text_recursive(node["content"], text_parts)
+            _extract_text_recursive(node["content"], text_parts, list_depth)
         # Add line break after
         text_parts.append("")
 
     # Process ordered/unordered lists
     elif node_type in ("bulletList", "orderedList"):
         if "content" in node:
-            _extract_text_recursive(node["content"], text_parts)
+            _extract_text_recursive(node["content"], text_parts, list_depth + 1)
         text_parts.append("")
 
     # Process list items with bullet points
     elif node_type == "listItem":
-        text_parts.append("• ")
+        text_parts.append("  " * max(list_depth - 1, 0) + "• ")
         if "content" in node:
-            _extract_text_recursive(node["content"], text_parts)
+            _extract_text_recursive(node["content"], text_parts, list_depth)
 
     # For other node types, just process content
     elif "content" in node:
-        _extract_text_recursive(node["content"], text_parts)
+        _extract_text_recursive(node["content"], text_parts, list_depth)

@@ -370,3 +370,47 @@ def no_source_result(ticket_key: str, provenance: dict) -> dict:
         "uat_complexity": None,
         "how_to_see_it": None,
     }
+
+
+def spec_only_notice(spec_only: dict) -> dict:
+    """The banner a plan written from ACs alone carries, for every renderer.
+
+    It must not read like an ordinary plan. Its cases rest on the ticket's
+    acceptance criteria; anything they assert about code (a link target, an
+    email template) was checked only if a borrowed sibling PR showed it.
+    """
+    borrowed = spec_only.get("borrowed_from") or []
+    parts = [
+        "This ticket has no merged or open pull request of its own, so this "
+        f"plan was written from its {spec_only.get('ac_count', 0)} acceptance "
+        "criteria."
+    ]
+    if borrowed:
+        parts.append(
+            "Cases were checked against pull requests from "
+            f"{', '.join(borrowed)} (under {spec_only.get('parent_key')}), "
+            "which may be where this ticket's behaviour was built."
+        )
+    elif spec_only.get("sibling_lookup_failed"):
+        parts.append(
+            "The lookup for pull requests on related tickets failed, so no "
+            "implementation was checked — not because none exists."
+        )
+    elif spec_only.get("parent_key"):
+        parts.append(
+            f"No other ticket under {spec_only['parent_key']} has a merged or "
+            "open pull request either, so no implementation was checked."
+        )
+    else:
+        parts.append("No implementation was checked.")
+    unavailable = spec_only.get("siblings_dev_status_unavailable") or []
+    if unavailable:
+        parts.append(
+            "Jira's development panel did not answer for "
+            f"{', '.join(unavailable)}, so their pull requests may be missing."
+        )
+    parts.append(
+        "Anything the criteria say the code does — where a link goes, what an "
+        "email contains — must be checked by running it, not by reading this plan."
+    )
+    return {"mode": "spec_only", "message": " ".join(parts), **spec_only}

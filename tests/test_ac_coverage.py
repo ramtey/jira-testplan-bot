@@ -96,7 +96,8 @@ def test_extract_handles_dash_bullets_and_bold_heading():
 
 
 def test_extract_pulls_indented_sub_bullets_as_siblings():
-    """Indented sub-bullets become their own AC entries; QA tests each separately."""
+    """Indented sub-bullets become their own AC entries; QA tests each separately.
+    Each carries its parent, since a sub-bullet usually qualifies it."""
     text = """## Acceptance Criteria
 
 * Data should match the mobile app
@@ -108,7 +109,10 @@ def test_extract_pulls_indented_sub_bullets_as_siblings():
 ## Notes"""
     acs = extract_acceptance_criteria(text)
     assert "Data should match the mobile app" in acs
-    assert "All loan, down payment, interest fields present" in acs
+    assert (
+        "Data should match the mobile app → All loan, down payment, interest fields present"
+        in acs
+    )
     assert "Calculation logic verified" in acs
 
 
@@ -221,8 +225,9 @@ def test_extract_works_on_real_adf_output():
 
 
 def test_extract_handles_adf_nested_sub_bullets():
-    """SK-2141 pattern: indented sub-bullet inside a parent listItem. ADF
-    serializes both at the same level — we want both pulled out as ACs."""
+    """SK-2141 pattern: indented sub-bullet inside a parent listItem. Both are
+    pulled out as ACs, and the sub-bullet keeps its parent (SK-2627: a
+    sub-bullet that lost its parent lost which button it described)."""
     adf = _adf_doc([
         _heading("Acceptance Criteria"),
         _bullets(
@@ -235,8 +240,8 @@ def test_extract_handles_adf_nested_sub_bullets():
     ])
     acs = extract_acceptance_criteria(extract_text_from_adf(adf))
     assert "Data should match mobile app" in acs
-    assert "All fields present" in acs
-    assert "Save to forms file works" in acs
+    assert "Data should match mobile app → All fields present" in acs
+    assert "Save shows toast → Save to forms file works" in acs
     assert "Preview opens PDF" in acs
     assert len(acs) == 6  # 4 top-level + 2 sub-bullets
 

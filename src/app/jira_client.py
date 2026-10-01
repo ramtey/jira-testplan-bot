@@ -2450,6 +2450,52 @@ class JiraClient:
             )
         return children
 
+    _MAX_SIBLINGS_TO_BORROW_FROM = 8
+
+    async def get_sibling_development_info(
+        self, parent_key: str, exclude_key: str
+    ) -> list[tuple[str, DevelopmentInfo | None, bool]]:
+        """Development info for the other children of ``parent_key``.
+
+        For a ticket with no PR of its own whose implementation landed under
+        a sibling — SK-2627, a QA-only ticket whose email was built in
+        SK-2630's PRs. Returns ``(key, info, unavailable)`` per sibling, in
+        creation order, with the same meaning of ``unavailable`` as
+        ``_get_development_info``.
+
+        Raises if the sibling list itself cannot be fetched. Unlike
+        ``_get_children``, which degrades to ``[]`` because it only feeds
+        prompt context, an empty answer here is reported to the tester as
+        "no sibling has a PR", so a failure must not look like one.
+        """
+        if not re.match(r"^[A-Z][A-Z0-9_]*-\d+$", parent_key):
+            return []
+        async with retrying_client(timeout=20) as client:
+            r = await client.post(
+                f"{self.base_url}/rest/api/3/search/jql",
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json={
+                    "jql": f"parent = {parent_key} ORDER BY created ASC",
+                    "fields": ["summary"],
+                    "maxResults": self._MAX_SIBLINGS_TO_BORROW_FROM + 1,
+                },
+            )
+            r.raise_for_status()
+            issues = (r.json() or {}).get("issues") or []
+
+        siblings = [
+            (i.get("id"), i.get("key"))
+            for i in issues
+            if i.get("key") and i.get("id") and i.get("key") != exclude_key
+        ][: self._MAX_SIBLINGS_TO_BORROW_FROM]
+        results: list[tuple[str, DevelopmentInfo | None, bool]] = []
+        # Sequential: each call can fan out to GitHub, whose search API is
+        # paced (see github_client); a gather here would trip the throttle.
+        for issue_id, key in siblings:
+            info, unavailable = await self._get_development_info(issue_id, key)
+            results.append((key, info, unavailable))
+        return results
+
     async def _get_linked_issues(self, issue_links_data: list[dict]) -> LinkedIssues | None:
         """
         Fetch and parse linked issues focusing on blocking relationships.

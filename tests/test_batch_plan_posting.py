@@ -686,3 +686,76 @@ async def test_a_ticket_that_never_hosted_is_not_touched_by_the_sweep():
         )
 
     assert result["demoted"] == []
+
+
+# ---------------------------------------------------------------------------
+# The pointer says what the batch plan checked about this ticket (SK-2627)
+# ---------------------------------------------------------------------------
+
+
+def test_a_pointer_for_a_ticket_with_no_extracted_acs_says_nothing_was_checked():
+    text = plan_posting._pointer_text(
+        "SK-2630", ["SK-2627", "SK-2630"], {"total": 0, "uncovered": [], "under_covered": []}
+    )
+    assert "No acceptance criteria could be read from this ticket" in text
+
+
+def test_a_pointer_names_destination_gaps():
+    text = plan_posting._pointer_text(
+        "SK-2630",
+        ["SK-2627", "SK-2630"],
+        {
+            "total": 15,
+            "uncovered": [{"id": "SK-2627-AC4", "text": "Body"}],
+            "under_covered": [
+                {
+                    "id": "SK-2627-AC7",
+                    "missing_actions": ["destination: directly inside the Forms file"],
+                    "missing_destination": "directly inside the Forms file",
+                }
+            ],
+        },
+    )
+    assert "covers 14 of this ticket's 15 acceptance criteria" in text
+    assert "SK-2627-AC4 (not covered)" in text
+    assert "SK-2627-AC7 (no case asserts where it lands: directly inside the Forms file)" in text
+
+
+def test_an_unreadable_plan_is_not_reported_as_one_without_acs():
+    text = plan_posting._pointer_text(
+        "SK-2630", ["SK-2627"], plan_posting.COVERAGE_UNREADABLE
+    )
+    assert "could not be loaded" in text
+    assert "No acceptance criteria" not in text
+
+
+@pytest.mark.asyncio
+async def test_each_pointer_carries_its_own_tickets_coverage():
+    import json as _json
+
+    posted: list = []
+    jira = _fake_jira(posted)
+    run = MagicMock()
+    run.batch_host_key = "SK-2630"
+    plan = MagicMock()
+    plan.body = _json.dumps({"ac_coverage": {"tickets": {
+        "SK-2627": {"total": 0, "uncovered": [], "under_covered": []},
+        "SK-2623": {"total": 2, "uncovered": [], "under_covered": []},
+    }}})
+    repo = MagicMock()
+    repo.get_run_for_plan = AsyncMock(return_value=run)
+    repo.get_plan_with_cases = AsyncMock(return_value=(plan, []))
+    repo.mark_plan_posted_to_jira = AsyncMock()
+
+    with (
+        patch("src.app.services.plan_posting.plan_repository", repo),
+        patch("src.app.services.plan_posting.get_db", return_value=MagicMock()),
+    ):
+        await plan_posting.post_batch(
+            jira, plan_id=551, comment_text="the plan",
+            ticket_keys=["SK-2623", "SK-2627", "SK-2630"],
+        )
+
+    bodies = {key: text for key, kind, text in posted if kind is PlanCommentKind.pointer}
+    assert "No acceptance criteria could be read" in bodies["SK-2627"]
+    assert "covers 2 of this ticket's 2" in bodies["SK-2623"]

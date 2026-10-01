@@ -21,7 +21,11 @@ import httpx
 from .config import settings
 from .confluence_client import ConfluenceClient, ConfluencePage
 from .copy_only import detect_copy_only, render_copy_only_guidance
-from .description_analyzer import extract_acceptance_criteria, extract_ac_action_facets
+from .description_analyzer import (
+    extract_ac_action_facets,
+    extract_ac_destination,
+    extract_acceptance_criteria,
+)
 from .diff_budget import allocate_patch_budget, omitted_note
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
@@ -180,6 +184,20 @@ def _format_ac_line(ac_id: str, text: str) -> str:
             f"Cover EACH one (a separate case, or one parameterized case with a row per "
             f"action). Do NOT cover only a subset — every action above must be exercised "
             f"by some case that tags {ac_id}.\n"
+        )
+    destination = extract_ac_destination(text)
+    if destination:
+        line += (
+            f"    ↳ DESTINATION AC — asserts WHERE the user ends up: {destination}. "
+            f"Write a case with `assertion_type: \"destination\"` that triggers this "
+            f"exact control from its real entry point (the link in the delivered email, "
+            f"the button on the page — never a URL you typed) and whose `expected` names "
+            f"the landing location as the pass condition. Showing the target can be "
+            f"reached or opened some other way (signing in and navigating to it) is an "
+            f"ACCESS check and does NOT cover {ac_id}. If the control's target is not in "
+            f"any supplied diff, keep the case and set `needs_manual_verification: true` "
+            f"with a grounding warning saying the destination cannot be verified from "
+            f"source.\n"
         )
     return line
 
@@ -2939,6 +2957,40 @@ TICKET INFORMATION
                 "Add a line to `risks_and_gaps` naming what could not be read.\n"
             )
 
+        # No PR of this ticket's own: the ACs are the spec. Without this the
+        # model either wrote nothing (SK-2627) or, before the no-source guard,
+        # speculated about UI it could not see (SK-2609).
+        spec_only = development_info.get("spec_only") if development_info else None
+        if spec_only:
+            borrowed = spec_only.get("borrowed_from") or []
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "NO PULL REQUEST OF THIS TICKET'S OWN — WRITE FROM THE ACCEPTANCE CRITERIA\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += (
+                "This ticket has no merged or open PR. Its acceptance criteria are the "
+                "specification: write a case for every AC, and take each case's "
+                "`expected` from the AC text (`expected_verified: false`).\n"
+            )
+            if borrowed:
+                prompt += (
+                    f"The PRs listed belong to sibling tickets ({', '.join(borrowed)}). "
+                    "Use them to name real controls and to check behaviour, but only "
+                    "where a diff actually shows it.\n"
+                )
+            else:
+                prompt += "No implementation is available to read.\n"
+            prompt += (
+                "- Do NOT invent element names, URLs, routes or copy that are not in an "
+                "AC or a diff.\n"
+                "- For every AC whose behaviour you cannot find in any supplied diff — a "
+                "link target, an email template, a redirect — keep the case, set "
+                "`needs_manual_verification: true`, and add a `grounding_warnings` entry "
+                "for that AC saying it cannot be verified from source and naming the "
+                "code that would have to be read (e.g. the email template that renders "
+                "the button). Silence here is the failure: an AC with no case and no "
+                "warning reads as covered.\n"
+            )
+
         # The ticket linked a design we could not read. Say so loudly: silence
         # here produces a plan with no visual checks, indistinguishable from a
         # plan for a ticket that never had a design.
@@ -3023,6 +3075,12 @@ TICKET INFORMATION
                              "before it lands"
                     )
                     prompt += f"- **{pr.get('title', 'Untitled PR')}** ({state_label})\n"
+                    if pr.get("borrowed_from"):
+                        prompt += (
+                            f"  Belongs to sibling ticket {pr['borrowed_from']}, not this "
+                            "one — it may implement this ticket's behaviour; cite it only "
+                            "where its diff actually shows that behaviour.\n"
+                        )
                     if pr.get('source_branch'):
                         prompt += f"  Branch: {pr.get('source_branch')}\n"
 
@@ -3972,6 +4030,21 @@ TEST_CASE_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
             "description": "Acceptance-criteria IDs this case exercises, e.g. ['SK-2137-AC1', 'SK-2139-AC2', 'SK-2175-AC3']. Used whenever an 'ACCEPTANCE CRITERIA TO COVER' section is supplied — that includes multi-ticket plans AND single-ticket parent plans whose subtasks contributed ACs. List every ID this case legitimately validates; subtask IDs (e.g. SK-2175-AC1 on a SK-2112 plan) are equally required.",
+        },
+        "assertion_type": {
+            "type": "string",
+            "enum": ["destination", "access", "content", "state", "behavior"],
+            "description": (
+                "What kind of claim `expected` makes. 'destination': where "
+                "activating a control takes the user (the URL, screen or flow "
+                "they land on) — REQUIRED for any case covering an AC marked "
+                "DESTINATION. 'access': that a user can reach, open or use "
+                "something by any route. 'content': copy, labels, layout. "
+                "'state': persisted data or status after the steps. "
+                "'behavior': anything else. A destination is not proved by "
+                "access: opening the file directly does not show the email "
+                "button lands there."
+            ),
         },
         "grounded_in": {
             "type": "array",

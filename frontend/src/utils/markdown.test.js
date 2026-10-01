@@ -167,3 +167,30 @@ test('a malformed walkthrough does not break the comment', () => {
     assert.ok(!jira.includes('VIDEO SHOULD COVER'))
   }
 })
+
+// SK-2627: a plan written from ACs because the ticket has no PR of its own
+// must say so where the tester reads it, and attribute borrowed PRs.
+const SPEC_ONLY_PLAN = {
+  happy_path: [{ title: 'Check It Out lands inside the shared file', steps: ['Click it'], expected: 'Lands in the file' }],
+  edge_cases: [],
+  regression_checklist: [],
+  source_provenance: {
+    pull_requests: [{
+      number: 49, repository: 'acme/user-service', state: 'merged',
+      used_as_grounding: true, borrowed: true, ticket_key: 'SK-2630',
+    }],
+    spec_only: { mode: 'spec_only', message: 'This ticket has no merged or open pull request of its own.' },
+  },
+}
+
+test('a spec-only plan says so in the Jira comment and names the sibling', () => {
+  const jira = formatTestPlanAsJira(SPEC_ONLY_PLAN)
+  assert.match(jira, /WRITTEN FROM ACCEPTANCE CRITERIA\. This ticket has no merged or open pull request/)
+  assert.match(jira, /acme\/user-service#49 — merged — from SK-2630/)
+})
+
+test('a spec-only plan says so in the markdown copy, even with no PRs at all', () => {
+  const plan = { ...SPEC_ONLY_PLAN, source_provenance: { ...SPEC_ONLY_PLAN.source_provenance, pull_requests: [] } }
+  const md = formatTestPlanAsMarkdown(plan, { key: 'SK-2627', summary: 'Email invitation' })
+  assert.match(md, /Written from acceptance criteria\.\*\* This ticket has no merged/)
+})

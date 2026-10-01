@@ -36,7 +36,7 @@ from ..code_grounding_critic import (
 )
 from ..github_client import GitHubSearchThrottled
 from ..config import settings
-from ..description_analyzer import extract_ac_action_facets
+from ..description_analyzer import extract_ac_action_facets, extract_ac_destination
 from ..fix_scope_critic import (
     apply_scope_verdicts,
     build_case_scope_inputs,
@@ -307,6 +307,9 @@ def compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
     # ac_id → list of case-text blobs, so a compound AC can be checked PER
     # enumerated action against the cases that actually claim to cover it.
     cases_by_ac: dict[str, list[str]] = {}
+    # ac_id → assertion types of the cases covering it, so a destination AC
+    # can require a case that asserts the destination rather than access.
+    assertion_types_by_ac: dict[str, set[str]] = {}
     for bucket in (
         test_plan.happy_path,
         test_plan.edge_cases,
@@ -341,6 +344,9 @@ def compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
                     declared.add(trimmed)
                     kept.append(trimmed)
                     cases_by_ac.setdefault(trimmed, []).append(_case_text_blob(case))
+                    assertion_types_by_ac.setdefault(trimmed, set()).add(
+                        str(case.get("assertion_type") or "").strip().lower()
+                    )
                 else:
                     invalid_ids.add(trimmed)
             # Rewrite the case so the UI / persisted plan only show real IDs.
@@ -370,17 +376,35 @@ def compute_ac_coverage(test_plan, tickets_data: list[dict]) -> dict:
                 # case. A subset (only created+updated) ships the rest
                 # untested while the bullet-level check reads as fully covered.
                 facets = extract_ac_action_facets(text)
+                missing: list[str] = []
                 if facets:
                     blob = " ".join(cases_by_ac.get(ac_id, []))
                     text_stems = {_facet_stem(w) for w in re.findall(r"[a-z]+", blob)}
                     missing = [f for f in facets if not _facet_is_covered(f, text_stems)]
-                    if missing:
-                        under_covered.append({
-                            "id": ac_id,
-                            "text": text,
-                            "missing_actions": missing,
-                            "actions": facets,
-                        })
+                # An AC that says where a control takes the user is covered
+                # only by a case asserting that destination. A case proving
+                # the user can reach the target some other way is an access
+                # check — the SK-2627 sign-off that shipped two email buttons
+                # pointing at the app root.
+                destination = extract_ac_destination(text)
+                missing_destination = (
+                    destination
+                    if destination
+                    and "destination" not in assertion_types_by_ac.get(ac_id, set())
+                    else None
+                )
+                if missing or missing_destination:
+                    entry = {
+                        "id": ac_id,
+                        "text": text,
+                        "missing_actions": missing
+                        + ([f"destination: {missing_destination}"] if missing_destination else []),
+                        "actions": (facets or [])
+                        + ([f"destination: {destination}"] if destination else []),
+                    }
+                    if missing_destination:
+                        entry["missing_destination"] = missing_destination
+                    under_covered.append(entry)
             else:
                 uncovered.append({"id": ac_id, "text": text})
         uncovered_total += len(uncovered)
@@ -881,7 +905,27 @@ def _is_ungrounded(case: dict) -> bool:
     )
 
 
-def quarantine_ungrounded_cases(test_plan) -> list[dict]:
+def _gradeable_from_the_ac(case: dict, spec_is_source: bool) -> bool:
+    """Whether an ungrounded case still has a pass condition a tester can grade.
+
+    Quarantine exists for cases whose expected result is a guess. Two kinds
+    are not: a case asserting where a control takes the user, when an AC
+    states that destination (the tester clicks it and looks), and, on a plan
+    written from ACs because the ticket has no PR, any case citing an AC —
+    there the AC is the spec. Plan 551 filed SK-2627's "Sign Up For Forms"
+    case under needs-spec, out of the gradeable sections, and the broken
+    button shipped.
+    """
+    if not case.get("covers_acs") or case.get("ac_grounding_disputed"):
+        # A case the AC-grounding critic says goes beyond its cited AC has
+        # no AC-stated pass condition to grade by.
+        return False
+    if spec_is_source:
+        return True
+    return str(case.get("assertion_type") or "").strip().lower() == "destination"
+
+
+def quarantine_ungrounded_cases(test_plan, *, spec_is_source: bool = False) -> list[dict]:
     """Pull ungrounded cases out of the numbered sections, in place.
 
     Before this existed the pipeline already *detected* these cases — it
@@ -903,7 +947,7 @@ def quarantine_ungrounded_cases(test_plan) -> list[dict]:
             continue
         keep = []
         for case in items:
-            if _is_ungrounded(case):
+            if _is_ungrounded(case) and not _gradeable_from_the_ac(case, spec_is_source):
                 case["needs_spec"] = True
                 case["needs_spec_reason"] = (
                     "Neither the UI element this case drives nor its expected "

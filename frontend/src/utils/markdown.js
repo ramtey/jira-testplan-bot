@@ -468,10 +468,17 @@ const provenanceEntries = (plan) => {
   return Array.isArray(entries) ? entries : []
 }
 
+// A plan written from a ticket's ACs because it has no PR of its own. It has
+// to say so at the top: SK-2627 had no plan at all, and a plan in its place
+// that read like an ordinary one would hide that no code was checked.
+const specOnlyMessage = (plan) => plan?.source_provenance?.spec_only?.message || ''
+
 const formatProvenanceMarkdown = (plan) => {
   const entries = provenanceEntries(plan)
-  if (entries.length === 0) return ''
+  const specOnly = specOnlyMessage(plan)
+  if (entries.length === 0 && !specOnly) return ''
   let md = '## 🔗 Grounded in\n\n'
+  if (specOnly) md += `> ⚠️ **Written from acceptance criteria.** ${specOnly}\n\n`
   if (plan.source_provenance.grounded_on_unmerged) {
     md += '> ⚠️ Part of this plan rests on code that has not merged. Those cases describe proposed behaviour and can drift as the PR changes.\n\n'
   }
@@ -479,6 +486,7 @@ const formatProvenanceMarkdown = (plan) => {
     const state = PR_STATE_LABELS[e.state] || e.state || 'unknown'
     const sha = shortSha(e.head_sha)
     md += `- ${e.url ? `[${prLabel(e)}](${e.url})` : prLabel(e)} — ${state}`
+    if (e.borrowed && e.ticket_key) md += ` — from ${e.ticket_key}`
     if (sha) md += ` @ \`${sha}\``
     if (!e.used_as_grounding) md += ' — **excluded**'
     md += '\n'
@@ -492,8 +500,10 @@ const formatProvenanceMarkdown = (plan) => {
 
 const formatProvenanceJira = (plan) => {
   const entries = provenanceEntries(plan)
-  if (entries.length === 0) return ''
+  const specOnly = specOnlyMessage(plan)
+  if (entries.length === 0 && !specOnly) return ''
   let jira = '🔗 GROUNDED IN\n\n'
+  if (specOnly) jira += `⚠️ WRITTEN FROM ACCEPTANCE CRITERIA. ${specOnly}\n\n`
   if (plan.source_provenance.grounded_on_unmerged) {
     jira += '⚠️ Part of this plan rests on code that has not merged. Those cases describe proposed behaviour and can drift as the PR changes.\n\n'
   }
@@ -501,6 +511,7 @@ const formatProvenanceJira = (plan) => {
     const state = PR_STATE_LABELS[e.state] || e.state || 'unknown'
     const sha = shortSha(e.head_sha)
     jira += `  • ${prLabel(e)} — ${state}`
+    if (e.borrowed && e.ticket_key) jira += ` — from ${e.ticket_key}`
     if (sha) jira += ` @ ${sha}`
     if (!e.used_as_grounding) jira += ' (excluded)'
     if (e.url) jira += `\n    ${e.url}`

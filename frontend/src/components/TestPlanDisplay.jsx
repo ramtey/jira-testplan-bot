@@ -1218,9 +1218,10 @@ function SourceProvenancePanel({ provenance }) {
   // An unreadable design is worth saying even on a ticket with no PRs — it is
   // the difference between "no visual checks were needed" and "no visual
   // checks could be written".
+  const specOnly = provenance?.spec_only?.message || ''
   if (entries.length === 0 && !figmaUnavailable && contextGaps.length === 0
-      && criticsUnavailable.length === 0 && !copyOnly) return null
-  const unmerged = !!provenance.grounded_on_unmerged
+      && criticsUnavailable.length === 0 && !copyOnly && !specOnly) return null
+  const unmerged = !!provenance.grounded_on_unmerged || !!specOnly
   return (
     <div
       className="card"
@@ -1237,7 +1238,12 @@ function SourceProvenancePanel({ provenance }) {
           Grounded in
         </span>
       </div>
-      {unmerged && (
+      {specOnly && (
+        <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', marginBottom: 'var(--s-3)' }}>
+          <strong>Written from acceptance criteria.</strong> {specOnly}
+        </div>
+      )}
+      {provenance.grounded_on_unmerged && (
         <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', marginBottom: 'var(--s-3)' }}>
           Part of this plan rests on code that has not merged — those cases describe
           proposed behaviour and can drift as the PR changes.
@@ -1315,6 +1321,7 @@ function SourceProvenancePanel({ provenance }) {
               ) : name}
               {' — '}
               {PR_STATE_LABELS[e.state] || e.state || 'unknown'}
+              {e.borrowed && e.ticket_key && <> — from {e.ticket_key}</>}
               {sha && (
                 <code style={{ fontSize: 11, marginLeft: 6, color: 'var(--fg-subtle)' }}>{sha}</code>
               )}

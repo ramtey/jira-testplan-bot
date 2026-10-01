@@ -426,19 +426,36 @@ class _StubLLM:
         return None
 
 
-def _request(dev_info: dict | None, ticket_key: str = "SK-2563"):
+WITH_ACS = "Acceptance Criteria:\n1. Defaults reset for internal testers\n"
+# A ticket that gives the generator nothing to write from: no PR and no AC.
+NO_ACS = "Reset the personal calculator defaults for internal testers."
+
+
+def _request(
+    dev_info: dict | None,
+    ticket_key: str = "SK-2563",
+    description: str = WITH_ACS,
+    parent_key: str | None = None,
+):
     from src.app.models import GenerateTestPlanRequest
 
     return GenerateTestPlanRequest(
         ticket_key=ticket_key,
         summary="Reset personal calculator defaults",
-        description="Acceptance Criteria:\n1. Defaults reset for internal testers\n",
+        description=description,
         issue_type="Story",
         development_info=dev_info,
+        parent_info={"key": parent_key, "summary": "Parent"} if parent_key else None,
     )
 
 
-async def _generate(dev_info, ticket_key="SK-2563", plan=None):
+async def _generate(
+    dev_info,
+    ticket_key="SK-2563",
+    plan=None,
+    description=WITH_ACS,
+    parent_key=None,
+):
     captured: dict = {}
     with (
         patch.object(
@@ -449,7 +466,8 @@ async def _generate(dev_info, ticket_key="SK-2563", plan=None):
         patch.object(plan_service, "classify_deliverable", AsyncMock(return_value=None)),
     ):
         response = await plan_service.generate_single(
-            _request(dev_info, ticket_key), llm=_StubLLM(captured, plan)
+            _request(dev_info, ticket_key, description, parent_key),
+            llm=_StubLLM(captured, plan),
         )
     return response, captured
 
@@ -504,9 +522,12 @@ async def test_sk2563_regenerated_never_sees_the_abandoned_pr():
 
 @pytest.mark.asyncio
 async def test_a_closed_unmerged_pr_alone_yields_no_plan():
-    """SK-2563 if the abandoned PR had been its *only* PR. Nothing landed,
-    so there is nothing to test."""
-    response, captured = await _generate(_dev_info(_sk2563_closed_pr()))
+    """SK-2563 if the abandoned PR had been its *only* PR, and it had no ACs.
+    Nothing landed and nothing specifies the behaviour, so there is nothing
+    to test."""
+    response, captured = await _generate(
+        _dev_info(_sk2563_closed_pr()), description=NO_ACS
+    )
 
     assert response["no_source"] is True
     assert response["happy_path"] == []
@@ -516,7 +537,9 @@ async def test_a_closed_unmerged_pr_alone_yields_no_plan():
 @pytest.mark.asyncio
 async def test_no_pr_at_all_reports_no_implementation_found():
     """SK-2609: ten cases of speculation before, a short report now."""
-    response, captured = await _generate(None, ticket_key="SK-2609")
+    response, captured = await _generate(
+        None, ticket_key="SK-2609", description=NO_ACS
+    )
 
     assert response["no_source"] is True
     assert response["ticket_key"] == "SK-2609"
@@ -527,6 +550,167 @@ async def test_no_pr_at_all_reports_no_implementation_found():
     assert response["integration_tests"] == []
     assert response["regression_checklist"] == []
     assert captured == {}, "the generator must not have been called at all"
+
+
+@pytest.mark.asyncio
+async def test_a_no_source_skip_is_recorded_as_skipped_not_ok():
+    """Run 959 (SK-2627) was stored as status ok, 660ms, no plan — the same
+    record as a success. The skip has to say it is one."""
+    with patch.object(plan_service.run_tracker, "skip", AsyncMock()) as skip:
+        await _generate(None, ticket_key="SK-2609", description=NO_ACS)
+    skip.assert_awaited_once()
+    assert skip.await_args.kwargs["reason"] == "no_source"
+
+
+# ─── no PR of its own, but ACs: write from the ACs (SK-2627) ─────────────────
+
+
+def _sibling_lookup(result=None, exc=None):
+    mock = AsyncMock(return_value=result or [], side_effect=exc)
+    return patch.object(
+        plan_service.JiraClient, "get_sibling_development_info", mock
+    ), mock
+
+
+@pytest.mark.asyncio
+async def test_a_ticket_with_acs_and_no_pr_gets_a_plan_written_from_its_acs():
+    lookup, _ = _sibling_lookup()
+    with lookup:
+        response, captured = await _generate(None, ticket_key="SK-2627")
+
+    assert "no_source" not in response
+    assert captured, "the generator must have been called"
+    assert captured["development_info"]["spec_only"]["ac_count"] == 1
+    notice = response["source_notice"]
+    assert notice["mode"] == "spec_only"
+    assert "written from its 1 acceptance criteria" in notice["message"]
+    assert response["source_provenance"]["spec_only"]
+
+
+@pytest.mark.asyncio
+async def test_sibling_prs_are_borrowed_and_attributed():
+    """SK-2627's email was built in SK-2630's PRs."""
+    from src.app.models import DevelopmentInfo, PullRequest
+
+    sibling = DevelopmentInfo(
+        commits=[],
+        pull_requests=[
+            PullRequest(
+                title="SK-2630 feat: add file-share invite email endpoint",
+                status="MERGED",
+                url="https://github.com/acme/user-service/pull/49",
+                repository="acme/user-service",
+                merged_at="2026-09-24T23:44:53Z",
+                number=49,
+            )
+        ],
+        branches=[],
+    )
+    lookup, mock = _sibling_lookup([("SK-2630", sibling, False), ("SK-2623", None, False)])
+    with lookup:
+        response, captured = await _generate(
+            None, ticket_key="SK-2627", parent_key="SK-2620"
+        )
+
+    mock.assert_awaited_once_with("SK-2620", "SK-2627")
+    prs = captured["development_info"]["pull_requests"]
+    assert [(pr["number"], pr["borrowed_from"]) for pr in prs] == [(49, "SK-2630")]
+    entry = response["source_provenance"]["pull_requests"][0]
+    assert entry["ticket_key"] == "SK-2630" and entry["borrowed"] is True
+    assert "SK-2630" in response["source_notice"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sibling_lookup_is_not_reported_as_no_sibling_prs():
+    lookup, _ = _sibling_lookup(exc=RuntimeError("Jira 503"))
+    with lookup:
+        response, captured = await _generate(
+            None, ticket_key="SK-2627", parent_key="SK-2620"
+        )
+
+    assert captured, "a failed lookup still leaves the ACs to write from"
+    message = response["source_notice"]["message"]
+    assert "lookup" in message and "failed" in message
+    assert "No other ticket" not in message
+
+
+@pytest.mark.asyncio
+async def test_ac_citing_cases_stay_gradeable_on_a_spec_only_plan():
+    """Plan 551 filed SK-2627's sign-up case under needs-spec. On a plan
+    written from ACs, the AC is the spec: a case citing one is gradeable."""
+    plan = TestPlan(
+        happy_path=[
+            _case(
+                "Sign Up For Forms lands in account creation",
+                needs_manual_verification=True,
+                expected_verified=False,
+                covers_acs=["SK-2627-AC1"],
+            ),
+            _case(
+                "Speculative control nobody specified",
+                needs_manual_verification=True,
+                expected_verified=False,
+            ),
+        ],
+        edge_cases=[],
+        integration_tests=[],
+        regression_checklist=[],
+    )
+    lookup, _ = _sibling_lookup()
+    with lookup:
+        response, _ = await _generate(None, ticket_key="SK-2627", plan=plan)
+
+    assert [c["title"] for c in response["happy_path"]] == [
+        "Sign Up For Forms lands in account creation"
+    ]
+    assert [c["title"] for c in response["needs_spec_cases"]] == [
+        "Speculative control nobody specified"
+    ]
+
+
+def test_a_case_the_critic_says_exceeds_its_ac_is_still_quarantined():
+    """Regenerated SK-2627 kept "Save fails — no success toast" gradeable
+    because it cited AC1, though the critic said AC1 says nothing about
+    failure. Citing an AC is not the same as the AC stating the outcome."""
+    plan = TestPlan(
+        happy_path=[
+            _case(
+                "Save fails — no success toast and no invitation email",
+                needs_manual_verification=True,
+                expected_verified=False,
+                covers_acs=["SK-2627-AC1"],
+                ac_grounding_disputed=True,
+            )
+        ],
+        edge_cases=[],
+        integration_tests=[],
+        regression_checklist=[],
+    )
+    moved = quarantine_ungrounded_cases(plan, spec_is_source=True)
+    assert [c["title"] for c in moved] == [
+        "Save fails — no success toast and no invitation email"
+    ]
+
+
+def test_an_ungrounded_destination_case_is_not_quarantined():
+    """Outside spec-only mode too: the AC states where the button goes, so
+    clicking it is a gradeable check even when the link target is not in
+    any diff."""
+    plan = TestPlan(
+        happy_path=[
+            _case(
+                "Check It Out lands inside the shared file",
+                needs_manual_verification=True,
+                expected_verified=False,
+                covers_acs=["SK-2627-AC7"],
+                assertion_type="destination",
+            )
+        ],
+        edge_cases=[],
+        integration_tests=[],
+        regression_checklist=[],
+    )
+    assert quarantine_ungrounded_cases(plan) == []
 
 
 @pytest.mark.asyncio
@@ -688,3 +872,15 @@ def test_a_scope_decision_comment_outranks_testing_chatter():
     assert bodies[0].startswith("Closing this PR"), (
         "and must be ranked above ordinary testing chatter"
     )
+
+
+def test_prompt_tells_the_model_it_is_writing_from_the_acs():
+    prompt = _prompt_for(
+        {
+            "pull_requests": [{**_merged_pr(), "borrowed_from": "SK-2630"}],
+            "spec_only": {"ac_count": 3, "borrowed_from": ["SK-2630"]},
+        }
+    )
+    assert "NO PULL REQUEST OF THIS TICKET'S OWN" in prompt
+    assert "cannot be verified from source" in prompt
+    assert "Belongs to sibling ticket SK-2630" in prompt
