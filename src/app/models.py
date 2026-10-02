@@ -4,6 +4,7 @@ Data models for the Jira Test Plan Bot.
 This module contains all Pydantic and dataclass models used throughout the application.
 """
 
+import functools
 import re
 from dataclasses import dataclass
 
@@ -18,6 +19,30 @@ LOOM_URL_RE = re.compile(
     r"https?://(?:www\.)?loom\.com/share/[A-Za-z0-9_-]+",
     re.IGNORECASE,
 )
+
+
+@functools.lru_cache(maxsize=8)
+def _compile_video_url_re(prefixes: tuple[str, ...]) -> re.Pattern[str]:
+    alternatives = [r"(?:www\.)?loom\.com/share/"]
+    for prefix in prefixes:
+        bare = re.sub(r"^https?://", "", prefix.strip(), flags=re.IGNORECASE)
+        if bare:
+            alternatives.append(re.escape(bare))
+    return re.compile(
+        r"https?://(?:" + "|".join(alternatives) + r")[A-Za-z0-9_-]+",
+        re.IGNORECASE,
+    )
+
+
+def video_url_re() -> re.Pattern[str]:
+    """Loom share URLs plus any host in settings.pr_video_url_prefixes.
+
+    Read at call time rather than import time so a settings override (tests,
+    a reloaded .env) takes effect without re-importing this module.
+    """
+    from .config import settings
+
+    return _compile_video_url_re(tuple(settings.pr_video_url_prefixes or ()))
 
 
 # ============================================================================
@@ -672,10 +697,11 @@ class WorkflowActionRequest(BaseModel):
                 # Blank/whitespace entries get dropped downstream by
                 # _normalize_url_list; no reason to reject the whole payload.
                 continue
-            if not LOOM_URL_RE.fullmatch(trimmed):
+            if not video_url_re().fullmatch(trimmed):
                 raise ValueError(
                     f"{trimmed!r} is not a valid Loom share URL "
-                    f"(expected https://www.loom.com/share/…)"
+                    f"(expected https://www.loom.com/share/… or a host in "
+                    f"PR_VIDEO_URL_PREFIXES)"
                 )
         return value
 

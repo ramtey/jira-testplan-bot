@@ -34,7 +34,7 @@ from .jira_client import (
     JiraNotFoundError,
     is_blocked_bot_display_name,
 )
-from .models import LOOM_URL_RE, WorkflowActionRequest
+from .models import LOOM_URL_RE, WorkflowActionRequest, video_url_re
 from .repositories import walkthrough_repository
 from . import uat_readiness
 
@@ -92,7 +92,8 @@ async def _resolve_media_ids_for_urls(
 # validator and the PR-description scraper below can't drift. We .search()
 # here (URLs are embedded in prose / markdown link targets) rather than
 # .fullmatch() — trailing punctuation like "video: …loom.com/share/abc."
-# is naturally excluded by the character class.
+# is naturally excluded by the character class. The scraper uses
+# models.video_url_re(), which adds the PR_VIDEO_URL_PREFIXES hosts to Loom.
 
 
 # GitHub-hosted image URLs that show up in PR descriptions. Three shapes:
@@ -207,7 +208,7 @@ async def _harvest_loom_urls_from_merged_prs(
             continue
         fetched_any = True
         body = details.description or ""
-        for match in LOOM_URL_RE.finditer(body):
+        for match in video_url_re().finditer(body):
             url = match.group(0).rstrip(".,);:]")
             if url not in seen_looms:
                 seen_looms.add(url)

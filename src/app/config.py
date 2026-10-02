@@ -138,6 +138,14 @@ class Settings(BaseSettings):
     # env as JSON, e.g. BOT_DISPLAY_NAMES='["testing acme","ci bot"]'.
     bot_display_names: list[str] = []
 
+    # Video hosts besides Loom whose share links count as a demo video in a
+    # merged PR's description. Each entry is a URL prefix ending where the
+    # video id starts; the scheme is optional. Matched links show up in the
+    # Pass-to-UAT "From merged PR" panel and post into the hand-off comment
+    # exactly like a Loom. Set via env as JSON, e.g.
+    # PR_VIDEO_URL_PREFIXES='["https://videos.acme.com/r/"]'.
+    pr_video_url_prefixes: list[str] = []
+
     # ---- Queue watcher -------------------------------------------------
     # Pre-generates a test plan the moment a ticket lands in the QA queue,
     # so the tester opens a ticket that already has a plan, critics run and

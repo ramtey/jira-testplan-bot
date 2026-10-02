@@ -1011,10 +1011,12 @@ def _build_qa_pass_adf(
         })
 
     for loom_url in pr_looms:
+        # PR_VIDEO_URL_PREFIXES hosts ride the same list; don't call them Loom.
+        host_label = "Loom" if re.search(r"(?i)^https?://(?:www\.)?loom\.com/", loom_url) else "Video"
         content.append({
             "type": "paragraph",
             "content": [
-                {"type": "text", "text": "📹 Loom (from merged PR): "},
+                {"type": "text", "text": f"📹 {host_label} (from merged PR): "},
                 {
                     "type": "text",
                     "text": loom_url,

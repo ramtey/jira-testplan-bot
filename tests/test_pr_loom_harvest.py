@@ -85,6 +85,60 @@ def test_loom_regex_ignores_non_share_paths():
     ) == []
 
 
+def test_video_regex_adds_configured_prefixes():
+    # PR_VIDEO_URL_PREFIXES hosts match alongside Loom; scheme in the
+    # prefix is optional and an unconfigured host still doesn't match.
+    with patch.object(
+        workflow_routes.settings,
+        "pr_video_url_prefixes",
+        ["https://videos.acme.com/r/", "clips.acme.io/v/"],
+    ):
+        assert workflow_routes.video_url_re().findall(
+            "Demo [here](https://videos.acme.com/r/5ofnmidog7), "
+            "also http://clips.acme.io/v/Ab_9. and https://www.loom.com/share/abc "
+            "but not https://videos.acme.com/x/zzz or https://other.com/r/q"
+        ) == [
+            "https://videos.acme.com/r/5ofnmidog7",
+            "http://clips.acme.io/v/Ab_9",
+            "https://www.loom.com/share/abc",
+        ]
+
+
+def test_video_regex_is_loom_only_by_default():
+    with patch.object(workflow_routes.settings, "pr_video_url_prefixes", []):
+        assert workflow_routes.video_url_re().findall(
+            "https://videos.acme.com/r/5ofnmidog7 https://loom.com/share/x"
+        ) == ["https://loom.com/share/x"]
+
+
+@pytest.mark.asyncio
+async def test_harvest_picks_up_configured_video_host():
+    jira = _jira_client(pr_urls=["https://github.com/acme/app/pull/1"])
+    gh = MagicMock()
+    gh.fetch_pr_details = AsyncMock(
+        return_value=_pr_details("Video: https://videos.acme.com/r/5ofnmidog7")
+    )
+    with patch.object(workflow_routes.settings, "github_token", "t"), patch.object(
+        workflow_routes.settings, "pr_video_url_prefixes", ["https://videos.acme.com/r/"]
+    ), patch.object(workflow_routes, "GitHubClient", return_value=gh):
+        assert await _harvest(jira) == (
+            ["https://videos.acme.com/r/5ofnmidog7"], [], "found"
+        )
+
+
+def test_request_accepts_configured_video_host():
+    from src.app.models import WorkflowActionRequest
+
+    url = "https://videos.acme.com/r/5ofnmidog7"
+    with patch.object(
+        workflow_routes.settings, "pr_video_url_prefixes", ["https://videos.acme.com/r/"]
+    ):
+        assert WorkflowActionRequest(pr_loom_urls=[url]).pr_loom_urls == [url]
+    with patch.object(workflow_routes.settings, "pr_video_url_prefixes", []):
+        with pytest.raises(ValueError):
+            WorkflowActionRequest(pr_loom_urls=[url])
+
+
 # ---------- Guards ----------
 
 

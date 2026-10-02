@@ -150,6 +150,14 @@ def test_build_qa_pass_adf_pr_loom_uses_distinct_prefix():
     }
 
 
+def test_build_qa_pass_adf_pr_non_loom_video_is_labelled_video():
+    doc = _build_qa_pass_adf(
+        None, None, None, None, None, ["https://videos.acme.com/r/abc"]
+    )
+    paragraphs = _loom_paragraphs(doc)
+    assert paragraphs[0]["content"][0]["text"] == "📹 Video (from merged PR): "
+
+
 def test_build_qa_pass_adf_pr_loom_alone_creates_a_comment():
     # A ticked PR loom is meaningful on its own — no other field required.
     doc = _build_qa_pass_adf(
