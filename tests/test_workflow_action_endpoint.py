@@ -9,6 +9,7 @@ tests drive the full handler through FastAPI's TestClient so we catch
 regressions in how the pieces are wired.
 """
 
+import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -175,6 +176,34 @@ def test_pass_to_uat_gates_high_complexity_ticket_without_walkthrough():
     # No Jira calls after the gate — ticket stays exactly where it was.
     jira.list_transitions.assert_not_awaited()
     jira.transition_issue.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "summary, prefixes",
+    [
+        ("Video: https://www.loom.com/share/abc123", []),
+        ("Video: https://videos.acme.com/r/5ofnmidog7", ["https://videos.acme.com/r/"]),
+    ],
+)
+def test_pass_to_uat_video_link_in_notes_satisfies_gate(summary, prefixes):
+    """The form has no Loom field; a video link pasted into the notes is the
+    walkthrough, so the readiness lookup must not run."""
+    import json
+
+    jira = _jira_stub()
+    with patch("src.app.workflow_routes.JiraClient", return_value=jira), \
+            patch.object(workflow_routes.settings, "pr_video_url_prefixes", prefixes), \
+            patch("src.app.workflow_routes.uat_readiness") as uat_mod:
+        uat_mod.fetch_readiness = AsyncMock(
+            return_value={"needs_walkthrough": True, "uat_complexity": "high"}
+        )
+        response = client.post(
+            "/issue/SK-42/workflow/pass-to-uat",
+            data={"payload": json.dumps({"summary": summary})},
+        )
+
+    assert response.status_code == 200
+    uat_mod.fetch_readiness.assert_not_awaited()
 
 
 def test_pass_to_uat_override_flag_bypasses_readiness_gate():

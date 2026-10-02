@@ -453,11 +453,6 @@ function truncateMiddle(name, max = 32) {
   return base.slice(0, head) + ellipsis + base.slice(-tail) + ext
 }
 
-// Mirrors LOOM_URL_RE in src/app/models.py. Gates the pass-to-UAT /
-// fail-to-* forms so the tester sees an inline error instead of a 422
-// from the backend validator. Keep the two in sync.
-const LOOM_URL_RE = /^https?:\/\/(?:www\.)?loom\.com\/share\/[A-Za-z0-9_-]+$/i
-
 // Human-facing message per status returned by GET /issue/{key}/pr-looms.
 // Kept as a lookup instead of an if-tree so cases stay parallel and easy to
 // read. Note: "skipped" (non-SK project) is handled by not rendering the
@@ -819,7 +814,6 @@ function WorkflowActions({
   const [feedback, setFeedback] = useState(null)
   const [isLeaving, setIsLeaving] = useState(false)
   const [noteForAction, setNoteForAction] = useState(null)
-  const [loomUrlsText, setLoomUrlsText] = useState('')
   const [summary, setSummary] = useState('')
   const [environments, setEnvironments] = useState(DEFAULT_ENVIRONMENTS)
   const [reason, setReason] = useState('')
@@ -881,7 +875,6 @@ function WorkflowActions({
   // State resets when the form closes.
   const [checklistTicked, setChecklistTicked] = useState(() => new Set())
   const checklistSteps = Array.isArray(videoChecklistSteps) ? videoChecklistSteps : []
-  const loomInputRef = useRef(null)
   // Refs so the "insert [[img:filename]]" chip button can drop the token
   // at the current caret position in whichever textarea the tester is
   // filling out: the Reason on fail-back, the Notes on pass-to-UAT.
@@ -1083,9 +1076,17 @@ function WorkflowActions({
     if (!noteForAction || !ticketKey) return
     const draft = readNoteDraft(ticketKey, noteForAction.id)
     if (!draft) return
-    if (typeof draft.reason === 'string') setReason(draft.reason)
-    if (typeof draft.summary === 'string') setSummary(draft.summary)
-    if (typeof draft.loomUrlsText === 'string') setLoomUrlsText(draft.loomUrlsText)
+    // Drafts saved before the Loom URL field was removed may still carry
+    // its text; append it to the body so an unsent link isn't lost.
+    const legacyLooms =
+      typeof draft.loomUrlsText === 'string' ? draft.loomUrlsText.trim() : ''
+    const withLegacy = (text) =>
+      legacyLooms ? (text ? `${text}\n${legacyLooms}` : legacyLooms) : text
+    if (isFailAction(noteForAction.id)) {
+      setReason(withLegacy(typeof draft.reason === 'string' ? draft.reason : ''))
+    } else {
+      setSummary(withLegacy(typeof draft.summary === 'string' ? draft.summary : ''))
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteForAction?.id, ticketKey])
 
@@ -1096,12 +1097,12 @@ function WorkflowActions({
     if (!noteForAction || !ticketKey) return
     const t = setTimeout(() => {
       const payload = isFailAction(noteForAction.id)
-        ? { reason, loomUrlsText }
-        : { summary, loomUrlsText }
+        ? { reason }
+        : { summary }
       writeNoteDraft(ticketKey, noteForAction.id, payload)
     }, DRAFT_DEBOUNCE_MS)
     return () => clearTimeout(t)
-  }, [noteForAction, ticketKey, reason, summary, loomUrlsText])
+  }, [noteForAction, ticketKey, reason, summary])
 
   const togglePrLoom = (url) => {
     setSelectedPrLooms((prev) => {
@@ -1196,7 +1197,6 @@ function WorkflowActions({
       clearNoteDraft(ticketKey, noteForAction.id)
     }
     setNoteForAction(null)
-    setLoomUrlsText('')
     setSummary('')
     setEnvironments(DEFAULT_ENVIRONMENTS)
     setReason('')
@@ -1423,33 +1423,18 @@ function WorkflowActions({
   const onNoteSubmit = (e) => {
     e.preventDefault()
     if (!noteForAction) return
-    const looms = loomUrlsText
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-
-    const badLoom = looms.find((u) => !LOOM_URL_RE.test(u))
-    if (badLoom) {
-      setFeedback({
-        kind: 'error',
-        text: `"${badLoom}" is not a valid Loom URL (expected https://www.loom.com/share/…).`,
-      })
-      return
-    }
-
     if (noteForAction.id === 'pass-to-uat') {
       // No client-side gate — the server enforces the walkthrough rule and
       // returns a 409 that opens the override prompt in runAction.
-      // PR-discovered Loom URLs the tester ticked on ride on their own
+      // PR-discovered video URLs the tester ticked on ride on their own
       // field so the pass comment can label them "(from merged PR)".
-      // Deduped against typed URLs so a link that shows up in both places
-      // renders once, as a tester-supplied Loom.
-      const seenLooms = new Set(looms)
+      // Skipped when the tester also pasted the link into the notes, so
+      // the same video never posts twice.
+      const trimmedSummary = summary.trim()
       const prLooms = discoveredPrLooms.filter(
-        (url) => selectedPrLooms.has(url) && !seenLooms.has(url)
+        (url) => selectedPrLooms.has(url) && !trimmedSummary.includes(url)
       )
       const prImages = discoveredPrImages.filter((url) => selectedPrImages.has(url))
-      const trimmedSummary = summary.trim()
       // Fold the "steps demonstrated" checklist into the Jira comment when
       // at least one box is ticked. Silent when nothing is checked so the
       // comment stays clean for testers who don't engage with the widget.
@@ -1464,7 +1449,6 @@ function WorkflowActions({
         return trimmedSummary ? `${trimmedSummary}\n\n${bullets}` : bullets
       })()
       const hasAnyField =
-        looms.length > 0 ||
         prLooms.length > 0 ||
         prImages.length > 0 ||
         composedSummary ||
@@ -1472,7 +1456,6 @@ function WorkflowActions({
         imageFiles.length > 0
       const baseBody = hasAnyField
         ? {
-            loom_urls: looms.length > 0 ? looms : null,
             pr_loom_urls: prLooms.length > 0 ? prLooms : null,
             pr_image_urls: prImages.length > 0 ? prImages : null,
             summary: composedSummary,
@@ -1493,7 +1476,6 @@ function WorkflowActions({
       }
       const body = {
         reason: trimmedReason,
-        loom_urls: looms.length > 0 ? looms : null,
         mention_account_ids:
           mentionAccountIds.length > 0 ? mentionAccountIds : null,
       }
@@ -1715,18 +1697,6 @@ function WorkflowActions({
               </>
             )}
 
-            <span className="lbl">Loom URL{loomUrlsText.includes('\n') ? 's' : ''}</span>
-            <textarea
-              ref={loomInputRef}
-              className="inp mono"
-              rows={2}
-              placeholder="https://www.loom.com/share/…"
-              value={loomUrlsText}
-              onChange={(e) => setLoomUrlsText(e.target.value)}
-              disabled={pendingAction !== null}
-              style={{ minHeight: 40 }}
-            />
-
             {noteForAction.id === 'pass-to-uat' && prLoomStatus && prLoomStatus !== 'skipped' && (
               <>
                 <span className="lbl">From merged PR</span>
@@ -1807,8 +1777,8 @@ function WorkflowActions({
                     rows={3}
                     placeholder={
                       checklistSteps.length > 0
-                        ? 'Additional notes (optional). Markdown supported.'
-                        : 'Optional. Markdown supported.'
+                        ? 'Additional notes (optional). Paste the video link here. Markdown supported.'
+                        : 'Optional. Paste the video link here. Markdown supported.'
                     }
                     value={summary}
                     onChange={(e) => setSummary(e.target.value)}

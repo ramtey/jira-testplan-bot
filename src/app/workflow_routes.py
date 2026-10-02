@@ -263,6 +263,13 @@ async def _enforce_pass_to_uat_walkthrough_gate(
                 parsed_payload.pr_loom_urls
                 and any(u and u.strip() for u in parsed_payload.pr_loom_urls)
             )
+            # The form has no Loom field any more; testers paste the video
+            # link into the notes, so a Loom / PR_VIDEO_URL_PREFIXES link
+            # there counts the same.
+            or (
+                parsed_payload.summary
+                and video_url_re().search(parsed_payload.summary)
+            )
         )
     )
     # Form-uploaded images are counted below via `images`; the raw UploadFile
