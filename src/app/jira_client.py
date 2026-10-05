@@ -648,6 +648,9 @@ def _comment_carries_test_plan_marker(comment: dict) -> bool:
 
 
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
+# A summary that already states the verdict ("QA Passed", "qa-pass") gets
+# no marker line on top of it.
+_QA_PASS_VERDICT_RE = re.compile(r"(?i)\bQA[\s-]*pass(?:ed)?\b")
 # The fail-back action lets the tester return a ticket to either "To Do"
 # or "In Progress" (see SK_WORKFLOW_ACTIONS in workflow_routes.py), so the
 # marker text is built at post time from the actual target column. This
@@ -956,8 +959,9 @@ def _build_qa_pass_adf(
 ) -> dict | None:
     """Build the ADF body for a QA→UAT pass comment.
 
-    The marker paragraph is always first so future flows can detect this
-    comment the same way test-plan comments are detected. The environments
+    The marker paragraph comes first unless the summary already states
+    the verdict itself (`_QA_PASS_VERDICT_RE`), in which case it's
+    dropped and any environments get a plain `Environments:` line. The environments
     tag (e.g. `(Integ + Staging)`) is rendered into the marker line so it
     stays visible without expanding. Loom links sit above the fold (one
     paragraph per URL). `pr_loom_urls` are looms the planner harvested
@@ -986,16 +990,26 @@ def _build_qa_pass_adf(
     if not looms and not pr_looms and not summary and not envs and not images:
         return None
 
-    if envs:
-        marker_text = QA_PASS_MARKER.replace(
-            "QA Passed", f"QA Passed ({' + '.join(envs)})"
-        )
+    content: list[dict] = []
+    if _QA_PASS_VERDICT_RE.search(summary):
+        # The tester wrote their own verdict line ("QA Passed — re-test
+        # after fix, moving to UAT"); stacking ours on top reads twice.
+        # Envs only lived in our marker, so they get a line of their own.
+        if envs:
+            content.append({
+                "type": "paragraph",
+                "content": [{"type": "text", "text": f"Environments: {' + '.join(envs)}"}],
+            })
     else:
-        marker_text = QA_PASS_MARKER
-
-    content: list[dict] = [
-        {"type": "paragraph", "content": [{"type": "text", "text": marker_text}]}
-    ]
+        if envs:
+            marker_text = QA_PASS_MARKER.replace(
+                "QA Passed", f"QA Passed ({' + '.join(envs)})"
+            )
+        else:
+            marker_text = QA_PASS_MARKER
+        content.append(
+            {"type": "paragraph", "content": [{"type": "text", "text": marker_text}]}
+        )
 
     for loom_url in looms:
         content.append({

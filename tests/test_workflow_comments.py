@@ -79,6 +79,28 @@ def test_build_qa_pass_adf_marker_unchanged_without_envs():
     assert _marker_text(doc) == QA_PASS_MARKER
 
 
+def test_build_qa_pass_adf_skips_marker_when_summary_states_verdict():
+    doc = _build_qa_pass_adf(
+        None, "QA Passed — re-test after fix, moving to UAT", None
+    )
+    assert doc is not None
+    texts = [n.get("text", "") for p in doc["content"] for n in p.get("content", [])]
+    assert QA_PASS_MARKER not in texts
+    assert sum("QA Passed" in t for t in texts) == 1
+
+
+def test_build_qa_pass_adf_keeps_envs_when_summary_states_verdict():
+    doc = _build_qa_pass_adf(None, "qa pass on retest", ["Integ", "Staging"])
+    assert doc is not None
+    assert _marker_text(doc) == "Environments: Integ + Staging"
+
+
+def test_build_qa_pass_adf_keeps_marker_when_summary_has_no_verdict():
+    doc = _build_qa_pass_adf(None, "Checked the dashboard, all good", None)
+    assert doc is not None
+    assert _marker_text(doc) == QA_PASS_MARKER
+
+
 def test_build_qa_pass_adf_renders_loom_link():
     doc = _build_qa_pass_adf(["https://loom.com/abc"], None, None)
     assert doc is not None
