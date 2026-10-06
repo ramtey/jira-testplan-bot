@@ -99,6 +99,30 @@ def _scrub_test_plan_data(test_plan_data: dict) -> dict:
     return {key: _scrub_test_case(value) for key, value in test_plan_data.items()}
 
 
+_PLAN_CASE_SECTIONS = ("happy_path", "edge_cases", "integration_tests", "regression_checklist")
+
+
+def _require_cases(test_plan_data: dict, response: dict) -> None:
+    """Refuse a plan with nothing in any section.
+
+    No ticket legitimately produces zero cases across all four required
+    sections — the schema requires each of them. A tool_use block that comes
+    back empty is a failed generation, and before this it became a plan of
+    0 cases reported as success (seen 2026-10-06 replaying SK-1998: the
+    other three runs of the same ticket produced 24–26 items).
+    """
+    if any(test_plan_data.get(k) for k in _PLAN_CASE_SECTIONS):
+        return
+    keys = sorted(k for k, v in test_plan_data.items() if v) or ["none"]
+    raise LLMError(
+        "Claude returned a test plan with no cases in any section "
+        f"(stop_reason={response.get('stop_reason')!r}; non-empty fields: "
+        f"{', '.join(keys)}). Treating it as a failed generation, not an "
+        "empty plan.",
+        error_type="service_unavailable",
+    )
+
+
 def _normalize_fix_status(raw: Any, legacy_is_fixed: Any = None) -> str:
     """Coerce LLM output to a valid fix_status. Falls back to legacy is_fixed boolean."""
     if isinstance(raw, str) and raw in _VALID_FIX_STATUSES:
@@ -4792,6 +4816,7 @@ class ClaudeClient(LLMClient):
                     error_type="service_unavailable",
                 )
             test_plan_data = _scrub_test_plan_data(tool_block["input"])
+            _require_cases(test_plan_data, data)
 
             return TestPlan(
                 happy_path=test_plan_data.get("happy_path", []),
@@ -4884,6 +4909,7 @@ class ClaudeClient(LLMClient):
                     error_type="service_unavailable",
                 )
             test_plan_data = _scrub_test_plan_data(tool_block["input"])
+            _require_cases(test_plan_data, data)
 
             return TestPlan(
                 happy_path=test_plan_data.get("happy_path", []),
