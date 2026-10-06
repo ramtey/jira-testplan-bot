@@ -277,33 +277,49 @@ def holdout(profile: RiskProfile, keys: set[str]) -> RiskProfile:
 
     For replay evals only. Every profile line is grounded in cited tickets,
     and a profile mined from a ticket's own bounce scores that ticket by
-    reading the answer back. Dropping every line that cites a held-out key —
-    the whole line, even when it cites other evidence too — asks the harder
-    question: would the knowledge from everything else have caught it?
-    A table row or bullet is one line; continuation lines go with their
-    bullet.
+    reading the answer back. A block citing a held-out key is dropped whole,
+    even when it cites other evidence too — the harder question is whether
+    the knowledge from everything else would have caught it.
+
+    Blocks: a bullet or table row with its indented continuation lines; a
+    paragraph (consecutive plain lines). A dropped paragraph ending in ":"
+    takes the list it introduces with it — its bullets came from the same
+    source even when they don't repeat the key (Nick's SK-2620 Phase II
+    list did not, and leaked into the first Forms eval).
     """
     if not keys:
         return profile
     key_re = re.compile(r"\b(" + "|".join(re.escape(k) for k in sorted(keys)) + r")\b")
-    out: list[str] = []
-    dropping = False
+    # A bullet marker needs its space: "**T1a. …**" is a paragraph, not a bullet.
+    item_re = re.compile(r"\s*(?:[-*]\s|\d+\.\s|\|)")
+
+    # Group lines into blocks: ("sep", [line]) | ("item", lines) | ("para", lines)
+    blocks: list[tuple[str, list[str]]] = []
     for line in profile.body.splitlines():
-        starts_item = bool(re.match(r"\s*(?:[-*]|\d+\.|\|)", line)) or not line.strip() or line.lstrip().startswith("#")
-        if starts_item:
-            dropping = bool(key_re.search(line))
-        elif dropping:
-            continue
-        elif key_re.search(line):
-            # A continuation line citing the key: drop the bullet it belongs to.
-            while out and not re.match(r"\s*(?:[-*]|\d+\.|\|)", out[-1]) and out[-1].strip():
-                out.pop()
-            if out and re.match(r"\s*(?:[-*]|\d+\.)", out[-1]):
-                out.pop()
-            dropping = True
-            continue
-        if not dropping:
-            out.append(line)
+        if not line.strip() or line.lstrip().startswith("#"):
+            blocks.append(("sep", [line]))
+        elif item_re.match(line):
+            blocks.append(("item", [line]))
+        elif line[:1] in (" ", "\t") and blocks and blocks[-1][0] == "item":
+            blocks[-1][1].append(line)
+        elif blocks and blocks[-1][0] == "para":
+            blocks[-1][1].append(line)
+        else:
+            blocks.append(("para", [line]))
+
+    out: list[str] = []
+    dropping_list = False
+    for kind, lines in blocks:
+        cited = bool(key_re.search(" ".join(lines)))
+        if kind == "sep":
+            dropping_list = False
+            out.extend(lines)
+        elif kind == "para":
+            dropping_list = cited and lines[-1].rstrip().endswith(":")
+            if not cited:
+                out.extend(lines)
+        elif not (cited or dropping_list):
+            out.extend(lines)
     body = "\n".join(out)
     return RiskProfile(
         name=profile.name,

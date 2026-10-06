@@ -135,3 +135,23 @@ def test_holdout_drops_cited_lines_and_their_continuations(tmp_path):
 def test_parse_profile_uses_file_stem_when_unnamed(tmp_path):
     p = parse_profile("---\nmatch:\n  repos: [x]\n---\nbody", tmp_path / "digisign.md")
     assert p.name == "digisign"
+
+
+def test_holdout_drops_a_list_introduced_by_a_cited_paragraph(tmp_path):
+    # Nick's Phase II bullets didn't repeat SK-2620, only their intro did,
+    # and "Contacts and MLS import" leaked into the first Forms eval.
+    text = PROFILE + """
+**Surfaces a newly-granted person reaches** — check the ones the change
+could affect (Nick's SK-2620 Phase II checklist):
+- Contacts and MLS import inside the file
+- Envelope history
+
+**Unrelated note:**
+- Kept bullet
+"""
+    [p] = load_profiles(write_profile(tmp_path, text))
+    h = holdout(p, {"SK-2620"})
+    assert "Surfaces a newly-granted" not in h.body
+    assert "Contacts and MLS import" not in h.body
+    assert "Envelope history" not in h.body
+    assert "Unrelated note" in h.body and "Kept bullet" in h.body
