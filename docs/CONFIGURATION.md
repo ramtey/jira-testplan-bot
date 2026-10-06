@@ -59,6 +59,7 @@ belongs in a public repo. All four are JSON, all four are optional, and
 | `TEAM_GITHUB_LOGIN_TO_JIRA` | GitHub login → `[Jira accountId, display name]`, for choosing who a fail-back returns to | Falls back to searching Jira by commit email → profile name → login; misses anyone whose GitHub name differs from their Jira name, or who commits via a GitHub noreply address. Logged once at startup of the first lookup |
 | `BOT_DISPLAY_NAMES` | Jira display names of service accounts that must never be left holding a ticket | Only the accountId-based check guards the hand-off |
 | `BUG_LENS_REPO_HINTS` | Product keyword regex → repos to code-search when a bug ticket has no linked PR | Bug Lens searches only repos the ticket actually links |
+| `RISK_PROFILES_DIR` | Directory of product risk profiles — QA-written user types, fragile features and environment limits, one markdown file per product. See [risk_profile.example.md](risk_profile.example.md) | Plans know only what the ticket, PRs and comments say |
 
 Finding a Jira accountId: it appears in any user object the Jira API returns,
 or query `/rest/api/3/user/search?query=<email>` on your instance.

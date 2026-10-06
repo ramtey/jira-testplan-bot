@@ -39,6 +39,11 @@ from .security_surfaces import (
     merge_development_infos,
     render_security_guidance,
 )
+from .risk_profiles import (
+    match_profiles,
+    match_profiles_for_batch,
+    render_risk_profile_guidance,
+)
 from .shared_component_fanout import detect_fanout, render_fanout_guidance
 
 _VALID_FIX_STATUSES = ("not_fixed", "in_testing", "fixed")
@@ -3251,6 +3256,12 @@ TICKET INFORMATION
         if security_ctx is not None:
             prompt += render_security_guidance(security_ctx)
 
+        # Product risk profile: QA-written knowledge the ticket can't carry.
+        # Matched by linked repo or summary; see src/app/risk_profiles.py.
+        prompt += render_risk_profile_guidance(
+            match_profiles(summary=summary, development_info=development_info)
+        )
+
         prompt += UI_GROUNDING_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
 
@@ -3626,6 +3637,10 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
         )
         if security_ctx is not None:
             prompt += render_security_guidance(security_ctx)
+
+        # Once for the batch, over every ticket: a profile matching any of
+        # them governs the whole plan, which the model emits once.
+        prompt += render_risk_profile_guidance(match_profiles_for_batch(tickets))
 
         prompt += UI_GROUNDING_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE

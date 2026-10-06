@@ -132,3 +132,34 @@ class TestConditionParity:
         assert "conditions unrecorded" in out
         assert "parity unverified" in out
         assert "conditions match" not in out
+
+
+class TestRewindLeaks:
+    """Two ways the answer survived the rewind, found building the Forms corpus."""
+
+    def test_a_bounce_a_second_before_its_complaint_is_removed(self):
+        # The bot moves the status ~1s before posting the comment, and
+        # bounce_history pairs that comment's text with the bounce.
+        cutoff = rb._iso("2026-09-16T13:38:43.612-07:00")
+        payload = {"bounce_history": [
+            {"timestamp": "2026-09-16T13:38:42.500-07:00", "reason": "the complaint"},
+            {"timestamp": "2026-09-10T09:00:00-07:00", "reason": "an older bounce"},
+        ]}
+        out, removed = rb.rewind(payload, cutoff)
+        assert [b["reason"] for b in out["bounce_history"]] == ["an older bounce"]
+        assert removed["bounces"] == 1
+
+    def test_a_fix_merged_before_the_comment_is_removed_when_the_row_is_dated_earlier(self):
+        # SK-2662: the fix merged at 11:56, QA wrote it up at 13:38. The row is
+        # dated before the merge, and the matched comment must not move the
+        # cutoff past it.
+        row_cutoff = rb._iso("2026-09-16T11:55:00-07:00")
+        payload = {"comments": [{"created": "2026-09-16T13:38:43-07:00",
+                                 "body": "shouldOverride true is coerced"}]}
+        comment = rb.reason_cutoff(payload, row_cutoff, "shouldOverride true is coerced")
+        cutoff = min(row_cutoff, comment)
+        assert cutoff == row_cutoff
+        dev = {"development_info": {"pull_requests": [
+            {"merged_at": "2026-09-16T11:56:00-07:00"}]}}
+        _, removed = rb.rewind(dev, cutoff)
+        assert removed["prs"] == 1

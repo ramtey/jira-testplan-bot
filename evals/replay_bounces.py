@@ -57,6 +57,17 @@ CONTEXT_RETRY_PAUSE_S = 20
 # grading call depends on.
 JUDGE_MODEL = os.environ.get("EVAL_JUDGE_MODEL", "claude-opus-4-8")
 
+# Product risk profiles for this run: a directory, or unset for none. Read
+# from its own variable rather than RISK_PROFILES_DIR so the .env the live bot
+# uses cannot switch profiles on in a baseline run by accident.
+#
+# Each ticket is replayed against a HOLDOUT copy: every profile line citing
+# that ticket is removed first (src/app/risk_profiles.py:holdout). Profiles
+# are mined from bounces like these, and a profile that still carries a
+# ticket's own complaint scores it by reading the answer back — the fifth
+# way this eval can leak.
+EVAL_RISK_PROFILES_DIR = os.environ.get("EVAL_RISK_PROFILES_DIR") or None
+
 GRADE_TOOL = {
     "name": "report_coverage",
     "description": "Report, per reported problem, whether the test plan would have caught it.",
@@ -233,6 +244,7 @@ def rewind(serialized, cutoff):
     """
     payload = serialized
     removed = {"comments": 0, "bounces": 0, "prs": 0, "attachments": 0}
+    att_cutoff = cutoff - ATTACHMENT_GRACE
 
     comments = payload.get("comments") or []
     # An undateable comment is dropped, not kept: we cannot prove it predates
@@ -242,9 +254,13 @@ def rewind(serialized, cutoff):
     removed["comments"] = len(comments) - len(kept)
     payload["comments"] = kept or None
 
+    # Bounces get the attachment grace window too. When the bot posts a
+    # bounce, the status moves about a second BEFORE the comment that carries
+    # the complaint, and bounce_history pairs that complaint with the bounce —
+    # so a bounce kept by a strict `< cutoff` brings the answer with it.
     bounces = payload.get("bounce_history") or []
     kept_b = [b for b in bounces
-              if (_iso(b.get("timestamp")) or cutoff) < cutoff]
+              if (_iso(b.get("timestamp")) or att_cutoff) < att_cutoff]
     removed["bounces"] = len(bounces) - len(kept_b)
     payload["bounce_history"] = kept_b or None
 
@@ -269,7 +285,6 @@ def rewind(serialized, cutoff):
     # before the complaint is part of the complaint, so attachments get a
     # grace window that comments do not.
     atts = payload.get("attachments") or []
-    att_cutoff = cutoff - ATTACHMENT_GRACE
     kept_a = [a for a in atts if (_iso(a.get("created")) or att_cutoff) < att_cutoff]
     removed["attachments"] = len(atts) - len(kept_a)
     payload["attachments"] = kept_a or None
@@ -348,6 +363,31 @@ async def fetch_with_context(jira, key, serialize_issue):
     return serialize_issue(await jira.get_issue(key)), True
 
 
+def use_profiles_for(key, extra=()):
+    """Point the generator at holdout copies of the eval's profiles for `key`.
+
+    `extra` holds more keys to hold out — a row's optional `holdout` column.
+    A problem found on one story of an epic was usually written into the
+    profile under the epic's key, so holding out the story alone leaks it.
+
+    Returns the loaded holdout profiles (empty when the run has none).
+    """
+    import tempfile
+    from src.app.risk_profiles import holdout, load_profiles
+
+    profiles = load_profiles(EVAL_RISK_PROFILES_DIR)
+    if not profiles:
+        settings.risk_profiles_dir = None
+        return []
+    held = [holdout(p, {key, *extra}) for p in profiles]
+    tmp = Path(tempfile.mkdtemp(prefix=f"profiles-{key}-"))
+    for original, p in zip(profiles, held):
+        front = original.path.read_text(encoding="utf-8").split("---", 2)[1]
+        (tmp / original.path.name).write_text(f"---{front}---\n{p.body}\n", encoding="utf-8")
+    settings.risk_profiles_dir = str(tmp)
+    return held
+
+
 def context_of(plan):
     """The conditions a plan was generated under, for parity checks.
 
@@ -401,7 +441,11 @@ async def phase_replay(rows, limit):
                 }, indent=2))
                 print("excluded (dev-status unavailable after retry)")
                 continue
-            cutoff = reason_cutoff(serialized, cutoff, row.get("reason"))
+            # The earlier of the row's own time and the complaint comment. A
+            # problem found before its comment was written (a DM, a fix merged
+            # first) is dated earlier in the corpus, and the matched comment
+            # must not move the cutoff past the fix.
+            cutoff = min(cutoff, reason_cutoff(serialized, cutoff, row.get("reason")))
             prs_before = len(((serialized.get("development_info") or {})
                               .get("pull_requests")) or [])
             serialized, removed = rewind(serialized, cutoff)
@@ -418,6 +462,14 @@ async def phase_replay(rows, limit):
                 }, indent=2))
                 print(f"excluded (all {prs_before} PRs postdate the bounce)")
                 continue
+            from src.app.risk_profiles import match_profiles
+            held = use_profiles_for(key, [
+                k.strip() for k in (row.get("holdout") or "").split(",") if k.strip()])
+            matched = [p.name for p in match_profiles(
+                summary=serialized.get("summary"),
+                development_info=serialized.get("development_info"),
+                profiles=held,
+            )]
             plan = await generate_single(
                 GenerateTestPlanRequest(**prompt_payload(serialized)))
             plan["_rewound_to"] = cutoff.isoformat()
@@ -441,6 +493,11 @@ async def phase_replay(rows, limit):
                 "critics_unavailable": prov.get("critics_unavailable") or [],
                 "fetch_retried": retried,
                 "model": settings.llm_model,
+                # The profiles that matched this ticket, after its holdout.
+                # Empty for a no-profile run and for an unmatched ticket alike;
+                # `risk_profiles_configured` tells those apart.
+                "risk_profiles": matched,
+                "risk_profiles_configured": bool(held),
             }
             plan_path(key).write_text(json.dumps(plan, indent=2, default=str))
             n = len(plan.get("happy_path") or []) + len(plan.get("edge_cases") or [])
@@ -646,6 +703,7 @@ def _conditions(results_dir, key):
         ("gaps", len(ctx.get("context_gaps") or [])),
         ("critics_down", len(ctx.get("critics_unavailable") or [])),
         ("model", ctx.get("model")),
+        ("risk_profiles", tuple(ctx.get("risk_profiles") or ())),
     )
 
 

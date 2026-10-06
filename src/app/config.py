@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     # Set via env as JSON, e.g. BUG_LENS_REPO_HINTS='{"title.?rep|folders": ["acme/mobile-app"]}'
     bug_lens_repo_hints: dict[str, list[str]] = {}
 
+    # Directory of product risk profiles (markdown + YAML front matter), one
+    # per product. A matched profile is handed to the generator as QA-written
+    # product knowledge — user types, fragile features, environment limits.
+    # Unset means no profiles. Keep the directory outside the repo; see
+    # src/app/risk_profiles.py and docs/risk_profile.example.md.
+    risk_profiles_dir: str | None = None
+
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
     # A real file key the health check reads, to prove design context actually

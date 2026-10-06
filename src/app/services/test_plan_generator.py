@@ -48,6 +48,7 @@ from ..grounding_critic import (
     build_case_verification_inputs,
 )
 from ..models import GenerateTestPlanRequest, TicketInput
+from ..risk_profiles import profile_tag_is_known
 from ..regression_grounding_critic import (
     apply_regression_verdicts,
     build_regression_grounding_inputs,
@@ -915,7 +916,14 @@ def _gradeable_from_the_ac(case: dict, spec_is_source: bool) -> bool:
     there the AC is the spec. Plan 551 filed SK-2627's "Sign Up For Forms"
     case under needs-spec, out of the gradeable sections, and the broken
     button shipped.
+
+    A third kind: a case tagged from a product risk profile with an id that
+    profile defines. The profile is QA's written spec for it — a Remind &
+    Resend check on a sharing ticket is meant to be outside the diff, and
+    SK-2620's escaped bugs were exactly those.
     """
+    if profile_tag_is_known(case.get("title")):
+        return True
     if not case.get("covers_acs") or case.get("ac_grounding_disputed"):
         # A case the AC-grounding critic says goes beyond its cited AC has
         # no AC-stated pass condition to grade by.
