@@ -44,6 +44,7 @@ from ..copy_only import audit_plan_shape
 from ..db.models.plan import PlanFormat
 from ..db.models.run import RunType
 from ..db.mongo import get_db
+from ..deploy_state import read_deploy_state
 from ..deliverable_classifier import (
     aggregate_deliverables_for_critique,
     format_deliverable_hint,
@@ -435,6 +436,20 @@ async def _write_from_acs(
     return request.model_copy(update={"development_info": dev}), provenance, spec_only
 
 
+async def _read_deploy_state(development_info: dict | None) -> list[dict]:
+    """Deployment state for the ticket's PRs; [] when none is configured."""
+    sources = settings.deploy_state_sources
+    prs = (development_info or {}).get("pull_requests") or []
+    if not sources or not prs:
+        return []
+    from ..github_client import GitHubClient
+    try:
+        return await read_deploy_state(GitHubClient(), prs, sources)
+    except Exception as e:
+        logger.warning("deploy state unavailable: %s", e)
+        return []
+
+
 async def generate_single(
     request: GenerateTestPlanRequest, *, llm=None
 ) -> dict:
@@ -560,7 +575,7 @@ async def generate_single(
         # surface critic has something to check against. Gated by
         # settings.surface_classifier_enabled; off means it returns None
         # immediately and this gather costs nothing extra.
-        images, (resolved_slack, slack_gaps), deliverable = await asyncio.gather(
+        images, (resolved_slack, slack_gaps), deliverable, deploy_state = await asyncio.gather(
             _download_images(request.image_urls),
             resolve_slack_messages_in_text(request.description, request.comments),
             classify_deliverable(
@@ -571,12 +586,29 @@ async def generate_single(
                 issue_type=request.issue_type,
                 development_info=request.development_info,
             ),
+            _read_deploy_state(request.development_info),
         )
         # Sources the ticket points at that we could not read. Recorded on the
         # plan and handed to the generator so it writes around nothing in
         # silence. Confluence gaps are added inside the client, which is where
         # those pages are fetched.
         context_gaps = list(slack_gaps)
+        # Which test environment runs which of the ticket's PRs. Read at
+        # generation time, because it is the one input that goes stale fastest.
+        if deploy_state:
+            dev_for_prompt = dict(request.development_info or {})
+            dev_for_prompt["deploy_state"] = deploy_state
+            request = request.model_copy(update={"development_info": dev_for_prompt})
+            provenance["deploy_state"] = [
+                {k: e[k] for k in ("env", "repo", "tag", "error")} for e in deploy_state
+            ]
+            unread = sorted({f"{e['env']} ({e['repo']})" for e in deploy_state if e["error"]})
+            if unread:
+                context_gaps.append(
+                    "the deployed build could not be checked for "
+                    + ", ".join(unread)
+                    + ", so the plan cannot say whether those environments run this change"
+                )
         # A read that failed is a gap, exactly like a Confluence page that
         # would not load. context_gaps is a list of strings precisely so a new
         # source needs no new plumbing to reach the prompt and the tester.

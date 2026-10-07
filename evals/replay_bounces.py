@@ -410,6 +410,9 @@ async def phase_replay(rows, limit):
     jira = JiraClient()
 
     suppress_run_writes()
+    # Deployment state is today's, and cannot be rewound to the bounce: a
+    # replay would plan a months-old ticket against this morning's builds.
+    settings.deploy_state_sources = {}
     (RESULTS / "plans").mkdir(parents=True, exist_ok=True)
     todo = [r for r in rows if not plan_path(r["key"]).exists()]
     done = len(rows) - len(todo)          # count before --limit, or the line lies

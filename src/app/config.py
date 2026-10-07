@@ -111,6 +111,12 @@ class Settings(BaseSettings):
     # Characters of full-file text per ticket, shared across its PRs.
     full_file_budget_chars: int = 240_000
 
+    # Where each test environment's build is recorded, per code repo, so a plan
+    # can say which environment runs which PR. JSON, e.g.
+    # DEPLOY_STATE_SOURCES='{"acme/web": {"integ": "acme/deploys/web/integ/values.yaml"}}'
+    # Empty means not checked. See src/app/deploy_state.py.
+    deploy_state_sources: dict[str, dict[str, str]] = {}
+
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
     # A real file key the health check reads, to prove design context actually

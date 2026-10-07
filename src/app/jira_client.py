@@ -2084,6 +2084,7 @@ class JiraClient:
                             pr_obj.status = _github_pr_status(gh_details)
                             pr_obj.number = gh_details.number
                             pr_obj.head_sha = gh_details.head_sha
+                            pr_obj.merge_commit_sha = gh_details.merge_commit_sha
                             if gh_details.author:
                                 pr_obj.author = gh_details.author
                             pr_obj.files_changed = [
@@ -2192,6 +2193,7 @@ class JiraClient:
                         pr_obj.status = _github_pr_status(gh_details)
                         pr_obj.number = gh_details.number
                         pr_obj.head_sha = gh_details.head_sha
+                        pr_obj.merge_commit_sha = gh_details.merge_commit_sha
                         if gh_details.author:
                             pr_obj.author = gh_details.author
                         pr_obj.github_description = gh_details.description

@@ -26,6 +26,7 @@ from .description_analyzer import (
     extract_ac_destination,
     extract_acceptance_criteria,
 )
+from .deploy_state import DEPLOY_STATE_GUIDANCE, render_deploy_state
 from .diff_budget import allocate_patch_budget, omitted_note, render_full_files
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
@@ -3220,6 +3221,12 @@ TICKET INFORMATION
                         prompt += "     - Each concern or question raised by a reviewer → create a test case that validates it\n"
                         prompt += "     - Each edge case or gotcha mentioned → create a test case that exercises it\n"
                         prompt += "     - Each bug or unexpected behavior noted → create a test case that catches regression\n"
+
+            deploy_text = render_deploy_state(development_info.get("deploy_state") or [])
+            if deploy_text:
+                prompt += "\n**Deployment state — which environment runs which PR:**\n"
+                prompt += deploy_text + "\n"
+                prompt += f"⚠️ REQUIRED: {DEPLOY_STATE_GUIDANCE}\n"
 
             # Add commit information
             commits = development_info.get("commits", [])

@@ -1127,17 +1127,20 @@ class GitHubClient:
             return None
 
     async def fetch_files_at_ref(
-        self, repo: str, ref: str, paths: list[str], max_bytes: int = 300_000,
+        self, repo: str, ref: str | None, paths: list[str], max_bytes: int = 300_000,
     ) -> dict[str, str]:
-        """Fetch whole files from `repo` ("owner/name") at commit `ref`.
+        """Fetch whole files from `repo` ("owner/name") at commit `ref`, or at
+        the default branch when `ref` is None.
 
         Returns only the files that came back; a path that failed is absent,
         never an empty string, so a caller cannot mistake "could not read" for
         "the file is empty". Files over `max_bytes` are skipped — a generated
         or vendored blob is not worth a prompt.
         """
-        if not self.token or not ref or not paths:
+        if not self.token or not paths:
             return {}
+        params = {"ref": ref} if ref else {}
+        at = (ref or "default")[:7]
         headers = {**self._headers(), "Accept": "application/vnd.github.raw"}
         sem = asyncio.Semaphore(6)
         out: dict[str, str] = {}
@@ -1147,14 +1150,14 @@ class GitHubClient:
                 try:
                     r = await client.get(
                         f"{self.base_url}/repos/{repo}/contents/{path}",
-                        params={"ref": ref}, headers=headers,
+                        params=params, headers=headers,
                     )
                 except httpx.HTTPError as e:
-                    logger.warning("Full file fetch failed for %s@%s:%s: %s", repo, ref[:7], path, e)
+                    logger.warning("Full file fetch failed for %s@%s:%s: %s", repo, at, path, e)
                     return
                 if r.status_code != 200:
                     logger.warning("Full file fetch for %s@%s:%s returned %s",
-                                   repo, ref[:7], path, r.status_code)
+                                   repo, at, path, r.status_code)
                     return
                 if len(r.content) > max_bytes:
                     logger.info("Skipping full file %s (%d bytes)", path, len(r.content))
@@ -1164,6 +1167,29 @@ class GitHubClient:
         async with httpx.AsyncClient(timeout=30) as client:
             await asyncio.gather(*(one(client, p) for p in paths))
         return out
+
+    async def compare_commits(self, repo: str, base: str, head: str) -> dict | None:
+        """GitHub's compare of `base...head` in `repo`: ``{"status", "ahead_by",
+        "behind_by"}``, where status "ahead"/"identical" means `head` contains
+        `base`. None when GitHub did not answer — never a guessed status.
+        """
+        if not self.token:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(
+                    f"{self.base_url}/repos/{repo}/compare/{base}...{head}",
+                    params={"per_page": 1}, headers=self._headers(),
+                )
+        except httpx.HTTPError as e:
+            logger.warning("Compare %s %s...%s failed: %s", repo, base[:7], head[:7], e)
+            return None
+        if r.status_code != 200:
+            logger.warning("Compare %s %s...%s returned %s", repo, base[:7], head[:7], r.status_code)
+            return None
+        data = r.json()
+        return {"status": data.get("status"), "ahead_by": data.get("ahead_by", 0),
+                "behind_by": data.get("behind_by", 0)}
 
     async def _find_test_files(self, client: httpx.AsyncClient, owner: str, repo: str) -> list[str]:
         """

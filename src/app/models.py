@@ -115,6 +115,9 @@ class PullRequest:
     # Tip commit of the PR branch, from GitHub. Recorded as run provenance so a
     # reader can tell which revision the plan's cases were written against.
     head_sha: str | None = None
+    # The commit a merged PR landed as. A squash merge's branch commits are
+    # never ancestors of a release build; this one is (see deploy_state.py).
+    merge_commit_sha: str | None = None
     number: int | None = None  # GitHub PR number
     # GitHub was asked for this PR's diff and could not answer. Without it the
     # PR arrives with no files_changed, which downstream reads as "the diff is
