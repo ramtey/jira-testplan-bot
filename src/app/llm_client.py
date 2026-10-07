@@ -26,7 +26,7 @@ from .description_analyzer import (
     extract_ac_destination,
     extract_acceptance_criteria,
 )
-from .diff_budget import allocate_patch_budget, omitted_note
+from .diff_budget import allocate_patch_budget, omitted_note, render_full_files
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
     output_budget,
@@ -3095,6 +3095,12 @@ TICKET INFORMATION
                     pr for pr in pull_requests
                     if not _pr_has_landed(pr)
                 ]
+                # Full files share one per-ticket budget across the PRs that
+                # carry them, so a ticket with four PRs costs no more than one.
+                full_file_prs = sum(
+                    1 for pr in pull_requests
+                    if any(f.get("full_content") for f in pr.get("files_changed") or [])
+                )
                 for pr in pull_requests:
                     landed = _pr_has_landed(pr)
                     state_label = (
@@ -3167,6 +3173,25 @@ TICKET INFORMATION
                                 prompt += f"\n  {note}\n"
                             prompt += "\n  ⚠️ REQUIRED: Read these diffs carefully and generate test cases for every new behaviour they introduce — especially new data sources, new fields, new API calls, and new conditional logic.\n"
                             prompt += "  ⚠️ REQUIRED: For every API endpoint, handler, or shared helper modified above, enumerate OTHER plausible callers/surfaces that hit the same code (see 'API SURFACE PARITY' below). A diff-only view will not show sibling callers in unmodified files — name them explicitly and generate a test per surface. If a sibling surface is plausible but unverifiable in the diff, write the test against the user-facing flow AND add a `grounding_warning` entry.\n"
+
+                        full_text = render_full_files(
+                            files_changed,
+                            total_budget=settings.full_file_budget_chars // max(1, full_file_prs),
+                        ) if full_file_prs else ""
+                        if full_text:
+                            prompt += (
+                                "\n  📄 Changed files in full, as they stand after this PR "
+                                "(line-numbered):\n"
+                            )
+                            for line in full_text.split("\n"):
+                                prompt += f"  {line}\n"
+                            prompt += (
+                                "\n  ⚠️ REQUIRED: Take expected results — status codes, error "
+                                "messages, labels, which guard runs first — from these files, and "
+                                "cite the exact line in `expected_source` (file:line). Do not mark "
+                                "an expected result unverified when the line that produces it is "
+                                "shown above.\n"
+                            )
 
                         prompt += "\n"
 

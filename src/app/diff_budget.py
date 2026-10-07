@@ -134,3 +134,30 @@ def omitted_note(files: list[dict], shown: list[tuple[str, str, bool]]) -> str |
         + ". Code you cannot see here may still exist. Treat an element you "
           "cannot find as unconfirmed, not as absent."
     )
+
+
+def render_full_files(files: list[dict], *, total_budget: int, per_file_cap: int = 60_000) -> str:
+    """The changed files in full, line-numbered, within `total_budget` chars.
+
+    Line numbers are the point: they let a case cite `Handler.cs:74` as the
+    line that returns its 403, which a diff hunk's relative offsets cannot.
+    Returns "" when no file carries `full_content`.
+    """
+    numbered = [
+        {"filename": f["filename"],
+         "patch": "\n".join(f"{n:5d}| {line}"
+                            for n, line in enumerate(f["full_content"].splitlines(), 1))}
+        for f in files if f.get("full_content")
+    ]
+    shown = allocate_patch_budget(numbered, total_budget=total_budget, per_file_cap=per_file_cap)
+    if not shown:
+        return ""
+    out = []
+    for name, text, was_cut in shown:
+        if was_cut:
+            text = text.rsplit("\n", 1)[0] + "\n  … (file continues; the rest was over budget)"
+        out.append(f"--- {name} (whole file after this PR) ---\n{text}")
+    note = omitted_note(numbered, shown)
+    if note:
+        out.append(note)
+    return "\n\n".join(out)

@@ -80,6 +80,8 @@ class FileChange:
     deletions: int
     changes: int
     patch: str | None = None  # Diff patch for runtime source files (config/tooling excluded)
+    # The whole file at the PR's head commit, when full-file grounding is on.
+    full_content: str | None = None
 
 
 @dataclass

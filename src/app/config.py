@@ -101,6 +101,16 @@ class Settings(BaseSettings):
     # src/app/risk_profiles.py and docs/risk_profile.example.md.
     risk_profiles_dir: str | None = None
 
+    # Show the generator each changed source file in full, as it stands at the
+    # PR's head commit, beside its diff. A diff hunk alone hides the rest of the
+    # handler — the status codes, the guards that run first, the menu items the
+    # hunk did not touch — and the plan then hedges every expected result as
+    # "unverified". On SK-2687 this raised a 32-fact rubric score from ~16 to
+    # ~22 at roughly 6x the prompt size. Off until the replay eval confirms it.
+    full_file_grounding: bool = False
+    # Characters of full-file text per ticket, shared across its PRs.
+    full_file_budget_chars: int = 240_000
+
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
     # A real file key the health check reads, to prove design context actually

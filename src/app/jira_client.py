@@ -1524,6 +1524,25 @@ def _is_patchable_file(filename: str) -> bool:
     return basename.endswith(_RUNTIME_EXTENSIONS)
 
 
+async def _attach_full_files(github_client, pr_obj) -> None:
+    """Give each diffed file its whole text at the PR's head commit.
+
+    Only when `full_file_grounding` is on, and only for files whose diff the
+    generator already gets — the same runtime-source filter, so a test project
+    or a config file does not ride in on the bigger budget. A file GitHub would
+    not return keeps `full_content=None` and is shown as its diff alone.
+    """
+    if not settings.full_file_grounding or not pr_obj.head_sha or not pr_obj.repository:
+        return
+    files = [fc for fc in (pr_obj.files_changed or []) if fc.patch and fc.status != "removed"]
+    if not files:
+        return
+    got = await github_client.fetch_files_at_ref(
+        pr_obj.repository, pr_obj.head_sha, [fc.filename for fc in files])
+    for fc in files:
+        fc.full_content = got.get(fc.filename)
+
+
 # Bounce-back detection: a "bounce" is a status transition that drops the
 # ticket back to a "needs more dev work" state AFTER it had already been
 # pushed to a downstream review/test state. Names are matched lowercase.
@@ -2082,6 +2101,7 @@ class JiraClient:
                             ]
                             pr_obj.total_additions = gh_details.total_additions
                             pr_obj.total_deletions = gh_details.total_deletions
+                            await _attach_full_files(github_client, pr_obj)
                             pr_obj.comments = [
                                 PRComment(
                                     author=comment.author,
@@ -2188,6 +2208,7 @@ class JiraClient:
                         ]
                         pr_obj.total_additions = gh_details.total_additions
                         pr_obj.total_deletions = gh_details.total_deletions
+                        await _attach_full_files(github_client, pr_obj)
                         pr_obj.comments = [
                             PRComment(
                                 author=comment.author,

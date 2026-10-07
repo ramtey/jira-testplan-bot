@@ -1126,6 +1126,45 @@ class GitHubClient:
             logger.warning(f"Failed to fetch {file_path}: {e}")
             return None
 
+    async def fetch_files_at_ref(
+        self, repo: str, ref: str, paths: list[str], max_bytes: int = 300_000,
+    ) -> dict[str, str]:
+        """Fetch whole files from `repo` ("owner/name") at commit `ref`.
+
+        Returns only the files that came back; a path that failed is absent,
+        never an empty string, so a caller cannot mistake "could not read" for
+        "the file is empty". Files over `max_bytes` are skipped — a generated
+        or vendored blob is not worth a prompt.
+        """
+        if not self.token or not ref or not paths:
+            return {}
+        headers = {**self._headers(), "Accept": "application/vnd.github.raw"}
+        sem = asyncio.Semaphore(6)
+        out: dict[str, str] = {}
+
+        async def one(client: httpx.AsyncClient, path: str) -> None:
+            async with sem:
+                try:
+                    r = await client.get(
+                        f"{self.base_url}/repos/{repo}/contents/{path}",
+                        params={"ref": ref}, headers=headers,
+                    )
+                except httpx.HTTPError as e:
+                    logger.warning("Full file fetch failed for %s@%s:%s: %s", repo, ref[:7], path, e)
+                    return
+                if r.status_code != 200:
+                    logger.warning("Full file fetch for %s@%s:%s returned %s",
+                                   repo, ref[:7], path, r.status_code)
+                    return
+                if len(r.content) > max_bytes:
+                    logger.info("Skipping full file %s (%d bytes)", path, len(r.content))
+                    return
+                out[path] = r.content.decode("utf-8", "replace")
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            await asyncio.gather(*(one(client, p) for p in paths))
+        return out
+
     async def _find_test_files(self, client: httpx.AsyncClient, owner: str, repo: str) -> list[str]:
         """
         Find test files in the repository to learn testing patterns.
