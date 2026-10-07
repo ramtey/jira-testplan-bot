@@ -1452,8 +1452,28 @@ def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
 
 # Directories whose files are never worth diffing (generated, tooling, agent config)
 _SKIP_PATCH_DIRS = frozenset({'.agents', '.claude', '.cursor', 'scripts', 'tooling', 'node_modules'})
-# File extensions that are runtime source code
-_RUNTIME_EXTENSIONS = ('.tsx', '.ts', '.jsx', '.js', '.py', '.swift', '.kt')
+# File extensions that are runtime source code. A language missing here is
+# invisible to the generator: until 2026-10-07 `.cs` was absent, so every .NET
+# backend PR reached the prompt as a bare file list and every API case on
+# SK-2687 hedged its status code as "unverified".
+_RUNTIME_EXTENSIONS = (
+    '.tsx', '.ts', '.jsx', '.js', '.mjs', '.cjs', '.vue', '.svelte',
+    '.py', '.swift', '.kt', '.cs', '.java', '.go', '.rb', '.php',
+)
+# Test code, by directory segment (`__tests__/`, a .NET `Foo.Tests/` or
+# `Foo.UnitTests/` project) or by file name, across those languages.
+_TEST_DIR_SEGMENTS = frozenset({'test', 'tests', '__tests__', 'spec', 'specs'})
+_TEST_DIR_SUFFIXES = ('.tests', '.test', '.unittests', '.integrationtests', '.specs')
+_TEST_FILE_SUFFIXES = (
+    '.test.ts', '.test.tsx', '.spec.ts', '.spec.tsx', '.test.js', '.test.jsx', '.spec.js',
+    '_test.go', '_spec.rb', '_test.rb',
+)
+# CamelCase languages name tests `FooTests.cs` / `FooTest.java`. Matched
+# case-sensitively, or `Latest.cs` and `Contest.java` would vanish as tests.
+_CAMEL_TEST_FILE_SUFFIXES = tuple(
+    f'{stem}{ext}' for stem in ('Test', 'Tests')
+    for ext in ('.cs', '.java', '.kt', '.swift', '.php')
+)
 # Substrings in a filename that indicate it's a config/tooling file, not runtime code
 _CONFIG_INDICATORS = ('config.', 'eslint', 'tsconfig', 'vite.', 'webpack.', 'jest.', 'vitest.', 'rollup.')
 
@@ -1495,7 +1515,11 @@ def _is_patchable_file(filename: str) -> bool:
     for indicator in _CONFIG_INDICATORS:
         if indicator in basename:
             return False
-    if any(basename.endswith(s) for s in ('.test.ts', '.test.tsx', '.spec.ts', '.spec.tsx', '.test.js')):
+    if basename.endswith(_TEST_FILE_SUFFIXES):
+        return False
+    if filename.rsplit('/', 1)[-1].endswith(_CAMEL_TEST_FILE_SUFFIXES):
+        return False
+    if any(d in _TEST_DIR_SEGMENTS or d.endswith(_TEST_DIR_SUFFIXES) for d in parts[:-1]):
         return False
     return basename.endswith(_RUNTIME_EXTENSIONS)
 
