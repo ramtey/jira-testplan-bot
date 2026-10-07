@@ -1835,7 +1835,15 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
   const describePostResult = (result, target, action) => {
     const parts = result.parts ?? 1
     const posted = result.posted_parts ?? parts
-    const spread = parts > 1 ? ` across ${parts} comments` : ''
+    // An oversized plan goes up as one index comment with the full text
+    // attached. If that attach failed it was split the old way, and the tester
+    // needs to know why the ticket has several comments again.
+    let spread = parts > 1 ? ` across ${parts} comments` : ''
+    if (result.attachment_filename) {
+      spread += ` as a case index — full plan attached as ${result.attachment_filename}`
+    } else if (result.attachment_error) {
+      spread += ` (the full plan could not be attached: ${result.attachment_error})`
+    }
     // The comment can land while the app fails to record it as the live
     // version. That is not an alternative to the outcomes below — a post can
     // be partial *and* unrecorded — so it reads as a suffix on whichever one

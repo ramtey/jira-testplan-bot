@@ -739,6 +739,40 @@ async def _select(
     )
 
 
+async def _read_attached_plans(jira, selection: _Selection) -> None:
+    """Swap an index comment's body for the full plan it links to.
+
+    An oversized plan is posted as one index comment — titles and expected
+    results only — with the full text attached (``jira_client`` explains why).
+    Parsed as it stands, the index would adopt every case with no steps or
+    preconditions under a fingerprint that still matches, so nothing downstream
+    would notice the plan was hollow. The attachment is the plan: it is rendered
+    through the same ``_comment_body_adf`` the comment would have been, so the
+    one parser below reads both.
+
+    A download that fails refuses the adoption. Falling back to the index would
+    store that hollow plan as if it were the real one.
+    """
+    from src.app.jira_client import PlanCommentKind, _comment_body_adf, attached_plan_id
+
+    for position, comment in enumerate(selection.parts):
+        attachment_id = attached_plan_id(comment.get("body") or {})
+        if attachment_id is None:
+            continue
+        try:
+            text = await jira.download_attachment_text(attachment_id)
+        except Exception as exc:
+            raise PlanAdoptionError(
+                f"Comment {comment.get('id')} is an index whose full plan is attachment "
+                f"{attachment_id}, and that attachment could not be read ({exc}) — "
+                "adopting the index alone would store cases without their steps"
+            ) from exc
+        selection.parts[position] = {
+            **comment,
+            "body": _comment_body_adf(text, _kind(comment) or PlanCommentKind.single),
+        }
+
+
 def _own_selection(
     comments: list[dict], comment_id: str | None, key: str, allow_incomplete: bool
 ) -> _Selection:
@@ -789,7 +823,9 @@ async def preview(ticket_key: str, comment_id: str | None = None) -> dict:
     # A short set is reported rather than refused: preview writes nothing, and
     # seeing the counts next to "part 2 is missing" is what tells an operator
     # which comment to repost. ``commit`` refuses the same set.
-    selection = await _select(JiraClient(), key, comment_id, allow_incomplete=True)
+    jira = JiraClient()
+    selection = await _select(jira, key, comment_id, allow_incomplete=True)
+    await _read_attached_plans(jira, selection)
 
     plan = _parse_selection(selection, key)
     summary = summarize(plan, selection.ticket_keys)
@@ -838,7 +874,9 @@ async def commit(ticket_key: str, comment_id: str | None = None) -> dict:
     from src.app.services.run_tracker import _actor_email
 
     key = ticket_key.upper()
-    selection = await _select(JiraClient(), key, comment_id, allow_incomplete=False)
+    jira = JiraClient()
+    selection = await _select(jira, key, comment_id, allow_incomplete=False)
+    await _read_attached_plans(jira, selection)
     parts = selection.parts
     plan = _parse_selection(selection, key)
 

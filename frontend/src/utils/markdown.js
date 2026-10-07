@@ -463,9 +463,22 @@ const prLabel = (entry) => {
 const shortSha = (sha) =>
   typeof sha === 'string' && sha.length >= 7 ? sha.slice(0, 7) : null
 
+// A batch lists each ticket's PRs, and tickets in one batch usually share
+// them — SK-2687's comment named digisign.sender.envelope#92 three times. An
+// entry is dropped only when it would print an identical line.
 const provenanceEntries = (plan) => {
   const entries = plan?.source_provenance?.pull_requests
-  return Array.isArray(entries) ? entries : []
+  if (!Array.isArray(entries)) return []
+  const seen = new Set()
+  return entries.filter((e) => {
+    const id = JSON.stringify([
+      e?.url, e?.repository, e?.number, e?.state, e?.head_sha,
+      e?.borrowed && e?.ticket_key, e?.used_as_grounding,
+    ])
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
 }
 
 // A plan written from a ticket's ACs because it has no PR of its own. It has

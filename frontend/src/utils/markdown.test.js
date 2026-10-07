@@ -194,3 +194,17 @@ test('a spec-only plan says so in the markdown copy, even with no PRs at all', (
   const md = formatTestPlanAsMarkdown(plan, { key: 'SK-2627', summary: 'Email invitation' })
   assert.match(md, /Written from acceptance criteria\.\*\* This ticket has no merged/)
 })
+
+test('a PR shared by several tickets in a batch is listed once', () => {
+  // SK-2687's batch comment named digisign.sender.envelope#92 three times.
+  const pr = {
+    number: 92, repository: 'skyslope/digisign.sender.envelope', state: 'merged',
+    head_sha: '6d9a3550000', url: 'https://github.com/skyslope/digisign.sender.envelope/pull/92',
+    used_as_grounding: true,
+  }
+  const open = { ...pr, number: 96, state: 'open', url: 'https://github.com/skyslope/digisign.sender.envelope/pull/96' }
+  const plan = { happy_path: [], source_provenance: { pull_requests: [pr, open, { ...pr }, { ...pr }] } }
+  const jira = formatTestPlanAsJira(plan)
+  assert.equal(jira.match(/envelope#92/g).length, 1)
+  assert.equal(jira.match(/envelope#96/g).length, 1)
+})

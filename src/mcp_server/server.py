@@ -696,6 +696,10 @@ async def _post_test_plan_to_jira(ticket_key: str, test_plan: str) -> list[TextC
         # only "posted" would leave the caller thinking it is one comment, and
         # a post that stopped partway has to say how far it got.
         spread = f" across {parts} comments" if parts > 1 else ""
+        if result.get("attachment_filename"):
+            spread += f" as an index, full plan attached as {result['attachment_filename']}"
+        elif result.get("attachment_error"):
+            spread += f" (could not attach the full plan: {result['attachment_error']})"
         if posted < parts:
             why = f" ({result['part_error']})" if result.get("part_error") else ""
             text = (

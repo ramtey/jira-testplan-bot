@@ -168,4 +168,4 @@ class TestItStaysPatchable:
         assert "httpx.AsyncClient(" not in source, (
             "a call site builds a bare client and so has no retry"
         )
-        assert source.count("retrying_client(") == 36
+        assert source.count("retrying_client(") == 39

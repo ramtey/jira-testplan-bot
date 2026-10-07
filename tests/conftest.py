@@ -80,6 +80,40 @@ def block_real_database(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     monkeypatch.setattr(db_mongo, "_client", None)
 
 
+class RealJiraAttachmentAccess(RuntimeError):
+    """Raised when a test reaches a real Jira attachment endpoint."""
+
+
+@pytest.fixture(autouse=True)
+def block_real_jira_attachments(monkeypatch: pytest.MonkeyPatch):
+    """Keep `post_comment`'s attachment calls off real tickets.
+
+    Many tests build a real ``JiraClient`` and patch only the comment calls,
+    and several use live keys (SK-2623, SK-2331). Posting an oversized plan
+    uploads its full text as an attachment, and every plan post clears earlier
+    copies of that file — a DELETE on a real ticket if left unpatched. These
+    fail loudly instead; a test that needs them patches them on its instance,
+    which takes precedence over the class attribute set here.
+    """
+    from src.app.jira_client import JiraClient
+
+    def _blocked(name):
+        async def _raise(self, *args, **kwargs):
+            raise RealJiraAttachmentAccess(
+                f"a test called JiraClient.{name} unpatched — it would reach a real "
+                "Jira ticket. Patch it on the client instance."
+            )
+        return _raise
+
+    for name in (
+        "upload_attachments",
+        "get_attachments",
+        "delete_attachment",
+        "download_attachment_text",
+    ):
+        monkeypatch.setattr(JiraClient, name, _blocked(name))
+
+
 @pytest.fixture(autouse=True)
 def reset_code_search_budget():
     """Give every test a fresh GitHub code-search budget.

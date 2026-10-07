@@ -331,6 +331,122 @@ _PART_HEADER_PROBE = (
 )
 _CONTINUED_SUFFIX = " (continued)"
 
+# A plan too big for one comment used to be split across up to five, and a
+# ticket carrying four "part N of 4" comments is noise nobody reads in order.
+# Trimming the text cannot fix that: on SK-2687's 19-case batch plan (90KB of
+# ADF) dropping every metadata line still left 66KB — titles, steps and
+# expected results are most of it. So an oversized plan is posted as ONE index
+# comment (case titles and expected results) with the full text attached to
+# the ticket, and the index links to it.
+#
+# The paragraph carrying the link stays outside the collapsed body, so a reader
+# sees where the steps are without expanding anything. It is also how the
+# index is recognised on the way back in: `attached_plan_id` reads the
+# attachment id out of its link, and plan adoption parses the attachment, not
+# the index — an index adopted as the plan would have cases with no steps.
+PLAN_ATTACHMENT_PREFIX = "📎"
+_PLAN_ATTACHMENT_ID_RE = re.compile(r"/secure/attachment/(\d+)/")
+_CASE_TITLE_LINE_RE = re.compile(r"^\*\*\d+\. \[[a-z_]+:\d+\]")
+def plan_attachment_filename(issue_key: str, kind: "PlanCommentKind") -> str:
+    """Name of the file holding the full plan behind an index comment.
+
+    One name per kind and ticket, so a regenerated plan replaces its own file
+    and a batch plan never removes the file behind the ticket's own plan."""
+    prefix = "batch-test-plan" if kind is PlanCommentKind.batch else "test-plan"
+    return f"{prefix}-{issue_key}.md"
+
+
+def _plan_attachment_line(filename: str, url: str) -> str:
+    return (
+        f"{PLAN_ATTACHMENT_PREFIX} Full plan with steps, preconditions and test data: "
+        f"[{filename}]({url}) — attached to this ticket"
+    )
+
+
+# Sections the index reduces to their heading. None of them is gradeable —
+# warnings, gaps in the ticket, cases quarantined as unverifiable — and between
+# them they were a third of SK-2687's index: 25 grounding warnings, 12
+# needs-spec cases and a page of risks.
+_INDEX_COLLAPSED_SECTIONS = (
+    "⚠️ UI GROUNDING WARNINGS",
+    "⚠️ RISKS / GAPS OBSERVED",
+    "🚧 NEEDS SPEC",
+)
+
+
+def _is_banner_line(line: str) -> bool:
+    """Any of the formatter's section banners: an emoji, then upper case.
+
+    Wider than `_is_section_heading_line`, which knows only the case sections;
+    this also has to see where the collapsed sections end."""
+    if not line or line[0].isspace() or line[0].isalnum() or line.startswith("**"):
+        return False
+    letters = [c for c in line if c.isalpha()]
+    return len(letters) >= 3 and line == line.upper()
+
+
+def _plan_index_text(
+    marked_text: str, attachment_line: str, keep_expected: bool = True
+) -> str:
+    """`marked_text` cut down to an index of its cases.
+
+    What stays is what a tester acts on in Jira: the how-to-test guide, the
+    provenance, every case's title line — it carries the `[section:index]` id a
+    tester marks against — optionally its expected result, the regression
+    checklist and the covered list, both of which are markable too. Steps,
+    preconditions, test data and the per-case metadata are in the attachment,
+    and the sections in `_INDEX_COLLAPSED_SECTIONS` shrink to their heading.
+    """
+    lines = marked_text.splitlines()
+    out: list[str] = [lines[0], "", attachment_line, ""] if lines else []
+    in_case = False
+    collapsing = False
+    for line in lines[1:]:
+        stripped = line.strip()
+        if collapsing:
+            if not _is_banner_line(line):
+                continue
+            collapsing = False
+        if _CASE_TITLE_LINE_RE.match(stripped):
+            in_case = True
+            out += [line, ""]
+            continue
+        if in_case:
+            if (stripped and all(c == "─" for c in stripped)) or _is_banner_line(line):
+                in_case = False
+                out += [line, ""]
+            elif keep_expected and stripped.startswith("Expected Result:"):
+                out += [line, ""]
+            continue
+        if stripped.startswith(_INDEX_COLLAPSED_SECTIONS):
+            out += [f"{stripped} — in the attached plan", ""]
+            collapsing = True
+            continue
+        out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).rstrip() + "\n"
+
+
+def attached_plan_id(adf: dict) -> str | None:
+    """The attachment id an index comment links its full plan to, or None.
+
+    Only the top-level paragraphs are read: the link sits beside the marker,
+    outside the collapsed body, and a plan whose own text happened to quote an
+    attachment URL must not be mistaken for an index."""
+    for node in (adf or {}).get("content") or []:
+        if node.get("type") != "paragraph":
+            continue
+        children = node.get("content") or []
+        text = "".join(c.get("text") or "" for c in children)
+        if not text.startswith(PLAN_ATTACHMENT_PREFIX):
+            continue
+        for child in children:
+            for mark in child.get("marks") or []:
+                href = (mark.get("attrs") or {}).get("href") or ""
+                match = _PLAN_ATTACHMENT_ID_RE.search(href)
+                if match:
+                    return match.group(1)
+    return None
+
 
 def plan_version_note(version: int | None, when: datetime | None = None) -> str | None:
     """The version line that rides on the marker, e.g. ``v3 · updated 23 Sep 2026``.
@@ -1312,11 +1428,19 @@ def _wrap_body_in_expand(adf_doc: dict, marker: str = TEST_PLAN_MARKER,
     )
     if marker not in first_text:
         return adf_doc
-    inner = _group_test_cases_into_nested_expands(content[1:])
+    # An index comment's link to the full plan stays visible beside the marker.
+    visible = [first]
+    rest = content[1:]
+    while rest and rest[0].get("type") == "paragraph" and _adf_paragraph_text(
+        rest[0]
+    ).startswith(PLAN_ATTACHMENT_PREFIX):
+        visible.append(rest[0])
+        rest = rest[1:]
+    inner = _group_test_cases_into_nested_expands(rest)
     return {
         **adf_doc,
         "content": [
-            first,
+            *visible,
             {
                 "type": "expand",
                 "attrs": {"title": title},
@@ -3586,7 +3710,38 @@ class JiraClient:
             JiraConnectionError: If Jira is unreachable
         """
         marked_text = f"{_marker_line(version_note, kind)}\n\n{comment_text}"
-        parts, truncated = _split_marked_text_into_parts(marked_text, version_note, kind)
+        attachment_name = plan_attachment_filename(issue_key, kind)
+        attachment_id: str | None = None
+        attachment_error: str | None = None
+        text_to_post = marked_text
+        if kind in _COLLAPSED_KINDS and _adf_size(marked_text, kind) > JIRA_COMMENT_MAX_BYTES:
+            try:
+                uploaded = await self.upload_attachments(
+                    issue_key,
+                    [(attachment_name, marked_text.encode("utf-8"), "text/markdown")],
+                )
+                attachment_id = str(uploaded[0]["id"]) if uploaded and uploaded[0].get("id") else None
+                if attachment_id is None:
+                    attachment_error = "Jira accepted the upload but returned no attachment id"
+            except Exception as e:
+                attachment_error = str(e) or type(e).__name__
+            if attachment_id:
+                line = _plan_attachment_line(
+                    attachment_name,
+                    f"{self.base_url}/secure/attachment/{attachment_id}/{attachment_name}",
+                )
+                text_to_post = _plan_index_text(marked_text, line)
+                if _adf_size(text_to_post, kind) > JIRA_COMMENT_MAX_BYTES:
+                    text_to_post = _plan_index_text(marked_text, line, keep_expected=False)
+            else:
+                # Without the attachment an index would point at nothing, so
+                # the plan goes up whole, split the old way, and the caller is
+                # told why it is not one comment.
+                logger.warning(
+                    "Could not attach the full test plan to %s, splitting instead: %s",
+                    issue_key, attachment_error,
+                )
+        parts, truncated = _split_marked_text_into_parts(text_to_post, version_note, kind)
         if truncated:
             logger.warning(
                 "Test plan for %s exceeded %d Jira comments and was truncated",
@@ -3655,6 +3810,15 @@ class JiraClient:
             except Exception as e:
                 if not results:
                     # Nothing landed — this is a plain failed post, report it as one.
+                    # The file uploaded for it would be an orphan nothing links to.
+                    if attachment_id:
+                        try:
+                            await self.delete_attachment(attachment_id)
+                        except Exception as cleanup_error:
+                            logger.warning(
+                                "Could not remove orphaned plan attachment %s on %s: %s",
+                                attachment_id, issue_key, cleanup_error,
+                            )
                     raise
                 # Some of the plan is already on the ticket. Reporting a bare
                 # failure here would be a lie in the other direction, so stop
@@ -3679,7 +3843,17 @@ class JiraClient:
                     stale_id, issue_key, e,
                 )
 
+        # The file behind the previous version goes once this one has landed —
+        # or, if this plan fit inline, because nothing links to it any more.
+        if kind in _COLLAPSED_KINDS and part_error is None:
+            await self._delete_plan_attachments(
+                issue_key, attachment_name, keep_id=attachment_id
+            )
+
         result = dict(results[0])
+        result["attachment_filename"] = attachment_name if attachment_id else None
+        result["attachment_id"] = attachment_id
+        result["attachment_error"] = attachment_error
         result["updated"] = bool(existing_ids)
         result["truncated"] = truncated
         result["parts"] = len(parts)
@@ -4025,6 +4199,62 @@ class JiraClient:
         r.raise_for_status()
 
         return r.json()
+
+    async def get_attachments(self, issue_key: str) -> list[dict]:
+        """The issue's attachments as Jira lists them (id, filename, …)."""
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}?fields=attachment"
+        try:
+            async with retrying_client(timeout=20) as client:
+                r = await client.get(url, headers=self._headers())
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        r.raise_for_status()
+        return (r.json().get("fields") or {}).get("attachment") or []
+
+    async def delete_attachment(self, attachment_id: str) -> None:
+        """Delete one attachment. Already gone (404) counts as deleted."""
+        url = f"{self.base_url}/rest/api/3/attachment/{attachment_id}"
+        try:
+            async with retrying_client(timeout=20) as client:
+                r = await client.delete(url, headers=self._headers())
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+        if r.status_code == 404:
+            return
+        r.raise_for_status()
+
+    async def download_attachment_text(self, attachment_id: str) -> str:
+        """The content of a text attachment, e.g. the full plan behind an index."""
+        url = f"{self.base_url}/rest/api/3/attachment/content/{attachment_id}"
+        try:
+            async with retrying_client(timeout=30) as client:
+                r = await client.get(url, headers=self._headers(), follow_redirects=True)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Attachment not found: {attachment_id}")
+        r.raise_for_status()
+        return r.content.decode("utf-8")
+
+    async def _delete_plan_attachments(
+        self, issue_key: str, filename: str, keep_id: str | None
+    ) -> None:
+        """Remove earlier copies of a plan file, keeping `keep_id`.
+
+        Best effort: a leftover file is clutter, not a wrong plan — the comment
+        links to the current one by id — so a failure here is logged and the
+        post still reports what it did."""
+        try:
+            for att in await self.get_attachments(issue_key):
+                att_id = str(att.get("id") or "")
+                if att.get("filename") == filename and att_id and att_id != keep_id:
+                    await self.delete_attachment(att_id)
+        except Exception as e:
+            logger.warning(
+                "Could not clear earlier %s attachments on %s: %s", filename, issue_key, e
+            )
 
     async def delete_comment(self, issue_key: str, comment_id: str) -> None:
         """Delete a comment from a Jira issue.

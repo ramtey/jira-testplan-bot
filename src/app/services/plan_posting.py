@@ -243,6 +243,11 @@ async def post_one(
         "version_note": result.get("version_note"),
         "kind": result.get("kind", kind.value),
         "adopted_legacy": result.get("adopted_legacy", False),
+        # An oversized plan is one index comment plus the full text attached.
+        # `attachment_error` set means that attach failed and the plan went up
+        # split instead, which the client has to explain.
+        "attachment_filename": result.get("attachment_filename"),
+        "attachment_error": result.get("attachment_error"),
         "plan_id": plan_id,
         "posted_at": posted_at_iso,
         "recorded": recorded,
