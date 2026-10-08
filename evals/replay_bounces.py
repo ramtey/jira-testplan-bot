@@ -388,6 +388,12 @@ def use_profiles_for(key, extra=()):
     return held
 
 
+def unreadable_prs(serialized):
+    """How many of the ticket's (rewound) PRs GitHub would not return."""
+    prs = ((serialized.get("development_info") or {}).get("pull_requests")) or []
+    return sum(1 for pr in prs if isinstance(pr, dict) and pr.get("github_enrichment_failed"))
+
+
 def context_of(plan):
     """The conditions a plan was generated under, for parity checks.
 
@@ -452,6 +458,25 @@ async def phase_replay(rows, limit):
             prs_before = len(((serialized.get("development_info") or {})
                               .get("pull_requests")) or [])
             serialized, removed = rewind(serialized, cutoff)
+
+            # A PR GitHub would not return reaches the generator as a bare
+            # title, so the plan is written without code. On 2026-10-07 the
+            # machine dropped off the org's IP allow list mid-run and 26 of 33
+            # graded tickets in BOTH arms ran that way; the compare measured
+            # the outage. Same rule as dev-status: retry once, then exclude.
+            if unreadable_prs(serialized):
+                await asyncio.sleep(CONTEXT_RETRY_PAUSE_S)
+                serialized, retried = await fetch_with_context(jira, key, serialize_issue)
+                serialized, removed = rewind(serialized, cutoff)
+                if unreadable_prs(serialized):
+                    plan_path(key).write_text(json.dumps({
+                        "excluded": f"{unreadable_prs(serialized)} PR(s) could not be read "
+                                    "from GitHub, and still could not on retry — scoring "
+                                    "this would measure the outage, not the plan",
+                        "_context": {"github_unreadable": True, "retried": True},
+                    }, indent=2))
+                    print("excluded (GitHub could not read its PRs after retry)")
+                    continue
 
             # Every PR on the ticket postdates the bounce, so the rewind left
             # no implementation to ground cases in. The bot would score near

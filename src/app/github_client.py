@@ -975,7 +975,13 @@ class GitHubClient:
             if e.response.status_code == 404:
                 logger.warning(f"PR not found or no access: {pr_url}")
             elif e.response.status_code == 403:
-                logger.warning(f"GitHub API rate limit or insufficient permissions: {pr_url}")
+                # GitHub's own message says which 403 this is; an org IP allow
+                # list (off the VPN) reads exactly like a rate limit otherwise.
+                try:
+                    reason = (e.response.json().get("message") or "")[:160]
+                except ValueError:
+                    reason = ""
+                logger.warning(f"GitHub refused {pr_url} (403): {reason or 'rate limit or insufficient permissions'}")
             else:
                 logger.error(f"Failed to fetch PR details from {pr_url}: {e}")
             return None
