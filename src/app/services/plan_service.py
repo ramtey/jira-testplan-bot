@@ -45,6 +45,7 @@ from ..db.models.plan import PlanFormat
 from ..db.models.run import RunType
 from ..db.mongo import get_db
 from ..deploy_state import read_deploy_state
+from ..flag_state import LaunchDarklyReader, read_flag_state
 from ..deliverable_classifier import (
     aggregate_deliverables_for_critique,
     format_deliverable_hint,
@@ -450,6 +451,33 @@ async def _read_deploy_state(development_info: dict | None) -> list[dict]:
         return []
 
 
+async def _read_flag_state(request) -> list[dict]:
+    """What the flags this ticket touches serve per environment; [] when off."""
+    sources = settings.ld_flag_sources
+    token = settings.launchdarkly_api_token
+    prs = ((request.development_info or {}).get("pull_requests")) or []
+    if not sources or not token or not prs:
+        return []
+    ticket_text = [request.summary or "", request.description or ""]
+    texts_by_repo: dict[str, list[str]] = {}
+    for pr in prs:
+        repo = pr.get("repository")
+        if repo not in sources:
+            continue
+        texts = texts_by_repo.setdefault(repo, list(ticket_text))
+        texts.append(pr.get("github_description") or "")
+        for f in pr.get("files_changed") or []:
+            texts += [f.get("patch") or "", f.get("full_content") or ""]
+    if not texts_by_repo:
+        return []
+    try:
+        return await read_flag_state(LaunchDarklyReader(token), texts_by_repo, sources)
+    except Exception as e:
+        logger.warning("flag state unavailable: %s", e)
+        return [{"project": "*", "key": None, "name": None, "envs": {},
+                 "error": f"flag state read failed: {type(e).__name__}"}]
+
+
 async def generate_single(
     request: GenerateTestPlanRequest, *, llm=None
 ) -> dict:
@@ -575,7 +603,7 @@ async def generate_single(
         # surface critic has something to check against. Gated by
         # settings.surface_classifier_enabled; off means it returns None
         # immediately and this gather costs nothing extra.
-        images, (resolved_slack, slack_gaps), deliverable, deploy_state = await asyncio.gather(
+        images, (resolved_slack, slack_gaps), deliverable, deploy_state, flag_state = await asyncio.gather(
             _download_images(request.image_urls),
             resolve_slack_messages_in_text(request.description, request.comments),
             classify_deliverable(
@@ -587,6 +615,7 @@ async def generate_single(
                 development_info=request.development_info,
             ),
             _read_deploy_state(request.development_info),
+            _read_flag_state(request),
         )
         # Sources the ticket points at that we could not read. Recorded on the
         # plan and handed to the generator so it writes around nothing in
@@ -608,6 +637,20 @@ async def generate_single(
                     "the deployed build could not be checked for "
                     + ", ".join(unread)
                     + ", so the plan cannot say whether those environments run this change"
+                )
+        if flag_state:
+            dev_for_prompt = dict(request.development_info or {})
+            dev_for_prompt["flag_state"] = flag_state
+            request = request.model_copy(update={"development_info": dev_for_prompt})
+            provenance["flag_state"] = [
+                {k: e[k] for k in ("project", "key", "error")} for e in flag_state
+            ]
+            unread = sorted({e["key"] or e["project"] for e in flag_state if e["error"]})
+            if unread:
+                context_gaps.append(
+                    "feature flag state could not be read from LaunchDarkly for "
+                    + ", ".join(unread)
+                    + ", so the plan cannot say what those flags serve in each environment"
                 )
         # A read that failed is a gap, exactly like a Confluence page that
         # would not load. context_gaps is a list of strings precisely so a new

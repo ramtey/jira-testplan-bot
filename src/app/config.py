@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     # Empty means not checked. See src/app/deploy_state.py.
     deploy_state_sources: dict[str, dict[str, str]] = {}
 
+    # Read-only LaunchDarkly access, so a plan states what each flag the ticket
+    # touches serves per environment instead of guessing (or telling testers to
+    # flip it). LD_FLAG_SOURCES maps a code repo to its LD project and to the
+    # environments to read, as {label: LD env key}; labels should match
+    # DEPLOY_STATE_SOURCES. See src/app/flag_state.py.
+    launchdarkly_api_token: str | None = None
+    ld_flag_sources: dict[str, dict] = {}
+
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
     # A real file key the health check reads, to prove design context actually

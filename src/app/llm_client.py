@@ -27,6 +27,7 @@ from .description_analyzer import (
     extract_acceptance_criteria,
 )
 from .deploy_state import DEPLOY_STATE_GUIDANCE, render_deploy_state
+from .flag_state import FLAG_STATE_GUIDANCE, render_flag_state
 from .diff_budget import allocate_patch_budget, omitted_note, render_full_files
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
@@ -3227,6 +3228,12 @@ TICKET INFORMATION
                 prompt += "\n**Deployment state — which environment runs which PR:**\n"
                 prompt += deploy_text + "\n"
                 prompt += f"⚠️ REQUIRED: {DEPLOY_STATE_GUIDANCE}\n"
+
+            flag_text = render_flag_state(development_info.get("flag_state") or [])
+            if flag_text:
+                prompt += "\n**Feature flags this ticket touches — what each environment serves:**\n"
+                prompt += flag_text + "\n"
+                prompt += f"⚠️ REQUIRED: {FLAG_STATE_GUIDANCE}\n"
 
             # Add commit information
             commits = development_info.get("commits", [])
