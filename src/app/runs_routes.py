@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 
 from .db.mongo import get_db
 from .repositories import jira_ticket_repository, plan_repository
+from .services import progress_key as progress_key_service
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,47 @@ async def runs_by_ticket(ticket_key: str):
         "auto_bug_analysis_dispatched_at": (
             auto_dispatched_at.isoformat() if auto_dispatched_at else None
         ),
+    }
+
+
+@router.get("/tickets/{ticket_key}/live-plan")
+async def live_plan(ticket_key: str):
+    """The plan(s) live in Jira for this ticket, every case under its canonical id.
+
+    The UAT runner's source of truth. It used to parse the Jira comment, which
+    is a rendering: a large plan's comment is only an index, and pairing cases
+    with ids by reading the comment is what marked the wrong case on SK-2325.
+
+    `live_plans` is empty when nothing has been posted, and holds two entries
+    when the ticket has both its own plan and a batch plan covering it; which
+    one to run is the tester's call. A store failure is a 503, never an empty
+    list, so "no plan" and "could not look" cannot be confused.
+    """
+    key = ticket_key.upper()
+    try:
+        db = get_db()
+        live = await plan_repository.list_live_plans_for_ticket(db, ticket_key=key)
+    except Exception:
+        logger.exception("live_plan failed for %s", key)
+        raise HTTPException(status_code=503, detail="Plan store unavailable")
+
+    return {
+        "ticket_key": key,
+        "live_plans": [
+            {
+                "plan_id": plan.id,
+                "version": plan.version,
+                "ticket_keys": list(run.ticket_keys or []),
+                "batch": len(run.ticket_keys or []) > 1,
+                "jira_comment_id": plan.jira_comment_id,
+                "posted_at": plan.posted_at.isoformat() if plan.posted_at else None,
+                "progress_key": progress_key_service.build_progress_key(
+                    list(run.ticket_keys or []), plan.body
+                ),
+                "cases": progress_key_service.cases_by_id(plan.body),
+            }
+            for run, plan in live
+        ],
     }
 
 

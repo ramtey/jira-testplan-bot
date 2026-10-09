@@ -297,32 +297,48 @@ def case_index(body: Any) -> dict[str, dict]:
 
     Returns ``{id: {"section", "index", "title", "optional"}}`` in render order.
     """
+    return {case_id: meta for case_id, meta, _item in _walk(body)}
+
+
+def cases_by_id(body: Any) -> list[dict]:
+    """Every case in render order, each carrying its canonical id and its full
+    stored content.
+
+    For a reader that has to *run* the cases rather than just address them —
+    the UAT runner. It used to rebuild this pairing by parsing the Jira
+    comment, and the pairing is the step that went wrong on SK-2325. Built from
+    the same walk as ``case_index``, so an id here is the id the mark script
+    validates against.
+    """
+    return [{"id": case_id, **meta, "case": item} for case_id, meta, item in _walk(body)]
+
+
+def _walk(body: Any):
+    """Yield ``(id, meta, item)`` for every case, in render order."""
     plan = _as_plan_dict(body)
-    index: dict[str, dict] = {}
     for section in CHECKLIST_KEYS:
         position = 0
         for item in _items(plan, section):
             if section in COVERABLE_KEYS and _is_covered(item):
                 continue
-            index[f"{section}:{position}"] = {
+            yield f"{section}:{position}", {
                 "section": section,
                 "index": position,
                 "title": _title_of(item),
                 "optional": False,
-            }
+            }, item
             position += 1
     position = 0
     for section in COVERABLE_KEYS:
         for item in _items(plan, section):
             if not _is_covered(item):
                 continue
-            index[f"{COVERED_KEY}:{position}"] = {
+            yield f"{COVERED_KEY}:{position}", {
                 "section": COVERED_KEY,
                 "index": position,
                 "title": _title_of(item),
                 "optional": True,
                 "origin_section": section,
                 "unit_test_ref": item.get("unit_test_ref") or None,
-            }
+            }, item
             position += 1
-    return index

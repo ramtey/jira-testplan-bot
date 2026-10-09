@@ -200,6 +200,37 @@ async def list_runs_with_plans_by_ticket(
     return rows
 
 
+async def list_live_plans_for_ticket(
+    db: AsyncIOMotorDatabase,
+    *,
+    ticket_key: str,
+) -> list[tuple[Run, GeneratedPlan]]:
+    """The plans currently live in Jira for `ticket_key`, newest post first.
+
+    "Live" is `jira_comment_id` being set, which `mark_plan_posted_to_jira`
+    keeps true of at most one plan per comment slot. So this is at most two
+    rows: the ticket's own plan and a batch plan covering it. A newer
+    regeneration nobody posted is deliberately absent — the tester is working
+    from the comment, not from the bot's latest draft.
+
+    Not built on `list_runs_with_plans_by_ticket`: that one stops at 20 rows,
+    and a ticket regenerated often enough would push its live plan past them.
+    """
+    runs = await crud.find_many(
+        db, Run, {"ticket_keys": ticket_key, **_SUCCESSFUL_TEST_PLAN_RUN}
+    )
+    if not runs:
+        return []
+    runs_by_id = {r.id: r for r in runs}
+    plans = await crud.find_many(
+        db,
+        GeneratedPlan,
+        {"run_id": {"$in": list(runs_by_id)}, "jira_comment_id": {"$ne": None}},
+        sort=[("posted_at", DESCENDING)],
+    )
+    return [(runs_by_id[p.run_id], p) for p in plans]
+
+
 async def get_run_for_plan(
     db: AsyncIOMotorDatabase, *, plan_id: int
 ) -> Run | None:
