@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     # DEPLOY_STATE_SOURCES. See src/app/flag_state.py.
     launchdarkly_api_token: str | None = None
     ld_flag_sources: dict[str, dict] = {}
+    # Email domains whose addresses may appear in a plan when a flag rule
+    # targets them (test accounts). Any other address is counted, not named.
+    # Empty means every address is hidden.
+    ld_internal_email_domains: list[str] = []
 
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)

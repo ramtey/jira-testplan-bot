@@ -136,3 +136,23 @@ async def test_prompt_carries_flag_state_and_the_no_write_rule():
     prompt = _PromptOnlyClient()._build_prompt("SK-1", "Owner only", "body", {}, dev)
     assert "staging: ON: subscriberId in [3356] -> true" in prompt
     assert "NEVER tell a tester to change a flag" in prompt
+
+
+def test_only_internal_addresses_reach_the_plan(monkeypatch):
+    from src.app.config import settings
+    monkeypatch.setattr(settings, "ld_internal_email_domains", ["skyslope.com"])
+    env = {"on": True, "rules": [{"clauses": [{"attribute": "email", "op": "in", "values": [
+        "123DevBroker@skyslope.com", "someone@freedrops.org", "client@gmail.com"]}],
+        "variation": 0}], "fallthrough": {"variation": 1}}
+    line = summarize_env(IN_PERSON, env)
+    assert "123DevBroker@skyslope.com" in line
+    assert "freedrops" not in line and "gmail" not in line
+    assert "2 other address(es)" in line
+
+
+def test_with_no_internal_domain_every_address_is_hidden(monkeypatch):
+    from src.app.config import settings
+    monkeypatch.setattr(settings, "ld_internal_email_domains", [])
+    env = {"on": True, "rules": [{"clauses": [{"attribute": "email", "op": "in",
+        "values": ["a@skyslope.com"]}], "variation": 0}], "fallthrough": {"variation": 1}}
+    assert "a@skyslope.com" not in summarize_env(IN_PERSON, env)

@@ -138,6 +138,31 @@ def _serve(flag: dict, block: dict) -> str:
     return "?"
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@([^@\s]+)$")
+
+
+def _clause_values(values: list) -> str:
+    """A rule's values, safe to put in a plan that gets posted to Jira.
+
+    Targeting rules list real people. Internal addresses stay — a test account
+    like 123DevBroker@ is exactly what a tester needs to see — and every other
+    address becomes a count, so no customer email reaches a prompt or a ticket.
+    """
+    from .config import settings
+    internal = {d.lower().lstrip("@") for d in settings.ld_internal_email_domains or []}
+    shown, hidden = [], 0
+    for v in dict.fromkeys(map(str, values)):
+        m = _EMAIL_RE.match(v)
+        if m and m.group(1).lower() not in internal:
+            hidden += 1
+        else:
+            shown.append(v)
+    text = ", ".join(shown[:5]) + (", …" if len(shown) > 5 else "")
+    if hidden:
+        text += f"{', ' if text else ''}{hidden} other address(es)"
+    return text
+
+
 def summarize_env(flag: dict, env: dict) -> str:
     """One line a tester can act on, e.g.
     'ON: subscriberId in [3356] -> true; everyone else -> false'."""
@@ -151,8 +176,7 @@ def summarize_env(flag: dict, env: dict) -> str:
     for rule in env.get("rules") or []:
         clauses = " AND ".join(
             f"{c.get('attribute')} {'not ' if c.get('negate') else ''}{c.get('op')} "
-            f"[{', '.join(str(v) for v in list(dict.fromkeys(map(str, c.get('values') or [])))[:5])}"
-            f"{', …' if len(c.get('values') or []) > 5 else ''}]"
+            f"[{_clause_values(c.get('values') or [])}]"
             for c in rule.get("clauses") or []
         )
         bits.append(f"{clauses} -> {_serve(flag, rule)}")
