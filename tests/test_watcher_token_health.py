@@ -224,3 +224,115 @@ class TestOfflineIsNotABrokenToken:
             FakeStatus("Figma", False, "missing", "Not configured (optional).")]))
         await queue_watcher.check_tokens_once()
         assert seen == []
+
+
+# ---------------------------------------------------------------------------
+# GitHub: probe a real repo, and hold the sweep while it is refused
+# ---------------------------------------------------------------------------
+
+class FakeGitHubHealth:
+    def __init__(self, status):
+        self.status = status
+
+    async def validate_github_token(self):
+        return self.status
+
+
+@pytest.fixture
+def hold_env(monkeypatch, tmp_path):
+    from src.app.config import settings
+    monkeypatch.setattr(settings, "github_token", "github_pat_x", raising=False)
+    monkeypatch.setattr(settings, "watch_hold_without_github", True, raising=False)
+    monkeypatch.setattr(queue_watcher, "TOKEN_STATE_PATH", tmp_path / "state.json")
+    sent = []
+    monkeypatch.setattr(queue_watcher, "notify", lambda title, msg, **k: sent.append(title))
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_github_hold_alerts_once_then_releases(monkeypatch, hold_env):
+    refused = FakeStatus("GitHub", False, "insufficient_permissions",
+                         "The GitHub token can no longer read skyslope/digisign3-ui (404).")
+    _patch_github(monkeypatch, refused)
+    assert "can no longer read" in await queue_watcher._github_hold_reason()
+    assert "can no longer read" in await queue_watcher._github_hold_reason()
+    assert hold_env == ["Test Plan Bot: plans on hold"]  # once, not every sweep
+
+    _patch_github(monkeypatch, FakeStatus("GitHub", True))
+    assert await queue_watcher._github_hold_reason() is None
+    assert hold_env[-1] == "Test Plan Bot"  # the all-clear
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_github_is_not_a_hold(monkeypatch, hold_env):
+    """Offline says nothing about access; never hold on a guess."""
+    _patch_github(monkeypatch, FakeStatus("GitHub", False, "service_unavailable", "timed out"))
+    assert await queue_watcher._github_hold_reason() is None
+    assert hold_env == []
+
+
+@pytest.mark.asyncio
+async def test_hold_can_be_switched_off(monkeypatch, hold_env):
+    from src.app.config import settings
+    monkeypatch.setattr(settings, "watch_hold_without_github", False)
+    _patch_github(monkeypatch, FakeStatus("GitHub", False, "insufficient_permissions", "x"))
+    assert await queue_watcher._github_hold_reason() is None
+
+
+def _patch_github(monkeypatch, status):
+    import src.app.token_service as ts
+    monkeypatch.setattr(ts, "TokenHealthService", lambda: FakeGitHubHealth(status))
+
+
+# --- the probe itself: /user answering 200 is not enough -------------------
+
+import httpx  # noqa: E402
+
+from src.app.token_service import TokenErrorType, TokenHealthService  # noqa: E402
+
+
+def _github(monkeypatch, repo_status, repo_body):
+    from src.app import token_service as ts
+    monkeypatch.setattr(ts.settings, "github_token", "github_pat_x", raising=False)
+    monkeypatch.setattr(ts.settings, "github_healthcheck_repo", "skyslope/digisign3-ui", raising=False)
+
+    async def _get(self, url, **kwargs):
+        req = httpx.Request("GET", url)
+        if url.endswith("/user"):
+            return httpx.Response(200, json={"login": "bot"}, request=req)
+        return httpx.Response(repo_status, json=repo_body, request=req)
+    monkeypatch.setattr(httpx.AsyncClient, "get", _get)
+
+
+@pytest.mark.asyncio
+async def test_ip_allow_list_is_named_as_such(monkeypatch):
+    _github(monkeypatch, 403, {"message": "Although you appear to have the correct authorization "
+                                          "credentials, the `skyslope` organization has an IP allow list enabled"})
+    st = await TokenHealthService().validate_github_token()
+    assert not st.is_valid and st.error_type == TokenErrorType.INSUFFICIENT_PERMISSIONS
+    assert "IP allow list" in st.error_message and "VPN" in st.error_message
+
+
+@pytest.mark.asyncio
+async def test_lost_repo_access_fails_even_though_user_answers(monkeypatch):
+    _github(monkeypatch, 404, {"message": "Not Found"})
+    st = await TokenHealthService().validate_github_token()
+    assert not st.is_valid and "can no longer read skyslope/digisign3-ui (404)" in st.error_message
+
+
+@pytest.mark.asyncio
+async def test_readable_repo_is_healthy_and_says_what_it_read(monkeypatch):
+    _github(monkeypatch, 200, {"full_name": "skyslope/digisign3-ui"})
+    st = await TokenHealthService().validate_github_token()
+    assert st.is_valid and st.details["repo_access"] == "reads skyslope/digisign3-ui"
+
+
+@pytest.mark.asyncio
+async def test_no_repo_to_probe_says_it_did_not_check(monkeypatch):
+    _github(monkeypatch, 200, {})
+    from src.app import token_service as ts
+    monkeypatch.setattr(ts.settings, "github_healthcheck_repo", None)
+    monkeypatch.setattr(ts.settings, "deploy_state_sources", {})
+    monkeypatch.setattr(ts.settings, "ld_flag_sources", {})
+    st = await TokenHealthService().validate_github_token()
+    assert st.is_valid and st.details["repo_access"].startswith("not checked")

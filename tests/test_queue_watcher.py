@@ -58,8 +58,10 @@ class _Harness:
         payload=None,
         plan=None,
         generate_error=None,
+        github_hold=None,
     ):
         self.queue = list(queue)
+        self.github_hold = github_hold
         self.screen = screen or {}
         self.payload = payload or _payload(pull_requests=[_merged_pr()])
         self.plan = plan or {"happy_path": [{"title": "t"}], "plan_id": 7}
@@ -79,6 +81,9 @@ class _Harness:
                 raise self.generate_error
             self.generated.append(request.ticket_key)
             return self.plan
+
+        async def _hold():
+            return self.github_hold
 
         async def _bug_lens(payload, serialized):
             self.bug_lens_calls.append(payload["ticket_key"])
@@ -105,6 +110,7 @@ class _Harness:
             patch.object(queue_watcher.plan_service, "prompt_payload", _prompt_payload),
             patch.object(queue_watcher.plan_service, "generate_single", _generate),
             patch.object(queue_watcher, "_dispatch_bug_lens", _bug_lens),
+            patch.object(queue_watcher, "_github_hold_reason", _hold),
         ]
         for p in self._patches:
             p.start()
@@ -534,3 +540,17 @@ async def test_a_screening_error_costs_one_ticket_not_the_whole_sweep():
     assert outcomes["SK-1"] == "failed"
     assert outcomes["SK-2"] == "generated"
     assert "No servers found yet" in result.outcomes[0].detail
+
+
+@pytest.mark.asyncio
+async def test_a_github_outage_holds_every_ticket_and_writes_nothing():
+    """2026-10-07 and 2026-10-12: GitHub refused the bot and the sweep kept
+    posting plans that read no code. Held tickets get no plan and no attempt,
+    so the next sweep picks them up."""
+    reason = "GitHub refuses this machine: the skyslope org has an IP allow list"
+    with _Harness(queue=("SK-1", "SK-2"), github_hold=reason) as h:
+        result = await queue_watcher.sweep_once(projects=["SK"])
+    assert h.generated == []
+    assert _reasons(result) == {"SK-1": queue_watcher.SKIP_GITHUB_UNREADABLE,
+                                "SK-2": queue_watcher.SKIP_GITHUB_UNREADABLE}
+    assert all(o.detail == reason for o in result.outcomes)

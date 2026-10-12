@@ -60,6 +60,16 @@ def _humanize_seconds(seconds: int | None) -> str:
     return f"{seconds / 86400:.1f} days"
 
 
+def github_probe_repo() -> str | None:
+    """The repo the GitHub health check reads (see settings.github_healthcheck_repo)."""
+    if settings.github_healthcheck_repo:
+        return settings.github_healthcheck_repo
+    for sources in (settings.deploy_state_sources, settings.ld_flag_sources):
+        for repo in (sources or {}):
+            return repo
+    return None
+
+
 class TokenErrorType(str, Enum):
     """Types of token errors."""
     VALID = "valid"
@@ -252,16 +262,20 @@ class TokenHealthService:
 
                 if response.status_code == 200:
                     user_data = response.json()
+                    details = {
+                        "user_login": user_data.get("login"),
+                        "user_name": user_data.get("name"),
+                    }
+                    repo_problem = await self._probe_github_repo(client, details, last_checked)
+                    if repo_problem:
+                        return repo_problem
                     return TokenStatus(
                         service_name=service_name,
                         is_valid=True,
                         is_required=False,
                         error_type=TokenErrorType.VALID,
                         last_checked=last_checked,
-                        details={
-                            "user_login": user_data.get("login"),
-                            "user_name": user_data.get("name"),
-                        },
+                        details=details,
                     )
                 elif response.status_code == 401:
                     error_data = response.json() if response.text else {}
@@ -364,6 +378,59 @@ class TokenHealthService:
                 error_message=f"Unexpected error: {str(e)}",
                 last_checked=last_checked,
             )
+
+    async def _probe_github_repo(self, client, details: dict, last_checked) -> "TokenStatus | None":
+        """Can the token read a repo the bot plans from? None when it can.
+
+        /user only proves the token authenticates. Twice in one week it
+        answered 200 while every org repo was refused — the org's IP allow list
+        (VPN off) on 2026-10-07, a fine-grained token's org access revoked on
+        2026-10-12 — and plans went out with no code. So the check reads one
+        real repo, and says plainly when it could not pick one.
+        """
+        repo = github_probe_repo()
+        if not repo:
+            details["repo_access"] = (
+                "not checked — set GITHUB_HEALTHCHECK_REPO to a repo plans are written from"
+            )
+            return None
+        org = repo.split("/")[0]
+        r = await client.get(
+            f"https://api.github.com/repos/{repo}",
+            headers={"Authorization": f"Bearer {settings.github_token}",
+                     "Accept": "application/vnd.github.v3+json"},
+        )
+        if r.status_code == 200:
+            details["repo_access"] = f"reads {repo}"
+            return None
+        try:
+            message = (r.json() or {}).get("message") or ""
+        except ValueError:
+            message = ""
+        if r.status_code == 403 and "rate limit" in message.lower():
+            details["repo_access"] = "not checked — rate limited"
+            return None
+        if r.status_code == 403 and "ip allow list" in message.lower():
+            error = (f"GitHub refuses this machine: the {org} org has an IP allow list "
+                     "and this IP is not on it (VPN off?). Plans cannot read any code until it is.")
+        elif r.status_code in (403, 404):
+            error = (f"The GitHub token can no longer read {repo} ({r.status_code}). Its access "
+                     f"to the {org} org was revoked or needs re-approval; plans cannot read any code.")
+        else:
+            return TokenStatus(
+                service_name="GitHub", is_valid=False, is_required=False,
+                error_type=TokenErrorType.SERVICE_UNAVAILABLE,
+                error_message=f"GitHub returned {r.status_code} reading {repo}.",
+                last_checked=last_checked,
+            )
+        return TokenStatus(
+            service_name="GitHub", is_valid=False, is_required=False,
+            error_type=TokenErrorType.INSUFFICIENT_PERMISSIONS,
+            error_message=error,
+            help_url="https://github.com/settings/personal-access-tokens",
+            last_checked=last_checked,
+            details={**details, "repo": repo, "github_message": message[:200]},
+        )
 
     async def validate_anthropic_token(self) -> TokenStatus:
         """

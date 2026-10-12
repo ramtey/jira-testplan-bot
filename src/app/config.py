@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     # Figma bills /v1/files by what it returns, so a nonexistent key answers
     # 404 even while the quota for real files is exhausted.
     figma_healthcheck_file_key: str | None = None
+    # An "owner/repo" the GitHub health check reads, to prove the token can
+    # still see the code plans are written from. /user answers 200 for a token
+    # that has lost every org repo (2026-10-12) and from a machine the org's
+    # IP allow list refuses (2026-10-07). Unset: the first repo in
+    # DEPLOY_STATE_SOURCES, then LD_FLAG_SOURCES; none of those -> not checked.
+    github_healthcheck_repo: str | None = None
 
     # Slack (for resolving Slack message links in Jira descriptions/comments)
     slack_user_token: str | None = None  # Slack user token (xoxp-) - required scopes: channels:history, groups:history, im:history, mpim:history, users:read
@@ -211,6 +217,9 @@ class Settings(BaseSettings):
     # would outlive the code it was written from. A ticket with no diff at
     # all is separately the thin plan QA would rather write by hand.
     watch_require_merged_pr: bool = True
+    # Hold every generation in a sweep while GitHub refuses the bot (IP allow
+    # list, revoked token), instead of posting plans that read no code.
+    watch_hold_without_github: bool = True
     # Don't re-attempt a ticket whose last attempt (success OR failure) was
     # within this window. Stops a ticket that fails every cycle — a timeout,
     # a malformed description — from burning a call every interval.

@@ -81,6 +81,9 @@ SKIP_NO_MERGED_PR = "no_merged_pr"
 SKIP_NO_SOURCE = "no_source"
 SKIP_ON_HOLD = "on_hold"
 SKIP_CAP_REACHED = "cycle_cap_reached"
+# GitHub refuses the bot (IP allow list, revoked token): a plan written now
+# would have no code. Nothing is recorded, so the next sweep retries it.
+SKIP_GITHUB_UNREADABLE = "github_unreadable"
 
 
 @dataclass
@@ -278,6 +281,18 @@ async def sweep_once(
     result.scanned = len(queue)
     generated = 0
 
+    # One probe per sweep, before any ticket: a plan written while GitHub
+    # refuses the bot reads no code and is worse than a plan written five
+    # minutes later. On 2026-10-07 and 2026-10-12 the sweep kept posting such
+    # plans for hours, each flagged only by a gap line inside it.
+    hold = await _github_hold_reason() if queue else None
+    if hold:
+        for ticket_key in queue:
+            result.outcomes.append(
+                TicketOutcome(ticket_key, "skipped", SKIP_GITHUB_UNREADABLE, hold)
+            )
+        return result
+
     for ticket_key in queue:
         if generated >= cap:
             result.outcomes.append(
@@ -410,6 +425,40 @@ def _write_token_state(state: dict) -> None:
     except Exception:
         logger.warning("watcher: could not persist token state to %s; the next "
                        "sweep will re-check", TOKEN_STATE_PATH, exc_info=True)
+
+
+async def _github_hold_reason() -> str | None:
+    """Why this sweep must not generate, or None to go ahead.
+
+    Holds only on a fact about access (allow list, revoked or missing repo
+    access). An unreachable GitHub — laptop offline — says nothing about
+    access, and Jira is unreachable then too, so nothing would generate anyway.
+    Alerts once when a hold starts and once when it ends, not every sweep.
+    """
+    if not settings.github_token or not settings.watch_hold_without_github:
+        return None
+    from ..token_service import TokenHealthService
+    try:
+        status = await TokenHealthService().validate_github_token()
+    except Exception:
+        logger.exception("watcher: GitHub probe raised; not holding on a guess")
+        return None
+    state = _read_token_state()
+    was_holding = bool(state.get("github_hold"))
+    if _is_token_problem(status):
+        logger.error("watcher: holding generation — %s", status.error_message)
+        if not was_holding:
+            notify("Test Plan Bot: plans on hold", status.error_message or "GitHub refuses the bot.")
+            state["github_hold"] = True
+            _write_token_state(state)
+        return status.error_message or "GitHub refuses the bot"
+    if was_holding and status.is_valid:
+        logger.info("watcher: GitHub readable again; releasing the hold")
+        notify("Test Plan Bot", "GitHub is readable again; held tickets plan on this sweep.",
+               sound=False)
+        state["github_hold"] = False
+        _write_token_state(state)
+    return None
 
 
 def notify(title: str, message: str, *, sound: bool = True) -> None:
