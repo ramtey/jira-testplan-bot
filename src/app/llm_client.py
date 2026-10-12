@@ -425,10 +425,52 @@ these sources:
    string constant, route, icon name).
 2. **The testID reference** — the element appears in the testID list (when
    one is provided for this app).
-3. **The ticket description or attached screenshots** — the element is
-   shown or described concretely.
+Ticket text, AC wording, linked specs and attached screenshots tell you what
+was INTENDED. They do not show that a control ships, so on their own they do
+not back a named control, action or flag in a step — that is the failure this
+section exists to prevent. Use them to choose WHAT to test; use code to decide
+HOW the step names it.
 
-When you CANNOT find the element in any of those sources, ALL of the
+**A control must exist in the state your step is in.** Finding a label in the
+code is not enough when the component renders it conditionally. Read the
+condition. A link affordance that offers only "Disconnect" while a record is
+linked and "Connect" only while it is unlinked means "link it again using
+Connect" cannot be performed on a linked record — the real path is Disconnect,
+then Connect. Repeating, undoing or re-doing an action is where this goes wrong
+most often: check what the UI offers after the first action, not before it.
+
+**Flags and settings are code too.** A flag, setting or field name you put in a
+step or precondition (`autoSync`, "the Auto Sync setting") must appear in the
+code you were shown. A name that appears only in the ticket is the ticket's
+vocabulary, not the app's — describe the condition instead ("a calculation that
+is linked to a Forms file").
+
+**When code does not back it, write the intent.** "Re-establish the link
+between the calculation and the Forms file" is gradeable on any build; "tap
+Connect again" fails a correct build when Connect is not offered. Prefer the
+intent rewrite. Only when the step cannot be expressed without the name, keep
+it, start the step with "Unverified — assumption:", and do the three things
+below.
+
+**Declare every named reference in `step_grounding`.** For each step (and the
+preconditions, as step 0) that names a UI control, a user action on a specific
+control, a route, or a flag/setting, add `{step, element, kind, source}`.
+`source` is the `pr:<file>` or `testid:<screen>` that shows it, and the same
+entry must be in the case's `grounded_in`. Leave `source` empty when no code
+shows it. A post-generation check reads this list: a reference with no code
+source, or a `pr:` path that is not one of the changed files you were shown, is
+marked unverified in the step text and warned on — and a case that also has an
+unverified expected result is moved out of the gradeable sections.
+
+**An unverified expected result does not make its steps verified.** When
+`expected_verified` is false because the code was not in your context, the
+steps that lead to it were written from the same missing context. Every named
+reference in those steps needs its own code source in `step_grounding`, or the
+step is written as intent / marked "Unverified — assumption:". Marking only the
+expected result tells the tester which outcome to doubt but not which action
+may be impossible to perform.
+
+When you CANNOT find the element in the code sources above, ALL of the
 following are REQUIRED (do not pick one — do all three):
 
 1. **Still write the test case** in the appropriate section (happy_path,
@@ -441,8 +483,8 @@ following are REQUIRED (do not pick one — do all three):
    JSON object. This is the schema flag that surfaces the test to the
    reviewer as "trust but verify." Phrase the test's steps generically
    using the user-facing flow ("trigger the bulk-fill edit flow") OR use
-   the wording from the AC verbatim — either is acceptable when paired
-   with this flag. Do NOT silently invent a literal label without the
+   the wording from the AC verbatim with the step starting "Unverified —
+   assumption:". Do NOT silently invent a literal label without the
    flag set.
 
 3. **Add a matching entry to top-level `grounding_warnings`:**
@@ -1866,6 +1908,12 @@ PASS then means nothing.
   handler, there is no seek to regress. Assert the transport that exists.
 - ❌ Enumerating siblings you assume exist ("the Edit, Duplicate and Delete row
   actions") when the diff shows only two of them.
+- ❌ "🔴 Documents on a file can still be uploaded, renamed, downloaded and deleted
+  through the UI" — when no code from that product's UI is in your sources, you
+  do not know it offers rename (here it did not). A list of user ACTIONS is a
+  list of controls. Name only the actions the code shows, or write the surface:
+  "🔴 Existing document management on the Forms file (adding, opening and
+  removing documents) behaves as before".
 - ✅ "🟡 The Print or Download share option still works from the share menu and is
   unaffected by this change."
 
@@ -1873,8 +1921,9 @@ Because a checklist line is a bare string, it has nowhere to carry
 `needs_manual_verification` or a `grounding_warnings` entry — so the escape hatch
 the UI GROUNDING rules give a test case is not available here. Use this instead,
 in order:
-1. **Name only controls you can point at in the diff, the testID reference, the
-   screen guide, the ticket, or a screenshot.** Keep the rest of the line.
+1. **Name only controls, actions and flags you can point at in the diff, the
+   testID reference or the screen guide.** The ticket and screenshots say what
+   was intended, not what ships. Keep the rest of the line.
 2. **When you want to cover a neighbouring surface but cannot confirm its
    controls, write the line about the surface and the observable behaviour
    instead of the control.** "🟡 Sharing by a non-audio option still reaches the
@@ -4148,6 +4197,34 @@ TEST_CASE_SCHEMA = {
                 "empty `grounded_in` AND empty `covers_acs` is malformed — drop "
                 "the test or rewrite the step to be more general."
             ),
+        },
+        "step_grounding": {
+            "type": "array",
+            "description": (
+                "One entry per UI control, user action on a specific control, "
+                "route, or flag/setting that a step or the preconditions NAME "
+                "(see 'UI GROUNDING'). `step` is the 1-based step number, 0 for "
+                "the preconditions. `source` is the `pr:<file>` or "
+                "`testid:<screen>` that shows the element exists IN THE STATE "
+                "the step is in, and must also be in `grounded_in`; leave it "
+                "empty when no code shows it — ticket text, ACs, specs and "
+                "screenshots are not code. An entry with no code source is "
+                "marked unverified in the step text after generation. Omit the "
+                "field only when no step names anything."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "step": {"type": "integer"},
+                    "element": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["control", "action", "route", "flag"],
+                    },
+                    "source": {"type": "string"},
+                },
+                "required": ["step", "element", "kind", "source"],
+            },
         },
         "needs_manual_verification": {
             "type": "boolean",

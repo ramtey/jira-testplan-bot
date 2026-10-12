@@ -448,18 +448,37 @@ def test_the_five_correct_plan_522_lines_survive_a_full_pass():
         )
 
 
-def test_unverifiable_never_changes_the_text():
-    """Failure to prove is not grounds to weaken a line. An unverifiable
-    verdict annotates and nothing more."""
+def test_unverifiable_keeps_every_word_and_marks_the_line():
+    """Failure to prove is not grounds to weaken a line — but a line naming a
+    control no code confirmed is an assumption, and the tester has to see
+    that on the line itself (SK-2579's rename line). The priority emoji and
+    every word of the original survive; only the marker is added."""
     plan = _plan_522()
     before = list(plan.regression_checklist)
     notes = apply_regression_verdicts(plan, {
         line_id(4): {"verdict": "unverifiable", "reason": "no snippets", "rewrite": ""},
     })
-    assert plan.regression_checklist == before
+    prefix, body = split_priority(before[4])
+    assert plan.regression_checklist[4] == (
+        f"{prefix}Unverified — assumption (no code shows this): {body}"
+    )
+    assert plan.regression_checklist[:4] == before[:4]
+    assert plan.regression_checklist[5:] == before[5:]
     assert notes[0]["status"] == "unchecked"
-    assert notes[0]["rewritten"] == ""
+    assert notes[0]["severity"] == "warn"
     assert "no snippets" in notes[0]["explanation"]
+
+
+def test_unverifiable_does_not_stack_markers():
+    plan = _plan_522()
+    apply_regression_verdicts(plan, {
+        line_id(4): {"verdict": "unverifiable", "reason": "r", "rewrite": ""},
+    })
+    once = plan.regression_checklist[4]
+    apply_regression_verdicts(plan, {
+        line_id(4): {"verdict": "unverifiable", "reason": "r", "rewrite": ""},
+    })
+    assert plan.regression_checklist[4] == once
 
 
 def test_a_verdict_for_a_non_candidate_line_is_ignored():

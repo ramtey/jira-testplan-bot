@@ -56,11 +56,12 @@ be a worse bug than the one it fixes:
    appends to or deletes from the list. The line count is invariant, so
    ``progress_key.fingerprint`` is invariant, so UAT progress recorded
    against a plan survives the pass.
-2. ``unverifiable`` — no repo, no token, a code-search miss — is a
-   no-op on the text. Failure to prove is never grounds to weaken a
-   line; it only annotates ``regression_grounding_notes`` so a tester
-   knows which lines were not checked.
-3. Only lines that *name a control* are sent to the LLM at all
+2. ``unverifiable`` — no repo, no token, a code-search miss — never
+   weakens a line. Failure to prove is not grounds to drop or narrow it;
+   the line keeps every word and gains an ``Unverified — assumption``
+   prefix, plus a ``regression_grounding_notes`` entry, so a tester sees
+   on the line itself that no code backed what it names.
+3. Only lines that *name a control* (or enumerate user actions) are sent to the LLM at all
    (:func:`build_regression_grounding_inputs`). A flow-shaped line
    ("Navigating back from the preview screen and re-entering restores a
    playable walkthrough") names no control, is never a candidate, and
@@ -97,6 +98,8 @@ from __future__ import annotations
 
 import re
 from typing import Iterable
+
+from .step_grounding import MARKER, _ALREADY_MARKED_RE
 
 _MAX_LINE_LEN = 400
 _MAX_SNIPPET_LEN = 3200
@@ -181,6 +184,36 @@ def _looks_like_a_testid(token: str) -> bool:
 _SLASH_LIST_RE = re.compile(r"\([^)]*/[^)]*\)")
 
 
+#: User actions on a document or record. Two or more distinct ones in a line
+#: ("can still be uploaded, renamed, downloaded and deleted") enumerate the
+#: affordances of a surface exactly as "(play/pause/seek)" enumerates a
+#: control's, and are as easy to pad with one that does not exist. SK-2579's
+#: plan 610 asserted a Forms rename UI that files-ui does not have; with no
+#: control noun in the line, it was never a candidate and went out unchecked.
+_UI_ACTION_RE = re.compile(
+    r"\b(upload|renam|download|delet|duplicat|archiv|restor|export|import|"
+    r"print|shar|mov|copy|copi|edit|reorder|favorit)"
+    r"(?:e|es|ed|d|s|ing|ied)?\b",
+    re.IGNORECASE,
+)
+
+
+_LIST_GLUE_RE = re.compile(r"^\s*(?:,|/|,?\s*(?:and|or))\s*$", re.IGNORECASE)
+
+
+def _enumerates_actions(body: str) -> bool:
+    """Two different actions joined as a list ("uploaded, renamed", "edit or
+    delete"). Adjacency matters: "restores a playable walkthrough without
+    duplicate document preparation" names two action stems and is a flow."""
+    matches = list(_UI_ACTION_RE.finditer(body))
+    for a, b in zip(matches, matches[1:]):
+        if a.group(1).lower() == b.group(1).lower():
+            continue
+        if _LIST_GLUE_RE.match(body[a.end():b.start()]):
+            return True
+    return False
+
+
 def names_a_control(line: str) -> bool:
     """Whether this checklist line asserts something about a named control.
 
@@ -192,6 +225,8 @@ def names_a_control(line: str) -> bool:
     if not body.strip():
         return False
     if _CONTROL_NOUN_RE.search(body) or _SLASH_LIST_RE.search(body):
+        return True
+    if _enumerates_actions(body):
         return True
     return any(
         _looks_like_a_testid(m.group(0))
@@ -337,8 +372,9 @@ the standard:
   - The line names a screen you were shown no source for. → unverifiable, NOT unfounded_control.
 
 **unverifiable** — you cannot tell from what you were shown. No snippets, snippets that don't cover
-the surface the line names, or a control you simply cannot locate. This is a normal, frequent answer
-and has no cost: the line is left exactly as written and merely annotated.
+the surface the line names, or a control you simply cannot locate. This is a normal, frequent answer:
+the line keeps every word and is marked for the tester as an assumption no code confirmed, which is
+the honest outcome when you were not shown the code. Do not choose "grounded" to avoid the mark.
 
 For **unfounded_control** you MUST also return `rewrite`: the corrected line, priority emoji omitted.
 Rules for the rewrite — all of them:
@@ -496,7 +532,8 @@ def apply_regression_verdicts(test_plan, verdicts: dict[str, dict]) -> list[dict
       ``progress_key.fingerprint``, so changing it would orphan the UAT
       progress already recorded against the plan.
     * The priority emoji of a rewritten line is carried over verbatim.
-    * ``unverifiable`` and ``grounded`` never alter the text.
+    * ``grounded`` never alters the text; ``unverifiable`` only prefixes it
+      with the assumption marker, keeping every word.
 
     Notes land on ``test_plan.regression_grounding_notes`` — a separate
     list rather than ``grounding_warnings``, because those entries are
@@ -544,20 +581,29 @@ def apply_regression_verdicts(test_plan, verdicts: dict[str, dict]) -> list[dict
                 "severity": "info",
             })
         elif kind == "unverifiable":
-            _, body = split_priority(line)
+            # Kept, never weakened — but no longer kept *clean*. A line naming
+            # a control or action nobody could find in code is an assumption,
+            # and a tester has to be able to see that on the line itself: a
+            # note in a side list did not stop SK-2579's rename line from
+            # reading as a fact. Same marker the step check writes.
+            prefix, body = split_priority(line)
+            marked = body
+            if not _ALREADY_MARKED_RE.match(body):
+                marked = f"{MARKER} (no code shows this): {body}"
+                items[idx] = f"{prefix}{marked}"
             added.append({
                 "line_index": idx,
                 "status": "unchecked",
                 "original": body,
-                "rewritten": "",
+                "rewritten": marked if marked != body else "",
                 "explanation": (
                     f"Regression critic: {reason}"
                     if reason
                     else "Regression critic: could not confirm this line's controls "
-                         "against the linked source. Line left as written."
+                         "against the linked source. Line marked as an assumption."
                 ),
                 "source": "critic_regression",
-                "severity": "info",
+                "severity": "warn",
             })
 
     if added:

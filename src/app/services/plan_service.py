@@ -83,6 +83,7 @@ from .test_plan_generator import (
 )
 from src.app.citation_integrity import flag_unconfirmed_citations
 from src.app.data_provisioning import flag_unactionable_data_asks
+from src.app.step_grounding import check_step_grounding, readable_code_paths
 from src.app.video_walkthrough import build_walkthrough
 
 logger = logging.getLogger(__name__)
@@ -783,6 +784,22 @@ async def generate_single(
             provenance["critics_unavailable"] = critic_gaps
             logger.warning("critics unavailable for %s: %s",
                            request.ticket_key, "; ".join(critic_gaps))
+        # Step check, after the critics and before quarantine: a step naming
+        # a control, action or flag that only the ticket text backs is marked
+        # where it stands and warned on, and a step-level one sets the
+        # needs_manual_verification the model should have set — which is what
+        # lets quarantine move a case whose expected result is a guess too
+        # (SK-2579's "again using Connect"). See src/app/step_grounding.py.
+        unbacked_steps = check_step_grounding(
+            test_plan, readable_code_paths(single_ticket_dev_info)
+        )
+        if unbacked_steps:
+            provenance["unbacked_step_references"] = len(unbacked_steps)
+            logger.info(
+                "%d step reference(s) in %s name UI no code backs: %s",
+                len(unbacked_steps), request.ticket_key,
+                [w["missing_element"] for w in unbacked_steps],
+            )
         # Quarantine last: the code-grounding critic un-badges cases whose
         # behaviour it found in the repo, and those rescues have to land
         # before we decide what is ungrounded.
@@ -1116,6 +1133,17 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         if multi_critic_gaps:
             provenance["critics_unavailable"] = multi_critic_gaps
             logger.warning("critics unavailable: %s", "; ".join(multi_critic_gaps))
+        # Step check before quarantine; see generate_single.
+        unbacked_steps = check_step_grounding(
+            test_plan, readable_code_paths(multi_ticket_dev_info)
+        )
+        if unbacked_steps:
+            provenance["unbacked_step_references"] = len(unbacked_steps)
+            logger.info(
+                "%d step reference(s) name UI no code backs: %s",
+                len(unbacked_steps),
+                [w["missing_element"] for w in unbacked_steps],
+            )
         # See generate_single: quarantining runs after every critic so the
         # code-grounding recheck's rescues are respected.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)
