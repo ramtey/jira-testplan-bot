@@ -1201,6 +1201,46 @@ class GitHubClient:
             return None
         return [t["path"] for t in data.get("tree") or [] if t.get("type") == "blob"]
 
+    async def search_code_hits(self, query: str, scope: str, max_hits: int = 8) -> list[dict]:
+        """GitHub code search under `scope` ("org:acme" or "repo:acme/x").
+
+        Returns `[{"repo", "path", "fragments"}]`, the matched snippets only —
+        reading a hit is a separate, deliberate call. Shares the code-search
+        limiter with every other search here (GitHub allows ~10 a minute).
+
+        Raises GitHubSearchThrottled when GitHub refuses for rate reasons: an
+        empty list must only ever mean the search ran and matched nothing.
+        """
+        import urllib.parse
+
+        if not self.token:
+            return []
+        await _code_search_limiter.acquire()
+        url = (f"{self.base_url}/search/code?q={urllib.parse.quote(query + ' ' + scope)}"
+               f"&per_page={max_hits}")
+        headers = {**self._headers(), "Accept": "application/vnd.github.text-match+json"}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=headers)
+        _code_search_limiter.note_response(response)
+        retry_after = self._throttle_retry_after(response)
+        if retry_after is not None:
+            _code_search_limiter.note_external_throttle(retry_after)
+            raise GitHubSearchThrottled(
+                f"GitHub code search rate-limited (status {response.status_code})",
+                retry_after=retry_after,
+            )
+        if response.status_code != 200:
+            logger.warning("GitHub code search returned %s for %r", response.status_code, query)
+            return []
+        return [
+            {
+                "repo": (item.get("repository") or {}).get("full_name"),
+                "path": item.get("path"),
+                "fragments": [m.get("fragment", "")[:400] for m in item.get("text_matches") or []][:2],
+            }
+            for item in (response.json().get("items") or [])[:max_hits]
+        ]
+
     async def compare_commits(self, repo: str, base: str, head: str) -> dict | None:
         """GitHub's compare of `base...head` in `repo`: ``{"status", "ahead_by",
         "behind_by"}``, where status "ahead"/"identical" means `head` contains

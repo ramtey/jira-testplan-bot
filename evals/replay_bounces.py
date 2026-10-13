@@ -421,6 +421,8 @@ async def phase_replay(rows, limit):
     settings.deploy_state_sources = {}
     # Flag state likewise: today's targeting, not the bounce's.
     settings.ld_flag_sources = {}
+    # Exploration reads today's default branches, not the code at the bounce.
+    settings.exploration_enabled = False
     (RESULTS / "plans").mkdir(parents=True, exist_ok=True)
     todo = [r for r in rows if not plan_path(r["key"]).exists()]
     done = len(rows) - len(todo)          # count before --limit, or the line lies

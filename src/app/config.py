@@ -129,6 +129,12 @@ class Settings(BaseSettings):
     # Empty means every address is hidden.
     ld_internal_email_domains: list[str] = []
 
+    # Before writing, let a small read-only agent search the PRs' organizations
+    # for sibling entry points, guards and callers outside the diff (see
+    # src/app/code_exploration.py). Off until measured: it adds minutes and
+    # several model turns per plan.
+    exploration_enabled: bool = False
+
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
     # A real file key the health check reads, to prove design context actually

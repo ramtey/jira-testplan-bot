@@ -29,6 +29,7 @@ from .description_analyzer import (
 from .deploy_state import DEPLOY_STATE_GUIDANCE, render_deploy_state
 from .evidence_checks import render_repo_evidence
 from .flag_state import FLAG_STATE_GUIDANCE, render_flag_state
+from .code_exploration import EXPLORATION_GUIDANCE, render_findings
 from .diff_budget import allocate_patch_budget, omitted_note, render_full_files
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
@@ -3462,6 +3463,12 @@ TICKET INFORMATION
                 prompt += "\n**Feature flags this ticket touches — what each environment serves:**\n"
                 prompt += flag_text + "\n"
                 prompt += f"⚠️ REQUIRED: {FLAG_STATE_GUIDANCE}\n"
+
+            explore_text = render_findings(development_info.get("code_exploration"))
+            if explore_text:
+                prompt += "\n**Related code outside the PR diffs (read during exploration):**\n"
+                prompt += explore_text + "\n"
+                prompt += f"⚠️ REQUIRED: {EXPLORATION_GUIDANCE}\n"
 
             # Add commit information
             commits = development_info.get("commits", [])

@@ -54,6 +54,7 @@ from ..evidence_checks import (
     primary_notes,
 )
 from ..flag_state import LaunchDarklyReader, read_flag_state
+from ..code_exploration import explore, summary_line
 from ..deliverable_classifier import (
     aggregate_deliverables_for_critique,
     format_deliverable_hint,
@@ -508,6 +509,20 @@ async def _read_flag_state(request) -> list[dict]:
                  "error": f"flag state read failed: {type(e).__name__}"}]
 
 
+async def _explore_code(request, llm) -> dict | None:
+    """Findings about code outside the PR diffs; None when exploration is off."""
+    if not settings.exploration_enabled or not hasattr(llm, "_post_messages"):
+        return None
+    prs = ((request.development_info or {}).get("pull_requests")) or []
+    if not prs:
+        return None
+    from ..github_client import GitHubClient
+    result = await explore(llm, GitHubClient(), summary=request.summary,
+                           description=request.description, pull_requests=prs)
+    logger.info("code exploration for %s: %s", request.ticket_key, summary_line(result))
+    return result
+
+
 async def generate_single(
     request: GenerateTestPlanRequest, *, llm=None
 ) -> dict:
@@ -642,7 +657,7 @@ async def generate_single(
             + [f.get("patch") or "" for pr in ((request.development_info or {}).get("pull_requests") or [])
                if isinstance(pr, dict) for f in (pr.get("files_changed") or []) if isinstance(f, dict)]
         )
-        images, (resolved_slack, slack_gaps), deliverable, deploy_state, flag_state, repo_evidence = await asyncio.gather(
+        images, (resolved_slack, slack_gaps), deliverable, deploy_state, flag_state, repo_evidence, exploration = await asyncio.gather(
             _download_images(request.image_urls),
             resolve_slack_messages_in_text(request.description, request.comments),
             classify_deliverable(
@@ -656,6 +671,7 @@ async def generate_single(
             _read_deploy_state(request.development_info),
             _read_flag_state(request),
             _read_repo_evidence(request.development_info, mentioned),
+            _explore_code(request, llm),
         )
         # Sources the ticket points at that we could not read. Recorded on the
         # plan and handed to the generator so it writes around nothing in
@@ -689,6 +705,17 @@ async def generate_single(
                         e["error"] + ", so no case can be counted as covered by a unit test "
                         "and the plan makes no claim about CI or what ships"
                     )
+        if exploration:
+            provenance["code_exploration"] = json.loads(summary_line(exploration))
+            if exploration.get("findings"):
+                dev_for_prompt = dict(request.development_info or {})
+                dev_for_prompt["code_exploration"] = exploration
+                request = request.model_copy(update={"development_info": dev_for_prompt})
+            if exploration.get("error"):
+                context_gaps.append(
+                    "code outside the pull requests could not be fully explored "
+                    f"({exploration['error']}), so sibling routes and callers may be missing"
+                )
         if flag_state:
             dev_for_prompt = dict(request.development_info or {})
             dev_for_prompt["flag_state"] = flag_state
