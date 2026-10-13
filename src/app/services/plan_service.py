@@ -63,7 +63,12 @@ from ..description_analyzer import extract_acceptance_criteria
 from ..jira_client import JiraClient
 from ..llm_client import LLMError, get_llm_client
 from ..models import GenerateTestPlanRequest, TicketInput
-from ..repositories import bug_analysis_repository
+from ..repositories import (
+    bug_analysis_repository,
+    plan_repository,
+    test_plan_progress_repository,
+)
+from ..scope_checks import run_platform_critic, run_scope_checks
 from ..seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from ..security_surfaces import audit_persona_split
 from ..slack_client import resolve_slack_messages_in_text
@@ -75,7 +80,8 @@ from ..source_grounding import (
     no_source_result,
     spec_only_notice,
 )
-from . import run_tracker
+from . import plan_revision, run_tracker
+from . import progress_key as progress_key_service
 from .batch_plan_host import choose_batch_host_for_tickets
 from .test_plan_generator import (
     classify_deliverable,
@@ -329,6 +335,56 @@ async def _download_images(
         if image_data:
             images.append(image_data)
     return images or None
+
+
+async def _load_previous_plan(ticket_key: str) -> tuple[dict | None, str | None]:
+    """The stored single-ticket plan for ``ticket_key`` that QA's marks are on.
+
+    Returns ``(previous, gap)``. ``previous`` is ``{plan_id, body,
+    progress_key, checked_ids}``, or None when the ticket has no earlier plan.
+    Of the ticket's own plans, newest first, it takes the first with recorded
+    marks, else the first posted to Jira, else the newest. Picking the newest
+    alone would map from an unposted draft that nobody tested: SK-2822's v2
+    (plan 622) would have become the "previous" plan, and the nine passes on
+    plan 620 would have dropped out of the report. A batch plan that included
+    the ticket is skipped, because its key and ids belong to the batch. ``gap``
+    says why nothing could be read when the lookup failed. Without the previous
+    plan a regeneration cannot keep ids stable or report what it moved, and the
+    plan must say so rather than look like a first version.
+    """
+    try:
+        db = get_db()
+        candidates = []
+        for plan, tickets in await plan_repository.find_plans_for_tickets(
+            db, ticket_keys=[ticket_key], limit=10
+        ):
+            if [t.upper() for t in tickets] != [ticket_key.upper()]:
+                continue
+            key = progress_key_service.build_progress_key(tickets, plan.body)
+            row = await test_plan_progress_repository.get_progress(db, progress_key=key)
+            try:
+                checked = json.loads(row.checked_ids or "[]") if row is not None else []
+            except (ValueError, TypeError):
+                checked = []
+            candidates.append({
+                "plan_id": plan.id,
+                "body": plan.body,
+                "progress_key": key,
+                "checked_ids": [c for c in checked if isinstance(c, str)],
+                "_posted": bool(getattr(plan, "jira_comment_id", None)),
+            })
+        chosen = (
+            next((c for c in candidates if c["checked_ids"]), None)
+            or next((c for c in candidates if c["_posted"]), None)
+            or (candidates[0] if candidates else None)
+        )
+        if chosen is None:
+            return None, None
+        chosen.pop("_posted")
+        return chosen, None
+    except Exception as exc:  # noqa: BLE001 — degrade the remap, not the plan
+        logger.exception("previous plan lookup failed for %s", ticket_key)
+        return None, f"the previous plan could not be read ({type(exc).__name__})"
 
 
 async def _load_seed_regressions(ticket_key: str, parent_key: str) -> list[dict]:
@@ -761,6 +817,17 @@ async def generate_single(
         testing_context = dict(request.testing_context or {})
         if deliverable is not None and deliverable.artifact_type != "unknown":
             testing_context["deliverable_hint"] = format_deliverable_hint(deliverable)
+        previous, previous_gap = (
+            await _load_previous_plan(request.ticket_key)
+            if settings.regenerate_in_place else (None, None)
+        )
+        if previous is not None:
+            testing_context["previous_plan"] = plan_revision.render_previous_plan(
+                plan_id=previous["plan_id"],
+                progress_key=previous["progress_key"],
+                body=previous["body"],
+                checked_ids=previous["checked_ids"],
+            )
 
         test_plan = await llm.generate_test_plan(
             ticket_key=request.ticket_key,
@@ -897,11 +964,28 @@ async def generate_single(
                 len(unbacked_steps), request.ticket_key,
                 [w["missing_element"] for w in unbacked_steps],
             )
+        # Scope rules G, H, J (src/app/scope_checks.py): marks, never moves,
+        # so the section counts — the progress key — are untouched. Before
+        # quarantine, so a case it moves to needs-spec keeps its marker.
+        rewritten, platform_gap = await run_platform_critic(
+            llm, test_plan, [request.development_info]
+        )
+        if rewritten:
+            provenance["platform_rewritten"] = rewritten
+        if platform_gap:
+            provenance.setdefault("critics_unavailable", []).append(platform_gap)
+        scope = run_scope_checks(test_plan, [request.development_info])
+        _record_scope(provenance, scope, request.ticket_key)
         # Quarantine last: the code-grounding critic un-badges cases whose
         # behaviour it found in the repo, and those rescues have to land
         # before we decide what is ungrounded.
         needs_spec_cases = quarantine_ungrounded_cases(
-            test_plan, spec_is_source=spec_only is not None
+            test_plan,
+            spec_is_source=spec_only is not None,
+            protected_titles=(
+                plan_revision.passed_titles(previous["body"], previous["checked_ids"])
+                if previous is not None else frozenset()
+            ),
         )
         # Rule A, after quarantine so cases moved to needs-spec still count as
         # having used a note.
@@ -1005,6 +1089,20 @@ async def generate_single(
         }
         if spec_only is not None:
             response["source_notice"] = provenance["spec_only"]
+        # What this regeneration does to recorded QA progress, from the final
+        # body — the one the key is computed from. Saved with the plan and
+        # returned, so the mapping is in front of whoever posts it.
+        if previous is not None:
+            response["progress_remap"] = plan_revision.build_progress_remap(
+                ticket_keys=[request.ticket_key],
+                old_plan_id=previous["plan_id"],
+                old_body=previous["body"],
+                new_body=response,
+                checked_ids=previous["checked_ids"],
+            )
+            _log_remap(request.ticket_key, response["progress_remap"])
+        elif previous_gap:
+            provenance["previous_plan_unavailable"] = previous_gap
 
         saved = await run_tracker.complete_with_plan(
             run_ctx,
@@ -1028,6 +1126,31 @@ async def generate_single(
     except Exception as e:
         await run_tracker.fail(run_ctx, error_code=_error_code(e))
         raise
+
+
+def _record_scope(provenance: dict, scope: dict, label: str) -> None:
+    if scope["pre_existing_labelled"]:
+        provenance["pre_existing_labelled"] = scope["pre_existing_labelled"]
+    for key in ("platform_unscoped", "out_of_scope_suspects"):
+        if scope[key]:
+            provenance[key] = scope[key]
+            logger.info("%s: %d case(s) for %s: %s", key, len(scope[key]), label,
+                        [f["location"] for f in scope[key]])
+
+
+def _log_remap(ticket_key: str, remap: dict) -> None:
+    if remap["misattached"]:
+        logger.warning(
+            "regenerating %s kept key %s but %d recorded mark(s) now name a "
+            "different case: %s", ticket_key, remap["new_key"],
+            len(remap["misattached"]), [m["id"] for m in remap["misattached"]],
+        )
+    elif remap["key_changed"] and remap["checked"]:
+        logger.warning(
+            "regenerating %s moved progress %s -> %s; %d recorded mark(s) need "
+            "carrying over", ticket_key, remap["old_key"], remap["new_key"],
+            len(remap["checked"]),
+        )
 
 
 async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
@@ -1310,6 +1433,14 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
                 len(unbacked_steps),
                 [w["missing_element"] for w in unbacked_steps],
             )
+        batch_dev_infos = [d.get("development_info") for d in multi_ticket_dev_info]
+        rewritten, platform_gap = await run_platform_critic(llm, test_plan, batch_dev_infos)
+        if rewritten:
+            provenance["platform_rewritten"] = rewritten
+        if platform_gap:
+            provenance.setdefault("critics_unavailable", []).append(platform_gap)
+        scope = run_scope_checks(test_plan, batch_dev_infos)
+        _record_scope(provenance, scope, "batch")
         # See generate_single: quarantining runs after every critic so the
         # code-grounding recheck's rescues are respected.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)
@@ -1438,7 +1569,22 @@ def _error_code(exc: Exception) -> str:
     """
     if isinstance(exc, LLMError):
         return f"LLMError: {exc}"
-    return f"{type(exc).__name__}: {exc}"
+    # Where it was raised, too. SK-2822's run 1057 recorded only "AttributeError:
+    # 'str' object has no attribute 'get'". The uvicorn log had gone to a
+    # terminal, a rerun did not reproduce it, and nothing said which of the
+    # pipeline's many .get calls met a string where the schema promised an object.
+    frame = _innermost_app_frame(exc)
+    return f"{type(exc).__name__}: {exc}" + (f" (at {frame})" if frame else "")
+
+
+def _innermost_app_frame(exc: BaseException) -> str | None:
+    import traceback
+
+    frames = [f for f in traceback.extract_tb(exc.__traceback__) if "/src/app/" in f.filename]
+    if not frames:
+        return None
+    f = frames[-1]
+    return f"{f.filename.split('/src/app/', 1)[1]}:{f.lineno} in {f.name}"
 
 
 # --------------------------------------------------------------------------

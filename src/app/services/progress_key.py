@@ -300,6 +300,15 @@ def case_index(body: Any) -> dict[str, dict]:
     return {case_id: meta for case_id, meta, _item in _walk(body)}
 
 
+def cases_with_items(body: Any) -> list[tuple[str, dict, Any]]:
+    """``case_index`` plus the case itself: ``[(id, meta, item)]`` in render order.
+
+    For callers that need more of a case than its title — ``plan_revision``
+    shows the generator each previous case's expected result.
+    """
+    return list(_walk(body))
+
+
 def cases_by_id(body: Any) -> list[dict]:
     """Every case in render order, each carrying its canonical id and its full
     stored content.

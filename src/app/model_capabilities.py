@@ -39,6 +39,11 @@ _FIRST_EFFORT_VERSION = {"opus": (4, 5), "sonnet": (4, 6), "fable": (5, 0), "myt
 # these, no thinking unless you asked for it.
 _FIRST_THINKING_BY_DEFAULT = {"opus": (5, 0), "sonnet": (5, 0), "fable": (5, 0), "mythos": (5, 0)}
 
+# Exact versions that accept `speed: "fast"` (beta `fast-mode-2026-02-01`, Claude
+# API only). Not a floor: Opus 4.7 had it and lost it, and it errors there.
+_FAST_MODE_VERSIONS = {("opus", (4, 8)), ("opus", (5, 0)), ("opus", (5, 5))}
+FAST_MODE_BETA = "fast-mode-2026-02-01"
+
 
 def parse_model(model: str | None) -> tuple[str, tuple[int, int]] | None:
     """('opus', (4, 5)) for 'claude-opus-4-5-20251101'. None if unrecognised.
@@ -71,6 +76,11 @@ def supports_effort(model: str | None) -> bool:
     family, version = parsed
     floor = _FIRST_EFFORT_VERSION.get(family)
     return floor is not None and version >= floor
+
+
+def supports_fast_mode(model: str | None) -> bool:
+    """True where `speed: "fast"` is accepted. Same model, faster output."""
+    return parse_model(model) in _FAST_MODE_VERSIONS
 
 
 def thinks_by_default(model: str | None) -> bool:

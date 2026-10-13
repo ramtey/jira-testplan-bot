@@ -102,6 +102,13 @@ def _stub_persistence():
     plan_service._read_repo_evidence = _repo
     plan_service._load_seed_regressions = _no_seeds
 
+    async def _no_previous(*_a, **_k):
+        return None, None
+
+    # Plan 608 is in Atlas under this ticket key; showing it to the generator
+    # would hand the plan under test the answer it is scored against.
+    plan_service._load_previous_plan = _no_previous
+
 
 def _cases(plan: dict) -> list[tuple[str, int, dict]]:
     out = []

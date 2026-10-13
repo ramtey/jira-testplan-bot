@@ -906,6 +906,15 @@ def _is_ungrounded(case: dict) -> bool:
     )
 
 
+def _protected(case: dict, protected_titles: frozenset[str]) -> bool:
+    if not protected_titles:
+        return False
+    from .plan_revision import CONFIDENT, _score, protected_title
+
+    title = protected_title(case.get("title") or "")
+    return any(_score(title, p) >= CONFIDENT for p in protected_titles)
+
+
 def _gradeable_from_the_ac(case: dict, spec_is_source: bool) -> bool:
     """Whether an ungrounded case still has a pass condition a tester can grade.
 
@@ -924,6 +933,13 @@ def _gradeable_from_the_ac(case: dict, spec_is_source: bool) -> bool:
     """
     if profile_tag_is_known(case.get("title")):
         return True
+    # A fourth: a case that takes its steps from a ticket comment (evidence
+    # rule A). The testing note is the spec, and it states the pass condition.
+    # Plan 624 quarantined six such cases, built from the change author's own
+    # verification note, because the model had labelled their expected results
+    # as assumptions.
+    if any(str(i).strip() for i in (case.get("source_comment_ids") or [])):
+        return True
     if not case.get("covers_acs") or case.get("ac_grounding_disputed"):
         # A case the AC-grounding critic says goes beyond its cited AC has
         # no AC-stated pass condition to grade by.
@@ -933,7 +949,9 @@ def _gradeable_from_the_ac(case: dict, spec_is_source: bool) -> bool:
     return str(case.get("assertion_type") or "").strip().lower() == "destination"
 
 
-def quarantine_ungrounded_cases(test_plan, *, spec_is_source: bool = False) -> list[dict]:
+def quarantine_ungrounded_cases(
+    test_plan, *, spec_is_source: bool = False, protected_titles: frozenset[str] = frozenset()
+) -> list[dict]:
     """Pull ungrounded cases out of the numbered sections, in place.
 
     Before this existed the pipeline already *detected* these cases — it
@@ -947,6 +965,12 @@ def quarantine_ungrounded_cases(test_plan, *, spec_is_source: bool = False) -> l
     ``needs_spec_reason``) and returned. Callers put them in the plan's
     ``needs_spec_cases`` list, which every renderer shows as a separate,
     explicitly non-gradeable section.
+
+    ``protected_titles`` (normalised by ``plan_revision.protected_title``) are
+    cases QA already passed in the previous version of the plan. They stay
+    where they are. A case someone graded is gradeable by definition, and
+    moving it shifts every recorded id after it. SK-2822's plan 624 quarantined
+    three passed happy-path cases and took the section from 5 to 0.
     """
     quarantined: list[dict] = []
     for section in _QUARANTINABLE_SECTIONS:
@@ -955,7 +979,11 @@ def quarantine_ungrounded_cases(test_plan, *, spec_is_source: bool = False) -> l
             continue
         keep = []
         for case in items:
-            if _is_ungrounded(case) and not _gradeable_from_the_ac(case, spec_is_source):
+            if (
+                _is_ungrounded(case)
+                and not _gradeable_from_the_ac(case, spec_is_source)
+                and not _protected(case, protected_titles)
+            ):
                 case["needs_spec"] = True
                 case["needs_spec_reason"] = (
                     "Neither the UI element this case drives nor its expected "

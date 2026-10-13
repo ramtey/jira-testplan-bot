@@ -416,3 +416,183 @@ class TestFigmaAuthClassification:
                 raise ValueError("not json")
 
         assert _auth_error(Broken()).error_type == "insufficient_permissions"
+
+
+class TestStreamedPlanTransport:
+    """Plan generation streams, so a 64k cap is not a 10-minute silent wait.
+
+    SK-2912's regeneration hit the 40k cap; raising it on a non-streaming
+    call would have swapped the truncation for a read timeout. These pin the
+    SSE reassembly: the caller gets the same dict `response.json()` gave.
+    """
+
+    @staticmethod
+    def _sse(events):
+        import json as _json
+
+        lines = []
+        for ev in events:
+            lines.append(f"event: {ev['type']}")
+            lines.append(f"data: {_json.dumps(ev)}")
+            lines.append("")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _transport(monkeypatch, status, body):
+        from src.app import llm_client as mod
+
+        monkeypatch.setattr(mod.settings, "anthropic_api_key", "sk-test", raising=False)
+        monkeypatch.setattr(mod.asyncio, "sleep", AsyncMock())
+        sent = []
+
+        def handler(request):
+            import json as _json
+
+            sent.append(_json.loads(request.content))
+            return httpx.Response(status, text=body, headers={"content-type": "text/event-stream"})
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(
+            mod.httpx,
+            "AsyncClient",
+            lambda *a, **kw: real(transport=httpx.MockTransport(handler), timeout=kw.get("timeout")),
+        )
+        return ClaudeClient(), sent
+
+    _TOOL_EVENTS = [
+        {"type": "message_start", "message": {"id": "m1", "role": "assistant", "content": [], "usage": {"input_tokens": 900, "output_tokens": 1}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "ping"},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "t1", "name": "submit_test_plan", "input": {}}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"happy_path": [{"tit'}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": 'le": "A"}]}'}},
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 4321}},
+        {"type": "message_stop"},
+    ]
+
+    @pytest.mark.asyncio
+    async def test_stream_rebuilds_the_message_dict(self, monkeypatch):
+        client, sent = self._transport(monkeypatch, 200, self._sse(self._TOOL_EVENTS))
+
+        data = await client._post_messages({"model": "m"}, timeout=600.0, stream=True)
+
+        assert sent[0]["stream"] is True
+        assert data["stop_reason"] == "tool_use"
+        assert data["usage"] == {"input_tokens": 900, "output_tokens": 4321}
+        assert [b["type"] for b in data["content"]] == ["thinking", "tool_use"]
+        assert data["content"][1]["input"] == {"happy_path": [{"title": "A"}]}
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_stop_reason_survives_the_stream(self, monkeypatch):
+        # The truncation guard reads stop_reason; it must still see it.
+        events = [e for e in self._TOOL_EVENTS if e["type"] != "message_delta"]
+        events.insert(-1, {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 98304}})
+        client, _ = self._transport(monkeypatch, 200, self._sse(events))
+
+        data = await client._post_messages({"model": "m"}, timeout=600.0, stream=True)
+        assert data["stop_reason"] == "max_tokens"
+
+    @pytest.mark.asyncio
+    async def test_a_stream_cut_off_mid_message_is_an_error_not_a_plan(self, monkeypatch):
+        client, _ = self._transport(monkeypatch, 200, self._sse(self._TOOL_EVENTS[:7]))
+
+        with pytest.raises(LLMError, match="ended before the message was complete"):
+            await client._post_messages({"model": "m"}, timeout=600.0, stream=True)
+
+    @pytest.mark.asyncio
+    async def test_an_error_event_mid_stream_is_reported(self, monkeypatch):
+        events = self._TOOL_EVENTS[:5] + [{"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}]
+        client, _ = self._transport(monkeypatch, 200, self._sse(events))
+
+        with pytest.raises(LLMError, match="overloaded_error"):
+            await client._post_messages({"model": "m"}, timeout=600.0, stream=True)
+
+    @pytest.mark.asyncio
+    async def test_an_error_status_keeps_its_body_for_the_message(self, monkeypatch):
+        client, sent = self._transport(monkeypatch, 400, '{"error": {"message": "bad request"}}')
+
+        with pytest.raises(httpx.HTTPStatusError) as exc:
+            await client._post_messages({"model": "m"}, timeout=600.0, stream=True)
+        assert "bad request" in exc.value.response.text
+        assert len(sent) == 1, "a 400 is not transient"
+
+
+class TestFastMode:
+    """Every supported Claude call asks for fast mode; its 429 falls back."""
+
+    @staticmethod
+    def _transport(monkeypatch, statuses):
+        from src.app import llm_client as mod
+
+        monkeypatch.setattr(mod.settings, "anthropic_api_key", "sk-test", raising=False)
+        monkeypatch.setattr(mod.settings, "claude_fast_mode", True, raising=False)
+        monkeypatch.setattr(mod.ClaudeClient, "_fast_mode_unavailable", False)
+        monkeypatch.setattr(mod.asyncio, "sleep", AsyncMock())
+        sent = []
+
+        def handler(request):
+            import json as _json
+
+            sent.append((dict(request.headers), _json.loads(request.content)))
+            status = statuses[len(sent) - 1]
+            if status == 200:
+                return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
+            if status == "no-quota":
+                return httpx.Response(429, text="limit of 0", headers={"anthropic-fast-input-tokens-limit": "0"})
+            return httpx.Response(status, text="rate limited")
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(
+            mod.httpx,
+            "AsyncClient",
+            lambda *a, **kw: real(transport=httpx.MockTransport(handler), timeout=kw.get("timeout")),
+        )
+        return ClaudeClient(), sent
+
+    @pytest.mark.asyncio
+    async def test_a_supported_model_is_sent_fast(self, monkeypatch):
+        client, sent = self._transport(monkeypatch, [200])
+        await client._post_messages({"model": "claude-opus-5"}, timeout=60.0)
+
+        headers, body = sent[0]
+        assert body["speed"] == "fast"
+        assert headers["anthropic-beta"] == "fast-mode-2026-02-01"
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_model_is_never_sent_fast(self, monkeypatch):
+        # Opus 4.7 lost fast mode; sending it there is an error, not a no-op.
+        client, sent = self._transport(monkeypatch, [200])
+        await client._post_messages({"model": "claude-opus-4-7"}, timeout=60.0)
+
+        headers, body = sent[0]
+        assert "speed" not in body
+        assert "anthropic-beta" not in headers
+
+    @pytest.mark.asyncio
+    async def test_a_fast_mode_429_retries_at_standard_speed(self, monkeypatch):
+        client, sent = self._transport(monkeypatch, [429, 200])
+        data = await client._post_messages({"model": "claude-opus-5"}, timeout=60.0)
+
+        assert data["content"][0]["text"] == "ok"
+        assert [b.get("speed") for _, b in sent] == ["fast", None]
+        assert "anthropic-beta" not in sent[1][0]
+
+    @pytest.mark.asyncio
+    async def test_a_standard_speed_429_still_surfaces(self, monkeypatch):
+        client, sent = self._transport(monkeypatch, [429, 429])
+        with pytest.raises(httpx.HTTPStatusError):
+            await client._post_messages({"model": "claude-opus-5"}, timeout=60.0)
+        assert len(sent) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_zero_quota_stops_asking_for_fast_mode(self, monkeypatch):
+        # The org this runs under had a fast-mode quota of 0: without the
+        # latch every call would pay a wasted 429 round trip first.
+        client, sent = self._transport(monkeypatch, ["no-quota", 200, 200])
+        await client._post_messages({"model": "claude-opus-5"}, timeout=60.0)
+        await client._post_messages({"model": "claude-opus-5"}, timeout=60.0)
+
+        assert [b.get("speed") for _, b in sent] == ["fast", None, None]

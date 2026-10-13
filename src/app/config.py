@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # spend several minutes producing 16k output tokens; 120s would surface as
     # "Claude API request timed out" mid-generation.
     claude_api_timeout_seconds: float = 600.0
+    # Fast mode: the same model writing output up to ~2.5x faster, at premium
+    # pricing. On for every Claude call the model supports; a 429 on fast
+    # mode's separate rate limit drops that call back to standard speed.
+    claude_fast_mode: bool = True
 
     # GitHub (for PR diff fetching - Phase 3a)
     github_token: str | None = None  # GitHub personal access token (optional - enables PR diff fetching)
@@ -134,6 +138,12 @@ class Settings(BaseSettings):
     # src/app/code_exploration.py). Off until measured: it adds minutes and
     # several model turns per plan.
     exploration_enabled: bool = False
+
+    # On a single-ticket regeneration, show the generator the previous plan and
+    # its recorded QA marks so it rewords cases in place instead of moving them
+    # (src/app/services/plan_revision.py). Evals that replay a ticket turn it
+    # off, or the plan under test would be shown the answer it is scored on.
+    regenerate_in_place: bool = True
 
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)

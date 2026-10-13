@@ -363,15 +363,17 @@ const formatRisksAndGaps = (plan) => {
   const gaps = Array.isArray(plan?.risks_and_gaps) ? plan.risks_and_gaps.filter(Boolean) : []
   if (gaps.length === 0) return ''
   let md = '## ⚠️ Risks / Gaps Observed\n\n'
-  md += '_Not test cases — these are gaps in the ticket itself that no case can mark pass or fail._\n\n'
+  md += '_Not test cases and not counted toward pass/fail — gaps in the ticket itself, and follow-ups this change cannot fix._\n\n'
   gaps.forEach((g) => {
     if (typeof g === 'string') {
       md += `- ${g}\n`
       return
     }
-    md += `- **${g.gap || 'Unnamed gap'}**\n`
+    md += `- ${g.follow_up ? '**Follow-up, not counted:** ' : ''}**${g.gap || 'Unnamed gap'}**\n`
     if (g.impact) md += `  - Impact: ${g.impact}\n`
     if (g.evidence) md += `  - Evidence: \`${g.evidence}\`\n`
+    if (g.owner) md += `  - Owner: ${g.owner}\n`
+    if (g.suggested_ticket) md += `  - Suggested ticket: ${g.suggested_ticket}\n`
   })
   return md + '\n'
 }
@@ -1336,15 +1338,17 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
   const jiraGaps = Array.isArray(plan.risks_and_gaps) ? plan.risks_and_gaps.filter(Boolean) : []
   if (jiraGaps.length > 0) {
     jira += '⚠️ RISKS / GAPS OBSERVED\n\n'
-    jira += 'Not test cases — gaps in the ticket itself that no case can mark pass or fail.\n\n'
+    jira += 'Not test cases and not counted toward pass/fail — gaps in the ticket itself, and follow-ups this change cannot fix.\n\n'
     jiraGaps.forEach((g) => {
       if (typeof g === 'string') {
         jira += `  • ${g}\n`
         return
       }
-      jira += `  • ${g.gap || 'Unnamed gap'}\n`
+      jira += `  • ${g.follow_up ? 'Follow-up, not counted: ' : ''}${g.gap || 'Unnamed gap'}\n`
       if (g.impact) jira += `    Impact: ${g.impact}\n`
       if (g.evidence) jira += `    Evidence: ${g.evidence}\n`
+      if (g.owner) jira += `    Owner: ${g.owner}\n`
+      if (g.suggested_ticket) jira += `    Suggested ticket: ${g.suggested_ticket}\n`
     })
     jira += '\n'
   }

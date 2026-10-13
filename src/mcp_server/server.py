@@ -504,11 +504,16 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
             if isinstance(gap, str):
                 jira += f"  • {gap}\n"
                 continue
-            jira += f"  • {gap.get('gap', 'Unnamed gap')}\n"
+            prefix = "Follow-up, not counted: " if gap.get("follow_up") else ""
+            jira += f"  • {prefix}{gap.get('gap', 'Unnamed gap')}\n"
             if gap.get("impact"):
                 jira += f"    Impact: {gap['impact']}\n"
             if gap.get("evidence"):
                 jira += f"    Evidence: {gap['evidence']}\n"
+            if gap.get("owner"):
+                jira += f"    Owner: {gap['owner']}\n"
+            if gap.get("suggested_ticket"):
+                jira += f"    Suggested ticket: {gap['suggested_ticket']}\n"
         jira += "\n"
 
     jira += _needs_spec_text(test_plan_dict)
@@ -617,11 +622,16 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
                 if isinstance(gap, str):
                     output.append(f"- {gap}")
                     continue
-                line = f"- **{gap.get('gap', 'Unnamed gap')}**"
+                prefix = "Follow-up, not counted: " if gap.get("follow_up") else ""
+                line = f"- {prefix}**{gap.get('gap', 'Unnamed gap')}**"
                 if gap.get("impact"):
                     line += f" — {gap['impact']}"
                 if gap.get("evidence"):
                     line += f" (`{gap['evidence']}`)"
+                if gap.get("owner"):
+                    line += f" Owner: {gap['owner']}."
+                if gap.get("suggested_ticket"):
+                    line += f" Suggested ticket: {gap['suggested_ticket']}."
                 output.append(line)
             output.append("")
 

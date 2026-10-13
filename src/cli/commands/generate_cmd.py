@@ -607,11 +607,16 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
             if isinstance(gap, str):
                 lines.append(f"- {gap}")
                 continue
-            lines.append(f"- {gap.get('gap', 'Unnamed gap')}")
+            prefix = "Follow-up, not counted: " if gap.get("follow_up") else ""
+            lines.append(f"- {prefix}{gap.get('gap', 'Unnamed gap')}")
             if gap.get("impact"):
                 lines.append(f"  - Impact: {gap['impact']}")
             if gap.get("evidence"):
                 lines.append(f"  - Evidence: {gap['evidence']}")
+            if gap.get("owner"):
+                lines.append(f"  - Owner: {gap['owner']}")
+            if gap.get("suggested_ticket"):
+                lines.append(f"  - Suggested ticket: {gap['suggested_ticket']}")
         lines.append("")
 
     lines.extend(_needs_spec_lines(test_plan, format))

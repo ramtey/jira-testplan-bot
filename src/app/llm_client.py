@@ -33,8 +33,10 @@ from .code_exploration import EXPLORATION_GUIDANCE, render_findings
 from .diff_budget import allocate_patch_budget, omitted_note, render_full_files
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
+    FAST_MODE_BETA,
     output_budget,
     supports_effort,
+    supports_fast_mode,
     supports_temperature,
 )
 from .models import BugAnalysis, TestPlan
@@ -1181,6 +1183,75 @@ resolution", a pinned version, a bundled asset — check how the artifact is
 built (Dockerfile, lockfile use, build scripts; the BUILD/CI FACTS say). If what
 ships differs from what is committed, say so in the cases that depend on it.
 
+**SCOPE RULES G–K — what a case may claim, and what may count against the ticket.**
+A failed case reads as "this change is broken". These five rules keep that
+true: a case fails only when the change under test is wrong, never because of
+the host it ran on, code the change never touched, a reason already fixed, or
+someone else's repo. Downstream code marks G and I where you miss them, but it
+cannot fix the expected result. Only you can.
+
+**G. Name the platform, or test only what every platform shares.** Never write
+an expected result that depends on OS or environment behaviour unless the case
+names the platform. Unless the repo says otherwise, operator and developer
+commands run on macOS (zsh, a case-insensitive filesystem, BSD coreutils), and
+CI runs on Linux (bash, a case-sensitive filesystem, GNU coreutils). If the
+result differs between them, either give the expected result for each platform
+or test only the part that is the same on both. Typical traps:
+filename case; path separators and drive letters; line endings; GNU vs BSD
+flags (`sed -i`, `date -d`, `grep -P`, `readlink -f`); the default shell (bash
+vs zsh, e.g. a `#` comment typed at an interactive zsh prompt is an error);
+the host's Java or Node version; locale and timezone; whether a file is
+executable; whether a host resolves without DNS or VPN.
+❌ BAD: "`MODE=prod ./run.sh` exits 1 because the config file is named `Prod.conf` and filenames are case-sensitive" (on macOS, `[ -f ./Prod.conf ]` finds it, so the guard passes).
+✅ GOOD: "On macOS (case-insensitive APFS) the existence check finds Prod.conf and the run proceeds; on Linux CI it exits 1 with 'unknown mode'. Record the platform you ran on with the result."
+
+**H. Test what the change touched, or say it is pre-existing.** Before writing
+an expected result for a piece of behaviour, look in the diff for the code
+responsible for it. If the change did not touch that code, either drop the case
+or set `pre_existing: true` and start `expected` with "Pre-existing behaviour,
+not changed by this ticket:" (for a regression line, start the line with it). Derive that
+expected result from the CURRENT code at the commit under test, run on the
+platform operators actually use (rule G), not from what the code "should" do.
+A failure on a pre-existing case must never read as a regression the ticket caused.
+❌ BAD: a case asserting an input-validation guard's behaviour, written from what a reviewer expected, when the guard is in a file the diff did not change.
+✅ GOOD: pre_existing: true, expected: "Pre-existing behaviour, not changed by this ticket: the guard at run.sh:4 (unchanged since before this commit) accepts any MODE with a matching conf file; on macOS that includes `prod`."
+
+**I. Check that a case's reason still holds at this commit.** When a case's
+reason comes from a reviewer comment, a doc, a testing note or an earlier
+version of this plan, check that it is still true at the commit under test.
+If the commit already fixed it, turn the case into a check that the fix is
+there, or drop it. Never keep the old expectation alongside the fix, and never
+keep quoting the old finding as the case's reason.
+❌ BAD: "lowercase values must be rejected, because the reviewer found the README documenting lowercase values", when the same commit changed the README to the capitalised names.
+✅ GOOD: "README.md:12 now lists the values as Integ, Staging, Prod (changed in this commit); verify it does."
+
+**J. Problems the change cannot fix are follow-ups, not failures.** Problems in
+other repos, services or teams that this change cannot fix — sibling repos with
+the same flaw, pipelines that have not merged, decisions an owner has to make —
+go in `risks_and_gaps` with `follow_up: true`, an `owner` (team or person) and a
+`suggested_ticket` (a one-line title for the ticket to file). Never write them
+as a case or a regression line whose failure counts against this ticket. Only
+cases this change can make pass or fail count toward the pass/fail total. Ask
+of every case: "could a correct implementation of THIS change make it pass?"
+If not, it is a follow-up. A case you EXPECT to fail because the ticket left
+something out ("expect this to FAIL — it is a scope gap") is a gap, not a case:
+put it in `risks_and_gaps`, never in a section. Moving a finding out of the
+cases never means dropping it: every problem you move becomes a follow-up entry.
+❌ BAD: integration case "Sibling repo still uses the insecure setting — mark FAILED unless the owner confirms it is decommissioned".
+✅ GOOD: risks_and_gaps: {"gap": "acme/sibling-svc still uses the insecure setting", "impact": "...", "evidence": "acme/sibling-svc:conf/app.conf:3", "follow_up": true, "owner": "Platform team (acme/sibling-svc owners)", "suggested_ticket": "Apply the verify-full fix to acme/sibling-svc"}
+
+**K. Every expected result is either read from code or labelled an assumption.**
+It comes from code you read at the commit under test, cited as `<file>:<line>`
+in `expected_source`, or it is labelled "Unverified — assumption". Before you
+submit, re-read every assumption-labelled case against the code you have. If
+the code contradicts it, fix it. If the code does not settle it, `expected`
+must say what to RECORD ("record the exit status and message on your platform"),
+not assert an outcome. Rule K is about `expected_verified` and the wording of
+`expected` only. It is NOT a reason to set `needs_manual_verification`, which
+means the step's UI element or control could not be found. A step that runs a
+file, script or route the diff contains is grounded, even when its expected
+result is an assumption.
+
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
 "X remains unaffected" / "no regressions in Y" / "existing behaviour is
@@ -1871,6 +1942,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
       "environment": "Environment name AND base URL, e.g. 'staging — https://api-staging.example.com'",
       "expected_verified": true,
       "expected_source": "REQUIRED when expected_verified is true — the <file>:<line> the expected result was read from, e.g. 'src/middleware/auth.ts:64'. Omit when expected_verified is false.",
+      "pre_existing": "OPTIONAL: true when the diff did not touch the code behind this behaviour (rule H); then expected starts 'Pre-existing behaviour, not changed by this ticket:'",
       "data_shape": {
         "shape": "OPTIONAL: only when this case needs a specific input shape rather than ordinary data",
         "provisioning": "real_record|real_record_unconfirmed|stub|unreachable",
@@ -1930,7 +2002,10 @@ Return ONLY valid JSON (no markdown, no code blocks):
     {
       "gap": "What is missing or wrong, naming the artifact (file, key, endpoint, manifest)",
       "impact": "How this breaks the ticket's stated goal if it ships unaddressed",
-      "evidence": "<file>:<line> where you saw it"
+      "evidence": "<file>:<line> where you saw it",
+      "follow_up": "OPTIONAL: true when this change cannot fix it (rule J) — another repo, service, team, unmerged pipeline or owner decision",
+      "owner": "REQUIRED when follow_up is true: the team or person who can fix it",
+      "suggested_ticket": "REQUIRED when follow_up is true: a one-line title for the ticket to file"
     }
   ],
   "requirement_check": [
@@ -2134,6 +2209,13 @@ Before generating each section, mentally sort your tests:
 ✅ Every case that needs an unusual input shape carries `data_shape` with a `provisioning` route — no case asks anyone to "supply a record that…" without saying whether one can exist
 ✅ No case asserts a field on a form/template/report unless the field was found in the testID reference, a screen guide, or a template definition — a mapping in the diff is not a field binding
 ✅ Gaps the ticket missed are in `risks_and_gaps`, NOT disguised as test cases
+
+**SCOPE SELF-CHECK (rules G–K) — ask each question of EVERY case and regression line, and fix the case before submitting:**
+✅ Does the expected result depend on the OS, shell or environment without naming one? → name the platform, give each platform's result, or test only the shared part (G)
+✅ Does it test code the diff did not touch, without the pre-existing label? → drop it, or set `pre_existing: true` and derive the expected result from the current code (H)
+✅ Does its reason still hold at this commit? → if the commit fixed it, check the fix instead (I)
+✅ Can this change actually make it pass? → if not, move it to `risks_and_gaps` as a follow-up with an owner and a suggested ticket (J)
+✅ Is there code evidence for the expected result, or is it labelled an assumption that says what to record? (K)
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
 
@@ -2362,6 +2444,16 @@ class LLMClient(ABC):
         "rewrite": str}}``. Default implementation returns an empty dict —
         providers that don't run the critic behave the same as before this
         pass existed, and every line stays exactly as generated.
+        """
+        return {}
+
+    async def rewrite_platform_assumptions(self, items: list[dict]) -> dict[str, dict] | None:
+        """Rule G critic — rewrite expected results that depend on the host OS
+        without naming one (see ``scope_checks.run_platform_critic``).
+
+        Returns ``{id: {"action", "text", "steps"?, "reason"}}``, or None when
+        it could not run. Default is an empty dict: the flagged cases keep the
+        marker ``flag_platform_assumptions`` gives them.
         """
         return {}
 
@@ -3529,6 +3621,11 @@ TICKET INFORMATION
         if testing_context.get("deliverable_hint"):
             prompt += f"\n{testing_context['deliverable_hint']}\n"
 
+        # A regeneration: the previous plan and its recorded QA marks, so cases
+        # keep their ids (see services/plan_revision.render_previous_plan).
+        if testing_context.get("previous_plan"):
+            prompt += f"\n{testing_context['previous_plan']}\n"
+
         if _is_voice_ticket(summary, description):
             prompt += VOICE_TESTING_GUIDANCE
 
@@ -4457,6 +4554,10 @@ TEST_CASE_SCHEMA = {
             "type": "string",
             "description": "Required when `expected_verified` is true. The single primary `<file>:<line>` the expected result rests on, e.g. 'src/middleware/auth.ts:64'. Omit entirely when `expected_verified` is false.",
         },
+        "pre_existing": {
+            "type": "boolean",
+            "description": "Rule H. True when the behaviour this case checks lives in code the diff did NOT touch. `expected` must then start with 'Pre-existing behaviour, not changed by this ticket:' and be derived from the current code on the platform operators use, so a failure is never read as a regression this ticket caused. Omit (or false) when the change touched the responsible code.",
+        },
         "data_shape": {
             "type": "object",
             "description": (
@@ -4814,6 +4915,18 @@ SUBMIT_TEST_PLAN_TOOL = {
                             "type": "string",
                             "description": "Where you saw it — `<file>:<line>` where possible, e.g. 'infra/staging/partner-api.yaml:18 — env block has no PARTNER_API_AUDIENCE key'.",
                         },
+                        "follow_up": {
+                            "type": "boolean",
+                            "description": "Rule J. True when THIS change cannot fix it: another repo, service or team, a pipeline that has not merged, or a decision an owner has to make. Follow-ups never count toward the ticket's pass/fail total, and must not also appear as a case or regression line.",
+                        },
+                        "owner": {
+                            "type": "string",
+                            "description": "Required when follow_up is true: the team or person who can fix it.",
+                        },
+                        "suggested_ticket": {
+                            "type": "string",
+                            "description": "Required when follow_up is true: a one-line title for the ticket to file.",
+                        },
                     },
                     "required": ["gap", "impact", "evidence"],
                 },
@@ -4978,6 +5091,8 @@ class ClaudeClient(LLMClient):
     # a failed "Generate test plan". 502/503/504 are upstream-gateway hiccups
     # that behave the same way.
     _RETRYABLE_STATUSES = frozenset({502, 503, 504, 529})
+    # Set once a 429 shows the org has no fast-mode quota (see _post_messages).
+    _fast_mode_unavailable = False
     _MAX_ATTEMPTS = 4
     _BACKOFF_SECONDS = 1.0
 
@@ -5048,6 +5163,7 @@ class ClaudeClient(LLMClient):
         *,
         timeout: float,
         retry_timeouts: bool = False,
+        stream: bool = False,
     ) -> dict:
         """POST /v1/messages, retrying transient failures, and return the JSON.
 
@@ -5061,23 +5177,71 @@ class ClaudeClient(LLMClient):
         read timeout means the generation itself ran long, and re-running it
         only burns minutes. The short helpers that already retried timeouts
         pass True.
+
+        `stream` sends the request as SSE and rebuilds the same message dict
+        from the events (see `_read_message_stream`). A non-streaming call
+        sends no bytes until the whole answer is written, so `timeout` caps
+        the entire generation; streamed, it only caps the gap between events.
+        The plan calls need that: at a 40k cap they already ran close to the
+        600 s timeout, and SK-2912's regeneration needed more than 40k.
         """
+        fast = (
+            settings.claude_fast_mode
+            and not ClaudeClient._fast_mode_unavailable
+            and supports_fast_mode(payload.get("model"))
+        )
         for attempt in range(self._MAX_ATTEMPTS):
             is_last = attempt == self._MAX_ATTEMPTS - 1
+            headers = {
+                "anthropic-version": "2023-06-01",
+                "x-api-key": self.api_key,
+                "content-type": "application/json",
+            }
+            if fast:
+                headers["anthropic-beta"] = FAST_MODE_BETA
+                payload = {**payload, "speed": "fast"}
+            else:
+                payload = {k: v for k, v in payload.items() if k != "speed"}
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
+                    if stream:
+                        async with client.stream(
+                            "POST",
+                            "https://api.anthropic.com/v1/messages",
+                            headers=headers,
+                            json={**payload, "stream": True},
+                        ) as response:
+                            if response.is_error:
+                                # The error body is needed for _status_error.
+                                await response.aread()
+                            response.raise_for_status()
+                            return await self._read_message_stream(response)
                     response = await client.post(
                         "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "anthropic-version": "2023-06-01",
-                            "x-api-key": self.api_key,
-                            "content-type": "application/json",
-                        },
+                        headers=headers,
                         json=payload,
                     )
                     response.raise_for_status()
                     return response.json()
             except httpx.HTTPStatusError as e:
+                if fast and e.response.status_code == 429 and not is_last:
+                    # Fast mode has its own rate limit. Slower beats failed:
+                    # finish this call at standard speed, right away. A limit
+                    # of 0 means the org has no fast-mode quota at all, so stop
+                    # asking for it until the process restarts.
+                    import logging
+                    if e.response.headers.get("anthropic-fast-input-tokens-limit") == "0":
+                        ClaudeClient._fast_mode_unavailable = True
+                        logging.getLogger(__name__).warning(
+                            "fast mode: this org's quota is 0; using standard speed "
+                            "until restart. Ask an Anthropic org admin to enable it."
+                        )
+                    else:
+                        logging.getLogger(__name__).warning(
+                            "fast mode rate-limited; retrying at standard speed"
+                        )
+                    fast = False
+                    continue
                 if is_last or e.response.status_code not in self._RETRYABLE_STATUSES:
                     raise
                 delay = self._retry_delay(attempt, e.response)
@@ -5094,6 +5258,81 @@ class ClaudeClient(LLMClient):
             "Claude API request was never attempted.",
             error_type="service_unavailable",
         )
+
+    @staticmethod
+    async def _read_message_stream(response: "httpx.Response") -> dict:
+        """Rebuild the non-streaming message JSON from an SSE response.
+
+        Callers read `content`, `stop_reason` and `usage` exactly as they
+        would from `response.json()`. Tool input arrives as `partial_json`
+        fragments and is parsed once the block closes. A stream that ends
+        without `message_stop`, or with an `error` event, raises: a half-read
+        plan must never reach the caller looking like a whole one.
+        """
+        message: dict = {}
+        blocks: dict[int, dict] = {}
+        partial_json: dict[int, list[str]] = {}
+        event = None
+        finished = False
+
+        async for line in response.aiter_lines():
+            if line.startswith("event:"):
+                event = line[len("event:"):].strip()
+                continue
+            if not line.startswith("data:"):
+                continue
+            data = json.loads(line[len("data:"):].strip())
+            kind = data.get("type") or event
+
+            if kind == "message_start":
+                message = dict(data.get("message") or {})
+            elif kind == "content_block_start":
+                idx = data["index"]
+                blocks[idx] = dict(data.get("content_block") or {})
+                if blocks[idx].get("type") == "tool_use":
+                    partial_json[idx] = []
+            elif kind == "content_block_delta":
+                idx = data["index"]
+                delta = data.get("delta") or {}
+                block = blocks.setdefault(idx, {})
+                dtype = delta.get("type")
+                if dtype == "text_delta":
+                    block["text"] = block.get("text", "") + delta.get("text", "")
+                elif dtype == "input_json_delta":
+                    partial_json.setdefault(idx, []).append(delta.get("partial_json", ""))
+                elif dtype == "thinking_delta":
+                    block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+                elif dtype == "signature_delta":
+                    block["signature"] = delta.get("signature", "")
+            elif kind == "content_block_stop":
+                idx = data["index"]
+                if idx in partial_json:
+                    raw = "".join(partial_json.pop(idx))
+                    blocks[idx]["input"] = json.loads(raw) if raw else {}
+            elif kind == "message_delta":
+                message.update(data.get("delta") or {})
+                # Output counts in message_delta are cumulative; input counts
+                # only arrive in message_start.
+                message["usage"] = {**(message.get("usage") or {}), **(data.get("usage") or {})}
+            elif kind == "message_stop":
+                finished = True
+            elif kind == "error":
+                err = data.get("error") or {}
+                raise LLMError(
+                    "Claude's response stream failed partway through "
+                    f"({err.get('type', 'error')}: {err.get('message', 'no detail')}). "
+                    "Please try again.",
+                    error_type="service_unavailable",
+                )
+
+        if not finished:
+            raise LLMError(
+                "Claude's response stream ended before the message was complete. "
+                "Please try again.",
+                error_type="service_unavailable",
+            )
+        message["content"] = [blocks[i] for i in sorted(blocks)]
+        return message
 
     async def generate_test_plan(
         self,
@@ -5152,7 +5391,10 @@ class ClaudeClient(LLMClient):
                     # rest is thinking, which shares the same cap. 24k since
                     # evidence rules A–F added requirement_check and per-case
                     # evidence fields: SK-2419 hit the 16k cap in the replay.
-                    "max_tokens": self._budget(24576, thinking=16384),
+                    # 64k since regeneration-in-place: the generator restates
+                    # every previous case, and SK-2912 (56 cases, 6 PRs) hit
+                    # the 40k total. Streamed, so the cap is not a timeout.
+                    "max_tokens": self._budget(65536, thinking=32768),
                     "system": [
                         {
                             "type": "text",
@@ -5166,6 +5408,7 @@ class ClaudeClient(LLMClient):
                     "tool_choice": {"type": "tool", "name": "submit_test_plan"},
                 },
                 timeout=settings.claude_api_timeout_seconds,
+                stream=True,
             )
 
             # When Anthropic hits the output cap, the JSON inside the
@@ -5174,11 +5417,16 @@ class ClaudeClient(LLMClient):
             # are missing. Fail loudly so the caller can retry with a
             # smaller batch instead of shipping a half-empty plan.
             if data.get("stop_reason") == "max_tokens":
-                out_toks = (data.get("usage") or {}).get("output_tokens")
+                usage = data.get("usage") or {}
+                out_toks = usage.get("output_tokens")
+                thinking_toks = (usage.get("output_tokens_details") or {}).get("thinking_tokens")
                 raise LLMError(
                     "Claude truncated the test plan at the output-token cap"
-                    + (f" ({out_toks} tokens)" if out_toks else "")
-                    + ". Try fewer tickets per batch or split high-AC tickets.",
+                    + (f" ({out_toks} tokens" if out_toks else "")
+                    + (f", {thinking_toks} of them thinking" if out_toks and thinking_toks is not None else "")
+                    + (")" if out_toks else "")
+                    + ". This one ticket's plan is too large for a single response; "
+                    "split the ticket or narrow what it covers.",
                     error_type="service_unavailable",
                 )
             tool_block = next(
@@ -5248,7 +5496,10 @@ class ClaudeClient(LLMClient):
                     # rest is thinking, which shares the same cap. 24k since
                     # evidence rules A–F added requirement_check and per-case
                     # evidence fields: SK-2419 hit the 16k cap in the replay.
-                    "max_tokens": self._budget(24576, thinking=16384),
+                    # 64k since regeneration-in-place: the generator restates
+                    # every previous case, and SK-2912 (56 cases, 6 PRs) hit
+                    # the 40k total. Streamed, so the cap is not a timeout.
+                    "max_tokens": self._budget(65536, thinking=32768),
                     "system": [
                         {
                             "type": "text",
@@ -5262,6 +5513,7 @@ class ClaudeClient(LLMClient):
                     "tool_choice": {"type": "tool", "name": "submit_test_plan"},
                 },
                 timeout=settings.claude_api_timeout_seconds,
+                stream=True,
             )
 
             # When Anthropic hits the output cap, the JSON inside the
@@ -5270,10 +5522,14 @@ class ClaudeClient(LLMClient):
             # are missing. Fail loudly so the caller can retry with a
             # smaller batch instead of shipping a half-empty plan.
             if data.get("stop_reason") == "max_tokens":
-                out_toks = (data.get("usage") or {}).get("output_tokens")
+                usage = data.get("usage") or {}
+                out_toks = usage.get("output_tokens")
+                thinking_toks = (usage.get("output_tokens_details") or {}).get("thinking_tokens")
                 raise LLMError(
                     "Claude truncated the test plan at the output-token cap"
-                    + (f" ({out_toks} tokens)" if out_toks else "")
+                    + (f" ({out_toks} tokens" if out_toks else "")
+                    + (f", {thinking_toks} of them thinking" if out_toks and thinking_toks is not None else "")
+                    + (")" if out_toks else "")
                     + ". Try fewer tickets per batch or split high-AC tickets.",
                     error_type="service_unavailable",
                 )
@@ -5597,6 +5853,43 @@ class ClaudeClient(LLMClient):
         if not tool_block:
             return None
         return parse_coverage_verdicts(tool_block.get("input"))
+
+    async def rewrite_platform_assumptions(self, items: list[dict]) -> dict[str, dict] | None:
+        """Ask Claude to rewrite platform-dependent expected results in place.
+        None if it could not run, so the plan can say so."""
+        from .scope_checks import (
+            PLATFORM_CRITIC_SYSTEM_PROMPT,
+            REPORT_PLATFORM_REWRITES_TOOL,
+            build_platform_critic_message,
+            parse_platform_rewrites,
+        )
+
+        if not items:
+            return {}
+        try:
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(4096, thinking=8192),
+                    "system": [{"type": "text", "text": PLATFORM_CRITIC_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"}}],
+                    "messages": [{"role": "user", "content": build_platform_critic_message(items)}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [REPORT_PLATFORM_REWRITES_TOOL],
+                    "tool_choice": {"type": "tool", "name": "report_platform_rewrites"},
+                },
+                timeout=90.0,
+            )
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, LLMError):
+            import logging
+            logging.getLogger(__name__).warning(
+                "rewrite_platform_assumptions: transport error; cases left marked", exc_info=True)
+            return None
+        tool_block = next(
+            (b for b in (data.get("content") or []) if b.get("type") == "tool_use"), None)
+        if not tool_block:
+            return None
+        return parse_platform_rewrites(tool_block.get("input"))
 
     async def verify_code_grounding(
         self,

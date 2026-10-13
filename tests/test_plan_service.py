@@ -606,3 +606,48 @@ async def test_a_plan_that_could_not_be_persisted_says_so():
 
     assert "plan_id" not in response
     assert response["not_persisted"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_regeneration_shows_the_previous_plan_and_reports_the_remap():
+    """The previous plan and its recorded marks reach the prompt, and the saved
+    body carries the old key, the new key and where each recorded mark went —
+    so the mapping exists before anyone posts the plan (plan_revision)."""
+    previous_body = {
+        "happy_path": [{"title": "Assessed value renders", "expected": "shown"}],
+        "edge_cases": [{"title": "Sibling repo has the flaw", "expected": "x"}],
+        "integration_tests": [],
+        "regression_checklist": [],
+    }
+
+    async def _previous(_key):
+        return {"plan_id": 41, "body": json.dumps(previous_body),
+                "progress_key": "SK-1:1-1-0-0", "checked_ids": ["happy_path:0"]}, None
+
+    captured: dict = {}
+    with (
+        patch.object(plan_service, "_load_previous_plan", _previous),
+        patch.object(
+            plan_service.JiraClient, "get_issue", AsyncMock(return_value=_issue())
+        ),
+        patch.object(
+            plan_service.JiraClient, "download_image_as_base64", AsyncMock(return_value=None)
+        ),
+        patch.object(plan_service, "get_llm_client", return_value=_stub_llm(captured)),
+        patch.object(plan_service, "classify_deliverable", AsyncMock(return_value=None)),
+        patch.object(plan_service, "run_grounding_critic", AsyncMock(return_value=None)),
+        patch.object(plan_service, "run_code_grounding_critic", AsyncMock(return_value=None)),
+        patch.object(plan_service, "run_fix_scope_critic", AsyncMock(return_value=None)),
+        patch.object(plan_service, "run_surface_mismatch_critic", AsyncMock(return_value=None)),
+        patch.object(plan_service, "compute_ac_coverage", lambda *a, **k: {}),
+    ):
+        response = await plan_service.generate_for_ticket("SK-1")
+
+    block = captured["testing_context"]["previous_plan"]
+    assert "plan 41, progress key SK-1:1-1-0-0" in block
+    assert "happy_path:0 [PASSED] — Assessed value renders" in block
+    remap = response["progress_remap"]
+    assert (remap["old_key"], remap["new_key"]) == ("SK-1:1-1-0-0", "SK-1:1-0-0-0")
+    assert remap["checked"] == [{"from": "happy_path:0", "to": "happy_path:0", "status": "kept",
+                                 "confident": True}]
+    assert {m["from"]: m["status"] for m in remap["mapping"]}["edge_cases:0"] == "gone"

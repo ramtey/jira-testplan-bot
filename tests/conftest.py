@@ -171,3 +171,20 @@ def no_live_repo_evidence(monkeypatch: pytest.MonkeyPatch):
         return []
 
     monkeypatch.setattr(plan_service, "_read_repo_evidence", _none)
+
+
+@pytest.fixture(autouse=True)
+def no_previous_plan(monkeypatch: pytest.MonkeyPatch):
+    """Keep regeneration's previous-plan read off the real database.
+
+    ``generate_single`` looks up the ticket's last stored plan and its QA marks
+    (``plan_revision``). With ``MONGODB_URI`` in ``.env`` that would read
+    whatever plan the fixture's ticket key last got in Atlas. Tests of the
+    revision path patch ``plan_service._load_previous_plan`` themselves.
+    """
+    from src.app.services import plan_service
+
+    async def _none(*_args, **_kwargs):
+        return None, None
+
+    monkeypatch.setattr(plan_service, "_load_previous_plan", _none)

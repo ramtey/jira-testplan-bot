@@ -1098,14 +1098,14 @@ function RisksAndGapsPanel({ gaps }) {
         </span>
       </div>
       <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', marginBottom: 'var(--s-4)' }}>
-        Not test cases — gaps in the ticket itself that no case can mark pass or fail.
+        Not test cases and not counted toward pass/fail — gaps in the ticket itself, and follow-ups this change cannot fix.
       </div>
       <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
         {items.map((g, i) => (
           <li key={i} style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>
             {typeof g === 'string' ? g : (
               <>
-                <div>{g.gap}</div>
+                <div>{g.follow_up && <strong>Follow-up, not counted: </strong>}{g.gap}</div>
                 {g.impact && (
                   <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>Impact: {g.impact}</div>
                 )}
@@ -1113,6 +1113,12 @@ function RisksAndGapsPanel({ gaps }) {
                   <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>
                     Evidence: <code style={{ fontSize: 11 }}>{g.evidence}</code>
                   </div>
+                )}
+                {g.owner && (
+                  <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>Owner: {g.owner}</div>
+                )}
+                {g.suggested_ticket && (
+                  <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>Suggested ticket: {g.suggested_ticket}</div>
                 )}
               </>
             )}
