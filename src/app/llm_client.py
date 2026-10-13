@@ -5142,8 +5142,10 @@ class ClaudeClient(LLMClient):
                     # AC conflict resolution) — happy_path consumed the whole
                     # budget and edge_cases/integration_tests/regression got
                     # silently truncated. 16k of that is the plan itself; the
-                    # rest is thinking, which shares the same cap.
-                    "max_tokens": self._budget(16384, thinking=16384),
+                    # rest is thinking, which shares the same cap. 24k since
+                    # evidence rules A–F added requirement_check and per-case
+                    # evidence fields: SK-2419 hit the 16k cap in the replay.
+                    "max_tokens": self._budget(24576, thinking=16384),
                     "system": [
                         {
                             "type": "text",
@@ -5236,8 +5238,10 @@ class ClaudeClient(LLMClient):
                     # AC conflict resolution) — happy_path consumed the whole
                     # budget and edge_cases/integration_tests/regression got
                     # silently truncated. 16k of that is the plan itself; the
-                    # rest is thinking, which shares the same cap.
-                    "max_tokens": self._budget(16384, thinking=16384),
+                    # rest is thinking, which shares the same cap. 24k since
+                    # evidence rules A–F added requirement_check and per-case
+                    # evidence fields: SK-2419 hit the 16k cap in the replay.
+                    "max_tokens": self._budget(24576, thinking=16384),
                     "system": [
                         {
                             "type": "text",
