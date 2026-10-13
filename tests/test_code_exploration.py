@@ -178,3 +178,17 @@ def test_findings_reach_the_prompt_with_the_rule():
 
 def test_nothing_found_adds_nothing():
     assert render_findings({"findings": []}) == "" and render_findings(None) == ""
+
+
+@pytest.mark.asyncio
+async def test_history_is_cached_and_usage_is_summed():
+    class UsageLLM(ScriptedLLM):
+        async def _post_messages(self, payload, **kw):
+            self.payloads = getattr(self, "payloads", []) + [payload]
+            out = await super()._post_messages(payload, **kw)
+            return {**out, "usage": {"input_tokens": 100, "output_tokens": 10,
+                                     "cache_read_input_tokens": 50}}
+    llm = UsageLLM([[call("search_code", "a", query="x")], [call("report_findings", "b", findings=[])]])
+    result = await explore(llm, FakeGitHub(), summary="s", description="", pull_requests=PRS)
+    assert all(p["cache_control"] == {"type": "ephemeral"} for p in llm.payloads)
+    assert result["usage"]["input_tokens"] == 200 and result["usage"]["cache_read_input_tokens"] == 100

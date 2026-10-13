@@ -218,7 +218,9 @@ async def explore(llm, github, *, summary: str, description: str | None,
 
     Returns {"findings", "dropped", "searches", "reads", "turns", "error"}.
     """
-    result = {"findings": [], "dropped": 0, "searches": 0, "reads": 0, "turns": 0, "error": None}
+    result = {"findings": [], "dropped": 0, "searches": 0, "reads": 0, "turns": 0, "error": None,
+              "usage": {"input_tokens": 0, "output_tokens": 0,
+                        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}
     prs = [pr for pr in pull_requests if pr.get("repository")]
     if not prs:
         result["error"] = "no pull requests with a repository to explore from"
@@ -240,11 +242,17 @@ async def explore(llm, github, *, summary: str, description: str | None,
                     "messages": messages,
                     "tools": TOOLS,
                     "tool_choice": {"type": "auto"},
+                    # Each turn re-sends the whole history; caching its end
+                    # makes the next turn pay full price for the new part only.
+                    "cache_control": {"type": "ephemeral"},
                     **llm._effort_kwargs("medium"),
                 },
                 timeout=180,
                 retry_timeouts=True,
             )
+            for k, v in (data.get("usage") or {}).items():
+                if k in result["usage"] and isinstance(v, int):
+                    result["usage"][k] += v
             content = data.get("content") or []
             # Back unchanged, thinking blocks included: the next turn continues this one.
             messages.append({"role": "assistant", "content": content})
@@ -310,5 +318,5 @@ EXPLORATION_GUIDANCE = (
 
 def summary_line(exploration: dict) -> str:
     """One line for logs and provenance."""
-    return json.dumps({k: exploration.get(k) for k in ("searches", "reads", "turns", "dropped", "error")}
+    return json.dumps({k: exploration.get(k) for k in ("searches", "reads", "turns", "dropped", "error", "usage")}
                       | {"findings": len(exploration.get("findings") or [])})
