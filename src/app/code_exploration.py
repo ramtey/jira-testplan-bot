@@ -38,7 +38,7 @@ MAX_READS = 14
 READ_MAX_LINES = 300
 MAX_FINDINGS = 12
 
-FINDING_KINDS = ["sibling_entry_point", "caller", "guard", "config", "other"]
+FINDING_KINDS = ["sibling_entry_point", "caller", "guard", "config", "reachability", "other"]
 
 TOOLS = [
     {
@@ -117,6 +117,7 @@ Look for, in this order of value:
 1. Sibling entry points: other routes, handlers, UI actions or services that perform the SAME capability the ticket changes (another endpoint that mints the same token, another screen that offers the same action). Check whether each enforces the ticket's new rule. A sibling that does not is the most important thing you can find.
 2. Guards and preconditions on the changed path that live in unchanged code: status checks, permission checks, feature flags, ordering rules. Note their exact responses (status codes, messages).
 3. Callers and consumers of what the PRs changed, where behaviour visible to a user depends on them.
+4. Reachability: for each condition a changed branch handles (an error type or message, a regex alternative, a defensive guard, an input format), check whether anything in the repo, or the framework as this repo uses it, actually produces it. Search for the producer: the code that raises that error, sends that input, or loads things the way the branch assumes. Report a branch nothing reaches today as kind "reachability" with what you searched, so the plan covers it with a unit test instead of a UI case.
 
 Work like an engineer: search for specific identifiers, read the files that matter, follow one hop further when it pays. Prefer reading over guessing. Skip anything the diffs already show.
 
@@ -148,11 +149,13 @@ def build_brief(summary: str, description: str | None, pull_requests: list[dict]
     return "\n".join(lines)
 
 
-class _Workspace:
+class Workspace:
     """The explorer's tools, with their budgets and the record of what was read."""
 
-    def __init__(self, github, pull_requests: list[dict]):
+    def __init__(self, github, pull_requests: list[dict], *,
+                 max_searches: int = MAX_SEARCHES, max_reads: int = MAX_READS):
         self.github = github
+        self.max_searches, self.max_reads = max_searches, max_reads
         self.orgs = _orgs(pull_requests)
         self.pr_refs: dict[tuple[str, str], str] = {}
         for pr in pull_requests:
@@ -168,7 +171,7 @@ class _Workspace:
         return bool(repo) and repo.split("/")[0] in self.orgs
 
     async def search_code(self, query: str, repo: str | None = None) -> str:
-        if self.searches >= MAX_SEARCHES:
+        if self.searches >= self.max_searches:
             return "Search budget spent. Read what you have found, then report."
         if repo and not self._in_scope(repo):
             return f"{repo} is outside the organizations this ticket belongs to."
@@ -187,7 +190,7 @@ class _Workspace:
         )
 
     async def read_file(self, repo: str, path: str, start_line: int = 1) -> str:
-        if self.reads >= MAX_READS:
+        if self.reads >= self.max_reads:
             return "Read budget spent. Report what you have."
         if not self._in_scope(repo):
             return f"{repo} is outside the organizations this ticket belongs to."
@@ -212,82 +215,106 @@ class _Workspace:
         return kept[:MAX_FINDINGS], len(findings) - len(kept)
 
 
+async def run_tool_loop(llm, ws: "Workspace", *, system: str, first_message: str,
+                        report_tool: dict, max_turns: int, result: dict) -> dict | None:
+    """Let the model search and read through ``ws`` until it calls ``report_tool``.
+
+    Returns the report's input, or None (with ``result["error"]`` set) when it
+    never reported. Fills ``turns`` and ``usage`` in ``result``; raises only
+    what ``llm._post_messages`` raises.
+    """
+    tools = TOOLS[:2] + [report_tool]
+    report_name = report_tool["name"]
+    messages = [{"role": "user", "content": first_message}]
+    for turn in range(max_turns + 1):
+        result["turns"] = turn + 1
+        last = turn == max_turns
+        if last:
+            messages.append({"role": "user", "content":
+                             f"Budget reached. Call {report_name} now with what you verified."})
+        data = await llm._post_messages(
+            {
+                "model": llm.model,
+                "max_tokens": llm._budget(4096, thinking=8192),
+                "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": {"type": "auto"},
+                # Each turn re-sends the whole history; caching its end
+                # makes the next turn pay full price for the new part only.
+                "cache_control": {"type": "ephemeral"},
+                **llm._effort_kwargs("medium"),
+            },
+            timeout=180,
+            retry_timeouts=True,
+        )
+        for k, v in (data.get("usage") or {}).items():
+            if k in result["usage"] and isinstance(v, int):
+                result["usage"][k] += v
+        content = data.get("content") or []
+        # Back unchanged, thinking blocks included: the next turn continues this one.
+        messages.append({"role": "assistant", "content": content})
+        calls = [b for b in content if b.get("type") == "tool_use"]
+        report = next((b for b in calls if b.get("name") == report_name), None)
+        if report:
+            return report.get("input") or {}
+        if not calls:
+            if last:
+                result["error"] = f"stopped without calling {report_name}"
+                return None
+            messages.append({"role": "user", "content": f"Call {report_name} to finish."})
+            continue
+
+        async def run(block):
+            args = block.get("input") or {}
+            try:
+                if block.get("name") == "search_code":
+                    out = await ws.search_code(args.get("query", ""), args.get("repo"))
+                elif block.get("name") == "read_file":
+                    out = await ws.read_file(args.get("repo", ""), args.get("path", ""),
+                                             int(args.get("start_line") or 1))
+                else:
+                    out = f"Unknown tool {block.get('name')}."
+                return {"type": "tool_result", "tool_use_id": block["id"], "content": out}
+            except Exception as e:  # a failed tool is told to the model, not raised
+                return {"type": "tool_result", "tool_use_id": block["id"],
+                        "content": f"Tool failed: {type(e).__name__}: {e}", "is_error": True}
+
+        # All results in one user message, so parallel calls stay parallel.
+        messages.append({"role": "user", "content": list(await asyncio.gather(*(run(b) for b in calls)))})
+    result["error"] = "ran out of turns"
+    return None
+
+
+def _new_result() -> dict:
+    return {"findings": [], "dropped": 0, "searches": 0, "reads": 0, "turns": 0, "error": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}
+
+
 async def explore(llm, github, *, summary: str, description: str | None,
                   pull_requests: list[dict]) -> dict:
     """Run the explorer. Never raises.
 
     Returns {"findings", "dropped", "searches", "reads", "turns", "error"}.
     """
-    result = {"findings": [], "dropped": 0, "searches": 0, "reads": 0, "turns": 0, "error": None,
-              "usage": {"input_tokens": 0, "output_tokens": 0,
-                        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}
+    result = _new_result()
     prs = [pr for pr in pull_requests if pr.get("repository")]
     if not prs:
         result["error"] = "no pull requests with a repository to explore from"
         return result
-    ws = _Workspace(github, prs)
-    messages = [{"role": "user", "content": build_brief(summary, description, prs)}]
+    ws = Workspace(github, prs)
     try:
-        for turn in range(MAX_TURNS + 1):
-            result["turns"] = turn + 1
-            last = turn == MAX_TURNS
-            if last:
-                messages.append({"role": "user", "content":
-                                 "Budget reached. Call report_findings now with what you verified."})
-            data = await llm._post_messages(
-                {
-                    "model": llm.model,
-                    "max_tokens": llm._budget(4096, thinking=8192),
-                    "system": [{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                    "messages": messages,
-                    "tools": TOOLS,
-                    "tool_choice": {"type": "auto"},
-                    # Each turn re-sends the whole history; caching its end
-                    # makes the next turn pay full price for the new part only.
-                    "cache_control": {"type": "ephemeral"},
-                    **llm._effort_kwargs("medium"),
-                },
-                timeout=180,
-                retry_timeouts=True,
-            )
-            for k, v in (data.get("usage") or {}).items():
-                if k in result["usage"] and isinstance(v, int):
-                    result["usage"][k] += v
-            content = data.get("content") or []
-            # Back unchanged, thinking blocks included: the next turn continues this one.
-            messages.append({"role": "assistant", "content": content})
-            calls = [b for b in content if b.get("type") == "tool_use"]
-            report = next((b for b in calls if b.get("name") == "report_findings"), None)
-            if report:
-                kept, dropped = ws.keep((report.get("input") or {}).get("findings") or [])
-                result.update(findings=kept, dropped=dropped)
-                break
-            if not calls:
-                if last:
-                    result["error"] = "explorer stopped without reporting findings"
-                    break
-                messages.append({"role": "user", "content": "Call report_findings to finish."})
-                continue
-
-            async def run(block):
-                args = block.get("input") or {}
-                try:
-                    if block.get("name") == "search_code":
-                        out = await ws.search_code(args.get("query", ""), args.get("repo"))
-                    elif block.get("name") == "read_file":
-                        out = await ws.read_file(args.get("repo", ""), args.get("path", ""),
-                                                 int(args.get("start_line") or 1))
-                    else:
-                        out = f"Unknown tool {block.get('name')}."
-                    return {"type": "tool_result", "tool_use_id": block["id"], "content": out}
-                except Exception as e:  # a failed tool is told to the model, not raised
-                    return {"type": "tool_result", "tool_use_id": block["id"],
-                            "content": f"Tool failed: {type(e).__name__}: {e}", "is_error": True}
-
-            # All results in one user message, so parallel calls stay parallel.
-            messages.append({"role": "user", "content": list(await asyncio.gather(*(run(b) for b in calls)))})
-        else:
+        report = await run_tool_loop(
+            llm, ws, system=SYSTEM, first_message=build_brief(summary, description, prs),
+            report_tool=TOOLS[2], max_turns=MAX_TURNS, result=result)
+        if report is not None:
+            kept, dropped = ws.keep(report.get("findings") or [])
+            result.update(findings=kept, dropped=dropped)
+        elif result["error"] == "ran out of turns":
             result["error"] = "explorer ran out of turns"
+        else:
+            result["error"] = "explorer stopped without reporting findings"
     except Exception as e:
         logger.warning("code exploration failed: %s", e)
         result["error"] = f"{type(e).__name__}: {e}"
@@ -312,7 +339,9 @@ EXPLORATION_GUIDANCE = (
     "These findings come from reading code outside the PR diffs. Turn each into a case or a "
     "risk: a sibling entry point gets its own case expecting the ticket's rule (from the AC), "
     "never its current behaviour; one that does not enforce the rule is also a risks_and_gaps "
-    "entry. Cite the file:line given here in expected_source."
+    "entry. Cite the file:line given here in expected_source. A \"reachability\" finding says "
+    "nothing in the app produces a condition the diff handles: cover that branch as unit coverage "
+    "(rule L), never as a UI case."
 )
 
 

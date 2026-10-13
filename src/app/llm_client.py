@@ -1252,6 +1252,47 @@ means the step's UI element or control could not be found. A step that runs a
 file, script or route the diff contains is grounded, even when its expected
 result is an assumption.
 
+**REACHABILITY RULES L–M — a code branch is not user-reachable behaviour.**
+Reading a branch in the diff tells you what the code WOULD do. It does not tell
+you that a tester can make it happen. A case that asks for a condition the
+running app never produces fails in UAT although the code is fine.
+
+**L. Name the trigger, and check it reaches the branch.** For every case whose
+`surface` is web_ui, mobile or manual_only, fill `trigger`: the user action or
+setup step that produces the case's condition in the running app, and the path
+from it to the changed code (`<file>:<line>` for each hop you read). Check it
+against how the framework really behaves and against the repo, not against the
+branch's own comment or test: what the framework does on that failure, whether
+anything in the repo produces the input the branch handles (search for it —
+the code exploration findings may already say), whether the condition can
+happen in the build a tester runs. If no trigger you can name reaches the
+branch, do NOT write a UI case for it. Regex alternatives, defensive guards,
+fallbacks for errors nothing raises today, and branches for inputs no caller
+sends belong in unit coverage:
+  - a test file shown to you asserts that branch, and CI runs it → write the
+    case at the unit level and mark it `covered_by_unit_test` (rules C and D),
+    with title and expected stating the unit-level claim, not a UI outcome;
+  - no test asserts it → a `risks_and_gaps` entry ("<branch> has no test and
+    nothing in the app reaches it today"), not a case a tester performs.
+Never send a tester to force the condition with tooling (DevTools blocking,
+editing storage, a proxy) unless you checked that the same tooling produces
+the condition the branch handles. A blocked request is not the same failure
+as the one the code catches.
+❌ BAD: a UI case "an invoice dated in the legacy MM/DD/YYYY format is parsed", because the parser's regex has a legacy-format alternative — when every caller formats dates as ISO (src/api/invoices.ts:40) and nothing in the app can submit the legacy form.
+✅ GOOD: covered_by_unit_test: true, title "parseDate accepts the legacy MM/DD/YYYY form", unit_test_ref: "src/lib/parseDate.test.ts › accepts legacy format", coverage_evidence quoted from it; and no UI case for the legacy branch.
+
+**M. Claims about the repo or its infrastructure cite the file they were read
+from.** Any statement about CI (what runs, what does not), build or deploy
+configuration, environment variables, feature flags or deployment comes from a
+file you read, and the case cites its path (".github/workflows/ci.yml, job
+`test`", "infra/values-integ.yaml:12"). The BUILD/CI FACTS state what code found
+and name their files; if a fact says it could not tell, you cannot tell either.
+If you cannot check a claim, write "unverified" and say what to check. Never
+assert it. "CI does not run this suite" is a claim about a file: cite it or do
+not make it.
+❌ BAD: "No CI job runs these tests, so run them locally" with no file named.
+✅ GOOD: "CI runs this file: .github/workflows/ci.yml job `test` runs `pnpm exec turbo run test` for every package except the two it filters out."
+
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
 "X remains unaffected" / "no regressions in Y" / "existing behaviour is
@@ -1943,6 +1984,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
       "expected_verified": true,
       "expected_source": "REQUIRED when expected_verified is true — the <file>:<line> the expected result was read from, e.g. 'src/middleware/auth.ts:64'. Omit when expected_verified is false.",
       "pre_existing": "OPTIONAL: true when the diff did not touch the code behind this behaviour (rule H); then expected starts 'Pre-existing behaviour, not changed by this ticket:'",
+      "trigger": "REQUIRED for web_ui, mobile and manual_only cases (rule L): the user action or setup step that produces this case's condition in the running app, and the path to the changed code, e.g. 'Submit the invoice form (src/ui/InvoiceForm.tsx:88) → POST /invoices → parseDate (src/lib/parseDate.ts:12)'",
       "data_shape": {
         "shape": "OPTIONAL: only when this case needs a specific input shape rather than ordinary data",
         "provisioning": "real_record|real_record_unconfirmed|stub|unreachable",
@@ -2216,6 +2258,8 @@ Before generating each section, mentally sort your tests:
 ✅ Does its reason still hold at this commit? → if the commit fixed it, check the fix instead (I)
 ✅ Can this change actually make it pass? → if not, move it to `risks_and_gaps` as a follow-up with an owner and a suggested ticket (J)
 ✅ Is there code evidence for the expected result, or is it labelled an assumption that says what to record? (K)
+✅ Could a tester following these steps on integ/staging actually see the expected result? Does the case's `trigger` name a real user action or setup step, and does it reach the changed code? → if nothing reachable triggers it, make it unit coverage or a gap, never a UI case (L)
+✅ Does any case or regression line claim something about CI, config, env vars, flags or deployment? → cite the file it was read from, or say "unverified" (M)
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
 
@@ -4553,6 +4597,10 @@ TEST_CASE_SCHEMA = {
         "expected_source": {
             "type": "string",
             "description": "Required when `expected_verified` is true. The single primary `<file>:<line>` the expected result rests on, e.g. 'src/middleware/auth.ts:64'. Omit entirely when `expected_verified` is false.",
+        },
+        "trigger": {
+            "type": "string",
+            "description": "Rule L. Required when `surface` is web_ui, mobile or manual_only: the user action or setup step that produces this case's condition in the running app, and the path from it to the changed code, with `<file>:<line>` for each hop you read. Checked against the framework's real behaviour and the repo, not against the branch's own test. If no trigger reaches the branch, this is not a UI case: make it unit coverage or a risks_and_gaps entry instead.",
         },
         "pre_existing": {
             "type": "boolean",

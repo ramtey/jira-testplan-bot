@@ -69,6 +69,7 @@ from ..repositories import (
     test_plan_progress_repository,
 )
 from ..scope_checks import run_platform_critic, run_scope_checks
+from ..reachability_checks import flag_ci_claims, run_reachability_critic, summarize as summarize_reachability
 from ..seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from ..security_surfaces import audit_persona_split
 from ..slack_client import resolve_slack_messages_in_text
@@ -928,6 +929,18 @@ async def generate_single(
             provenance["critics_unavailable"] = critic_gaps
             logger.warning("critics unavailable for %s: %s",
                            request.ticket_key, "; ".join(critic_gaps))
+        # Rule L, before the evidence checks: a UI case nothing in the app can
+        # trigger is rewritten as unit coverage where a test asserts its
+        # branch, and the rule C/D checks below then prove or revert that.
+        passed_titles = (
+            plan_revision.passed_titles(previous["body"], previous["checked_ids"])
+            if previous is not None else frozenset()
+        )
+        await _check_reachability(
+            llm, test_plan, [request.development_info], provenance,
+            repo_evidence=repo_evidence, exploration=exploration,
+            protected_titles=passed_titles, label=request.ticket_key,
+        )
         # Evidence rules B–F, after the critics and before the step check:
         # covered_by_unit_test claims are proven from the test code and CI or
         # reverted, and every case that needs a deployed environment gets a
@@ -976,16 +989,14 @@ async def generate_single(
             provenance.setdefault("critics_unavailable", []).append(platform_gap)
         scope = run_scope_checks(test_plan, [request.development_info])
         _record_scope(provenance, scope, request.ticket_key)
+        _record_ci_claims(provenance, flag_ci_claims(test_plan, repo_evidence))
         # Quarantine last: the code-grounding critic un-badges cases whose
         # behaviour it found in the repo, and those rescues have to land
         # before we decide what is ungrounded.
         needs_spec_cases = quarantine_ungrounded_cases(
             test_plan,
             spec_is_source=spec_only is not None,
-            protected_titles=(
-                plan_revision.passed_titles(previous["body"], previous["checked_ids"])
-                if previous is not None else frozenset()
-            ),
+            protected_titles=passed_titles,
         )
         # Rule A, after quarantine so cases moved to needs-spec still count as
         # having used a note.
@@ -1126,6 +1137,27 @@ async def generate_single(
     except Exception as e:
         await run_tracker.fail(run_ctx, error_code=_error_code(e))
         raise
+
+
+async def _check_reachability(llm, test_plan, dev_infos: list, provenance: dict, *,
+                              repo_evidence, exploration, label: str,
+                              protected_titles: frozenset[str] = frozenset()) -> None:
+    from ..github_client import GitHubClient
+    changes, gap = await run_reachability_critic(
+        llm, GitHubClient(), test_plan, dev_infos, repo_evidence=repo_evidence,
+        exploration=exploration, protected_titles=protected_titles,
+    )
+    if gap:
+        provenance.setdefault("critics_unavailable", []).append(gap)
+    if changes.get("converted") or changes.get("marked"):
+        provenance["reachability"] = {k: changes[k] for k in ("converted", "marked") if changes.get(k)}
+    if changes.get("usage"):
+        logger.info("reachability critic for %s: %s", label, summarize_reachability(changes))
+
+
+def _record_ci_claims(provenance: dict, flagged: list[dict]) -> None:
+    if flagged:
+        provenance["ci_claims_flagged"] = flagged
 
 
 def _record_scope(provenance: dict, scope: dict, label: str) -> None:
@@ -1405,6 +1437,11 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         if multi_critic_gaps:
             provenance["critics_unavailable"] = multi_critic_gaps
             logger.warning("critics unavailable: %s", "; ".join(multi_critic_gaps))
+        # Rule L; see generate_single.
+        await _check_reachability(
+            llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
+            repo_evidence=batch_repo_evidence, exploration=None, label="batch",
+        )
         # Evidence rules B–F; see generate_single.
         evidence = await run_evidence_checks(
             llm,
@@ -1441,6 +1478,7 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             provenance.setdefault("critics_unavailable", []).append(platform_gap)
         scope = run_scope_checks(test_plan, batch_dev_infos)
         _record_scope(provenance, scope, "batch")
+        _record_ci_claims(provenance, flag_ci_claims(test_plan, batch_repo_evidence))
         # See generate_single: quarantining runs after every critic so the
         # code-grounding recheck's rescues are respected.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)

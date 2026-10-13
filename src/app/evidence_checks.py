@@ -364,8 +364,16 @@ def _copied(path: str, copies: list[str], ctx: str) -> bool:
     return False
 
 
+# `test` as a task name: `test`, `test:unit`, but not `test-utils` or `tests/`.
+_TEST_TASK = r"\btest(?![\w-])"
+# A package manager or monorepo runner reaches the test task through whatever
+# sits between them: `pnpm exec turbo run test --filter=…`, `pnpm --filter web
+# test`, `yarn workspace web test`, `nx run-many -t test`. SK-2947's plan said
+# "no CI configuration runs a test command" because only `pnpm test` and
+# `pnpm run test` were recognised, while ci.yml ran `pnpm exec turbo run test`.
 _TEST_CMD_RE = re.compile(
-    r"\b(?:(?:npm|yarn|pnpm)\s+(?:run\s+)?test\b|jest\b|vitest\b|mocha\b|pytest\b|go\s+test\b"
+    r"\b(?:(?:npm|npx|yarn|pnpm|bun|turbo|nx|lerna|rush)\b[^\n#]*" + _TEST_TASK
+    + r"|jest\b|vitest\b|mocha\b|pytest\b|go\s+test\b"
     r"|dotnet\s+test\b|(?:gradlew?|mvn)\b[^\n]*\btest\b|xcodebuild\b[^\n]*\btest\b|make\s+test\b"
     r"|tox\b|cargo\s+test\b|rspec\b|phpunit\b)"
 )
@@ -411,11 +419,19 @@ def analyze_build(
     ci_files = sorted(p for p in tree if is_ci_path(p))
     ci_unread = [p for p in ci_files if p not in files]
     ci_test_cmds = []
+    # Lines that name a test task in a way the command pattern does not
+    # recognise (a job called `test`, a wrapper script). They make the answer
+    # "could not tell", never "not run": a pattern miss is not a fact about CI.
+    ci_test_hints = []
     for p in ci_files:
         for line in (files.get(p) or "").splitlines():
-            if _TEST_CMD_RE.search(line) and not line.strip().startswith("#"):
+            if line.strip().startswith("#"):
+                continue
+            if _TEST_CMD_RE.search(line):
                 ci_test_cmds.append({"file": p, "line": line.strip()})
                 break
+            if not ci_test_hints and re.search(_TEST_TASK, line):
+                ci_test_hints.append({"file": p, "line": line.strip()})
 
     findings: list[dict] = []
     docker_runners: list[dict] = []  # image builds whose test step really runs
@@ -525,13 +541,20 @@ def analyze_build(
                          "why": f"{c['file']} runs `{c['line']}` (check that its scope includes {t})"}
             continue
         hit = next((r for r in docker_runners if _copied(t, r["copies"], r["ctx"])), None)
+        if not hit and ci_test_hints:
+            h = ci_test_hints[0]
+            suites[t] = {"status": "unknown",
+                         "why": (f"{h['file']} has `{h['line']}`, which may run tests but is not a "
+                                 f"command this check recognises; read {h['file']} before saying CI "
+                                 f"does or does not run {t}")}
+            continue
         if hit and hit["unknown"]:
             suites[t] = {"status": "unknown",
                          "why": f"{hit['dockerfile']} runs `{hit['cmd']}` but its package.json could not be read"}
         elif hit:
             suites[t] = {"status": "runs", "why": f"{hit['dockerfile']} runs `{hit['cmd']}` during the image build"}
         else:
-            reasons = ["no CI configuration in the repo runs a test command"
+            reasons = [f"none of the CI files ({', '.join(ci_files)}) runs a test command"
                        if ci_files else "the repo has no CI configuration (no .github/workflows, Jenkinsfile, …)"]
             if docker_noops:
                 reasons.append(docker_noops[0][1])
