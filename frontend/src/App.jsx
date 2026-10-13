@@ -751,6 +751,8 @@ function App() {
                     onGenerateTestPlan={handleGenerateTestPlan}
                     onStopGeneration={testPlan.stop}
                     generatingPlan={testPlan.generating}
+                    generationStartedAt={testPlan.startedAt}
+                    lastGeneration={testPlan.lastRun}
                     onAnalyzeBug={handleAnalyzeBug}
                     onStopBugAnalysis={bugLens.stop}
                     analyzingBug={bugLens.analyzing}

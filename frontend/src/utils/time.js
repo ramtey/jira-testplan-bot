@@ -20,3 +20,24 @@ export function formatRelativeTime(iso) {
   const years = Math.round(months / 12)
   return `${years} year${years === 1 ? '' : 's'} ago`
 }
+
+// A stopwatch reading: "0:07", "4:12", "1:02:05". For the live counter, where
+// the width must not jump each second.
+export function formatClock(ms) {
+  const total = Math.max(0, Math.floor((ms || 0) / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = String(total % 60).padStart(2, '0')
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
+}
+
+// A finished duration in words: "7s", "4m 12s", "1h 2m".
+export function formatDuration(ms) {
+  const total = Math.max(0, Math.round((ms || 0) / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h) return `${h}h ${m}m`
+  if (m) return `${m}m ${s}s`
+  return `${s}s`
+}

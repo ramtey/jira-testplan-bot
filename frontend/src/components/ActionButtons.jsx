@@ -2,13 +2,34 @@
  * Buttons for test plan generation and bug analysis actions.
  */
 
+import { useEffect, useState } from 'react'
 import { Btn, Prog } from './ui'
+import { formatClock, formatDuration } from '../utils/time'
+
+const LAST_RUN_LABEL = { done: 'Generated in', failed: 'Failed after', stopped: 'Stopped after' }
+
+// Ticks once a second from `startedAt` (epoch ms). Its own component so the
+// second-by-second re-render stays out of the rest of the action row.
+function ElapsedClock({ startedAt }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [startedAt])
+  return (
+    <span className="tnum" title="Time since you clicked Generate" style={{ color: 'var(--fg-muted)' }}>
+      {formatClock(now - startedAt)}
+    </span>
+  )
+}
 
 function ActionButtons({
   pendingLabel,
   onGenerateTestPlan,
   onStopGeneration,
   generatingPlan,
+  generationStartedAt,
+  lastGeneration,
   onAnalyzeBug,
   onStopBugAnalysis,
   analyzingBug,
@@ -90,6 +111,29 @@ function ActionButtons({
           <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-sm)', marginLeft: 'var(--s-3)', display: 'inline-flex', alignItems: 'center', gap: 'var(--s-3)' }}>
             <span className="spin" style={{ color: 'var(--accent)' }} />
             {busyLabel}
+            {generatingPlan && generationStartedAt && (
+              <>
+                <span aria-hidden="true">·</span>
+                <ElapsedClock startedAt={generationStartedAt} />
+              </>
+            )}
+          </span>
+        )}
+
+        {!isBusy && lastGeneration && (
+          <span
+            className="tnum"
+            style={{
+              color: lastGeneration.outcome === 'done' ? 'var(--fg-subtle)' : 'var(--fg-muted)',
+              fontSize: 'var(--t-sm)',
+              marginLeft: 'var(--s-3)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 'var(--s-2)',
+            }}
+          >
+            <span aria-hidden="true">⏱</span>
+            {LAST_RUN_LABEL[lastGeneration.outcome]} {formatDuration(lastGeneration.ms)}
           </span>
         )}
 

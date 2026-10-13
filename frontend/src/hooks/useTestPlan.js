@@ -65,6 +65,10 @@ export function useTestPlan(restoringKeys = []) {
   )
   const [error, setError] = useState(null)
   const [controller, setController] = useState(null)
+  // How long generation takes: `startedAt` (epoch ms) while a run is in
+  // flight, then `lastRun` = { ms, outcome: 'done' | 'failed' | 'stopped' }.
+  const [startedAt, setStartedAt] = useState(null)
+  const [lastRun, setLastRun] = useState(null)
 
   useEffect(() => saveStored(STORAGE_KEY, writeStoredPlan(state)), [state])
 
@@ -85,6 +89,7 @@ export function useTestPlan(restoringKeys = []) {
     stateRef.current = EMPTY_PLAN_STATE
     setState(EMPTY_PLAN_STATE)
     setError(null)
+    setLastRun(null)
   }
 
   const stop = () => {
@@ -115,6 +120,9 @@ export function useTestPlan(restoringKeys = []) {
     setGenerating(true)
     setError(null)
     reset()
+    const t0 = Date.now()
+    setStartedAt(t0)
+    let outcome = 'failed'
 
     const owner = planOwner(ticketsData.map((t) => t.key))
 
@@ -141,15 +149,19 @@ export function useTestPlan(restoringKeys = []) {
 
       const data = await response.json()
       apply({ plan: data, origin: ORIGIN.generated, ticketKeys: owner })
+      outcome = 'done'
       return data
     } catch (err) {
       if (err.name === 'AbortError') {
+        outcome = 'stopped'
         setError('Test plan generation was cancelled')
       } else {
         setError(err.message)
       }
       return null
     } finally {
+      setLastRun({ ms: Date.now() - t0, outcome })
+      setStartedAt(null)
       setGenerating(false)
       setController(null)
     }
@@ -157,6 +169,8 @@ export function useTestPlan(restoringKeys = []) {
 
   return {
     generating,
+    startedAt,
+    lastRun,
     plan: state.plan,
     planOrigin: state.origin,
     error,
