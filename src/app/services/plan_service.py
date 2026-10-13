@@ -1149,8 +1149,11 @@ async def _check_reachability(llm, test_plan, dev_infos: list, provenance: dict,
     )
     if gap:
         provenance.setdefault("critics_unavailable", []).append(gap)
-    if changes.get("converted") or changes.get("marked"):
-        provenance["reachability"] = {k: changes[k] for k in ("converted", "marked") if changes.get(k)}
+    if any(changes.get(k) for k in ("converted", "marked", "confirmed", "unsure")):
+        # Every verdict, not only the changes: a case the critic called
+        # reachable is the trail when that case later fails in UAT.
+        provenance["reachability"] = {k: changes[k] for k in ("converted", "marked", "confirmed", "unsure")
+                                      if changes.get(k)}
     if changes.get("usage"):
         logger.info("reachability critic for %s: %s", label, summarize_reachability(changes))
 

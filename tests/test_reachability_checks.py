@@ -31,6 +31,7 @@ PRS = [{"repository": "acme/web", "number": 7, "title": "parse dates", "head_sha
 
 def _ui_case(title="Legacy date is parsed on the invoice form", **kw):
     return {"title": title, "priority": "high", "surface": "web_ui", "credentials": "test user",
+            "preconditions": "Signed in on integ", "unit_test_gap": "the test does not drive the UI",
             "steps": ["Open the invoice form", "Type 03/04/2025"], "expected": "The date shows as 4 March 2025",
             "expected_verified": True, "trigger": "Type a legacy date in the form",
             "environment": "integ", "needs_manual_verification": True,
@@ -107,8 +108,9 @@ def test_an_unreachable_case_with_a_test_becomes_unit_coverage_in_place():
     assert case["covered_by_unit_test"] is True and case["surface"] == "cli"
     assert case["title"] == "parseDate accepts the legacy MM/DD/YYYY form"
     assert case["reachability"]["original_title"] == "Legacy date is parsed on the invoice form"
-    for gone in ("trigger", "environment", "needs_manual_verification", "step_grounding"):
+    for gone in ("trigger", "needs_manual_verification", "step_grounding", "unit_test_gap"):
         assert gone not in case
+    assert not ev.needs_deployed_env(case), "a unit test needs no deploy check"
     assert plan.risks_and_gaps == []
 
 

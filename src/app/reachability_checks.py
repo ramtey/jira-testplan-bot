@@ -57,8 +57,8 @@ CI_UNCITED_MARKER = "Unverified — this claim about CI names no CI file; check 
 CI_CONTRADICTED_MARKER = "Contradicted by the CI config — {why} (rule M):"
 
 MAX_TURNS = 6
-MAX_SEARCHES = 5
-MAX_READS = 8
+MAX_SEARCHES = 8
+MAX_READS = 10
 _DIFF_BUDGET = 24_000
 _TEST_CHARS_PER_FILE = 6_000
 _TEST_CHARS_TOTAL = 18_000
@@ -94,11 +94,15 @@ For each case:
 1. Name the condition the case needs (the error, input or state) and the trigger it uses (its `trigger` field, preconditions and steps).
 2. Check whether that trigger produces that condition in the build a tester runs. Use the framework's real behaviour as this repo uses it, and the repo itself: search for the producer (code that raises that error, sends that input, loads resources the way the branch assumes) with search_code, and read what you find with read_file. Do not take the branch's own comment or its unit test as evidence that the condition happens; a unit test builds the input by hand.
 3. A tool that forces something (blocking a request in DevTools, editing storage, a proxy) counts only if it produces the SAME condition the code handles. A blocked request is a different failure from the one the code catches unless the framework turns one into the other.
+4. Ask how the thing that fails is loaded or produced. A resource referenced from server-rendered markup (a <link> or <script> tag in the HTML, an <img>) fails as a network error and throws nothing into application code. Only a resource that runtime code loads (a dynamic import(), a loader that injects it on demand) rejects a promise, and only if this repo actually loads THAT resource that way. Find that loading code in the repo (search for it) before you call an error-handling branch reachable; a branch that handles a loader's error is unreachable when nothing in the repo uses that loader for that resource.
+5. A hedged expected result ("if the error has another form, record it") is not evidence. The question is whether the trigger produces the exact condition the branch matches, not whether the tester could write something down.
 
 Verdicts:
-- "reachable": give the trigger and the path to the changed code, with file:line for hops you read.
-- "unreachable": ONLY when the framework's behaviour or code you read shows nothing produces the condition. Say what you searched and read and what it showed. If one of the TEST FILES below asserts that branch, also give `unit_test_ref` as "<file> › <exact test name as written>", `coverage_evidence` as the assertion line(s) copied verbatim from that test's body, and a unit-level rewrite of the case: `unit_title` and `unit_expected` state only what that test proves (no UI outcome), `unit_steps` say how to run that test file.
-- "unsure": anything you cannot settle. This is the default. Never answer "unreachable" on a guess.
+- "reachable": give the trigger and the path to the changed code, with file:line for hops you read. For a case about an error or an input, name the code or framework mechanism that PRODUCES that exact error or input (not only the boundary that receives it), with the file you found it in. If you searched for the producer and found none, the answer is "unreachable", not "unsure".
+- "unreachable": when the framework's normal behaviour does not produce the condition AND you searched the repo for the producer it would need (rule 4) and found none. That search coming back empty is the evidence; you do not also need to prove a negative about the framework. Say what you searched and read and what it showed. If one of the TEST FILES below asserts that branch, also give `unit_test_ref` as "<file> › <exact test name as written>", `coverage_evidence` as only the assertion line(s) (the `expect(...)` / `assert ...` lines) copied verbatim from inside that test's body — not the `it(...)` / `it.each(...)` header or the test table, and a unit-level rewrite of the case: `unit_title` and `unit_expected` state only what that test proves (no UI outcome), `unit_steps` say how to run that test file.
+- "unsure": when you could not look (search budget spent, a file you needed could not be read), or when the producer may exist in code you found but could not follow. Not for "I searched and found no producer" — that is "unreachable". Never answer "unreachable" without having searched.
+
+Spend your searches on the cases whose producer is not obvious from the diff (an error type or message, a regex alternative, a defensive guard); a plain user action on a screen the diff changes needs no search.
 
 Judge reachability only, never whether the code is correct. Call report_reachability exactly once, with one verdict per case id."""
 
@@ -203,9 +207,13 @@ def _owner(pull_requests: list[dict]) -> str:
     return f"Owners of {', '.join(repos)}" if repos else "The team that owns the changed code"
 
 
-# Fields that describe the UI run a converted case no longer has.
-_UI_ONLY_FIELDS = ("trigger", "environment", "data_shape", "step_grounding", "unverified_steps",
-                   "needs_manual_verification")
+# Fields that describe the UI run a converted case no longer has. The old
+# `unit_test_gap` argued the UI case was still needed, so it goes too.
+_UI_ONLY_FIELDS = ("trigger", "data_shape", "step_grounding", "unverified_steps",
+                   "needs_manual_verification", "unit_test_gap")
+# A unit test runs from a checkout. Saying so keeps the deploy check, which
+# keys on the environment and preconditions, off a case that has no deployment.
+_UNIT_ENVIRONMENT = "Local repository checkout at the merge commit; no deployed environment."
 
 
 def apply_reachability_verdicts(test_plan: Any, items: list[dict], verdicts: dict[str, dict],
@@ -216,7 +224,7 @@ def apply_reachability_verdicts(test_plan: Any, items: list[dict], verdicts: dic
     ``protected_titles`` are cases QA already passed: those are marked, never
     rewritten, so a recorded result keeps describing the case it was recorded on.
     """
-    converted, marked, confirmed = [], [], []
+    converted, marked, confirmed, unsure = [], [], [], []
     gaps = getattr(test_plan, "risks_and_gaps", None)
     if gaps is None:
         gaps = []
@@ -225,6 +233,7 @@ def apply_reachability_verdicts(test_plan: Any, items: list[dict], verdicts: dic
         v = verdicts.get(item["id"])
         case = item["_case"]
         if not v or v["verdict"] == "unsure":
+            unsure.append(item["id"])
             continue
         if v["verdict"] == "reachable":
             if not (case.get("trigger") or "").strip() and (v.get("trigger") or "").strip():
@@ -244,6 +253,8 @@ def apply_reachability_verdicts(test_plan: Any, items: list[dict], verdicts: dic
                 title=v["unit_title"].strip(),
                 expected=v["unit_expected"].strip(),
                 steps=steps or [f"Run the test {v['unit_test_ref'].strip()}."],
+                preconditions="A checkout of the repository at the merge commit.",
+                environment=_UNIT_ENVIRONMENT,
                 test_data=f"Not reachable from the UI: {reason}",
                 surface="cli",
                 covered_by_unit_test=True,
@@ -267,7 +278,7 @@ def apply_reachability_verdicts(test_plan: Any, items: list[dict], verdicts: dic
                 "suggested_ticket": f"Add a unit test for: {record['original_title']}",
             })
         marked.append(item["id"])
-    return {"converted": converted, "marked": marked, "confirmed": confirmed}
+    return {"converted": converted, "marked": marked, "confirmed": confirmed, "unsure": unsure}
 
 
 async def run_reachability_critic(llm: Any, github: Any, test_plan: Any,
@@ -277,7 +288,7 @@ async def run_reachability_critic(llm: Any, github: Any, test_plan: Any,
                                   protected_titles: frozenset[str] = frozenset()) -> tuple[dict, str | None]:
     """Rule L. Returns ``(changes, gap)``; ``gap`` is set when the critic could
     not run, so the plan says no reachability check happened."""
-    changes = {"converted": [], "marked": [], "confirmed": []}
+    changes = {"converted": [], "marked": [], "confirmed": [], "unsure": []}
     items = collect_reachability_items(test_plan)
     if not items:
         return changes, None
@@ -395,4 +406,4 @@ def flag_ci_claims(test_plan: Any, repo_evidence: list[dict] | None) -> list[dic
 
 
 def summarize(changes: dict) -> str:
-    return json.dumps({k: changes.get(k) for k in ("converted", "marked", "confirmed", "searches", "reads")})
+    return json.dumps({k: changes.get(k) for k in ("converted", "marked", "confirmed", "unsure", "searches", "reads")})

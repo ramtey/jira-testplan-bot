@@ -1277,7 +1277,14 @@ sends belong in unit coverage:
 Never send a tester to force the condition with tooling (DevTools blocking,
 editing storage, a proxy) unless you checked that the same tooling produces
 the condition the branch handles. A blocked request is not the same failure
-as the one the code catches.
+as the one the code catches. Ask how the failing thing is loaded: a resource
+referenced from server-rendered markup (a <link> or <script> tag, an <img>)
+fails as a network error and throws nothing into application code; only a
+resource that runtime code loads (a dynamic import(), an on-demand loader)
+rejects, and only if the repo loads THAT resource that way. Name the producer
+of the exact error or input in `trigger`, not only the code that receives it.
+A hedged expected result ("if the error looks different, record it") does not
+make a condition reachable.
 ❌ BAD: a UI case "an invoice dated in the legacy MM/DD/YYYY format is parsed", because the parser's regex has a legacy-format alternative — when every caller formats dates as ISO (src/api/invoices.ts:40) and nothing in the app can submit the legacy form.
 ✅ GOOD: covered_by_unit_test: true, title "parseDate accepts the legacy MM/DD/YYYY form", unit_test_ref: "src/lib/parseDate.test.ts › accepts legacy format", coverage_evidence quoted from it; and no UI case for the legacy branch.
 
