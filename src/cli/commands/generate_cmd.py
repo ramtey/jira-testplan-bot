@@ -22,6 +22,7 @@ from ...app.jira_client import (
 )
 from ...app.llm_client import LLMError
 from ...app.models import GenerateTestPlanRequest
+from ...app.evidence_checks import render_evidence_lines
 from ...app.services import plan_service
 from ...app.services.plan_service import NonTestableIssueError
 
@@ -494,6 +495,8 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
         lines.append("=" * 60)
         lines.append("")
 
+    # Evidence rules A–F: deployment, Acceptance gaps, Build & CI, notes.
+    lines.extend(render_evidence_lines(test_plan, markdown=format == "markdown"))
     lines.extend(_provenance_lines(test_plan, format))
 
     # Happy Path

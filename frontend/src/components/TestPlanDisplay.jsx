@@ -670,6 +670,22 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
             </div>
           </>
         )}
+        {Array.isArray(test.source_comment_ids) && test.source_comment_ids.length > 0 && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>From notes</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+              comment {test.source_comment_ids.join(', ')}
+            </div>
+          </>
+        )}
+        {test.unit_test_gap && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Unit tests</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d' }}>
+              Not covered — {test.unit_test_gap}
+            </div>
+          </>
+        )}
         {(test.credentials || test.environment) && (
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Runs on</span>
@@ -954,6 +970,107 @@ function GroundingWarningsPanel({ warnings, ticketKeys }) {
         />
       )}
     </div>
+  )
+}
+
+// Evidence rules A–F (src/app/evidence_checks.py). Built from evidence by
+// the backend and shown above everything else: a plan for a change that is not
+// deployed, or that does not do what the ticket asked, has to say so before a
+// tester reads a single case.
+const GAP_STATUS = {
+  unmet: 'Not met',
+  partial: 'Partly met',
+  not_verifiable: 'Cannot be confirmed from the code',
+  not_assessed: 'Not assessed',
+}
+
+function EvidenceBlock({ tone, icon, title, note, children }) {
+  const color = tone === 'danger' ? 'var(--danger)' : '#fcd34d'
+  return (
+    <div
+      className="card"
+      style={{
+        marginBottom: 'var(--s-5)',
+        padding: 'var(--s-5) var(--s-6)',
+        borderColor: tone === 'danger' ? 'rgba(239,68,68,.4)' : 'rgba(245,158,11,.35)',
+        background: tone === 'danger' ? 'var(--danger-soft)' : 'rgba(245,158,11,.05)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', marginBottom: 'var(--s-3)' }}>
+        <Icon name={icon} size={12} />
+        <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color }}>{title}</span>
+      </div>
+      {note && (
+        <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', marginBottom: 'var(--s-4)' }}>{note}</div>
+      )}
+      <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+        {children}
+      </ul>
+    </div>
+  )
+}
+
+function EvidencePanel({ plan }) {
+  const warnings = (plan?.deployment_status?.warnings || []).filter(Boolean)
+  const gaps = Array.isArray(plan?.acceptance_gaps) ? plan.acceptance_gaps : []
+  const facts = Array.isArray(plan?.build_and_ci) ? plan.build_and_ci : []
+  const unused = plan?.evidence_notes?.unused || []
+  const disagreements = plan?.evidence_notes?.disagreements || []
+  const li = { fontSize: 'var(--t-sm)', color: 'var(--fg)' }
+  const sub = { color: 'var(--fg-muted)', marginTop: 2 }
+  return (
+    <>
+      {warnings.length > 0 && (
+        <EvidenceBlock
+          tone={plan.deployment_status.status === 'not_deployed' ? 'danger' : 'warning'}
+          icon="alert"
+          title={plan.deployment_status.status === 'not_deployed' ? 'Not deployed' : 'Deployment'}
+          note="Every case that needs a deployed environment starts with a deploy check."
+        >
+          {warnings.map((w, i) => <li key={i} style={li}>{w}</li>)}
+        </EvidenceBlock>
+      )}
+      {gaps.length > 0 && (
+        <EvidenceBlock
+          tone="danger"
+          icon="alert-circle"
+          title={`${gaps.length} acceptance gap${gaps.length === 1 ? '' : 's'}`}
+          note="What the ticket asks for that the merged work does not (fully) do. Not test cases — these block sign-off until resolved or accepted."
+        >
+          {gaps.map((g, i) => (
+            <li key={i} style={li}>
+              <div><strong>{GAP_STATUS[g.status] || g.status}</strong> — {g.source}: “{g.requirement}”</div>
+              {g.missing && <div style={sub}>Missing: {g.missing}</div>}
+              {g.evidence && <div style={sub}>Code: <code style={{ fontSize: 11 }}>{g.evidence}</code></div>}
+            </li>
+          ))}
+        </EvidenceBlock>
+      )}
+      {facts.length > 0 && (
+        <EvidenceBlock tone="warning" icon="scan" title="Build & CI">
+          {facts.map((f, i) => (
+            <li key={i} style={li}>
+              <div>{f.finding}</div>
+              {f.evidence && <div style={sub}>Evidence: <code style={{ fontSize: 11 }}>{f.evidence}</code></div>}
+            </li>
+          ))}
+        </EvidenceBlock>
+      )}
+      {(unused.length > 0 || disagreements.length > 0) && (
+        <EvidenceBlock tone="warning" icon="scan" title="Testing notes on the ticket">
+          {unused.map((n) => (
+            <li key={n.id} style={li}>
+              Comment {n.id} ({n.kind}, {n.author}) was not used by any case. Read it before testing.
+            </li>
+          ))}
+          {disagreements.map((d, i) => (
+            <li key={`d${i}`} style={li}>
+              Plan departs from comment {d.comment_id}: the note says {d.note_says}; the plan {d.plan_does} — {d.why}
+            </li>
+          ))}
+        </EvidenceBlock>
+      )}
+    </>
   )
 }
 
@@ -2433,6 +2550,8 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
           }}
         />
       )}
+
+      <EvidencePanel plan={testPlan} />
 
       <SourceProvenancePanel provenance={testPlan.source_provenance} />
 

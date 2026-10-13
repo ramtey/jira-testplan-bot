@@ -1174,6 +1174,33 @@ class GitHubClient:
             await asyncio.gather(*(one(client, p) for p in paths))
         return out
 
+    async def list_tree(self, repo: str, ref: str) -> list[str] | None:
+        """Every file path in `repo` ("owner/name") at commit `ref`.
+
+        None when GitHub did not answer or truncated the listing — a partial
+        tree would let a caller conclude a file (a CI workflow, a lockfile) is
+        absent when it was only not listed.
+        """
+        if not self.token or not ref:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(
+                    f"{self.base_url}/repos/{repo}/git/trees/{ref}",
+                    params={"recursive": "1"}, headers=self._headers(),
+                )
+        except httpx.HTTPError as e:
+            logger.warning("Tree listing %s@%s failed: %s", repo, ref[:7], e)
+            return None
+        if r.status_code != 200:
+            logger.warning("Tree listing %s@%s returned %s", repo, ref[:7], r.status_code)
+            return None
+        data = r.json()
+        if data.get("truncated"):
+            logger.warning("Tree listing %s@%s was truncated by GitHub", repo, ref[:7])
+            return None
+        return [t["path"] for t in data.get("tree") or [] if t.get("type") == "blob"]
+
     async def compare_commits(self, repo: str, base: str, head: str) -> dict | None:
         """GitHub's compare of `base...head` in `repo`: ``{"status", "ahead_by",
         "behind_by"}``, where status "ahead"/"identical" means `head` contains

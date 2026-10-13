@@ -15,6 +15,7 @@ from mcp.types import Tool, TextContent
 from ..app.config import settings
 from ..app.jira_client import JiraClient, JiraAuthError, JiraNotFoundError
 from ..app.llm_client import LLMError
+from ..app.evidence_checks import render_evidence_lines
 from ..app.services import plan_service
 from ..app.services.plan_service import NonTestableIssueError
 from ..app.token_service import TokenHealthService
@@ -369,7 +370,9 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
     if test_plan_dict.get("no_source"):
         return _no_source_text(test_plan_dict)
 
-    jira = _provenance_text(test_plan_dict)
+    evidence = "\n".join(render_evidence_lines(test_plan_dict, markdown=False)).strip()
+    jira = (evidence + "\n\n════════════════════════════════════════════\n\n" if evidence else "")
+    jira += _provenance_text(test_plan_dict)
 
     if test_plan_dict.get("happy_path"):
         jira += "✅ HAPPY PATH TEST CASES\n\n"
@@ -548,6 +551,7 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
             "📋 **COMPLETE TEST PLAN** - Display this entire document without summarizing",
             "",
         ]
+        output.extend(render_evidence_lines(test_plan_dict, markdown=True))
         provenance = _provenance_text(test_plan_dict).strip()
         if provenance:
             output.append(provenance)

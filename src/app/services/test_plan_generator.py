@@ -1012,3 +1012,88 @@ def flatten_cases_for_persistence(test_plan) -> list[tuple[str, str, str | None]
             cases.append((item, "", "regression"))
 
     return cases
+
+
+async def run_evidence_checks(
+    llm,
+    test_plan,
+    *,
+    repo_evidence: list[dict] | None,
+    deploy_state: list[dict] | None,
+    requirements: list[dict],
+    dev_info: dict | None,
+    when: str,
+) -> dict:
+    """Hold the plan to evidence rules B–F (see src/app/evidence_checks.py).
+
+    Runs after the critics and before step grounding and quarantine:
+
+    * every ``covered_by_unit_test`` claim is checked against the test code
+      and CI, then read by the coverage critic; what is not proven returns to
+      its section with the reason in ``unit_test_gap``;
+    * every case that needs a deployed environment gets a deploy check first;
+    * the deployment banner, Acceptance gaps and build/CI facts are built
+      here, from evidence, not from the model's prose.
+
+    Returns the plan fields and provenance to merge into the response. A
+    coverage critic that could not run is reported in ``critic_gap``.
+    """
+    from ..evidence_checks import (
+        apply_coverage_verdicts,
+        build_acceptance_gaps,
+        build_deployment_status,
+        enforce_deploy_precondition,
+        enforce_unit_test_coverage,
+    )
+
+    repo_evidence = repo_evidence or []
+    claims = getattr(test_plan, "evidence_claims", None) or {}
+    test_sources: dict[str, str] = {}
+    suites: dict[str, dict] = {}
+    findings: list[dict] = []
+    for e in repo_evidence:
+        test_sources.update(e.get("test_sources") or {})
+        build = e.get("build") or {}
+        suites.update(build.get("suites") or {})
+        for f in build.get("findings") or []:
+            findings.append({**f, "repo": e["repo"]})
+        if e.get("error"):
+            findings.append({"kind": "repo_unread", "finding": e["error"].capitalize() + ".",
+                             "evidence": "", "repo": e["repo"]})
+
+    demoted, surviving = enforce_unit_test_coverage(test_plan, test_sources, suites)
+    critic_gap = None
+    if surviving:
+        try:
+            verdicts = await llm.verify_unit_coverage(surviving)
+        except Exception:
+            logger.exception("verify_unit_coverage raised; coverage left unconfirmed")
+            verdicts = None
+        if verdicts is None:
+            critic_gap = "unit-test coverage check could not run, so no case is counted as covered"
+        demoted += apply_coverage_verdicts(surviving, verdicts)
+    if demoted:
+        logger.info("evidence: %d covered_by_unit_test claim(s) reverted: %s",
+                    len(demoted), [d["case_id"] for d in demoted])
+
+    prs = [p for p in ((dev_info or {}).get("pull_requests") or []) if isinstance(p, dict)]
+    merged = [p for p in prs if (p.get("status") or "").upper() == "MERGED" and p.get("merge_commit_sha")]
+    commit = (max(merged, key=lambda p: p.get("merged_at") or "")["merge_commit_sha"]
+              if merged else next((p.get("head_sha") for p in prs if p.get("head_sha")), None))
+    sources = sorted({e.get("source") for e in (deploy_state or []) if e.get("source") and not e.get("error")})
+    how = (f"read the image tag in {' or '.join(sources)}, or the ArgoCD app's / pod's image"
+           if sources else None)
+    deploy_checks_added = enforce_deploy_precondition(test_plan, commit, how)
+
+    repos = sorted({p.get("repository") for p in prs if p.get("repository")})
+    deployment = build_deployment_status(deploy_state, claims.get("deployment_status"), repos, when)
+    gaps = build_acceptance_gaps(requirements, claims.get("requirement_check"))
+
+    return {
+        "deployment_status": deployment,
+        "acceptance_gaps": gaps,
+        "build_and_ci": findings,
+        "coverage_reverted": demoted,
+        "deploy_checks_added": deploy_checks_added,
+        "critic_gap": critic_gap,
+    }

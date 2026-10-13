@@ -2288,24 +2288,30 @@ class JiraClient:
 
     def _filter_testing_comments(self, comments_data: list[dict]) -> list[JiraComment]:
         """
-        Filter comments for testing-related content using smart keyword matching.
+        Choose and rank the comments the generator reads.
 
-        Hybrid approach:
-        1. Fetch last 15 comments (reasonable window)
-        2. Prioritize formal manual test plans (comments starting with "Manual Test Plan",
-           "Test Plan", or similar headings) — these are always included first
-        3. Filter remaining for testing-related keywords
-        4. Return up to 5 total (formal plans first, then other testing comments, then latest)
+        1. Take the last 40 comments.
+        2. Testing notes come first — "Testing notes", QA notes, kickoff
+           research, "how to verify", a manual test plan. These are primary
+           sources: SK-2826's note carried the deploy check, the receiver
+           setup, four concrete cases and the rollback, and a plan that never
+           used it sent the tester somewhere vaguer.
+        3. Then scope decisions, then other testing discussion, then the rest.
+        4. Return up to 20. This used to be 5 of the last 15, which let a
+           keyword count decide whether the one note that mattered was read.
 
-        Excludes comments created by this tool (identified by marker).
+        Excludes comments created by this tool (identified by marker). Every
+        comment keeps its Jira id so the plan can cite it.
 
         Args:
             comments_data: List of comment objects from Jira API
 
         Returns:
-            List of up to 5 JiraComment objects most relevant to testing
+            Up to 20 JiraComment objects, most relevant to testing first
         """
-        LIMIT = 5
+        from .evidence_checks import primary_note_kind
+
+        LIMIT = 20
 
 
         # Phrases that indicate a formal manual test plan — prioritized above all others
@@ -2356,8 +2362,8 @@ class JiraClient:
             'defect', 'issue', 'problem', 'fails', 'passes', 'coverage'
         ]
 
-        # Take last 15 comments (most recent)
-        recent_comments = comments_data[-15:] if len(comments_data) > 15 else comments_data
+        # The most recent 40
+        recent_comments = comments_data[-40:]
 
         parsed_comments = []
         formal_test_plans = []
@@ -2393,14 +2399,17 @@ class JiraClient:
                 created=created,
                 updated=updated,
                 author_account_id=author_info.get('accountId'),
+                id=str(comment_data['id']) if comment_data.get('id') else None,
             )
 
             parsed_comments.append(jira_comment)
 
             body_lower = body_text.lower()
 
-            # Check for formal test plan first (highest priority)
-            if any(marker in body_lower for marker in FORMAL_TEST_PLAN_MARKERS):
+            # Testing notes and formal test plans first (highest priority)
+            if primary_note_kind(body_text) or any(
+                marker in body_lower for marker in FORMAL_TEST_PLAN_MARKERS
+            ):
                 formal_test_plans.append(jira_comment)
             elif any(marker in body_lower for marker in SCOPE_DECISION_MARKERS):
                 scope_decisions.append(jira_comment)

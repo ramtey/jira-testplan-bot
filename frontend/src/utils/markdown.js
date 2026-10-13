@@ -240,6 +240,123 @@ const formatExpectedVerification = (test) => {
   return ''
 }
 
+// ─── evidence rules A–F ─────────────────────────────────────────────────────
+// Built by the backend from evidence, not from the model's prose (see
+// src/app/evidence_checks.py), and rendered first: whether the change is even
+// deployed, what the ticket asked for that the work does not do, and what the
+// build and CI actually run decide how every case below is read.
+
+const GAP_STATUS = {
+  unmet: 'Not met',
+  partial: 'Partly met',
+  not_verifiable: 'Cannot be confirmed from the code',
+  not_assessed: 'Not assessed',
+}
+
+const deploymentWarnings = (plan) =>
+  (plan?.deployment_status?.warnings || []).filter(Boolean)
+
+const formatEvidenceMarkdown = (plan) => {
+  let md = ''
+  const warnings = deploymentWarnings(plan)
+  if (warnings.length > 0) {
+    const notDeployed = plan.deployment_status.status === 'not_deployed'
+    md += notDeployed ? '## 🚫 Not Deployed\n\n' : '## 🚢 Deployment\n\n'
+    warnings.forEach((w) => { md += `> ⚠️ ${w}\n>\n` })
+    md += '\n'
+  }
+  const gaps = Array.isArray(plan?.acceptance_gaps) ? plan.acceptance_gaps : []
+  if (gaps.length > 0) {
+    md += `## ❗ Acceptance Gaps (${gaps.length})\n\n`
+    md += '_What the ticket asks for that the merged work does not (fully) do. Not test cases — these block sign-off until resolved or accepted._\n\n'
+    gaps.forEach((g) => {
+      md += `- **${GAP_STATUS[g.status] || g.status}** — ${g.source}: “${g.requirement}”\n`
+      if (g.missing) md += `  - Missing: ${g.missing}\n`
+      if (g.evidence) md += `  - Code: \`${g.evidence}\`\n`
+    })
+    md += '\n'
+  }
+  const facts = Array.isArray(plan?.build_and_ci) ? plan.build_and_ci : []
+  if (facts.length > 0) {
+    md += '## 🏗️ Build & CI\n\n'
+    facts.forEach((f) => {
+      md += `- ${f.finding}\n`
+      if (f.evidence) md += `  - Evidence: \`${f.evidence}\`\n`
+    })
+    md += '\n'
+  }
+  const notes = plan?.evidence_notes
+  if (notes && ((notes.unused || []).length > 0 || (notes.disagreements || []).length > 0)) {
+    md += '## 📝 Testing Notes on the Ticket\n\n'
+    ;(notes.unused || []).forEach((n) => {
+      md += `- ⚠️ Comment ${n.id} (${n.kind}, ${n.author}) was not used by any case. Read it before testing.\n`
+    })
+    ;(notes.disagreements || []).forEach((d) => {
+      md += `- Plan departs from comment ${d.comment_id}: the note says ${d.note_says}; the plan ${d.plan_does} — ${d.why}\n`
+    })
+    md += '\n'
+  }
+  return md
+}
+
+const formatEvidenceJira = (plan) => {
+  let jira = ''
+  const warnings = deploymentWarnings(plan)
+  if (warnings.length > 0) {
+    jira += plan.deployment_status.status === 'not_deployed' ? '🚫 NOT DEPLOYED\n\n' : '🚢 DEPLOYMENT\n\n'
+    warnings.forEach((w) => { jira += `  ⚠️ ${w}\n` })
+    jira += '\n'
+  }
+  const gaps = Array.isArray(plan?.acceptance_gaps) ? plan.acceptance_gaps : []
+  if (gaps.length > 0) {
+    jira += `❗ ACCEPTANCE GAPS (${gaps.length})\n\n`
+    jira += 'What the ticket asks for that the merged work does not (fully) do. Not test cases — these block sign-off until resolved or accepted.\n\n'
+    gaps.forEach((g) => {
+      jira += `  • ${GAP_STATUS[g.status] || g.status} — ${g.source}: “${g.requirement}”\n`
+      if (g.missing) jira += `    Missing: ${g.missing}\n`
+      if (g.evidence) jira += `    Code: \`${g.evidence}\`\n`
+    })
+    jira += '\n'
+  }
+  const facts = Array.isArray(plan?.build_and_ci) ? plan.build_and_ci : []
+  if (facts.length > 0) {
+    jira += '🏗️ BUILD & CI\n\n'
+    facts.forEach((f) => { jira += `  • ${f.finding}\n` })
+    jira += '\n'
+  }
+  const notes = plan?.evidence_notes
+  if (notes && ((notes.unused || []).length > 0 || (notes.disagreements || []).length > 0)) {
+    jira += '📝 TESTING NOTES ON THE TICKET\n\n'
+    ;(notes.unused || []).forEach((n) => {
+      jira += `  • ⚠️ Comment ${n.id} (${n.kind}) was not used by any case. Read it before testing.\n`
+    })
+    ;(notes.disagreements || []).forEach((d) => {
+      jira += `  • Plan departs from comment ${d.comment_id}: the note says ${d.note_says}; the plan ${d.plan_does} — ${d.why}\n`
+    })
+    jira += '\n'
+  }
+  if (jira) jira += '════════════════════════════════════════════\n\n'
+  return jira
+}
+
+// Per case: which testing note it came from, and what an existing test does
+// not cover (rule C keeps a partly covered case in the checklist).
+const formatCaseEvidence = (test) => {
+  let md = ''
+  const ids = Array.isArray(test.source_comment_ids) ? test.source_comment_ids.filter(Boolean) : []
+  if (ids.length > 0) md += `**From testing notes:** comment ${ids.join(', ')}\n\n`
+  if (test.unit_test_gap) md += `> 🧪 **Not covered by unit tests:** ${test.unit_test_gap}\n\n`
+  return md
+}
+
+const formatCaseEvidenceJira = (test) => {
+  let jira = ''
+  const ids = Array.isArray(test.source_comment_ids) ? test.source_comment_ids.filter(Boolean) : []
+  if (ids.length > 0) jira += `From testing notes: comment ${ids.join(', ')}\n\n`
+  if (test.unit_test_gap) jira += `🧪 Not covered by unit tests: ${test.unit_test_gap}\n\n`
+  return jira
+}
+
 // Rule-8 output: gaps that would break the ticket's goal but that no case
 // covers. Deliberately not a checklist — these are not pass/fail items.
 const formatRisksAndGaps = (plan) => {
@@ -630,6 +747,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
 
   const hasAcs = planHasAnyAcs(plan)
 
+  markdown += formatEvidenceMarkdown(plan)
   markdown += formatUatGuideMarkdown(plan, walkthrough)
   markdown += formatProvenanceMarkdown(plan)
   markdown += formatAcCoverageSummary(plan.ac_coverage)
@@ -667,6 +785,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       markdown += formatDataShape(test)
       markdown += formatSurface(test)
       markdown += formatExpectedVerification(test)
+      markdown += formatCaseEvidence(test)
       markdown += formatCoversAcs(test)
       markdown += formatGroundedIn(test, hasAcs)
     })
@@ -706,6 +825,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       markdown += formatDataShape(test)
       markdown += formatSurface(test)
       markdown += formatExpectedVerification(test)
+      markdown += formatCaseEvidence(test)
       markdown += formatCoversAcs(test)
       markdown += formatGroundedIn(test, hasAcs)
     })
@@ -750,6 +870,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       markdown += formatDataShape(test)
       markdown += formatSurface(test)
       markdown += formatExpectedVerification(test)
+      markdown += formatCaseEvidence(test)
       markdown += formatCoversAcs(test)
       markdown += formatGroundedIn(test, hasAcs)
     })
@@ -796,6 +917,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
       markdown += formatDataShape(test)
       markdown += formatSurface(test)
       markdown += formatExpectedVerification(test)
+      markdown += formatCaseEvidence(test)
       markdown += formatCoversAcs(test)
       markdown += formatGroundedIn(test, hasAcs)
     })
@@ -1006,6 +1128,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
 
   let jira = ''
 
+  jira += formatEvidenceJira(plan)
   jira += formatUatGuideJira(plan, walkthrough)
   jira += formatProvenanceJira(plan)
   jira += formatGroundingWarningsJira(plan)
@@ -1044,6 +1167,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
       jira += formatDataShapeJira(test)
       jira += formatSurfaceJira(test)
       jira += formatExpectedVerificationJira(test)
+      jira += formatCaseEvidenceJira(test)
       jira += '────────────────────────────────────────────\n\n'
     })
   }
@@ -1085,6 +1209,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
       jira += formatDataShapeJira(test)
       jira += formatSurfaceJira(test)
       jira += formatExpectedVerificationJira(test)
+      jira += formatCaseEvidenceJira(test)
       jira += '────────────────────────────────────────────\n\n'
     })
   }
@@ -1123,6 +1248,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
       jira += formatDataShapeJira(test)
       jira += formatSurfaceJira(test)
       jira += formatExpectedVerificationJira(test)
+      jira += formatCaseEvidenceJira(test)
       jira += '────────────────────────────────────────────\n\n'
     })
   }
@@ -1189,6 +1315,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
       jira += formatDataShapeJira(test)
       jira += formatSurfaceJira(test)
       jira += formatExpectedVerificationJira(test)
+      jira += formatCaseEvidenceJira(test)
       jira += '────────────────────────────────────────────\n\n'
     })
   }

@@ -1,0 +1,255 @@
+{
+ "_about": "SK-2826 (plan 608 v1) regression fixture, captured 2026-10-12 and sanitized for this public repo: org, hosts, account ids and people are placeholders. Comment ids, commit SHAs, code and structure are real. See tests/test_evidence_checks.py and evals/sk2826_evidence.py.",
+ "ticket_key": "SK-2826",
+ "summary": "[P2] Audit: Cloning a webhook response without consuming both branches lets a receiver stall delivery in acmeclose-openfaas (up to Medium)",
+ "issue_type": "Story",
+ "description": "Current reporting scale: Medium = P3 = Medium.\n\nBlocker = P0 = Severe; Critical = P1 = Critical; Major = P2 = High; Medium = P3 = Medium; Minor = P4 = Low.\n\nThis five-level scale supersedes the earlier P0-P3 mapping. The audit text below retains its original severity and priority wording as historical evidence.\n\nOriginal title: [P2] Audit: Cloning a webhook response without consuming both branches lets a receiver stall delivery in acmeclose-openfaas (Medium)\n\nProblem and impact\n\nCloning a webhook response without consuming both branches lets a receiver stall delivery\n\nA webhook receiver controls the response body to a delivery request. After node-fetch returns a successful response, the code creates a clone and consumes only the clone with text(); the original response branch is never read. In node-fetch 2.x, cloned Node streams must be consumed in parallel because an unread branch applies backpressure once its small stream buffer fills. A receiver can therefore return a 2xx body larger than that buffer and hold the invocation before archival. Repeated deliveries occupy worker capacity and build queue lag without requiring an error status.\n\nAttacker access and control\n\nThe attacker must control or compromise a webhook receiver selected by an accepted payload, then cause or wait for a delivery to that receiver. The attacker controls the status and response byte length and can return a finite body under a 2xx status.\n\nAttack path\n\nWhen the worker sends the outbound request, return HTTP 200 with a body larger than node-fetch's clone stream buffer. sendRequest accepts the 2xx response. processPayload calls response.clone().text() but never consumes response.body, so backpressure from the unread original branch prevents the clone from completing. The handler never reaches the archive move or success callback until a surrounding timeout or process termination releases it; repeating the response consumes concurrent worker slots and delays other webhooks.\n\nWhy current controls do not stop it\n\nThe Express 100 KB request-body limit applies only to inbound invocation JSON. The HTTP timeout can eventually release an affected request, but each attacker response can still occupy the invocation for that window, and the code defines no total job concurrency or response-byte bound. Rejecting non-2xx responses is irrelevant because the receiver uses 2xx.\n\nWhat to change\n\nDo not clone the response. Consume response.text() once, apply an explicit byte limit, and reuse that bounded string for logging and legacy XML validation. If two consumers are required, start both response branches in parallel as required by node-fetch 2.x. Also log only a bounded redacted excerpt or correlation identifier.\n\nHow to verify safely\n\nIn an isolated harness using the committed node-fetch 2.x resolution, have a local receiver return HTTP 200 with a finite body larger than the clone stream high-water mark. Call the outbound path with fabricated data and use a short harness deadline. Verify that clone().text() does not complete while the original response branch remains unread. Do not use a production receiver or queue.\n\nAssumptions\n\n• \nAt least one accepted webhook destination can be controlled or compromised by an attacker and remains reachable from the worker.\n\n• \nThe deployed dependency remains on the node-fetch 2.x line required by the committed function manifest and retains its documented clone stream behavior.\n\n• \nNo transparent proxy outside this repository rejects the response before it exceeds the clone stream buffer.\n\n\nEvidence\n\n• \nutils/http.js:7-27\n: The outbound helper passes a timeout but no response-size option to node-fetch and returns every successful response for later consumption.\n\n• \nutils/request-processor.js:129-150\n: Every successful webhook response is cloned and only the clone is converted to text; the original response body is never consumed before logging or XML parsing.\n\n• \nwebhook-delivery/package.json:17-23\n: The webhook function directly depends on the CommonJS node-fetch 2.x line whose cloned Node streams require parallel consumption.\n\n• \nyarn.lock:2798-2800\n: The committed root lock resolves the CommonJS node-fetch dependency used by the helper to the reviewed 2.x implementation.\n\n\nRelated repositories\n\n• \nNone identified from committed source.\n\n\nAudit record\n\n• \nParent tracker: \nSK-2823\n\n• \nRepository: \nacme/acmeclose-openfaas\n\n• \nAudited revision: \nmain@d7505fbaffe8a64614fa548d487d3253f35c30d3\n\n• \nConstellation: Bay\n\n• \nSeverity: Medium\n\n• \nCWE: CWE-400\n\n• \nFingerprint: \nacmeclose-openfaas|CWE-400|utils/request-processor.js|unconsumed-response-clone-stalls-delivery\n\n• \nExternal audit ID: \naudit-preaudit:bay:acmeclose-openfaas:sk:d7505fbaffe8\n\n\nDone when\n\n• \nThe failed trust boundary is fixed, or an approved risk decision records an owner and expiration date.\n\n• \nA regression test proves the exploit path and a negative case.\n\n• \nAny exposed credential or sensitive data is contained and rotated where applicable.\n\n• \nThe protected default branch is deployed where applicable, and a Audit rerun no longer reports this fingerprint.\n\n\nSensitive-data handling\n\nDo not copy credentials, tokens, signing links, disclosure content, transaction or customer values, personal data, documents, webhook bodies, or payment values into Jira, logs, pull requests, or test fixtures. Use synthetic data for regression tests and the approved incident process for credential rotation.",
+ "comments": [
+  {
+   "id": "336014",
+   "author": "Dev Agent",
+   "created": "2026-10-08T13:01:40.937-0700",
+   "body": "[agent] Kickoff research (read-only, main as of 2026-10-08)\n\nFinding verified?\n Yes. \nutils/request-processor.js:140\n calls \nresponse.clone().text()\n and never consumes the original body. node-fetch resolves to 2.6.7 (\nyarn.lock:2798-2800\n), where clone pipes one source into two PassThroughs. Once the unread branch's buffer fills, it applies backpressure and the clone read stalls. The stall is bounded: node-fetch 2.x applies the \ntimeout\n option (60s default, \nutils/http.js:12,20\n) to body reads too. A large 2xx body therefore stalls for about 60s and then throws a body-timeout. The side effect is worse than a stall: a delivery the receiver already accepted is treated as failed (424), then retried/DLQ'd, which can cause duplicate sends.\n\nFix approach\n\n• \nReplace \nresponse.clone().text()\n with a single bounded read. Use node-fetch's \nsize\n option in \nsendRequest\n, or read the stream with a byte cap, and reuse the string for logging and XML parsing.\n\n• \nLog a truncated or redacted excerpt rather than the full \nresp\n (\n:141-146\n). This partly covers threat model SKL-07.\n\n• \nDecide what to do when the response exceeds the cap. Recommended: treat it as success for JSON payload types, since the 2xx is already received, and fail for SOFTPRO_LEGACY_XML, which needs the body.\n\n\nLOE\n: Trivial. 1 small PR in acmeclose-openfaas and a webhook-delivery redeploy. No infra, no secrets, no other teams. Low regression risk. Only the legacy XML success parse depends on the body.\n\nKickoff pointers\n: \nprocessPayload\n in \nutils/request-processor.js\n, \nsendRequest\n in \nutils/http.js\n. Add a mocked test with a local http server returning a large 200 body; the existing \n__tests__/request-processor.js\n hits live AWS/httpbin, so add a separate mocked suite. Dependabot PR #1 (open) bumps deps; check it doesn't move node-fetch major. Related: SK-2823."
+  },
+  {
+   "id": "336173",
+   "author": "Dev Agent",
+   "created": "2026-10-09T15:29:35.196-0700",
+   "body": "[agent] \nTesting notes\n (fix merged to \nacmeclose-openfaas\n main at \n2824789f\n, PRs #5/#6)\n\n1. Preconditions\n\n• \nDeploy path: a main merge runs the Argo Workflows pipeline \nacmeclose-fn-webhook-delivery\n (bay-deployments \nbay/pipelines/acmeclose-fn-webhook-delivery/values.yaml\n): builds \nregistry.acme.test/bay/webhook-delivery:main-<sha7>\n, then commits the tag into \nbay/acmeclose-webhook-delivery-function/integ-west/values.yaml\n; ArgoCD app \ninteg-west.acmeclose-webhook-delivery-function\n auto-syncs. Staging (\nstaging-east.*\n) and prod (\nss-prod-west.*\n, behind an approval step) deploy only from a git tag.\n\n• \nAs of 2026-10-09 22:28Z: integ is still on \nmain-ab5a6d3\n (the commit before the fix), staging/prod on \nmain-4258aa2\n. \nNot confirmed deployed anywhere yet.\n Before testing, check bay-deployments for a commit \"set image tag main-2824789\" and that the ArgoCD app shows image \nwebhook-delivery:main-2824789\n and Synced/Healthy. If the pipeline did not run, ask the Bay/DevOps on-call to re-trigger it.\n\n• \nAccess: AWS \nacme-dev\n profile (integ account 000000000000) via Granted (see the \naws-profiles\n skill); Grafana NPE (Loki); an integ Bay user; optionally ArgoCD read access.\n\n\n2. Setup\n\n• \nReceiver: use webhook.site or a local server behind ngrok (the function runs in-cluster, so the URL must be internet-reachable). Prepare responses: (a) 200 with a short JSON body, (b) 200 with a body > 64 KB (e.g. 100 KB of \nx\n), (c) 200 with \n<xml><success>true</success></xml>\n, (d) 200 with \n<xml><success>false</success></xml>\n.\n\n• \nTrigger: use \nwebhook-traffic-generator/\n (run \nyarn install\n there). Edit \nindex.js\n locally: set \nENDPOINT_URL\n to your receiver; for the XML cases also delete the \npayloadType: \"JSON\"\n line in \npayload.js\n so the function falls back to \nSOFTPRO_LEGACY_XML\n. Run \nAWS_PROFILE=acme-dev AWS_REGION=us-west-2 node index.js\n, then \ncurl -X POST localhost:8080/send\n once per case. It writes an encrypted object to bucket \nacmeclose-webhook-delivery-integ\n under \nqueue/\n using KMS alias \nacmeclose-webhook-payload-encryption-key-integ\n. Do not revert these edits into a commit.\n\n• \nWhy not the UI: acmeclose-api only emits \nJSON\n integrator webhooks (\nIntegratorWebhookResponseType\n has a single value), so the XML path and a > 64 KB response cannot be produced from Bay. Creating a package in integ does fire a real Bearer-auth JSON webhook to Bay's own API, which is the regression check in step 5.\n\n\n3. Test cases\n\n• \nTC1 small 200 JSON: delivered once, object moves to \nhistory/\n.\n\n• \nTC2 200 with > 64 KB body (previously stalled 60s, returned 424, retried): completes in seconds, no retry, moves to \nhistory/\n.\n\n• \nTC3 XML \n<success>true</success>\n (large body ok): success, moves to \nhistory/\n.\n\n• \nTC4 XML \n<success>false</success>\n with a padded body: function fails 424, SQS retries, then DLQ function moves it to \ndlq/\n and posts a Slack \"Webhook Undeliverable\" alert.\n\n\n4. Verification\n\n• \nLogs: Grafana NPE, Loki datasource \ngrafanacloud-logs\n, query \n{namespace=\"integ-bay\", app=\"acmeclose-webhook-delivery\"} |= \"<filename>.json\"\n. The info line must have \ncode\n, \nresp\n (at most 256 chars, ending in \n…\n when truncated), \nresponseBytes\n equal to the real body size, and must NOT contain the full body. For TC4 the error line's \nreturned bad response:\n text is the 256-char excerpt only. DLQ logs: \napp=\"acmeclose-webhook-delivery-dlq\"\n.\n\n• \nS3: \naws s3 ls s3://acmeclose-webhook-delivery-integ/history/\n (or \ndlq/\n) for your filename; \nqueue/\n should be empty of it.\n\n• \nReceiver shows exactly one POST per case (TC4 shows the retries).\n\n\n5. Regression\n\n• \nIn integ Bay, create a disclosure package: this exercises the Bearer (\nhttp.getToken\n) + JSON path end to end; expect \ncode: 204\n in the log. Basic/None auth and the mocked large-body cases are covered by \nyarn jest __tests__/request-processor.unit.js\n (no AWS needed). \n__tests__/request-processor.js\n hits live AWS/httpbin and is optional.\n\n\n6. Rollback\n\n• \nRevert the integ image tag commit in bay-deployments (set \n.acme-func.image.tag\n back to \nmain-ab5a6d3\n); ArgoCD auto-syncs. Prod is untouched until a tag is cut.\n\n\nNot confirmed\n: pipeline run status for \n2824789f\n; whether \nwebhook-traffic-generator\n still installs cleanly (aws-sdk v2 pinned); the exact SQS retry count before DLQ."
+  },
+  {
+   "id": "336465",
+   "author": "QA Lead",
+   "created": "2026-10-12T16:31:13.843-0700",
+   "body": "🤖 Generated Test Plan — v1 · posted 12 Oct 2026 23:31 UTC\n\n📎 Full plan with steps, preconditions and test data: \ntest-plan-SK-2826.md\n — attached to this ticket\n\n🧭 HOW TO TEST THIS — START HERE\n\nUAT complexity: HIGH\n\nWebhook deliveries where the receiving system sends back a large reply used to hang for a minute and then be wrongly marked failed and retried; now they finish immediately. Also, the delivery log no longer records the receiver's whole reply — just the first 256 characters plus its size.\n\nWhy it's tricky: There is no UI at all: this is a background webhook worker, so seeing the cha"
+  }
+ ],
+ "pull_requests": [
+  {
+   "title": "SK-2826 fix(webhook-delivery): bound receiver response excerpt in logs and errors",
+   "status": "MERGED",
+   "url": "https://github.com/acme/acmeclose-openfaas/pull/6",
+   "source_branch": "SK-2826-bounded-response-log",
+   "destination_branch": "SK-2826-webhook-response-clone-stall",
+   "repository": "acme/acmeclose-openfaas",
+   "github_description": "Every delivery logged the full receiver response body, and the bad-XML-response error embedded it too. Receivers often echo the webhook payload, which carries transaction and customer data, and a hostile receiver could inflate log volume without limit. The log entry now carries a 256-character excerpt (with an ellipsis marker when truncated) plus responseBytes, and the thrown error uses the same excerpt; XML success parsing still uses the full body.\n\nStacked on #5.\n\nhttps://acme.atlassian.net/browse/SK-2826\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n<!-- CURSOR_SUMMARY -->\n---\n\n> [!NOTE]\n> **Low Risk**\n> Observability-only change that reduces PII/log volume; delivery and XML validation behavior on the full body are unchanged.\n> \n> **Overview**\n> Webhook delivery no longer writes the full receiver response into logs or failure messages. **`processPayload`** now logs a **256-character excerpt** (with an ellipsis when truncated), adds **`responseBytes`** for the full body size, and uses the same excerpt in the **SOFTPRO_LEGACY_XML** “bad response” error. XML success parsing still reads the complete response body.\n> \n> Unit tests cover truncation, byte-length accounting (including multi-byte characters), short bodies, preserved log fields (`verb`, `url`, `code`), and that oversized failure payloads are not embedded in error text.\n> \n> <sup>Reviewed by [Cursor Bugbot](https://cursor.com/bugbot) for commit 25ed5a18d4422ab9dadd69e98755599f4ef1ae4e. Bugbot is set up for automated code reviews on this repo. Configure [here](https://www.cursor.com/dashboard/bugbot).</sup>\n<!-- /CURSOR_SUMMARY -->",
+   "merged_at": "2026-10-09T22:25:25Z",
+   "head_sha": "25ed5a18d4422ab9dadd69e98755599f4ef1ae4e",
+   "merge_commit_sha": "2824789f5bcb9e9c14cc11163f471981706f50a1",
+   "number": 6,
+   "author": "dev-agent",
+   "files_changed": [
+    {
+     "filename": "__tests__/request-processor.unit.js",
+     "status": "modified",
+     "additions": 69,
+     "deletions": 0,
+     "changes": 69,
+     "patch": "@@ -89,3 +89,72 @@ describe(\"processPayload response body handling\", () => {\n     ).rejects.toThrow(\"returned bad response\");\n   });\n });\n+\n+describe(\"processPayload response logging\", () => {\n+  const CAP = 256;\n+  const MARKER = \"…\";\n+\n+  beforeEach(() => {\n+    jest.clearAllMocks();\n+  });\n+\n+  const loggedEntry = () => noopLogger.info.mock.calls[0][0];\n+\n+  it(\"logs a bounded excerpt ending with a marker for an oversized body\", async () => {\n+    const body = \"x\".repeat(LARGE_BODY_BYTES);\n+    http.sendRequest.mockResolvedValue(fakeResponse(body));\n+\n+    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n+\n+    const { resp } = loggedEntry();\n+    expect(resp.length).toBeLessThanOrEqual(CAP + 1);\n+    expect(resp.endsWith(MARKER)).toBe(true);\n+    expect(resp.startsWith(\"x\".repeat(CAP))).toBe(true);\n+  });\n+\n+  it(\"logs the full byte length of the body alongside the excerpt\", async () => {\n+    const body = \"é\".repeat(LARGE_BODY_BYTES);\n+    http.sendRequest.mockResolvedValue(fakeResponse(body));\n+\n+    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n+\n+    expect(loggedEntry().responseBytes).toBe(LARGE_BODY_BYTES * 2);\n+  });\n+\n+  it(\"logs a short body unchanged\", async () => {\n+    http.sendRequest.mockResolvedValue(fakeResponse(\"ok\"));\n+\n+    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n+\n+    expect(loggedEntry().resp).toBe(\"ok\");\n+    expect(loggedEntry().responseBytes).toBe(2);\n+  });\n+\n+  it(\"keeps verb, url and code in the log entry\", async () => {\n+    http.sendRequest.mockResolvedValue(fakeResponse(\"ok\"));\n+\n+    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n+\n+    expect(loggedEntry()).toMatchObject({\n+      verb: \"POST\",\n+      url: \"https://receiver.example.test/hook\",\n+      code: 200,\n+    });\n+  });\n+\n+  it(\"omits the full body from the bad XML response error message\", async () => {\n+    const body = `<xml><success>false</success><pad>${\"b\".repeat(\n+      LARGE_BODY_BYTES\n+    )}</pad></xml>`;\n+    http.sendRequest.mockResolvedValue(fakeResponse(body));\n+\n+    const failure = await processPayload({\n+      payload: payloadOf(\"SOFTPRO_LEGACY_XML\"),\n+      logger: noopLogger,\n+    }).catch((err) => err);\n+\n+    expect(failure.message).toContain(\"returned bad response\");\n+    expect(failure.message).not.toContain(body);\n+    expect(failure.message.length).toBeLessThan(CAP + 200);\n+  });\n+});\n",
+     "full_content": null
+    },
+    {
+     "filename": "utils/request-processor.js",
+     "status": "modified",
+     "additions": 11,
+     "deletions": 2,
+     "changes": 13,
+     "patch": "@@ -94,6 +94,14 @@ const getPayload = async ({ object, key, logger }) => {\n   };\n };\n \n+const RESPONSE_EXCERPT_CHARS = 256;\n+const TRUNCATION_MARKER = \"…\";\n+\n+const responseExcerpt = (text) =>\n+  text.length > RESPONSE_EXCERPT_CHARS\n+    ? text.slice(0, RESPONSE_EXCERPT_CHARS) + TRUNCATION_MARKER\n+    : text;\n+\n const processPayload = async ({ payload, logger }) => {\n   logger.debug(\"Processing the payload...\");\n \n@@ -142,14 +150,15 @@ const processPayload = async ({ payload, logger }) => {\n     verb: payload.method,\n     url: encodeURI(payload.targetUrl),\n     code: response.status,\n-    resp: responseText,\n+    resp: responseExcerpt(responseText),\n+    responseBytes: Buffer.byteLength(responseText),\n   });\n \n   if (payloadType === \"SOFTPRO_LEGACY_XML\") {\n     const xmlBodyAsJson = await parseXMLBody(responseText);\n     if (!(xmlBodyAsJson.xml.success && JSON.parse(xmlBodyAsJson.xml.success))) {\n       throw new Error(\n-        `HTTP ${payload.method} to ${payload.targetUrl} returned bad response: ${responseText}`\n+        `HTTP ${payload.method} to ${payload.targetUrl} returned bad response: ${responseExcerpt(responseText)}`\n       );\n     }\n   }\n",
+     "full_content": null
+    }
+   ],
+   "comments": [],
+   "total_additions": 80,
+   "total_deletions": 2,
+   "github_enrichment_failed": false
+  },
+  {
+   "title": "SK-2826 fix(webhook-delivery): large webhook responses stall on unread clone() branch",
+   "status": "MERGED",
+   "url": "https://github.com/acme/acmeclose-openfaas/pull/5",
+   "source_branch": "SK-2826-webhook-response-clone-stall",
+   "destination_branch": "main",
+   "repository": "acme/acmeclose-openfaas",
+   "github_description": "processPayload read the webhook response body only from response.clone(). node-fetch 2.x tees the body on clone, so the untouched original branch backs up once its buffer fills and any response larger than roughly 16 KB stalled until the 60s timeout. A delivery the receiver had already accepted was then marked failed and retried. The response is never used after the body is read, so this reads response.text() directly, and adds an offline regression test (mocked responses plus a real node-fetch Response streaming a large body).\n\nThe size-cap and bounded log-excerpt suggestions from the Audit finding are intentionally left for a follow-up.\n\nhttps://acme.atlassian.net/browse/SK-2826\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n<!-- CURSOR_SUMMARY -->\n---\n\n> [!NOTE]\n> **Medium Risk**\n> Touches core webhook delivery and response logging/parsing; behavior change is narrow but affects production delivery outcomes for large receiver responses.\n> \n> **Overview**\n> Fixes webhook deliveries that **stall and time out** when receivers return response bodies larger than ~16 KB. `processPayload` now reads the HTTP response with **`response.text()`** instead of **`response.clone().text()`**, avoiding node-fetch 2.x’s tee’d body where an unread clone branch fills its buffer and blocks until the 60s timeout—causing accepted deliveries to be marked failed and retried.\n> \n> Adds **`processPayload`** export for testing and a new unit suite covering large JSON/XML success paths (asserting **no `clone()`**), a streaming **node-fetch `Response`**, and unchanged **SOFTPRO_LEGACY_XML** failure handling.\n> \n> <sup>Reviewed by [Cursor Bugbot](https://cursor.com/bugbot) for commit 92c93ced2ce435e0547ce75bebf122574ee56915. Bugbot is set up for automated code reviews on this repo. Configure [here](https://www.cursor.com/dashboard/bugbot).</sup>\n<!-- /CURSOR_SUMMARY -->",
+   "merged_at": "2026-10-09T22:25:23Z",
+   "head_sha": "92c93ced2ce435e0547ce75bebf122574ee56915",
+   "merge_commit_sha": "2824789f5bcb9e9c14cc11163f471981706f50a1",
+   "number": 5,
+   "author": "dev-agent",
+   "files_changed": [
+    {
+     "filename": "__tests__/request-processor.unit.js",
+     "status": "added",
+     "additions": 91,
+     "deletions": 0,
+     "changes": 91,
+     "patch": "@@ -0,0 +1,91 @@\n+\"use strict\";\n+\n+jest.mock(\"aws-sdk\", () => ({\n+  S3: jest.fn(() => ({})),\n+  KMS: jest.fn(() => ({})),\n+}));\n+jest.mock(\"../utils/http\", () => ({\n+  sendRequest: jest.fn(),\n+  getToken: jest.fn(),\n+}));\n+\n+const { Readable } = require(\"stream\");\n+const { Response } = jest.requireActual(\"node-fetch\");\n+const http = require(\"../utils/http\");\n+const { processPayload } = require(\"../utils/request-processor\");\n+\n+const LARGE_BODY_BYTES = 128 * 1024;\n+\n+const noopLogger = { debug: jest.fn(), info: jest.fn(), error: jest.fn() };\n+\n+const fakeResponse = (text) => ({\n+  status: 200,\n+  statusText: \"OK\",\n+  text: jest.fn().mockResolvedValue(text),\n+  clone: jest.fn(() => {\n+    throw new Error(\"clone() leaves an unread branch that stalls large bodies\");\n+  }),\n+});\n+\n+const payloadOf = (payloadType) => ({\n+  payloadType,\n+  method: \"POST\",\n+  targetUrl: \"https://receiver.example.test/hook\",\n+  authentication: { type: \"None\" },\n+  payload: \"{}\",\n+});\n+\n+const largeXmlSuccess = () =>\n+  `<xml><success>true</success><pad>${\"a\".repeat(LARGE_BODY_BYTES)}</pad></xml>`;\n+\n+describe(\"processPayload response body handling\", () => {\n+  beforeEach(() => {\n+    jest.clearAllMocks();\n+  });\n+\n+  it(\"reads a large JSON response body directly without cloning\", async () => {\n+    const response = fakeResponse(\"x\".repeat(LARGE_BODY_BYTES));\n+    http.sendRequest.mockResolvedValue(response);\n+\n+    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n+\n+    expect(response.clone).not.toHaveBeenCalled();\n+    expect(response.text).toHaveBeenCalledTimes(1);\n+  });\n+\n+  it(\"reads a large SOFTPRO_LEGACY_XML success response directly without cloning\", async () => {\n+    const response = fakeResponse(largeXmlSuccess());\n+    http.sendRequest.mockResolvedValue(response);\n+\n+    await processPayload({\n+      payload: payloadOf(\"SOFTPRO_LEGACY_XML\"),\n+      logger: noopLogger,\n+    });\n+\n+    expect(response.clone).not.toHaveBeenCalled();\n+    expect(response.text).toHaveBeenCalledTimes(1);\n+  });\n+\n+  it(\"completes for a real node-fetch response streaming a large body\", async () => {\n+    const chunk = Buffer.alloc(16 * 1024, \"x\");\n+    const chunks = Array.from({ length: 8 }, () => chunk);\n+    const response = new Response(Readable.from(chunks), { status: 200 });\n+    http.sendRequest.mockResolvedValue(response);\n+\n+    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n+\n+    expect(response.bodyUsed).toBe(true);\n+  }, 5000);\n+\n+  it(\"still rejects a SOFTPRO_LEGACY_XML response that reports failure\", async () => {\n+    const response = fakeResponse(\"<xml><success>false</success></xml>\");\n+    http.sendRequest.mockResolvedValue(response);\n+\n+    await expect(\n+      processPayload({\n+        payload: payloadOf(\"SOFTPRO_LEGACY_XML\"),\n+        logger: noopLogger,\n+      })\n+    ).rejects.toThrow(\"returned bad response\");\n+  });\n+});\n",
+     "full_content": null
+    },
+    {
+     "filename": "utils/request-processor.js",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 1,
+     "changes": 4,
+     "patch": "@@ -137,7 +137,7 @@ const processPayload = async ({ payload, logger }) => {\n     `Done processing the payload, Target Payload Response Status: ${response.status}, Response Status Text: ${response.statusText}`\n   );\n \n-  const responseText = await response.clone().text();\n+  const responseText = await response.text();\n   logger.info({\n     verb: payload.method,\n     url: encodeURI(payload.targetUrl),\n@@ -155,6 +155,8 @@ const processPayload = async ({ payload, logger }) => {\n   }\n };\n \n+exports.processPayload = processPayload;\n+\n const parseXMLBody = (bodyAsString) =>\n   new Promise((resolve, reject) => {\n     xml2js.parseString(\n",
+     "full_content": null
+    }
+   ],
+   "comments": [],
+   "total_additions": 94,
+   "total_deletions": 1,
+   "github_enrichment_failed": false
+  }
+ ],
+ "commits": [
+  {
+   "message": "Merge pull request #6 from acme/SK-2826-bounded-response-log\n\nSK-2826 fix(webhook-delivery): bound receiver response excerpt in logs and errors",
+   "author": "Dev Agent",
+   "date": "2026-10-09T22:25:22.000+0000",
+   "url": "https://github.com/acme/acmeclose-openfaas/commit/2824789f5bcb9e9c14cc11163f471981706f50a1"
+  },
+  {
+   "message": "SK-2826 fix(webhook-delivery): full receiver response bodies were written to logs and error messages on every delivery — receivers echo webhook payloads containing transaction data, and a hostile receiver could inflate log volume unbounded\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+   "author": "Dev Agent",
+   "date": "2026-10-09T15:18:26.000+0000",
+   "url": "https://github.com/acme/acmeclose-openfaas/commit/25ed5a18d4422ab9dadd69e98755599f4ef1ae4e"
+  },
+  {
+   "message": "SK-2826 fix(webhook-delivery): full receiver response bodies were written to logs and error messages on every delivery — receivers echo webhook payloads containing transaction data, and a hostile receiver could inflate log volume unbounded\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+   "author": "Dev Agent",
+   "date": "2026-10-09T15:18:26.000+0000",
+   "url": "https://github.com/acme/acmeclose-openfaas/commit/2e88cc90099fa42fdf0109952a0221b760549147"
+  },
+  {
+   "message": "SK-2826 fix(webhook-delivery): large accepted webhook responses stalled for 60s then were marked failed and retried — response body was read only from a clone() and node-fetch 2.x tees the stream, so the unread original branch backed up\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+   "author": "Dev Agent",
+   "date": "2026-10-08T23:01:38.000+0000",
+   "url": "https://github.com/acme/acmeclose-openfaas/commit/92c93ced2ce435e0547ce75bebf122574ee56915"
+  },
+  {
+   "message": "SK-2826 fix(webhook-delivery): large accepted webhook responses stalled for 60s then were marked failed and retried — response body was read only from a clone() and node-fetch 2.x tees the stream, so the unread original branch backed up\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>",
+   "author": "Dev Agent",
+   "date": "2026-10-08T23:01:38.000+0000",
+   "url": "https://github.com/acme/acmeclose-openfaas/commit/32dfb2c5b5ce9a8859e07d41826eac7d53ecc99b"
+  }
+ ],
+ "merge_commit": "2824789f5bcb9e9c14cc11163f471981706f50a1",
+ "repo_tree": [
+  ".dockerignore",
+  ".gitignore",
+  ".s4.toml",
+  ".vscode/launch.json",
+  "AGENTS.md",
+  "README.md",
+  "__tests__/mock/constants.js",
+  "__tests__/request-processor.js",
+  "__tests__/request-processor.unit.js",
+  "__tests__/acmeclose-api.js",
+  "docs/threat-model.md",
+  "expire-packages.yml",
+  "expire-packages/Dockerfile",
+  "expire-packages/handler.js",
+  "expire-packages/index.js",
+  "expire-packages/instrumentation.js",
+  "expire-packages/package.json",
+  "package.json",
+  "reminder-processing.yml",
+  "reminder-processing/Dockerfile",
+  "reminder-processing/handler.js",
+  "reminder-processing/index.js",
+  "reminder-processing/instrumentation.js",
+  "reminder-processing/package.json",
+  "scripts/bad-filename.sh",
+  "scripts/empty-record.sh",
+  "scripts/no-records.sh",
+  "template/node16-sqs/.dockerignore",
+  "template/node16-sqs/Dockerfile",
+  "template/node16-sqs/function/handler.js",
+  "template/node16-sqs/function/package.json",
+  "template/node16-sqs/index.js",
+  "template/node16-sqs/instrumentation.js",
+  "template/node16-sqs/package.json",
+  "template/node16-sqs/template.yml",
+  "utils/errors.js",
+  "utils/get-secret.js",
+  "utils/http.js",
+  "utils/move-payload.js",
+  "utils/request-processor.js",
+  "utils/acmeclose-api.js",
+  "utils/slack.js",
+  "webhook-delivery-dlq.yml",
+  "webhook-delivery-dlq/Dockerfile",
+  "webhook-delivery-dlq/handler.js",
+  "webhook-delivery-dlq/index.js",
+  "webhook-delivery-dlq/instrumentation.js",
+  "webhook-delivery-dlq/package.json",
+  "webhook-delivery.yml",
+  "webhook-delivery/Dockerfile",
+  "webhook-delivery/handler.js",
+  "webhook-delivery/index.js",
+  "webhook-delivery/instrumentation.js",
+  "webhook-delivery/package.json",
+  "webhook-traffic-generator/create-payload.js",
+  "webhook-traffic-generator/index.js",
+  "webhook-traffic-generator/package.json",
+  "webhook-traffic-generator/payload.js",
+  "webhook-traffic-generator/readme.md",
+  "webhook-traffic-generator/yarn.lock",
+  "yarn.lock"
+ ],
+ "repo_files": {
+  "__tests__/request-processor.unit.js": "\"use strict\";\n\njest.mock(\"aws-sdk\", () => ({\n  S3: jest.fn(() => ({})),\n  KMS: jest.fn(() => ({})),\n}));\njest.mock(\"../utils/http\", () => ({\n  sendRequest: jest.fn(),\n  getToken: jest.fn(),\n}));\n\nconst { Readable } = require(\"stream\");\nconst { Response } = jest.requireActual(\"node-fetch\");\nconst http = require(\"../utils/http\");\nconst { processPayload } = require(\"../utils/request-processor\");\n\nconst LARGE_BODY_BYTES = 128 * 1024;\n\nconst noopLogger = { debug: jest.fn(), info: jest.fn(), error: jest.fn() };\n\nconst fakeResponse = (text) => ({\n  status: 200,\n  statusText: \"OK\",\n  text: jest.fn().mockResolvedValue(text),\n  clone: jest.fn(() => {\n    throw new Error(\"clone() leaves an unread branch that stalls large bodies\");\n  }),\n});\n\nconst payloadOf = (payloadType) => ({\n  payloadType,\n  method: \"POST\",\n  targetUrl: \"https://receiver.example.test/hook\",\n  authentication: { type: \"None\" },\n  payload: \"{}\",\n});\n\nconst largeXmlSuccess = () =>\n  `<xml><success>true</success><pad>${\"a\".repeat(LARGE_BODY_BYTES)}</pad></xml>`;\n\ndescribe(\"processPayload response body handling\", () => {\n  beforeEach(() => {\n    jest.clearAllMocks();\n  });\n\n  it(\"reads a large JSON response body directly without cloning\", async () => {\n    const response = fakeResponse(\"x\".repeat(LARGE_BODY_BYTES));\n    http.sendRequest.mockResolvedValue(response);\n\n    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n\n    expect(response.clone).not.toHaveBeenCalled();\n    expect(response.text).toHaveBeenCalledTimes(1);\n  });\n\n  it(\"reads a large SOFTPRO_LEGACY_XML success response directly without cloning\", async () => {\n    const response = fakeResponse(largeXmlSuccess());\n    http.sendRequest.mockResolvedValue(response);\n\n    await processPayload({\n      payload: payloadOf(\"SOFTPRO_LEGACY_XML\"),\n      logger: noopLogger,\n    });\n\n    expect(response.clone).not.toHaveBeenCalled();\n    expect(response.text).toHaveBeenCalledTimes(1);\n  });\n\n  it(\"completes for a real node-fetch response streaming a large body\", async () => {\n    const chunk = Buffer.alloc(16 * 1024, \"x\");\n    const chunks = Array.from({ length: 8 }, () => chunk);\n    const response = new Response(Readable.from(chunks), { status: 200 });\n    http.sendRequest.mockResolvedValue(response);\n\n    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n\n    expect(response.bodyUsed).toBe(true);\n  }, 5000);\n\n  it(\"still rejects a SOFTPRO_LEGACY_XML response that reports failure\", async () => {\n    const response = fakeResponse(\"<xml><success>false</success></xml>\");\n    http.sendRequest.mockResolvedValue(response);\n\n    await expect(\n      processPayload({\n        payload: payloadOf(\"SOFTPRO_LEGACY_XML\"),\n        logger: noopLogger,\n      })\n    ).rejects.toThrow(\"returned bad response\");\n  });\n});\n\ndescribe(\"processPayload response logging\", () => {\n  const CAP = 256;\n  const MARKER = \"…\";\n\n  beforeEach(() => {\n    jest.clearAllMocks();\n  });\n\n  const loggedEntry = () => noopLogger.info.mock.calls[0][0];\n\n  it(\"logs a bounded excerpt ending with a marker for an oversized body\", async () => {\n    const body = \"x\".repeat(LARGE_BODY_BYTES);\n    http.sendRequest.mockResolvedValue(fakeResponse(body));\n\n    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n\n    const { resp } = loggedEntry();\n    expect(resp.length).toBeLessThanOrEqual(CAP + 1);\n    expect(resp.endsWith(MARKER)).toBe(true);\n    expect(resp.startsWith(\"x\".repeat(CAP))).toBe(true);\n  });\n\n  it(\"logs the full byte length of the body alongside the excerpt\", async () => {\n    const body = \"é\".repeat(LARGE_BODY_BYTES);\n    http.sendRequest.mockResolvedValue(fakeResponse(body));\n\n    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n\n    expect(loggedEntry().responseBytes).toBe(LARGE_BODY_BYTES * 2);\n  });\n\n  it(\"logs a short body unchanged\", async () => {\n    http.sendRequest.mockResolvedValue(fakeResponse(\"ok\"));\n\n    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n\n    expect(loggedEntry().resp).toBe(\"ok\");\n    expect(loggedEntry().responseBytes).toBe(2);\n  });\n\n  it(\"keeps verb, url and code in the log entry\", async () => {\n    http.sendRequest.mockResolvedValue(fakeResponse(\"ok\"));\n\n    await processPayload({ payload: payloadOf(\"JSON\"), logger: noopLogger });\n\n    expect(loggedEntry()).toMatchObject({\n      verb: \"POST\",\n      url: \"https://receiver.example.test/hook\",\n      code: 200,\n    });\n  });\n\n  it(\"omits the full body from the bad XML response error message\", async () => {\n    const body = `<xml><success>false</success><pad>${\"b\".repeat(\n      LARGE_BODY_BYTES\n    )}</pad></xml>`;\n    http.sendRequest.mockResolvedValue(fakeResponse(body));\n\n    const failure = await processPayload({\n      payload: payloadOf(\"SOFTPRO_LEGACY_XML\"),\n      logger: noopLogger,\n    }).catch((err) => err);\n\n    expect(failure.message).toContain(\"returned bad response\");\n    expect(failure.message).not.toContain(body);\n    expect(failure.message.length).toBeLessThan(CAP + 200);\n  });\n});\n",
+  "__tests__/request-processor.js": "const constants = require(\"./mock/constants\");\nconst requestProcessor = require(\"utils/request-processor\").requestProcessor;\nconst bunyan = require(\"bunyan\");\nconst logger = bunyan.createLogger({ name: \"acmeclose-webhook-delivery\" });\n\ntest(\"key does not exist\", async () => {\n  const bucketName = constants.WebhookPayloadBucketName;\n  const key = \"na.json\";\n  await expect(requestProcessor({ bucketName, key, logger })).rejects.toThrow(\n    \"The specified key does not exist.\"\n  );\n});\n\ntest(\"successful no-auth delivery\", async () => {\n  const bucketName = constants.WebhookPayloadBucketName;\n  const key = \"test/200-no-auth.json\";\n  await requestProcessor({ bucketName, key, logger });\n});\n\ntest(\"successful bearer-auth delivery\", async () => {\n  const bucketName = constants.WebhookPayloadBucketName;\n  const key = \"test/200-bearer-auth.json\";\n  await requestProcessor({ bucketName, key, logger });\n});\n\ntest(\"bad auth for bearer-auth delivery\", async () => {\n  const bucketName = constants.WebhookPayloadBucketName;\n  const key = \"test/200-bad-bearer-auth.json\"; // this payload has bad auth credentials in it!\n  await expect(requestProcessor({ bucketName, key, logger })).rejects.toThrow(\n    \"Get token from https://id-integ.acme.test/oauth2/token failed - code:401 resp:Unauthorized\"\n  );\n});\n\ntest(\"bad no-auth delivery\", async () => {\n  const bucketName = constants.WebhookPayloadBucketName;\n  const key = \"test/500-no-auth.json\";\n  await expect(requestProcessor({ bucketName, key, logger })).rejects.toThrow(\n    \"HTTP POST to https://httpbin.org/status/500 failed - code:500 resp:INTERNAL SERVER ERROR\"\n  );\n});\n\ntest(\"bad bearer-auth delivery\", async () => {\n  const bucketName = constants.WebhookPayloadBucketName;\n  const key = \"test/500-bearer-auth.json\";\n  await expect(requestProcessor({ bucketName, key, logger })).rejects.toThrow(\n    \"HTTP POST to https://httpbin.org/status/500 failed - code:500 resp:INTERNAL SERVER ERROR\"\n  );\n});\n",
+  "webhook-delivery/Dockerfile": "FROM node:16-alpine\n\nRUN apk --no-cache add curl ca-certificates tini \\\n    && addgroup -S app && adduser -S -g app app\n\nENV NPM_CONFIG_LOGLEVEL=warn\n\n# Cap V8's old-space heap so it stays inside the container memory limit.\n# Pair this with a deployment memory limit of >= 256Mi.\nENV NODE_OPTIONS=\"--max-old-space-size=192\"\n\nRUN chmod 777 /tmp\n\nUSER app\n\nWORKDIR /home/app\n\n# Copy and install dependencies\nCOPY webhook-delivery/package.json ./\nRUN npm i\n\n# Copy application wrapper and instrumentation\nCOPY webhook-delivery/index.js webhook-delivery/instrumentation.js ./\n\n# Copy function handler\nCOPY webhook-delivery/handler.js ./\n\n# Copy shared utilities\nCOPY utils/ ./utils/\n\n# Run tests\nRUN npm test\n\nEXPOSE 8080\n\nENTRYPOINT [\"tini\", \"--\"]\nCMD [\"node\", \"--require\", \"./instrumentation.js\", \"index.js\"]\n",
+  "webhook-delivery/package.json": "{\n  \"name\": \"webhook-delivery\",\n  \"version\": \"1.0.1\",\n  \"description\": \"This processes and delivers webhook payloads\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"start\": \"node --require ./instrumentation.js index.js\",\n    \"test\": \"echo \\\"Error: no test specified\\\" && exit 0\"\n  },\n  \"keywords\": [],\n  \"license\": \"MIT\",\n  \"dependencies\": {\n    \"@opentelemetry/auto-instrumentations-node\": \"^0.36.4\",\n    \"@opentelemetry/exporter-trace-otlp-grpc\": \"^0.36.1\",\n    \"@opentelemetry/resources\": \"^1.10.1\",\n    \"@opentelemetry/sdk-node\": \"^0.36.1\",\n    \"aws-sdk\": \"^2.813.0\",\n    \"body-parser\": \"^1.18.2\",\n    \"bunyan\": \"^1.8.14\",\n    \"express\": \"^4.16.2\",\n    \"node-fetch\": \"^2.6.1\",\n    \"querystring\": \"^0.2.0\",\n    \"xml2js\": \"^0.4.23\"\n  }\n}\n",
+  "package.json": "{\n  \"scripts\": {\n    \"test\": \"AWS_PROFILE=acme-dev AWS_REGION=us-west-2 jest\"\n  },\n  \"jest\": {\n    \"modulePathIgnorePatterns\": [\n      \"build\"\n    ],\n    \"moduleDirectories\": [\n      \"<rootDir>\",\n      \"node_modules\"\n    ],\n    \"testPathIgnorePatterns\": [\n      \"/mock/\"\n    ]\n  },\n  \"dependencies\": {\n    \"aws-sdk\": \"^2.813.0\",\n    \"bunyan\": \"^1.8.14\",\n    \"node-fetch\": \"^2.6.1\",\n    \"xml2js\": \"^0.4.23\"\n  },\n  \"devDependencies\": {\n    \"jest\": \"^26.6.3\"\n  }\n}\n",
+  "utils/request-processor.js": "\"use strict\";\n\nconst aws = require(\"aws-sdk\");\nconst xml2js = require(\"xml2js\");\nconst crypto = require(\"crypto\");\nconst path = require(\"path\");\nconst http = require(\"./http\");\n\nconst s3 = new aws.S3({ apiVersion: \"2006-03-01\" });\nconst kms = new aws.KMS();\n\nexports.requestProcessor = async ({ bucketName, key, logger }) => {\n  if (!key.toLowerCase().endsWith(\".json\")) {\n    throw new Error(\n      `The key of '${key}' is not a JSON file so it can NOT be processed. Skipping this item...`\n    );\n  }\n  await processEvent({ bucketName, key, logger });\n};\n\nconst processEvent = async ({ bucketName, key, logger }) => {\n  // Get the payload to process\n  const parsedKey = decodeURIComponent(key.replace(/\\+/g, \" \"));\n  const object = await getObject({ bucketName, key: parsedKey, logger });\n  const payload = await getPayload({ object, key: parsedKey, logger });\n\n  // Process the payload\n  await processPayload({ payload: payload.payload, logger });\n};\n\nconst decryptData = async ({ encryptionData, filename }) => {\n  var kmsKeyBase64 = encryptionData.key;\n  var ivBase64 = encryptionData.iv;\n  var encryptionContext = { filename: filename };\n  var algo = encryptionData.algo;\n  switch (algo) {\n    case \"AES/CBC/PKCS7Padding\":\n      algo = \"aes-256-cbc\";\n      break;\n    default:\n      throw new Error(\"Unsupported encryption algorithm: \" + algo);\n  }\n\n  var kmsKeyBuffer = Buffer.from(kmsKeyBase64, \"base64\");\n  let kmsData = await kms\n    .decrypt({\n      CiphertextBlob: kmsKeyBuffer,\n      EncryptionContext: encryptionContext,\n    })\n    .promise();\n  const decipher = crypto.createDecipheriv(\n    algo,\n    kmsData.Plaintext,\n    Buffer.from(ivBase64, \"base64\")\n  );\n  var dec = decipher.update(encryptionData.encryptedJson, \"base64\", \"utf8\");\n  dec += decipher.final(\"utf8\");\n  return JSON.parse(dec);\n};\n\nconst getObject = async ({ bucketName, key, logger }) => {\n  const params = {\n    Bucket: bucketName,\n    Key: key,\n  };\n  // Get the object to process\n  logger.debug(`Getting the object: ${JSON.stringify(params)}`);\n  const object = await s3.getObject(params).promise();\n  logger.debug(\n    `Done retrieving the object: ContentLength: ${object.ContentLength}, ContentType: ${object.ContentType}`\n  );\n  return object;\n};\n\nconst getPayload = async ({ object, key, logger }) => {\n  logger.debug(\"Parsing the payload...\");\n  let payload = JSON.parse(object.Body.toString(\"utf-8\"));\n  if (payload.hasOwnProperty(\"encryptionData\")) {\n    const filename = path.basename(key);\n    logger.debug(\"Decrypting the payload...\");\n    const decryptedData = await decryptData({\n      encryptionData: payload.encryptionData,\n      filename,\n    });\n    // The decrypted data is an object which is allowed to overwrite/add\n    // any fields to the plain text paylod, so merge them here\n    payload = Object.assign({}, payload, decryptedData);\n    logger.debug(`Done decrypting the payload`);\n  }\n  return {\n    contentType: object.ContentType,\n    contentLength: object.ContentLength,\n    payload: payload,\n  };\n};\n\nconst RESPONSE_EXCERPT_CHARS = 256;\nconst TRUNCATION_MARKER = \"…\";\n\nconst responseExcerpt = (text) =>\n  text.length > RESPONSE_EXCERPT_CHARS\n    ? text.slice(0, RESPONSE_EXCERPT_CHARS) + TRUNCATION_MARKER\n    : text;\n\nconst processPayload = async ({ payload, logger }) => {\n  logger.debug(\"Processing the payload...\");\n\n  const payloadType = payload.hasOwnProperty(\"payloadType\")\n    ? payload.payloadType.toString()\n    : \"SOFTPRO_LEGACY_XML\";\n\n  let authorization =\n    payload.authentication.type === \"None\"\n      ? payload.authentication.type.toString()\n      : `${payload.authentication.type} ${payload.authentication.config.basicAuthCredsBase64}`;\n\n  if (payload.authentication.type === \"Bearer\") {\n    logger.debug(\"Payload using Bearer auth type, requesting access token.\");\n    const accessToken = await http.getToken({\n      idServer: payload.authentication.config.idServer,\n      basicAuthCredsBase64: payload.authentication.config.basicAuthCredsBase64,\n      scope: payload.authentication.config.scope,\n      grantType: payload.authentication.config.grantType,\n    });\n    authorization = `Bearer ${accessToken}`;\n    logger.debug(\"Payload using Bearer auth type, access token received.\");\n  }\n\n  const contentType =\n    payloadType === \"JSON\" ? \"application/json\" : \"application/xml\";\n\n  const headers = {\n    Authorization: authorization,\n    \"Content-Type\": contentType,\n  };\n\n  const response = await http.sendRequest({\n    url: encodeURI(payload.targetUrl),\n    headers: headers,\n    verb: payload.method,\n    body: payload.payload,\n    logger,\n  });\n  logger.debug(\n    `Done processing the payload, Target Payload Response Status: ${response.status}, Response Status Text: ${response.statusText}`\n  );\n\n  const responseText = await response.text();\n  logger.info({\n    verb: payload.method,\n    url: encodeURI(payload.targetUrl),\n    code: response.status,\n    resp: responseExcerpt(responseText),\n    responseBytes: Buffer.byteLength(responseText),\n  });\n\n  if (payloadType === \"SOFTPRO_LEGACY_XML\") {\n    const xmlBodyAsJson = await parseXMLBody(responseText);\n    if (!(xmlBodyAsJson.xml.success && JSON.parse(xmlBodyAsJson.xml.success))) {\n      throw new Error(\n        `HTTP ${payload.method} to ${payload.targetUrl} returned bad response: ${responseExcerpt(responseText)}`\n      );\n    }\n  }\n};\n\nexports.processPayload = processPayload;\n\nconst parseXMLBody = (bodyAsString) =>\n  new Promise((resolve, reject) => {\n    xml2js.parseString(\n      bodyAsString,\n      { explicitArray: false },\n      (err, result) => {\n        if (err) {\n          return reject(err);\n        }\n        return resolve(result);\n      }\n    );\n  });\n"
+ },
+ "deploy_state": [
+  {
+   "repo": "acme/acmeclose-openfaas",
+   "env": "integ",
+   "source": "acme/bay-deployments/bay/acmeclose-webhook-delivery-function/integ-west/values.yaml",
+   "tag": "main-ab5a6d3",
+   "deployed_commit": "ab5a6d3",
+   "error": null,
+   "prs": [
+    {
+     "number": 6,
+     "url": "https://github.com/acme/acmeclose-openfaas/pull/6",
+     "included": false,
+     "detail": ""
+    },
+    {
+     "number": 5,
+     "url": "https://github.com/acme/acmeclose-openfaas/pull/5",
+     "included": false,
+     "detail": ""
+    }
+   ]
+  },
+  {
+   "repo": "acme/acmeclose-openfaas",
+   "env": "staging",
+   "source": "acme/bay-deployments/bay/acmeclose-webhook-delivery-function/staging-east/values.yaml",
+   "tag": "main-4258aa2",
+   "deployed_commit": "4258aa2",
+   "error": null,
+   "prs": [
+    {
+     "number": 6,
+     "url": "https://github.com/acme/acmeclose-openfaas/pull/6",
+     "included": false,
+     "detail": ""
+    },
+    {
+     "number": 5,
+     "url": "https://github.com/acme/acmeclose-openfaas/pull/5",
+     "included": false,
+     "detail": ""
+    }
+   ]
+  }
+ ]
+}

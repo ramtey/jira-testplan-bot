@@ -38,6 +38,7 @@ import asyncio
 import json
 import logging
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 from ..config import NON_TESTABLE_ISSUE_TYPES, settings
 from ..copy_only import audit_plan_shape
@@ -45,6 +46,13 @@ from ..db.models.plan import PlanFormat
 from ..db.models.run import RunType
 from ..db.mongo import get_db
 from ..deploy_state import read_deploy_state
+from ..evidence_checks import (
+    check_note_usage,
+    extract_requirements,
+    gather_repo_evidence,
+    note_texts,
+    primary_notes,
+)
 from ..flag_state import LaunchDarklyReader, read_flag_state
 from ..deliverable_classifier import (
     aggregate_deliverables_for_critique,
@@ -76,6 +84,7 @@ from .test_plan_generator import (
     normalize_grounding_warnings,
     quarantine_ungrounded_cases,
     run_code_grounding_critic,
+    run_evidence_checks,
     run_fix_scope_critic,
     run_grounding_critic,
     run_regression_grounding_critic,
@@ -452,6 +461,26 @@ async def _read_deploy_state(development_info: dict | None) -> list[dict]:
         return []
 
 
+async def _read_repo_evidence(development_info: dict | None, mentioned: str) -> list[dict]:
+    """Tests, CI config, Dockerfiles and lockfiles at the merge commit (rules C, D, F).
+
+    Never raises: a repo that could not be read comes back with ``error`` set,
+    which the plan reports instead of making claims about it.
+    """
+    prs = [p for p in ((development_info or {}).get("pull_requests") or []) if isinstance(p, dict)]
+    if not prs:
+        return []
+    from ..github_client import GitHubClient
+
+    try:
+        return await gather_repo_evidence(GitHubClient(), prs, mentioned)
+    except Exception as e:
+        logger.warning("repo evidence read failed: %s", e)
+        return [{"repo": r, "ref": None, "error": f"repo evidence read failed: {type(e).__name__}",
+                 "test_sources": {}, "truncated": [], "build": None}
+                for r in sorted({p.get("repository") for p in prs if p.get("repository")})]
+
+
 async def _read_flag_state(request) -> list[dict]:
     """What the flags this ticket touches serve per environment; [] when off."""
     sources = settings.ld_flag_sources
@@ -604,7 +633,16 @@ async def generate_single(
         # surface critic has something to check against. Gated by
         # settings.surface_classifier_enabled; off means it returns None
         # immediately and this gather costs nothing extra.
-        images, (resolved_slack, slack_gaps), deliverable, deploy_state, flag_state = await asyncio.gather(
+        # Rule E's checklist and the text the lockfile finding quotes from.
+        requirements = extract_requirements(
+            request.description, extract_acceptance_criteria(request.description)
+        )
+        mentioned = " ".join(
+            [request.description or ""]
+            + [f.get("patch") or "" for pr in ((request.development_info or {}).get("pull_requests") or [])
+               if isinstance(pr, dict) for f in (pr.get("files_changed") or []) if isinstance(f, dict)]
+        )
+        images, (resolved_slack, slack_gaps), deliverable, deploy_state, flag_state, repo_evidence = await asyncio.gather(
             _download_images(request.image_urls),
             resolve_slack_messages_in_text(request.description, request.comments),
             classify_deliverable(
@@ -617,6 +655,7 @@ async def generate_single(
             ),
             _read_deploy_state(request.development_info),
             _read_flag_state(request),
+            _read_repo_evidence(request.development_info, mentioned),
         )
         # Sources the ticket points at that we could not read. Recorded on the
         # plan and handed to the generator so it writes around nothing in
@@ -639,6 +678,17 @@ async def generate_single(
                     + ", ".join(unread)
                     + ", so the plan cannot say whether those environments run this change"
                 )
+        if repo_evidence or requirements:
+            dev_for_prompt = dict(request.development_info or {})
+            dev_for_prompt["repo_evidence"] = repo_evidence
+            dev_for_prompt["requirements"] = requirements
+            request = request.model_copy(update={"development_info": dev_for_prompt})
+            for e in repo_evidence:
+                if e.get("error"):
+                    context_gaps.append(
+                        e["error"] + ", so no case can be counted as covered by a unit test "
+                        "and the plan makes no claim about CI or what ships"
+                    )
         if flag_state:
             dev_for_prompt = dict(request.development_info or {})
             dev_for_prompt["flag_state"] = flag_state
@@ -784,6 +834,25 @@ async def generate_single(
             provenance["critics_unavailable"] = critic_gaps
             logger.warning("critics unavailable for %s: %s",
                            request.ticket_key, "; ".join(critic_gaps))
+        # Evidence rules B–F, after the critics and before the step check:
+        # covered_by_unit_test claims are proven from the test code and CI or
+        # reverted, and every case that needs a deployed environment gets a
+        # deploy check first — before the step check counts steps.
+        evidence = await run_evidence_checks(
+            llm,
+            test_plan,
+            repo_evidence=repo_evidence,
+            deploy_state=deploy_state,
+            requirements=requirements,
+            dev_info=request.development_info,
+            when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        )
+        if evidence["critic_gap"]:
+            provenance.setdefault("critics_unavailable", []).append(evidence["critic_gap"])
+        if evidence["coverage_reverted"]:
+            provenance["coverage_reverted"] = evidence["coverage_reverted"]
+        if evidence["deploy_checks_added"]:
+            provenance["deploy_checks_added"] = len(evidence["deploy_checks_added"])
         # Step check, after the critics and before quarantine: a step naming
         # a control, action or flag that only the ticket text backs is marked
         # where it stands and warned on, and a step-level one sets the
@@ -791,7 +860,8 @@ async def generate_single(
         # lets quarantine move a case whose expected result is a guess too
         # (SK-2579's "again using Connect"). See src/app/step_grounding.py.
         unbacked_steps = check_step_grounding(
-            test_plan, readable_code_paths(single_ticket_dev_info)
+            test_plan, readable_code_paths(single_ticket_dev_info),
+            notes=note_texts(request.comments),
         )
         if unbacked_steps:
             provenance["unbacked_step_references"] = len(unbacked_steps)
@@ -806,6 +876,20 @@ async def generate_single(
         needs_spec_cases = quarantine_ungrounded_cases(
             test_plan, spec_is_source=spec_only is not None
         )
+        # Rule A, after quarantine so cases moved to needs-spec still count as
+        # having used a note.
+        notes = primary_notes(request.comments)
+        evidence_notes = check_note_usage(
+            test_plan,
+            notes,
+            (getattr(test_plan, "evidence_claims", None) or {}).get("note_disagreements"),
+            comment_ids=[c.get("id") for c in (request.comments or []) if c.get("id")],
+            extra_cases=needs_spec_cases,
+        )
+        if evidence_notes["unused"]:
+            provenance["unused_testing_notes"] = [n["id"] for n in evidence_notes["unused"]]
+            logger.warning("testing notes no case used on %s: %s", request.ticket_key,
+                           provenance["unused_testing_notes"])
         # Audit the promise, after quarantining so both the cases that stayed
         # and the ones that moved are covered. This only marks a citation as
         # unconfirmed — it never changes expected_verified, because doing so
@@ -878,6 +962,11 @@ async def generate_single(
                 test_plan.regression_grounding_notes or []
             ),
             "risks_and_gaps": test_plan.risks_and_gaps or [],
+            # Evidence rules A–F: rendered at the top of the plan.
+            "deployment_status": evidence["deployment_status"],
+            "acceptance_gaps": evidence["acceptance_gaps"],
+            "build_and_ci": evidence["build_and_ci"],
+            "evidence_notes": evidence_notes,
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
             # Which happy-path cases the UAT screen recording covers, and where
@@ -1049,6 +1138,39 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
             for t in tickets
         ]
 
+        # Evidence rules B–F for the batch: requirements per ticket (ids
+        # prefixed with the ticket key), and deployment and repo evidence read
+        # once over every ticket's PRs.
+        batch_requirements: list[dict] = []
+        for t in tickets_data:
+            for r in extract_requirements(t.get("description"), t["acceptance_criteria"]):
+                batch_requirements.append({**r, "id": f"{t['ticket_key']}-{r['id']}",
+                                           "source": f"{t['ticket_key']} {r['source']}"})
+        batch_prs = [pr for t in tickets_data
+                     for pr in ((t.get("development_info") or {}).get("pull_requests") or [])
+                     if isinstance(pr, dict)]
+        batch_dev_info = {"pull_requests": batch_prs}
+        batch_mentioned = " ".join(
+            [t.get("description") or "" for t in tickets_data]
+            + [f.get("patch") or "" for pr in batch_prs for f in (pr.get("files_changed") or [])
+               if isinstance(f, dict)]
+        )
+        batch_deploy_state, batch_repo_evidence = await asyncio.gather(
+            _read_deploy_state(batch_dev_info),
+            _read_repo_evidence(batch_dev_info, batch_mentioned),
+        )
+        for t in tickets_data:
+            dev = dict(t.get("development_info") or {})
+            dev["deploy_state"] = batch_deploy_state
+            dev["repo_evidence"] = batch_repo_evidence
+            dev["requirements"] = [r for r in batch_requirements
+                                   if r["id"].startswith(t["ticket_key"] + "-")]
+            t["development_info"] = dev
+        if batch_deploy_state:
+            provenance["deploy_state"] = [
+                {k: e[k] for k in ("env", "repo", "tag", "error")} for e in batch_deploy_state
+            ]
+
         mode = classify_multi_ticket_mode(tickets_data)
         cross_project_payload: dict | None = None
         if mode == "cross_project":
@@ -1133,9 +1255,26 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         if multi_critic_gaps:
             provenance["critics_unavailable"] = multi_critic_gaps
             logger.warning("critics unavailable: %s", "; ".join(multi_critic_gaps))
+        # Evidence rules B–F; see generate_single.
+        evidence = await run_evidence_checks(
+            llm,
+            test_plan,
+            repo_evidence=batch_repo_evidence,
+            deploy_state=batch_deploy_state,
+            requirements=batch_requirements,
+            dev_info=batch_dev_info,
+            when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        )
+        if evidence["critic_gap"]:
+            provenance.setdefault("critics_unavailable", []).append(evidence["critic_gap"])
+        if evidence["coverage_reverted"]:
+            provenance["coverage_reverted"] = evidence["coverage_reverted"]
+        if evidence["deploy_checks_added"]:
+            provenance["deploy_checks_added"] = len(evidence["deploy_checks_added"])
         # Step check before quarantine; see generate_single.
         unbacked_steps = check_step_grounding(
-            test_plan, readable_code_paths(multi_ticket_dev_info)
+            test_plan, readable_code_paths(multi_ticket_dev_info),
+            notes=note_texts([c for t in tickets_data for c in (t.get("comments") or [])]),
         )
         if unbacked_steps:
             provenance["unbacked_step_references"] = len(unbacked_steps)
@@ -1147,6 +1286,16 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         # See generate_single: quarantining runs after every critic so the
         # code-grounding recheck's rescues are respected.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)
+        batch_comments = [c for t in tickets_data for c in (t.get("comments") or [])]
+        evidence_notes = check_note_usage(
+            test_plan,
+            primary_notes(batch_comments),
+            (getattr(test_plan, "evidence_claims", None) or {}).get("note_disagreements"),
+            comment_ids=[c.get("id") for c in batch_comments if c.get("id")],
+            extra_cases=needs_spec_cases,
+        )
+        if evidence_notes["unused"]:
+            provenance["unused_testing_notes"] = [n["id"] for n in evidence_notes["unused"]]
         # Audit the promise, after quarantining so both the cases that stayed
         # and the ones that moved are covered. This only marks a citation as
         # unconfirmed — it never changes expected_verified, because doing so
@@ -1207,6 +1356,10 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
                 test_plan.regression_grounding_notes or []
             ),
             "risks_and_gaps": test_plan.risks_and_gaps or [],
+            "deployment_status": evidence["deployment_status"],
+            "acceptance_gaps": evidence["acceptance_gaps"],
+            "build_and_ci": evidence["build_and_ci"],
+            "evidence_notes": evidence_notes,
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
             # Which happy-path cases the UAT screen recording covers, and where

@@ -35,6 +35,17 @@ Where references come from
    control noun ("the Leave PDF option"). An undeclared reference has no
    source of its own, so it is backed only when the case cites code at all.
 
+A testing note is not code, and not a guess either
+---------------------------------------------------
+Evidence rule A has the generator reuse a testing note's concrete steps — the
+trigger script, the curl call, the log query (SK-2826's note 336173). Those
+name tooling the PR never touched, so this check used to mark them as
+assumptions and flag the case for quarantine, undoing the rule. A reference
+whose every word appears in a testing note the case cites
+(``source_comment_ids``) is labelled as coming from that note — still "not
+checked against the linked code", but not an assumption, and it does not set
+``needs_manual_verification``.
+
 What happens to an unbacked reference
 -------------------------------------
 * The step (or the preconditions) is prefixed in place with an
@@ -301,6 +312,31 @@ def _mark(text: str, elements: list[str]) -> str:
     return f"{MARKER} ({names} not found in the linked code): {text}"
 
 
+NOTE_MARKER = "From testing note"
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:\-]*[A-Za-z0-9_]|[A-Za-z0-9_]")
+
+
+def _in_note(element: str, note_text: str) -> bool:
+    """Every word of ``element`` appears in the note (paths split at ``/``)."""
+    if not note_text:
+        return False
+    tokens = [t.lower() for part in element.split("/") for t in _TOKEN_RE.findall(part)]
+    hay = " ".join(note_text.lower().split())
+    return bool(tokens) and all(t in hay for t in tokens)
+
+
+def _note_text(case: dict, notes: dict[str, str] | None) -> tuple[str, list[str]]:
+    ids = [str(i) for i in case.get("source_comment_ids") or [] if str(i) in (notes or {})]
+    return " ".join(notes[i] for i in ids), ids
+
+
+def _mark_from_note(text: str, elements: list[str], ids: list[str]) -> str:
+    if _ALREADY_MARKED_RE.match(text) or text.startswith(NOTE_MARKER):
+        return text
+    names = ", ".join(f"“{e}”" for e in elements)
+    return f"{NOTE_MARKER} {', '.join(ids)} ({names} not checked against the linked code): {text}"
+
+
 def _warning_ac_id(case: dict) -> str | None:
     for ac in case.get("covers_acs") or []:
         if isinstance(ac, str) and ac.strip():
@@ -308,19 +344,35 @@ def _warning_ac_id(case: dict) -> str | None:
     return None
 
 
-def check_step_grounding(test_plan, code_paths: set[str]) -> list[dict]:
+def check_step_grounding(test_plan, code_paths: set[str],
+                         notes: dict[str, str] | None = None) -> list[dict]:
     """Mark unbacked step references in place and return the warnings added.
 
     Mutates cases (step text, ``unverified_steps``,
     ``needs_manual_verification``) and appends to
     ``test_plan.grounding_warnings``. Never adds, removes or reorders a case
     or a step; moving a case is left to ``quarantine_ungrounded_cases``.
+    ``notes`` maps a testing note's comment id to its text; references a
+    cited note backs are labelled as such instead (see the module docstring).
     """
     added: list[dict] = []
     warnings = list(getattr(test_plan, "grounding_warnings", None) or [])
     for section in CHECKED_SECTIONS:
         for case in getattr(test_plan, section, None) or []:
             unbacked = find_unbacked_references(case, code_paths)
+            note_text, note_ids = _note_text(case, notes)
+            from_note = [r for r in unbacked if _in_note(r["element"], note_text)]
+            if from_note:
+                unbacked = [r for r in unbacked if r not in from_note]
+                by_step_note: dict[int, list[str]] = {}
+                for ref in from_note:
+                    by_step_note.setdefault(ref["step"], []).append(ref["element"])
+                for step, elements in by_step_note.items():
+                    if step == PRECONDITIONS:
+                        case["preconditions"] = _mark_from_note(case["preconditions"], elements, note_ids)
+                    else:
+                        case["steps"][step - 1] = _mark_from_note(case["steps"][step - 1], elements, note_ids)
+                case["note_backed_steps"] = from_note
             if not unbacked:
                 continue
             by_step: dict[int, list[str]] = {}

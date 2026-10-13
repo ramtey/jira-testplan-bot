@@ -192,6 +192,10 @@ class JiraComment:
     created: str
     updated: str | None = None
     author_account_id: str | None = None  # For ADF mention nodes
+    # Jira's comment id. The plan cites a testing note by it, so a case that
+    # reused a note's steps can say which note — and a note no case used can
+    # be named (see src/app/evidence_checks.py).
+    id: str | None = None
 
 
 @dataclass
@@ -425,6 +429,11 @@ class TestPlan:
     # something QA can mark pass or fail. Each entry:
     # {"gap": "...", "impact": "...", "evidence": "infra/staging/x.yaml:18"}
     risks_and_gaps: list[dict] | None = None
+    # The model's answers to evidence rules A, B and E — ``requirement_check``,
+    # ``deployment_status`` and ``note_disagreements`` — kept as it returned
+    # them. Never shown as is: evidence_checks turns them into the plan's
+    # Acceptance gaps, deployment banner and note report, after checking them.
+    evidence_claims: dict | None = None
     uat_complexity: str | None = None
     # One short, non-technical sentence (or two) for a UAT tester who skims and
     # won't read the full plan: what observably changed + where to click to see

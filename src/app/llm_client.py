@@ -27,6 +27,7 @@ from .description_analyzer import (
     extract_acceptance_criteria,
 )
 from .deploy_state import DEPLOY_STATE_GUIDANCE, render_deploy_state
+from .evidence_checks import render_repo_evidence
 from .flag_state import FLAG_STATE_GUIDANCE, render_flag_state
 from .diff_budget import allocate_patch_budget, omitted_note, render_full_files
 from .model_capabilities import (
@@ -102,6 +103,52 @@ def _scrub_test_plan_data(test_plan_data: dict) -> dict:
 
 
 _PLAN_CASE_SECTIONS = ("happy_path", "edge_cases", "integration_tests", "regression_checklist")
+
+
+def _render_batch_evidence(tickets: list[dict]) -> str:
+    """Deployment state, repo evidence and requirements for a batch prompt.
+
+    Repo evidence is per repo, not per ticket, so a repo two tickets share is
+    shown once. Requirement ids are already ticket-prefixed by the caller.
+    """
+    out: list[str] = []
+    seen_repos: set[str] = set()
+    deploy, evidence, reqs = [], [], []
+    for t in tickets:
+        dev = t.get("development_info") or {}
+        for e in dev.get("deploy_state") or []:
+            if (e.get("repo"), e.get("env")) not in seen_repos:
+                seen_repos.add((e.get("repo"), e.get("env")))
+                deploy.append(e)
+        for e in dev.get("repo_evidence") or []:
+            if e.get("repo") not in seen_repos:
+                seen_repos.add(e.get("repo"))
+                evidence.append(e)
+        reqs += dev.get("requirements") or []
+    text = render_deploy_state(deploy)
+    if text:
+        out.append("**Deployment state — which environment runs which PR:**\n" + text
+                   + f"\n⚠️ REQUIRED: {DEPLOY_STATE_GUIDANCE}")
+    else:
+        out.append("**Deployment state:** not read — no deployment source is configured. Apply "
+                   "rule B: every case that needs a deployed environment starts with a deploy check.")
+    if evidence:
+        out.append("**Tests, CI and build — read from each repo at the merge commit:**\n"
+                   + render_repo_evidence(evidence)
+                   + "\n⚠️ REQUIRED: apply rules C, D and F to these facts.")
+    if reqs:
+        out.append("**Requirements stated by the tickets — check each against the merged diff (rule E):**\n"
+                   + "\n".join(f"- {r['id']} [{r['source']}]: \"{r['text']}\"" for r in reqs)
+                   + "\n⚠️ REQUIRED: one `requirement_check` entry per id above.")
+    return "\n\n".join(out)
+
+
+def _evidence_claims(test_plan_data: dict) -> dict | None:
+    """The model's evidence-rule answers, or None when it gave none."""
+    claims = {k: test_plan_data.get(k) for k in
+              ("requirement_check", "deployment_status", "note_disagreements")
+              if test_plan_data.get(k)}
+    return claims or None
 
 
 def _require_cases(test_plan_data: dict, response: dict) -> None:
@@ -1061,19 +1108,77 @@ not a reason to ship unrunnable cases.
 ✅ GOOD (blocked, honestly labelled): "Preconditions: blocked until partner client_id/secret are provisioned, owner: Platform team. Steps: ..."
 ✅ GOOD (observable today): "Steps: call GET /v1/orders with no Authorization header. Expected: 401 (verified against src/middleware/auth.ts:22) — proves the route is deployed and the guard is wired, without needing the credentials this ticket will mint."
 
-**4. CHECK EXISTING AUTOMATED COVERAGE FIRST.**
-Before authoring a manual case, search the "Existing Unit Tests" context and the
-PR diff for a unit or integration test that already asserts the behaviour. If CI
-asserts it, do NOT duplicate it as manual UAT — set `covered_by_unit_test: true`
-and cite the file (and line, when known) in `unit_test_ref`. Manual UAT exists
-for what CI cannot reach.
+**4. CHECK EXISTING AUTOMATED COVERAGE FIRST — FROM THE TEST CODE.**
+Before authoring a manual case, look for a test that already asserts it — in the
+test files shown under "Tests, CI and build". Rules C and D below decide whether
+it counts. Manual UAT exists for what automated tests do not prove.
 
 Parameterized tests are the easy miss: an `it.each` / `test.each` / table-driven
 test that walks every rejection path already covers ALL of those paths, not just
 the first row. Read the table before writing an edge case that re-walks it.
 
 ❌ BAD: an edge case "rejects malformed token" when `auth.test.ts` has an `it.each` row for exactly that input.
-✅ GOOD: covered_by_unit_test: true, unit_test_ref: "src/middleware/auth.test.ts:40 › rejects malformed token (it.each row 2 of 4)".
+✅ GOOD: covered_by_unit_test: true, unit_test_ref: "src/middleware/auth.test.ts › rejects malformed token", coverage_evidence: "expect(res.status).toBe(401)" (and CI runs auth.test.ts).
+
+**EVIDENCE RULES A–F — every ticket, every surface (UI, backend, CLI, mobile).**
+A plan is only as good as the evidence it was built from. These six rules say
+what to read and what you may claim from it. Downstream code re-checks B–F and
+corrects the plan where you did not follow them; following them yourself is
+what keeps the plan coherent.
+
+**A. Use the ticket's comments.** Read every comment, not only the description.
+Testing notes, QA notes, kickoff research and "how to verify" sections — from a
+human or an agent — are PRIMARY sources (they are marked so). Reuse their
+concrete environment, setup, trigger, verification and rollback steps in the
+matching cases, word for word where they are commands, queries, paths or
+names, and put the comment id in that case's `source_comment_ids`. If your plan
+departs from a note (a different environment, a step you think is wrong, a case
+you drop), record it in `note_disagreements` — never drop a note silently.
+❌ BAD: "Exercise the import end-to-end in a test environment" when a note gives the seed script, the account to use and the query that shows the result.
+✅ GOOD: steps that run the note's seed script as that account and check the note's query, with `source_comment_ids: ["10234"]`.
+
+**B. Deployment is a precondition, not an assumption.** A case that needs a
+deployed environment (integ, staging, prod, a device build, a preview URL)
+starts with a step that checks the merged commit is actually running there and
+says HOW (the deployment repo's image tag, the ArgoCD app's image, the pod
+image, the app's version endpoint or build number). If the sources say it is
+not deployed — the deployment state shows NOT INCLUDED, or a note says "not
+deployed" — set `deployment_status` to deployed "no" with the statement and its
+source, and do not write cases that assume the deployment.
+
+**C. Prove unit-test coverage from the test code.** `covered_by_unit_test: true`
+only after you read the test body and found an assertion that checks the case's
+EXACT condition: the same input shape, the same position or boundary, and every
+claim in the expected result. Cite it as `unit_test_ref: "<file> › <exact test
+name>"` and quote the assertion line(s) verbatim in `coverage_evidence`. PR
+descriptions, commit messages and test names are NOT evidence — "(per PR #5
+description)" is an automatic rejection. If a test covers only part of a case,
+keep the case where it is (not covered) and say what the test does not assert
+in `unit_test_gap`.
+❌ BAD: case "a discount code past the 20th line item still applies" marked covered by a test whose cart has one line item.
+❌ BAD: case "total is rounded to cents AND the currency is shown" marked covered by a test that asserts only the rounding.
+
+**D. Check that CI runs the suite.** Before calling a case covered, or deferring
+anything "to CI", check the CI status shown for that test file. Not run means:
+say "tests exist but are not run in CI" and treat the test as no proof.
+
+**E. Acceptance gaps.** Compare every requirement the ticket states ("What to
+change", "Done when", acceptance criteria — listed for you with ids) with the
+merged diff. Return one `requirement_check` entry per id: met (with the code
+location), partial, unmet, or not_verifiable. Partial and unmet items become a
+top-level Acceptance gaps section — never fold them into regression items or
+low-priority checks, and never imply the work meets the ticket when it does
+not.
+A requirement for a TEST is met only by an assertion that checks what the
+requirement names, read from the test body: a test showing the fixed code
+works does not "prove the exploit path" or "reproduce the bug" — that needs a
+test that drives the failing input and would fail on the old code (or a control
+that shows the failure), and a "negative case" needs its own assertion.
+
+**F. Check how the build ships.** Before claiming what ships — "the committed X
+resolution", a pinned version, a bundled asset — check how the artifact is
+built (Dockerfile, lockfile use, build scripts; the BUILD/CI FACTS say). If what
+ships differs from what is committed, say so in the cases that depend on it.
 
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
@@ -1771,8 +1876,11 @@ Return ONLY valid JSON (no markdown, no code blocks):
         "evidence": "What you checked and what it showed — or what you could not confirm, or which upstream selector excludes this shape",
         "obtain": "The concrete ask: who does what. For real_record_unconfirmed, also the fallback if no record turns up"
       },
+      "source_comment_ids": ["OPTIONAL: Jira comment ids whose steps this case reuses"],
       "covered_by_unit_test": false,
-      "unit_test_ref": "OPTIONAL: only when covered_by_unit_test is true — the test file path (+ test name if known) that already covers this, e.g. 'src/netSheet.test.ts › computes buyer total'"
+      "unit_test_ref": "OPTIONAL: only when covered_by_unit_test is true — '<file> › <exact test name>', e.g. 'src/netSheet.test.ts › computes buyer total'",
+      "coverage_evidence": "OPTIONAL: only when covered_by_unit_test is true — the assertion line(s) quoted verbatim from that test's body",
+      "unit_test_gap": "OPTIONAL: when a test covers only part of this case — what it does not assert"
     }
   ],
   "edge_cases": [
@@ -1823,6 +1931,13 @@ Return ONLY valid JSON (no markdown, no code blocks):
       "impact": "How this breaks the ticket's stated goal if it ships unaddressed",
       "evidence": "<file>:<line> where you saw it"
     }
+  ],
+  "requirement_check": [
+    {"id": "R1", "status": "met|partial|unmet|not_verifiable", "evidence": "<file>:<line> or what the diff lacks", "missing": "what is not done"}
+  ],
+  "deployment_status": {"deployed": "yes|no|unknown", "statement": "...", "source": "comment id or deployment config"},
+  "note_disagreements": [
+    {"comment_id": "...", "note_says": "...", "plan_does": "...", "why": "..."}
   ]
 }
 
@@ -1848,14 +1963,28 @@ record can ever reach this code path" (`unreachable`). Those are three different
 asks to three different people, and a plan that leaves the reader to guess sends
 QA hunting for data that may not exist.
 
-**`covered_by_unit_test` / `unit_test_ref` (optional, applies to happy_path,
-edge_cases, and integration_tests):** Only set these when an "Existing Unit
-Tests" section was provided above AND an existing test already asserts this
-exact behaviour at the same level. Setting `covered_by_unit_test: true` moves
-the case into a separate "already covered" list QA can skip — so be
-conservative: a unit test on a function in isolation does NOT cover an
-end-to-end / integration / manual-UI case for the same feature. When in doubt,
-omit the field. Never drop a case to "save" it from the manual checklist.
+**`covered_by_unit_test` / `unit_test_ref` / `coverage_evidence` / `unit_test_gap`
+(optional, applies to happy_path, edge_cases, and integration_tests):** Follow
+rules C and D. `covered_by_unit_test: true` requires `unit_test_ref` in the form
+`<file> › <exact test name>` naming a test file shown under "Tests, CI and
+build", `coverage_evidence` quoting the assertion line(s) from that test's body
+verbatim, and that file's CI status RUNS. Anything less is rejected and the case
+returns to the manual checklist. When a test covers part of a case, leave
+`covered_by_unit_test` false and put what it misses in `unit_test_gap`. Never
+drop a case to "save" it from the manual checklist.
+
+**`source_comment_ids` (any case):** the Jira comment ids whose steps this case
+reuses (rule A).
+
+**Top-level evidence fields (rules A, B, E):**
+- `requirement_check`: one entry per requirement id listed in the prompt —
+  `{"id": "R2", "status": "met|partial|unmet|not_verifiable", "evidence":
+  "<file>:<line> or what the diff lacks", "missing": "what is not done"}`.
+- `deployment_status`: `{"deployed": "yes|no|unknown", "statement": "Not
+  deployed to staging: it runs release-1.4.0-1a2b3c4, which predates the fix",
+  "source": "comment 10234" or the deployment config}`.
+- `note_disagreements`: `[{"comment_id": "10234", "note_says": "...",
+  "plan_does": "...", "why": "..."}]` — empty when the plan follows every note.
 
 **REGRESSION CHECKLIST RULES:**
 The regression checklist must contain ONLY runtime behaviors that can be manually tested.
@@ -2184,6 +2313,16 @@ class LLMClient(ABC):
         providers that don't run the critic behave the same as before.
         """
         return {}
+
+    async def verify_unit_coverage(self, surviving: list[dict]) -> dict[str, dict] | None:
+        """Rule C's semantic half: does each cited test body assert the case's exact condition?
+
+        ``surviving`` comes from ``evidence_checks.enforce_unit_test_coverage``.
+        Returns ``{case_id: {"verdict": "full"|"partial"|"none", "missing"}}``,
+        or None when the check did not run. None is not "no problems found":
+        the caller treats every claim as unproven.
+        """
+        return None
 
     async def verify_code_grounding(
         self,
@@ -2842,26 +2981,43 @@ TICKET INFORMATION
                 prompt += "- Validate that fixes don't introduce regressions in related areas\n"
             prompt += "- Test integration points between this ticket and linked dependencies\n"
 
-        # Add Jira comments if available
+        # Add Jira comments if available. Every comment carries its Jira id so
+        # a case can cite the note it took its steps from (rule A).
         if comments:
-            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            prompt += "JIRA COMMENTS (TESTING-RELATED)\n"
-            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            prompt += f"\nThe following {len(comments)} comment(s) from the Jira ticket contain testing discussions, edge cases, or scenarios:\n\n"
+            from .evidence_checks import primary_note_kind
 
+            prompt += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "JIRA COMMENTS\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += f"\nThe ticket's {len(comments)} comment(s), testing notes first. Read every one.\n\n"
+
+            notes = []
             for i, comment in enumerate(comments, 1):
                 author = comment.get('author', 'Unknown')
                 body = comment.get('body', '')
                 created = comment.get('created', '')
+                cid = comment.get('id')
+                kind = primary_note_kind(body)
+                if kind and cid:
+                    notes.append((cid, kind))
 
-                # Allow up to 8000 chars per comment to preserve full manual test plans.
-                # Structured test plans written by developers can be several thousand chars
-                # and must not be truncated, as every test case is meaningful.
-                body_preview = body[:8000] + "..." if len(body) > 8000 else body
+                # Testing notes are kept whole up to 12000 chars: every step in
+                # one is something a case may need. Discussion is capped at 8000.
+                cap = 12000 if kind else 8000
+                body_preview = body[:cap] + "..." if len(body) > cap else body
 
-                prompt += f"**Comment {i} by {author}** (Posted: {created[:10] if created else 'Unknown date'}):\n"
+                label = f"Comment {cid}" if cid else f"Comment {i}"
+                tag = f" — PRIMARY SOURCE ({kind})" if kind else ""
+                prompt += f"**{label} by {author}** (Posted: {created[:10] if created else 'Unknown date'}){tag}:\n"
                 prompt += f"{body_preview}\n\n"
 
+            if notes:
+                listed = ", ".join(f"{cid} ({kind})" for cid, kind in notes)
+                prompt += f"⚠️ REQUIRED — primary sources on this ticket: {listed}. Apply rule A: reuse their "
+                prompt += "concrete environment, setup, trigger, verification and rollback steps in the matching "
+                prompt += "cases, set `source_comment_ids` on every case that uses one, and record any point where "
+                prompt += "your plan departs from a note in `note_disagreements`. A note's statement that the "
+                prompt += "change is not deployed goes into `deployment_status`.\n\n"
             prompt += "**Use these comments to:**\n"
             prompt += "- If a manual test plan is present, use it as the primary source of truth for test cases — preserve its structure, numbering, and coverage\n"
             prompt += "- Incorporate manually suggested test scenarios and edge cases\n"
@@ -2954,21 +3110,12 @@ TICKET INFORMATION
             # automated tests already cover so QA can skip them.
             unit_test_sources = repo_context.get("unit_test_sources")
             if unit_test_sources:
-                prompt += "\n**Existing Unit Tests (already automated):**\n"
+                prompt += "\n**Sample test files from the repo (style reference):**\n"
                 prompt += (
-                    "The following test files already exist in the repo. For each test "
-                    "case you generate, decide whether an existing unit test ALREADY "
-                    "covers that exact behaviour AT THE SAME LEVEL:\n"
-                    "- If yes, KEEP the case in its normal section but set "
-                    "`\"covered_by_unit_test\": true` and `\"unit_test_ref\"` to the test "
-                    "file path (and the specific test name if you can identify it). This "
-                    "routes the case into a separate \"already covered\" list so QA can "
-                    "skip the manual run.\n"
-                    "- A unit test that exercises a function IN ISOLATION does NOT cover "
-                    "an end-to-end, integration, or manual-UI case for the same feature — "
-                    "do NOT flag those; QA still needs to run them.\n"
-                    "- When unsure, leave the case unflagged (omit the field). Never drop "
-                    "a case; only annotate it.\n\n"
+                    "These show the project's test conventions. They are the first part "
+                    "of a few files only, so they are NOT evidence of coverage: a case may "
+                    "be marked `covered_by_unit_test` only from a test file shown in full "
+                    "under \"Tests, CI and build\" (rules C and D).\n\n"
                 )
                 for src in unit_test_sources[:3]:
                     path = src.get("path", "")
@@ -3277,6 +3424,38 @@ TICKET INFORMATION
                 prompt += "\n**Deployment state — which environment runs which PR:**\n"
                 prompt += deploy_text + "\n"
                 prompt += f"⚠️ REQUIRED: {DEPLOY_STATE_GUIDANCE}\n"
+            else:
+                prompt += (
+                    "\n**Deployment state:** not read — no deployment source is configured for "
+                    "this repo. Apply rule B: every case that needs a deployed environment starts "
+                    "with a step that checks the merged commit is running there, and says how.\n"
+                )
+
+            # Rules C, D, F: the test code itself, and what CI and the build
+            # actually do — read at the merge commit by evidence_checks.
+            repo_evidence = development_info.get("repo_evidence")
+            if repo_evidence:
+                prompt += "\n**Tests, CI and build — read from the repo at the merge commit:**\n"
+                prompt += render_repo_evidence(repo_evidence) + "\n"
+                prompt += (
+                    "⚠️ REQUIRED: apply rules C, D and F to the facts above. A case is "
+                    "`covered_by_unit_test` only if a test in a file shown above asserts its exact "
+                    "condition AND that file's CI status is RUNS. State every BUILD/CI FACT that "
+                    "bears on a case in that case, and never describe what ships in a way these facts "
+                    "contradict.\n"
+                )
+
+            # Rule E: every requirement the ticket states, to be checked against the diff.
+            requirements = development_info.get("requirements")
+            if requirements:
+                prompt += "\n**Requirements stated by the ticket — check each against the merged diff (rule E):**\n"
+                for r in requirements:
+                    prompt += f"- {r['id']} [{r['source']}]: \"{r['text']}\"\n"
+                prompt += (
+                    "⚠️ REQUIRED: return one `requirement_check` entry per id above. Unmet or "
+                    "partly met items become the plan's Acceptance gaps section — never fold "
+                    "them into regression items.\n"
+                )
 
             flag_text = render_flag_state(development_info.get("flag_state") or [])
             if flag_text:
@@ -3496,11 +3675,21 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
 
             comments = ticket.get("comments")
             if comments:
-                prompt += f"\n**Testing Comments ({len(comments)}):**\n"
-                for comment in comments[:3]:
+                # Every comment, with its id; testing notes nearly whole (rule A).
+                # This used to be the first 3 at 300 characters, which no
+                # testing note survives.
+                from .evidence_checks import primary_note_kind
+
+                prompt += f"\n**Comments ({len(comments)}, testing notes first):**\n"
+                for comment in comments:
                     body = comment.get("body", "")
-                    body_preview = body[:300] + "..." if len(body) > 300 else body
-                    prompt += f"- @{comment.get('author', 'Unknown')}: {body_preview}\n"
+                    kind = primary_note_kind(body)
+                    cap = 6000 if kind else 600
+                    body_preview = body[:cap] + "..." if len(body) > cap else body
+                    cid = comment.get("id")
+                    label = f"comment {cid}" if cid else "comment"
+                    tag = f" — PRIMARY SOURCE ({kind}); cite as source_comment_ids [\"{cid}\"]" if kind and cid else ""
+                    prompt += f"- {label} @{comment.get('author', 'Unknown')}{tag}: {body_preview}\n"
 
             # Deliverable-classifier hint attached by the multi endpoint via
             # ticket["testing_context"]["deliverable_hint"]. Present only for
@@ -3644,6 +3833,14 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                     # a prompt to check the diff, not a proof of non-existence.
                     prompt += "\n⚠️ THE TESTID REFERENCE IS STRONG BUT INCOMPLETE EVIDENCE: it is auto-generated and misses elements whose testID is built conditionally. Listed means it exists. Not listed means check the PR diff or screen guide before using it — and if it isn't there either, do NOT invent steps for it.\n"
                 break
+
+        # ── Evidence: deployment, tests/CI/build, requirements (rules B–F) ──
+        evidence_text = _render_batch_evidence(tickets)
+        if evidence_text:
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            prompt += "EVIDENCE — DEPLOYMENT, TESTS, CI AND BUILD, REQUIREMENTS\n"
+            prompt += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            prompt += evidence_text + "\n\n"
 
         # ── Cross-project seams ───────────────────────────────────────────────
         if cross_project and (cross_project.get("verified_seams") or cross_project.get("suspected_seams")):
@@ -3839,6 +4036,7 @@ class OllamaClient(LLMClient):
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
                     copy_only=test_plan_data.get("copy_only") or None,
+                    evidence_claims=_evidence_claims(test_plan_data),
                 )
 
         except httpx.ConnectError as e:
@@ -3909,6 +4107,7 @@ class OllamaClient(LLMClient):
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
                     copy_only=test_plan_data.get("copy_only") or None,
+                    evidence_claims=_evidence_claims(test_plan_data),
                 )
 
         except httpx.ConnectError as e:
@@ -4291,11 +4490,24 @@ TEST_CASE_SCHEMA = {
         },
         "covered_by_unit_test": {
             "type": "boolean",
-            "description": "Set true ONLY when an existing test from the 'Existing Unit Tests' context already asserts this exact behaviour AT THE SAME LEVEL. Moves the case into a separate 'already covered by unit tests' list QA can skip. A unit test on a function in isolation does NOT cover an end-to-end / integration / manual-UI case for the same feature — leave those unflagged. When true, populate `unit_test_ref`. Default false / omitted.",
+            "description": "Rules C and D. Set true ONLY when a test in a file shown under 'Tests, CI and build' asserts this case's EXACT condition (same input shape, position, boundary, and every claim in `expected`) AND that file's CI status is RUNS. Requires `unit_test_ref` and `coverage_evidence`. PR descriptions, commit messages and test names are not evidence. A unit test on a function in isolation does NOT cover an end-to-end / integration / manual-UI case. Partial coverage stays false — say what is missing in `unit_test_gap`. Claims that fail these checks are reverted downstream. Default false / omitted.",
         },
         "unit_test_ref": {
             "type": "string",
-            "description": "Required when `covered_by_unit_test` is true. The existing test file path that covers this case, plus the specific test name if identifiable, e.g. 'src/netSheet.test.ts › computes buyer total'.",
+            "description": "Required when `covered_by_unit_test` is true: '<file> › <exact test name>', e.g. 'src/netSheet.test.ts › computes buyer total'. The test name must appear verbatim in that file.",
+        },
+        "coverage_evidence": {
+            "type": "string",
+            "description": "Required when `covered_by_unit_test` is true: the assertion line(s) copied verbatim from that test's body that check this case's condition.",
+        },
+        "unit_test_gap": {
+            "type": "string",
+            "description": "When an existing test covers only part of this case: what it does not assert (e.g. 'asserts the byte count but never the excerpt's character length'). The case stays in the manual checklist.",
+        },
+        "source_comment_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Rule A: the Jira comment ids (from the JIRA COMMENTS section) whose environment, setup, trigger, verification or rollback steps this case reuses.",
         },
         "cross_project": {
             "type": "boolean",
@@ -4537,6 +4749,44 @@ SUBMIT_TEST_PLAN_TOOL = {
                             "required": ["kind", "identifier"],
                         },
                     },
+                },
+            },
+            "requirement_check": {
+                "type": "array",
+                "description": "Rule E. One entry per requirement id listed under 'Requirements stated by the ticket'. Compare each with the merged diff. Partial and unmet items become the plan's Acceptance gaps section.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "The requirement id, e.g. 'R2'."},
+                        "status": {"type": "string", "enum": ["met", "partial", "unmet", "not_verifiable"]},
+                        "evidence": {"type": "string", "description": "The code location that meets it, or what the diff lacks — `<file>:<line>` where possible."},
+                        "missing": {"type": "string", "description": "For partial/unmet: exactly what is not done."},
+                    },
+                    "required": ["id", "status", "evidence"],
+                },
+            },
+            "deployment_status": {
+                "type": "object",
+                "description": "Rule B. Whether the merged change is running in the environment the plan targets, as the sources show it (deployment state, comments).",
+                "properties": {
+                    "deployed": {"type": "string", "enum": ["yes", "no", "unknown"]},
+                    "statement": {"type": "string", "description": "One sentence, e.g. 'Not deployed to staging: it runs release-1.4.0-1a2b3c4, which predates the fix'."},
+                    "source": {"type": "string", "description": "Where that comes from: 'comment <id>' or the deployment config path."},
+                },
+                "required": ["deployed", "statement"],
+            },
+            "note_disagreements": {
+                "type": "array",
+                "description": "Rule A. Every point where the plan departs from a testing note in the comments. Empty when it follows them all.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "comment_id": {"type": "string"},
+                        "note_says": {"type": "string"},
+                        "plan_does": {"type": "string"},
+                        "why": {"type": "string"},
+                    },
+                    "required": ["comment_id", "note_says", "plan_does", "why"],
                 },
             },
             "risks_and_gaps": {
@@ -4947,6 +5197,7 @@ class ClaudeClient(LLMClient):
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,
                 copy_only=test_plan_data.get("copy_only") or None,
+                evidence_claims=_evidence_claims(test_plan_data),
             )
         except httpx.HTTPStatusError as e:
             raise self._status_error(e) from e
@@ -5040,6 +5291,7 @@ class ClaudeClient(LLMClient):
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,
                 copy_only=test_plan_data.get("copy_only") or None,
+                evidence_claims=_evidence_claims(test_plan_data),
             )
         except httpx.HTTPStatusError as e:
             raise self._status_error(e) from e
@@ -5298,6 +5550,42 @@ class ClaudeClient(LLMClient):
         if not tool_block:
             return {}
         return parse_scope_verdicts(tool_block.get("input"))
+
+    async def verify_unit_coverage(self, surviving: list[dict]) -> dict[str, dict] | None:
+        """Ask Claude whether each cited test body proves its case. None if it could not run."""
+        from .evidence_checks import (
+            COVERAGE_CRITIC_SYSTEM_PROMPT,
+            REPORT_COVERAGE_TOOL,
+            build_coverage_critic_message,
+            parse_coverage_verdicts,
+        )
+
+        if not surviving:
+            return {}
+        try:
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(4096, thinking=8192),
+                    "system": [{"type": "text", "text": COVERAGE_CRITIC_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"}}],
+                    "messages": [{"role": "user", "content": build_coverage_critic_message(surviving)}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [REPORT_COVERAGE_TOOL],
+                    "tool_choice": {"type": "tool", "name": "report_coverage"},
+                },
+                timeout=90.0,
+            )
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, LLMError):
+            import logging
+            logging.getLogger(__name__).warning(
+                "verify_unit_coverage: transport error; coverage left unconfirmed", exc_info=True)
+            return None
+        tool_block = next(
+            (b for b in (data.get("content") or []) if b.get("type") == "tool_use"), None)
+        if not tool_block:
+            return None
+        return parse_coverage_verdicts(tool_block.get("input"))
 
     async def verify_code_grounding(
         self,

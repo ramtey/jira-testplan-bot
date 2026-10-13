@@ -153,3 +153,21 @@ def noop_get_db():
     and only the database plumbing is in the way.
     """
     return _NoopDatabase()
+
+
+@pytest.fixture(autouse=True)
+def no_live_repo_evidence(monkeypatch: pytest.MonkeyPatch):
+    """Keep plan generation's repo-evidence read off real GitHub.
+
+    ``generate_single`` and ``generate_multi`` list each PR repo's tree and read
+    its tests, CI files and Dockerfiles (src/app/evidence_checks.py). With a
+    token in ``.env`` that is live traffic from any test whose fixture PR names
+    a repository. Returns no evidence by default; tests of the evidence path
+    patch ``plan_service._read_repo_evidence`` themselves.
+    """
+    from src.app.services import plan_service
+
+    async def _none(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(plan_service, "_read_repo_evidence", _none)

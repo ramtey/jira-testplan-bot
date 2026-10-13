@@ -1,0 +1,410 @@
+{
+ "happy_path": [
+  {
+   "title": "Large 2xx JSON webhook response no longer stalls — processPayload completes promptly and reaches archival/success",
+   "priority": "critical",
+   "preconditions": "Isolated offline harness in acmeclose-openfaas/webhook-delivery with the committed node-fetch 2.x resolution; a local HTTP receiver under the harness's control (never a production receiver or queue); synthetic payload data only.",
+   "steps": [
+    "Start a local HTTP server that responds HTTP 200 with a finite synthetic JSON body well above node-fetch's clone stream high-water mark (e.g. ~64 KB of repeated synthetic ASCII; the stall threshold reported in the PR is roughly 16 KB).",
+    "Require `processPayload` from `utils/request-processor.js` (now exported) and invoke it with a synthetic payload whose `targetUrl` points at the local server, a non-legacy (JSON) payload type, and a stub logger that records calls.",
+    "Impose a short harness deadline (e.g. 5 s) that is far below the 60 s node-fetch timeout.",
+    "Assert the promise resolves before the harness deadline."
+   ],
+   "expected": "`processPayload` resolves within the short harness deadline — it reads the body once via `response.text()` with no un-consumed clone branch, so no backpressure stall occurs and the delivery proceeds to the archive move / success path instead of timing out at 60 s and being marked failed (424) and retried.",
+   "test_data": "Local receiver: HTTP 200, Content-Type application/json, synthetic body ≈64 KB (> ~16 KB tee buffer). Harness deadline 5 s (< 60 s node-fetch timeout). No real customer or transaction data.",
+   "surface": "cli",
+   "credentials": "none — offline unit/integration harness against a localhost receiver; no AWS, queue, or production credentials.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas repo, `webhook-delivery` function, `__tests__/request-processor.unit.js`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:140 (now `const responseText = await response.text();`)",
+   "assertion_type": "behavior",
+   "grounded_in": [
+    "pr:utils/request-processor.js",
+    "pr:__tests__/request-processor.unit.js",
+    "ticket:SK-2826-desc"
+   ],
+   "covered_by_unit_test": true,
+   "unit_test_ref": "__tests__/request-processor.unit.js › large-body suite (real node-fetch Response streaming a large body, per PR #5 description)",
+   "covers_acs": []
+  },
+  {
+   "title": "Large 2xx SOFTPRO_LEGACY_XML success response is fully read and parsed (full body, not the excerpt)",
+   "priority": "critical",
+   "preconditions": "Same offline harness as above; synthetic XML only.",
+   "steps": [
+    "Start a local HTTP server returning HTTP 200 with a synthetic SOFTPRO legacy XML body whose total length exceeds ~16 KB and whose `<success>` element — placed AFTER more than 256 characters of filler — indicates success.",
+    "Call `processPayload` with a synthetic payload of type `SOFTPRO_LEGACY_XML` targeting that server and a stub logger.",
+    "Assert the call resolves without throwing, within a short harness deadline.",
+    "Inspect the stub logger's recorded info entry."
+   ],
+   "expected": "The call resolves successfully: XML success parsing reads the COMPLETE response body (not the 256-character excerpt), so a success flag located beyond character 256 is still detected. No error is thrown and no 60 s stall occurs.",
+   "test_data": "Synthetic legacy XML ≈20 KB with >256 chars of filler preceding the success element. No real transaction data.",
+   "surface": "cli",
+   "credentials": "none — offline harness, localhost receiver.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:156 (`const xmlBodyAsJson = await parseXMLBody(responseText);` — full body, not the excerpt)",
+   "assertion_type": "behavior",
+   "grounded_in": [
+    "pr:utils/request-processor.js"
+   ],
+   "covered_by_unit_test": true,
+   "unit_test_ref": "__tests__/request-processor.unit.js › large XML success suite (per PR #5 description: 'regression tests cover large bodies plus legacy XML failure handling')",
+   "covers_acs": []
+  },
+  {
+   "title": "Delivery log carries a 256-character excerpt plus responseBytes, and preserves verb/url/code",
+   "priority": "high",
+   "preconditions": "Offline harness; stub logger capturing the object passed to logger.info.",
+   "steps": [
+    "Call `processPayload` with a synthetic payload whose receiver returns HTTP 200 with a synthetic body longer than 256 characters.",
+    "Capture the object passed to `logger.info`.",
+    "Assert the `resp` field length and content.",
+    "Assert `responseBytes` equals the byte length of the FULL body, not the excerpt length.",
+    "Assert `verb`, `url` and `code` are still present and correct."
+   ],
+   "expected": "`logger.info` receives `resp` = the first 256 characters of the body followed by the truncation marker (257 characters total), `responseBytes` = Buffer.byteLength of the full untruncated body, and the pre-existing fields `verb` (payload.method), `url` (encodeURI of targetUrl) and `code` (response.status) unchanged.",
+   "test_data": "Synthetic ASCII body of 1,000 characters → expected resp length 257 (256 + marker), responseBytes 1000. No real response bodies.",
+   "surface": "cli",
+   "credentials": "none — offline harness.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:150-155 (`resp: responseExcerpt(responseText), responseBytes: Buffer.byteLength(responseText)`), with RESPONSE_EXCERPT_CHARS = 256 at :97",
+   "assertion_type": "content",
+   "grounded_in": [
+    "pr:utils/request-processor.js",
+    "pr:__tests__/request-processor.unit.js"
+   ],
+   "covered_by_unit_test": true,
+   "unit_test_ref": "__tests__/request-processor.unit.js › truncation / byte-length / preserved log fields (verb, url, code) cases (per PR #6 summary)",
+   "covers_acs": []
+  },
+  {
+   "title": "Ordinary small 2xx webhook delivery is unchanged end-to-end",
+   "priority": "high",
+   "preconditions": "Offline harness with a mocked response object.",
+   "steps": [
+    "Call `processPayload` with a synthetic payload whose receiver returns HTTP 200 with a short synthetic body (under 256 characters).",
+    "Capture the logger.info object and the resolution of the call."
+   ],
+   "expected": "The call resolves; `resp` contains the body verbatim with NO truncation marker appended; `responseBytes` equals the body's byte length; `verb`, `url`, `code` are logged as before. Behaviour for ordinary small responses is identical to pre-change behaviour.",
+   "test_data": "Synthetic body of ~40 ASCII characters.",
+   "surface": "cli",
+   "credentials": "none — offline harness.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:99-101 (responseExcerpt returns text unchanged when length <= 256)",
+   "assertion_type": "content",
+   "grounded_in": [
+    "pr:utils/request-processor.js"
+   ],
+   "covered_by_unit_test": true,
+   "unit_test_ref": "__tests__/request-processor.unit.js › short-body (no truncation) case (per PR #6 summary)",
+   "covers_acs": []
+  }
+ ],
+ "edge_cases": [
+  {
+   "title": "Exploit path proof: an unread clone branch stalls, the shipped single-read path does not (negative control)",
+   "priority": "critical",
+   "category": "security",
+   "preconditions": "Offline harness using the committed node-fetch 2.x resolution; local receiver only — never a production receiver or queue.",
+   "steps": [
+    "Start a local HTTP server returning HTTP 200 with a finite synthetic body larger than node-fetch's clone stream high-water mark (≈64 KB).",
+    "EXPLOIT CONTROL: in harness code only (not production code), fetch the URL and call `response.clone().text()` without reading `response.body`; apply a 5 s harness deadline.",
+    "Assert that this clone-only read does NOT complete within the deadline.",
+    "FIXED PATH: call the shipped `processPayload` against the same receiver with the same 5 s deadline.",
+    "Assert the shipped path completes within the deadline."
+   ],
+   "expected": "The clone-only read (the pre-fix shape) does not resolve within 5 s, demonstrating the backpressure stall; the shipped `processPayload` — which reads `response.text()` once — resolves within 5 s. This is the regression test the ticket's 'Done when' requires (exploit path plus negative case).",
+   "test_data": "Synthetic body ≈64 KB; harness deadline 5 s; node-fetch pinned at the committed 2.x resolution (yarn.lock). No production data.",
+   "surface": "cli",
+   "credentials": "none — offline harness, localhost receiver.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:140 (single `await response.text()`; the clone call is gone)",
+   "assertion_type": "behavior",
+   "grounded_in": [
+    "ticket:SK-2826-desc",
+    "pr:utils/request-processor.js"
+   ],
+   "data_shape": {
+    "shape": "An HTTP 200 response whose body exceeds node-fetch 2.x's clone stream high-water mark (~16 KB) and is finite.",
+    "provisioning": "stub",
+    "evidence": "No live receiver in the repo is documented as returning bodies of this size, and the ticket explicitly forbids using a production receiver. The PR itself used 'a real node-fetch Response streaming a large body' inside the test suite.",
+    "obtain": "Engineering stands up a local HTTP server (or a real node-fetch Response over a synthetic stream) in `__tests__/request-processor.unit.js` that emits ≈64 KB of synthetic ASCII under a 200 status. QA cannot produce this from any UI."
+   },
+   "expected_source_unconfirmed": true,
+   "expected_source_unconfirmed_reason": "cites a file but no line number",
+   "covers_acs": []
+  },
+  {
+   "title": "SOFTPRO_LEGACY_XML bad response: error message carries only the bounded excerpt, never the full body",
+   "priority": "high",
+   "category": "security",
+   "preconditions": "Offline harness; stub logger.",
+   "steps": [
+    "Have the mocked receiver return HTTP 200 with a synthetic legacy XML body whose success element is false/absent AND whose total length far exceeds 256 characters (e.g. ~10 KB of synthetic filler).",
+    "Call `processPayload` with payload type `SOFTPRO_LEGACY_XML` and capture the thrown error.",
+    "Measure the length of the error message and compare the body portion against the original body."
+   ],
+   "expected": "An Error is thrown whose message names the method and target URL and embeds only the 256-character excerpt (with the truncation marker) — the full ~10 KB body does NOT appear in the error text. The excerpt in the error is identical to the one written to the log.",
+   "test_data": "Synthetic failing XML ≈10 KB. Expected embedded body portion = 257 characters (256 + marker).",
+   "surface": "cli",
+   "credentials": "none — offline harness.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:161 (`returned bad response: ${responseExcerpt(responseText)}`)",
+   "assertion_type": "content",
+   "grounded_in": [
+    "pr:utils/request-processor.js",
+    "pr:__tests__/request-processor.unit.js"
+   ],
+   "covered_by_unit_test": true,
+   "unit_test_ref": "__tests__/request-processor.unit.js › 'oversized failure payloads are not embedded in error text' (per PR #6 summary)",
+   "expected_source_unconfirmed": true,
+   "expected_source_unconfirmed_reason": "cites a file but no line number",
+   "covers_acs": []
+  },
+  {
+   "title": "Multi-byte response body: excerpt is counted in characters, responseBytes in bytes",
+   "priority": "high",
+   "category": "boundary",
+   "steps": [
+    "Have the mocked receiver return HTTP 200 with a synthetic body composed of multi-byte characters (e.g. 500 identical non-ASCII characters) so byte length differs from character length.",
+    "Call `processPayload` and capture the logger.info object.",
+    "Compare the character length of `resp` against `responseBytes`."
+   ],
+   "expected": "`resp` is 256 characters plus the truncation marker (character-based slice, no split surrogate garbage in the common case), while `responseBytes` reports the FULL body's byte length computed with Buffer.byteLength — a larger number than the character count. The two values are deliberately different units and must not be conflated.",
+   "test_data": "500 multi-byte characters (e.g. a repeated 3-byte UTF-8 character) → character length 500, byte length 1500; expected resp length 257, responseBytes 1500.",
+   "surface": "cli",
+   "credentials": "none — offline harness.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:99-101 and :154 (slice by chars; Buffer.byteLength for bytes)",
+   "assertion_type": "content",
+   "grounded_in": [
+    "pr:utils/request-processor.js",
+    "pr:__tests__/request-processor.unit.js"
+   ],
+   "covered_by_unit_test": true,
+   "unit_test_ref": "__tests__/request-processor.unit.js › byte-length accounting including multi-byte characters (per PR #6 summary)",
+   "covers_acs": []
+  },
+  {
+   "title": "Truncation boundary: exactly 256 characters is not marked truncated; 257 is",
+   "priority": "medium",
+   "category": "boundary",
+   "steps": [
+    "Call `processPayload` with a mocked 200 response whose body is exactly 256 ASCII characters; capture logger.info.",
+    "Repeat with a body of exactly 257 ASCII characters; capture logger.info.",
+    "Compare both `resp` values against the respective source bodies."
+   ],
+   "expected": "For the 256-character body, `resp` equals the body verbatim with NO truncation marker (the helper truncates only when length is strictly greater than 256) and responseBytes = 256. For the 257-character body, `resp` is the first 256 characters plus the truncation marker (257 characters) and responseBytes = 257.",
+   "test_data": "| Body length | Expected resp | Expected responseBytes |\n|---|---|---|\n| 256 ASCII chars | body verbatim, no marker | 256 |\n| 257 ASCII chars | first 256 chars + marker | 257 |",
+   "surface": "cli",
+   "credentials": "none — offline harness.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:99 (`text.length > RESPONSE_EXCERPT_CHARS ? ... : text`)",
+   "assertion_type": "content",
+   "grounded_in": [
+    "pr:utils/request-processor.js"
+   ],
+   "covers_acs": []
+  },
+  {
+   "title": "Empty 2xx response body does not break logging or legacy XML handling",
+   "priority": "medium",
+   "category": "error_handling",
+   "steps": [
+    "Call `processPayload` with a mocked 200 response whose body is an empty string, using a non-legacy JSON payload type; capture logger.info.",
+    "Repeat with payload type `SOFTPRO_LEGACY_XML` and capture the outcome."
+   ],
+   "expected": "For the JSON type, the call resolves; `resp` is the empty string (no marker) and `responseBytes` is 0. For the legacy XML type, the existing XML-parse failure path is exercised — unverified: the diff does not change how parseXMLBody handles an empty string, so record whatever the current behaviour is (reject/throw) and confirm it is unchanged from pre-fix behaviour rather than newly introduced.",
+   "test_data": "Mocked 200 response, body = \"\".",
+   "surface": "cli",
+   "credentials": "none — offline harness.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": false,
+   "assertion_type": "behavior",
+   "grounded_in": [
+    "pr:utils/request-processor.js"
+   ],
+   "covers_acs": []
+  },
+  {
+   "title": "Inverse trigger: a large body no longer converts an accepted delivery into a failed/retried one",
+   "priority": "high",
+   "category": "error_handling",
+   "preconditions": "Offline harness with the delivery outcome observable (resolution vs. thrown body-timeout).",
+   "steps": [
+    "Start a local receiver returning HTTP 200 with a synthetic body ≈64 KB for a non-legacy JSON payload type.",
+    "Call `processPayload` under a harness deadline shorter than the 60 s node-fetch timeout.",
+    "Assert the call resolves rather than rejecting with a body-timeout error.",
+    "Assert the stub logger records no delivery-failure path for this invocation."
+   ],
+   "expected": "No body-timeout rejection occurs. The accepted 2xx is treated as a success, so the downstream failed/retry (424 + DLQ, per the kickoff comment) path is NOT entered — this is the duplicate-send side effect the fix removes.",
+   "test_data": "Synthetic 64 KB 200 body; harness deadline 5 s; node-fetch timeout 60 s default (utils/http.js).",
+   "surface": "cli",
+   "credentials": "none — offline harness.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:140 — single read removes the tee stall that previously produced the body timeout",
+   "assertion_type": "behavior",
+   "grounded_in": [
+    "ticket:SK-2826-desc",
+    "pr:utils/request-processor.js"
+   ],
+   "expected_source_unconfirmed": true,
+   "expected_source_unconfirmed_reason": "cites a file but no line number",
+   "covers_acs": []
+  }
+ ],
+ "integration_tests": [
+  {
+   "title": "[Backend] processPayload export is reachable and the mocked suite runs offline without hitting live AWS/httpbin",
+   "priority": "high",
+   "steps": [
+    "From the repo root, run the new mocked suite `__tests__/request-processor.unit.js` with network egress blocked (e.g. offline mode or a blocking proxy).",
+    "Confirm the suite imports `processPayload` from `utils/request-processor.js` via the newly added export.",
+    "Confirm the pre-existing `__tests__/request-processor.js` suite (which the kickoff comment says hits live AWS/httpbin) remains a separate file and is not required for this suite to pass."
+   ],
+   "expected": "The mocked unit suite passes with no outbound network access, proving the regression coverage is offline and deterministic; `processPayload` is importable because the diff adds `exports.processPayload = processPayload;`.",
+   "test_data": "No external data. Mocked response objects plus a real node-fetch Response over a synthetic large-body stream.",
+   "surface": "cli",
+   "credentials": "none — offline test run; no AWS credentials required.",
+   "environment": "Local developer / CI — acmeclose-openfaas repo root",
+   "expected_verified": true,
+   "expected_source": "utils/request-processor.js:158 (`exports.processPayload = processPayload;`)",
+   "assertion_type": "access",
+   "grounded_in": [
+    "pr:utils/request-processor.js",
+    "pr:__tests__/request-processor.unit.js"
+   ],
+   "covers_acs": []
+  },
+  {
+   "title": "[Backend] node-fetch stays on the committed 2.x line after the open Dependabot bump",
+   "priority": "high",
+   "steps": [
+    "Check out the Dependabot dependency-bump PR branch (PR #1, open at time of kickoff).",
+    "Resolve the installed node-fetch version for the `webhook-delivery` function and for the root lockfile.",
+    "Compare the resolved major version against the committed 2.x resolution.",
+    "If node-fetch has moved to a 3.x line, re-run the large-body suite and record the outcome."
+   ],
+   "expected": "node-fetch remains on the 2.x line that `webhook-delivery/package.json` declares and the root lockfile resolves. If the bump moves it to a 3.x major, flag it before merge — the body-read semantics and the `timeout` option behaviour differ, and the regression suite must be re-validated against the new major.",
+   "test_data": "Compare `webhook-delivery/package.json` dependency range against the resolved lockfile entry.",
+   "surface": "cli",
+   "credentials": "none.",
+   "environment": "Local developer / CI — acmeclose-openfaas repo",
+   "expected_verified": false,
+   "assertion_type": "state",
+   "grounded_in": [
+    "ticket:SK-2826-desc"
+   ],
+   "covers_acs": []
+  }
+ ],
+ "regression_checklist": [
+  "🔴 A SOFTPRO_LEGACY_XML delivery whose success flag appears BEYOND character 256 of the body still parses as success — XML parsing must use the full body, never the 256-character excerpt (utils/request-processor.js:156).",
+  "🔴 A SOFTPRO_LEGACY_XML delivery with a failing success flag still throws and is still treated as a failed delivery — the excerpt change must not swallow the failure, only shorten its message.",
+  "🔴 Ordinary small-body 2xx deliveries (under 256 characters) complete and log `resp` verbatim with no truncation marker — unchanged from pre-fix behaviour.",
+  "🔴 Non-2xx receiver responses are still rejected by `sendRequest` in utils/http.js and never reach the success/archive path — the response-read change must not alter status handling.",
+  "🔴 Exploit regression: with the committed node-fetch 2.x resolution, a 200 response larger than the clone high-water mark completes inside a short harness deadline; the clone-only control in the same harness still stalls (proves the fix, not the harness).",
+  "🟡 The delivery log entry still carries `verb`, `url` (encodeURI of targetUrl) and `code` alongside the new `resp` excerpt and `responseBytes`; downstream log consumers/dashboards that read these fields are unaffected.",
+  "🟡 Any log search or alert that previously matched on the full `resp` body content is reviewed — bodies are now truncated at 256 characters, so content beyond that no longer appears in logs.",
+  "🟡 Run the new offline mocked suite `__tests__/request-processor.unit.js` with network egress blocked and confirm it passes without AWS or httpbin, keeping it independent of the live-network `__tests__/request-processor.js` suite.",
+  "🟡 Re-run the full webhook-delivery test suite on the Dependabot dependency-bump branch and confirm node-fetch has not moved off the 2.x line; if it has, re-validate the large-body behaviour before merging either PR.",
+  "🟡 Bounce-back re-walk (Ready for UAT → In Progress, 2026-10-09, reason unrecorded): execute the complete delivery flow once end-to-end on a non-prod deployment with a disposable receiver returning a large 200 body — invoke, deliver, archive, success callback — and confirm no stall, no 424/retry, and no duplicate send. The earlier bounce had no recorded reason, so walk the whole flow rather than a single assertion.",
+  "🟢 Deploy-time sanity on the non-prod `webhook-delivery` pod: the startup probe on /_/health passes and the pod does not enter CrashLoopBackOff after the redeploy that ships this change (README deployment notes).",
+  "🟢 Memory behaviour of the function under a large (multi-MB) receiver response is observed at least once against the 256Mi limit / 192MB heap cap, since no response-byte cap was added in this change."
+ ],
+ "risks_and_gaps": [
+  {
+   "gap": "No response-byte cap was added. The Audit finding's 'apply an explicit byte limit' and node-fetch `size` option recommendations were explicitly deferred to a follow-up in PR #5's description, and `utils/http.js` still passes a timeout but no `size` option to node-fetch.",
+   "impact": "A hostile receiver can still force the worker to buffer an arbitrarily large 2xx body into a JavaScript string. With the container capped at 256Mi and the V8 heap at 192MB, a sufficiently large response can exhaust memory or inflate per-invocation time even though the 60 s tee stall is gone — the CWE-400 resource-exhaustion class is reduced, not closed.",
+   "evidence": "utils/http.js:7-27 (timeout only, no size option) plus PR #5 description: 'The size-cap and bounded log-excerpt suggestions from the Audit finding are intentionally left for a follow-up.'"
+  },
+  {
+   "gap": "No total job/response concurrency bound was introduced, which the finding calls out as a missing control ('the code defines no total job concurrency or response-byte bound').",
+   "impact": "Repeated slow-but-legal large responses can still occupy concurrent worker slots and build queue lag, though for a much shorter window now that deliveries no longer hang for the full 60 s timeout.",
+   "evidence": "Ticket description, 'Why current controls do not stop it'; neither PR diff touches concurrency configuration."
+  },
+  {
+   "gap": "The ticket's 'Done when' requires that a Audit rerun no longer reports fingerprint `acmeclose-openfaas|CWE-400|utils/request-processor.js|unconsumed-response-clone-stalls-delivery`, but nothing in the development activity records that rerun.",
+   "impact": "The ticket can be closed while the audit still reports the fingerprint, since the byte-limit half of 'What to change' was deferred; sign-off may be premature.",
+   "evidence": "Ticket 'Done when' bullet 4; no commit, PR, or comment references a Audit rerun result."
+  },
+  {
+   "gap": "The pre-existing suite `__tests__/request-processor.js` is described in the kickoff comment as hitting live AWS/httpbin, and neither PR changes it.",
+   "impact": "CI for this function remains partly dependent on external services; a network or httpbin outage can mask or falsely fail the regression coverage that proves this fix.",
+   "evidence": "Jira comment by Dev Agent, 2026-10-08: 'the existing __tests__/request-processor.js hits live AWS/httpbin, so add a separate mocked suite.'"
+  }
+ ],
+ "needs_spec_cases": [
+  {
+   "title": "No response-byte cap exists — an unbounded (very large) 2xx body is still read in full",
+   "priority": "medium",
+   "category": "boundary",
+   "steps": [
+    "Start a local receiver returning HTTP 200 with a synthetic body substantially larger than any realistic receiver reply (e.g. 50 MB of synthetic ASCII).",
+    "Call `processPayload` under a generous harness deadline and observe memory/time.",
+    "Record whether the body is read in full into a string."
+   ],
+   "expected": "The full body is read into memory — the size-cap recommendation from the Audit finding was EXPLICITLY deferred to a follow-up by PR #5's description, so no byte limit is enforced and no size-related rejection occurs. This case documents residual exposure, not a defect of the shipped change; do not file it as a bug against this ticket.",
+   "test_data": "Synthetic 50 MB ASCII body; container memory limit 256Mi with NODE_OPTIONS --max-old-space-size=192 per README.",
+   "surface": "cli",
+   "credentials": "none — offline harness.",
+   "environment": "Local developer / CI harness — acmeclose-openfaas `webhook-delivery`",
+   "expected_verified": false,
+   "assertion_type": "behavior",
+   "grounded_in": [
+    "pr:utils/request-processor.js",
+    "ticket:SK-2826-desc"
+   ],
+   "needs_manual_verification": true,
+   "data_shape": {
+    "shape": "An HTTP 200 response body in the tens of megabytes.",
+    "provisioning": "stub",
+    "evidence": "No live receiver is known to return a body of this size, and the ticket forbids using production receivers.",
+    "obtain": "Engineering streams synthetic bytes from a local HTTP server in the harness. QA cannot produce this."
+   },
+   "needs_spec": true,
+   "needs_spec_reason": "Neither the UI element this case drives nor its expected result could be traced to the linked source. Not gradeable until a spec or PR confirms the intended behaviour.",
+   "origin_section": "edge_cases"
+  },
+  {
+   "title": "[Backend] End-to-end webhook delivery against a non-production receiver completes, archives, and logs the bounded excerpt",
+   "priority": "high",
+   "preconditions": "A non-production deployment of the `webhook-delivery` function wired to a disposable test receiver and a disposable archive bucket/queue. Blocked until a deployed non-prod environment with the merged branch exists, owner: the team that owns the webhook-delivery deployment. Use synthetic payloads only — never a production receiver or queue.",
+   "steps": [
+    "Point a synthetic accepted webhook payload at a disposable receiver that replies HTTP 200 with a synthetic body of roughly 64 KB.",
+    "Invoke the deployed function with that payload.",
+    "Watch the function's logs for the delivery entry.",
+    "Check that the payload object is moved to the archive location and the success callback is made."
+   ],
+   "expected": "The invocation completes well inside the 60 s node-fetch timeout, the archive move and success callback occur, and the log entry for the delivery shows a `resp` field truncated to a 256-character excerpt with the truncation marker plus a `responseBytes` field carrying the full ~64 KB byte count. No retry or DLQ entry is produced for this delivery.",
+   "test_data": "Disposable receiver returning 200 with ≈64 KB of synthetic ASCII. No customer, transaction, or document data.",
+   "surface": "backend_http",
+   "credentials": "Whatever service principal the non-prod webhook-delivery deployment already uses to read the payload object and write the archive — not a user session. Exact grant not visible in the diff.",
+   "environment": "Non-production / staging deployment of the `webhook-delivery` OpenFaaS function — base URL not knowable from the diff; obtain from the deploying team.",
+   "expected_verified": false,
+   "assertion_type": "state",
+   "grounded_in": [
+    "pr:utils/request-processor.js",
+    "ticket:SK-2826-desc"
+   ],
+   "needs_manual_verification": true,
+   "data_shape": {
+    "shape": "A disposable webhook receiver that replies HTTP 200 with a ~64 KB synthetic body.",
+    "provisioning": "stub",
+    "evidence": "No configured production receiver is documented as returning bodies of this size, and the ticket explicitly forbids using a production receiver.",
+    "obtain": "Engineering or QA stands up a disposable HTTP endpoint (e.g. a small test service or request-bin equivalent under team control) returning a fixed 64 KB synthetic body; register it as a test destination in the non-prod environment only."
+   },
+   "needs_spec": true,
+   "needs_spec_reason": "Neither the UI element this case drives nor its expected result could be traced to the linked source. Not gradeable until a spec or PR confirms the intended behaviour.",
+   "origin_section": "integration_tests"
+  }
+ ]
+}
