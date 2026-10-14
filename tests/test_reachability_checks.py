@@ -267,3 +267,11 @@ def test_a_parameterised_test_body_includes_its_table():
     assert "Loading CSS chunk 12 failed." in body and "expect(isChunkLoadError" in body
     assert "other" not in body
     assert ev.extract_test_body(src, "other").startswith('"other"'), "a plain it() is unchanged"
+
+
+def test_a_true_uncited_ci_claim_gets_the_build_fact_attached():
+    case = _cli_case("Covered by the unit suite, which CI runs.", unit_test_ref=f"{TEST_FILE} › accepts the legacy form")
+    plan = _plan(edge_cases=[case])
+    assert rc.flag_ci_claims(plan, REPO_EVIDENCE) == [{"location": "edge_cases:0", "kind": "cited_from_build_facts"}]
+    assert case["expected"].startswith("Covered by the unit suite")
+    assert "(CI evidence: .github/workflows/ci.yml runs" in case["expected"]

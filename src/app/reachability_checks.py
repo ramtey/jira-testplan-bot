@@ -395,8 +395,25 @@ def flag_ci_claims(test_plan: Any, repo_evidence: list[dict] | None) -> list[dic
             return "uncited", CI_UNCITED_MARKER
         return None
 
+    def backing(text: str) -> str | None:
+        """The build fact that proves a positive claim about a file the text names."""
+        for path, st in suites.items():
+            if st.get("status") == "runs" and (path in text or posixpath.basename(path) in text):
+                return st.get("why")
+        return None
+
     for section, i, case in _cases(test_plan):
-        found = verdict(_case_text(case))
+        text = f"{_case_text(case)} {case.get('unit_test_ref') or ''}"
+        found = verdict(text)
+        if found and found[0] == "uncited" and not _negative_ci_sentences(text):
+            why = backing(text)
+            if why:
+                # True and provable: cite the file rather than call it unverified.
+                cite = f"(CI evidence: {why})"
+                if cite not in (case.get("expected") or ""):
+                    case["expected"] = f"{case.get('expected') or ''} {cite}".strip()
+                    flagged.append({"location": f"{section}:{i}", "kind": "cited_from_build_facts"})
+                continue
         if found and found[1] not in (case.get("expected") or ""):
             case["expected"] = _prefix(case.get("expected") or "", found[1])
             flagged.append({"location": f"{section}:{i}", "kind": found[0]})

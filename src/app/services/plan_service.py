@@ -1154,6 +1154,9 @@ async def _check_reachability(llm, test_plan, dev_infos: list, provenance: dict,
         # reachable is the trail when that case later fails in UAT.
         provenance["reachability"] = {k: changes[k] for k in ("converted", "marked", "confirmed", "unsure")
                                       if changes.get(k)}
+        # Raw positions in each section's body array at the time the critic
+        # ran, NOT the case ids the UI prints (those skip unit-covered cases).
+        provenance["reachability"]["ids_are"] = "raw body positions before quarantine"
     if changes.get("usage"):
         logger.info("reachability critic for %s: %s", label, summarize_reachability(changes))
 
