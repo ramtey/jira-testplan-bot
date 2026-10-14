@@ -320,18 +320,22 @@ async def run_reachability_critic(llm: Any, github: Any, test_plan: Any,
 # ---------------------------------------------------------------------------
 
 _CI_WORD = r"(?:CI|continuous integration|GitHub Actions|workflows?|pipelines?|CI jobs?)"
-_CI_CLAIM = re.compile(
-    rf"\b(?:no|not|never|nothing in)\b[^.;]{{0,40}}\b{_CI_WORD}\b"
-    rf"|\b{_CI_WORD}\b[^.;]{{0,40}}\b(?:does not|doesn't|do not|don't|never|not)\b[^.;]{{0,25}}\b(?:run|execute|cover)"
-    rf"|\b{_CI_WORD}\b[^.;]{{0,30}}\b(?:runs|executes|covers|enforces)\b"
-    rf"|\b(?:run|executed|enforced|covered)\s+(?:by|in)\s+(?:the\s+)?{_CI_WORD}\b",
-    re.I,
-)
+_RUN_VERB = r"(?:run|runs|ran|executed?|executes|exercised?|covered|covers|enforced?|enforces)"
+# Every pattern is applied to one sentence at a time and needs a run verb, so
+# "check that apps/web is not filtered out of the workflow" is not a claim that
+# CI does not run something; the negation has to govern the verb.
 _CI_NEGATIVE = re.compile(
-    rf"\b(?:no|not|never|nothing in)\b[^.;]{{0,40}}\b{_CI_WORD}\b"
-    rf"|\b{_CI_WORD}\b[^.;]{{0,40}}\b(?:does not|doesn't|do not|don't|never|not)\b",
+    rf"\b(?:not|never|n't)\s+(?:\w+\s+){{0,2}}?{_RUN_VERB}\b"
+    rf"|\bno\s+(?:\w+\s+){{0,2}}?{_CI_WORD}\b[^.;]{{0,40}}\b{_RUN_VERB}\b"
+    rf"|\bnothing in\b[^.;]{{0,40}}\b{_RUN_VERB}\b",
     re.I,
 )
+_CI_POSITIVE = re.compile(
+    rf"\b{_CI_WORD}\b[^.;]{{0,30}}\b(?:runs|executes|covers|enforces)\b"
+    rf"|\b(?:run|executed|enforced|covered)\s+(?:by|in|under)\s+(?:the\s+)?{_CI_WORD}\b",
+    re.I,
+)
+_HAS_CI_WORD = re.compile(rf"\b{_CI_WORD}\b", re.I)
 _CI_FILE_CITED = re.compile(
     r"\.github/workflows/|\bJenkinsfile\b|\.gitlab-ci\.yml|\b[\w.-]*ci[\w.-]*\.ya?ml\b|buildspec"
     r"|azure-pipelines|bitbucket-pipelines|\.circleci/|\.buildkite/|\bDockerfile\b",
@@ -341,17 +345,25 @@ _CI_FILE_CITED = re.compile(
 _PLATFORM_CI = re.compile(r"\b(?:on|in)\s+(?:the\s+)?(?:Linux\s+)?CI\b(?!\s+(?:runs|executes|covers))", re.I)
 
 
+def _sentences(text: str) -> list[str]:
+    return [x for x in re.split(r"(?<=[.;!?])\s+|\n+", _PLATFORM_CI.sub(" ", text)) if x.strip()]
+
+
+def _negative_ci_sentences(text: str) -> list[str]:
+    return [x for x in _sentences(text) if _HAS_CI_WORD.search(x) and _CI_NEGATIVE.search(x)]
+
+
 def _ci_claim(text: str) -> bool:
-    return bool(_CI_CLAIM.search(_PLATFORM_CI.sub(" ", text)))
+    return bool(_negative_ci_sentences(text)) or any(_CI_POSITIVE.search(x) for x in _sentences(text))
 
 
 def _contradiction(text: str, suites: dict[str, dict]) -> str | None:
-    """The CI-run evidence for a test file the text says CI does not run."""
-    if not _CI_NEGATIVE.search(_PLATFORM_CI.sub(" ", text)):
-        return None
-    for path, st in suites.items():
-        if st.get("status") == "runs" and (path in text or posixpath.basename(path) in text):
-            return st.get("why") or f"CI runs {path}"
+    """The CI-run evidence for a test file a sentence says CI does not run."""
+    for sentence in _negative_ci_sentences(text):
+        for path, st in suites.items():
+            if st.get("status") == "runs" and (path in sentence or posixpath.basename(path) in sentence
+                                               or "this file" in sentence or "these tests" in sentence):
+                return st.get("why") or f"CI runs {path}"
     return None
 
 

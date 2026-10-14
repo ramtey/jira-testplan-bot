@@ -248,3 +248,22 @@ def test_a_regression_line_keeps_its_priority_emoji_first():
     plan = _plan(regression_checklist=["🟡 CI does not run the web tests"])
     rc.flag_ci_claims(plan, [])
     assert plan.regression_checklist[0].startswith("🟡 " + rc.CI_UNCITED_MARKER)
+
+
+def test_asking_to_check_the_ci_scope_is_not_a_negative_claim():
+    """SK-2947 regeneration: a case that says CI runs the file was marked contradicted."""
+    text = ("Confirm the CI workflow's test scope includes this file: verify apps/web is within that turbo "
+            "scope (not filtered out) by checking the workflow's filter arguments.")
+    plan = _plan(integration_tests=[_cli_case(text + " CI runs it via .github/workflows/ci.yml.")])
+    assert rc.flag_ci_claims(plan, REPO_EVIDENCE) == []
+
+
+def test_a_parameterised_test_body_includes_its_table():
+    src = ('describe("m", () => {\n  it.each(["Loading chunk 9 failed.", "Loading CSS chunk 12 failed."])(\n'
+           '    "recognises %s when the name was lost",\n    (message) => {\n'
+           '      expect(isChunkLoadError(new Error(message))).toBe(true);\n    },\n  );\n'
+           '  it("other", () => { expect(1).toBe(1); });\n});\n')
+    body = ev.extract_test_body(src, "recognises %s when the name was lost")
+    assert "Loading CSS chunk 12 failed." in body and "expect(isChunkLoadError" in body
+    assert "other" not in body
+    assert ev.extract_test_body(src, "other").startswith('"other"'), "a plain it() is unchanged"

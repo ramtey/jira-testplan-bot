@@ -614,6 +614,28 @@ def _norm(s: str) -> str:
     return " ".join((s or "").split())
 
 
+_EACH_RE = re.compile(r"\b(?:it|test)(?:\.(?:only|skip|concurrent))*\.each\b")
+
+
+def _each_table_start(content: str, i: int) -> int:
+    """Where a parameterised test starts, when the name at ``i`` belongs to one.
+
+    In ``it.each([...])("name %s", fn)`` the inputs come before the name, so a
+    body taken from the name onward hides which values the test runs. SK-2947's
+    coverage check called a correct claim "partial" because the table holding
+    "Loading CSS chunk 12 failed." was cut off.
+    """
+    window = content[max(0, i - 4000):i]
+    matches = list(_EACH_RE.finditer(window))
+    if not matches:
+        return i
+    m = matches[-1]
+    between = window[m.end():]
+    if re.search(r"\b(?:it|test)\s*\(", between) or not between.rstrip().endswith("("):
+        return i
+    return i - len(window) + m.start()
+
+
 def extract_test_body(content: str, name: str) -> str | None:
     """The source of the test called ``name`` in ``content``.
 
@@ -627,6 +649,7 @@ def extract_test_body(content: str, name: str) -> str | None:
     for q in ('"', "'", "`"):
         i = content.find(f"{q}{name}{q}")
         if i >= 0:
+            i = _each_table_start(content, i)
             break
     else:
         m = re.search(rf"\b(?:def|func|fun|void|Task|async\s+Task)\s+{re.escape(name)}\s*\(", content)
