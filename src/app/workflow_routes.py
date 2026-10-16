@@ -37,6 +37,7 @@ from .jira_client import (
 from .models import LOOM_URL_RE, WorkflowActionRequest, video_url_re
 from .repositories import walkthrough_repository
 from . import uat_readiness
+from .services import auto_post
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,12 @@ SK_WORKFLOW_ACTIONS: dict[str, str] = {
     "fail-to-todo": "To Do",
     "fail-to-in-progress": "In Progress",
 }
+
+def _auto_posts_on(target_status: str) -> bool:
+    """Whether entering `target_status` posts the ticket's plan to Jira."""
+    configured = (settings.auto_post_status or "").strip().lower()
+    return bool(configured) and target_status.lower() == configured
+
 
 # Bounce-back actions that return a ticket to development with a required
 # reason + fail comment. Both behave identically aside from the target column.
@@ -732,14 +739,22 @@ async def run_workflow_action(
                 jira, issue_key, target_status, parent_pre_status
             )
 
+        async def _do_auto_post() -> dict | None:
+            if not _auto_posts_on(target_status):
+                return None
+            outcome = await auto_post.auto_post_own_plan(jira, issue_key)
+            return outcome.as_dict()
+
         (
             comment_posted,
             (parent_transitioned, parent_key),
             cascaded_subtasks,
+            auto_posted_plan,
         ) = await asyncio.gather(
             _do_comment(),
             _do_parent_transition(),
             _do_cascade(),
+            _do_auto_post(),
         )
         t_total = time.perf_counter() - t_start
 
@@ -763,6 +778,9 @@ async def run_workflow_action(
             "parent_transitioned": parent_transitioned,
             "parent_key": parent_key if parent_transitioned else None,
             "cascaded_subtasks": cascaded_subtasks,
+            # None when this transition doesn't auto-post; otherwise what
+            # happened to the plan, skips and failures included.
+            "auto_post": auto_posted_plan,
         }
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

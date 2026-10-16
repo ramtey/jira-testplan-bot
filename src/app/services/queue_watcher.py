@@ -64,7 +64,7 @@ from ..jira_client import JiraAuthError, JiraClient, JiraConnectionError
 from ..models import GenerateTestPlanRequest
 from ..repositories import plan_repository, ticket_hold_repository
 from ..source_grounding import PR_STATE_MERGED, classify_pr_state
-from . import plan_service
+from . import auto_post, plan_service
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +396,52 @@ async def sweep_once(
     return result
 
 
+@dataclass
+class AutoPostSweepResult:
+    outcomes: list[auto_post.AutoPostOutcome] = field(default_factory=list)
+    scanned: int = 0
+    queue_error: str | None = None
+
+
+async def sweep_auto_post(
+    *, projects: list[str] | None = None, dry_run: bool = False
+) -> AutoPostSweepResult:
+    """Post plans for tickets dragged into `auto_post_status` on the board.
+
+    Pull to testing posts on its own; this catches the moves it never sees,
+    and the ones where the plan was still generating when the ticket moved.
+    Only tickets that entered the column within `auto_post_lookback_hours`
+    are considered — see `JiraClient.search_keys_entered_status`.
+    """
+    result = AutoPostSweepResult()
+    status_name = (settings.auto_post_status or "").strip()
+    if not status_name:
+        return result
+    projects = projects or watched_projects()
+
+    jira = JiraClient()
+    keys: list[str] = []
+    for project_key in projects:
+        try:
+            keys.extend(
+                await jira.search_keys_entered_status(
+                    project_key,
+                    status_name,
+                    within_hours=settings.auto_post_lookback_hours,
+                )
+            )
+        except Exception as e:
+            result.queue_error = f"{type(e).__name__}: {e}"
+            logger.error("auto-post: could not read %s %r: %s", project_key, status_name, e)
+
+    result.scanned = len(keys)
+    for key in keys:
+        result.outcomes.append(
+            await auto_post.auto_post_own_plan(jira, key, dry_run=dry_run)
+        )
+    return result
+
+
 # Token-health state lives on disk, not in memory. In production the watcher
 # is a LaunchAgent running `testplan watch --once` — a fresh process every
 # five minutes — so an in-process timer would either never fire or fire on
@@ -624,6 +670,7 @@ async def watch(
     interval_seconds: int | None = None,
     dry_run: bool = False,
     on_result=None,
+    on_auto_post=None,
 ) -> None:
     """Sweep forever. ``on_result`` is called with each ``SweepResult``.
 
@@ -642,4 +689,10 @@ async def watch(
                 on_result(result)
         except Exception:
             logger.exception("watcher: sweep raised; retrying next cycle")
+        try:
+            posted = await sweep_auto_post(projects=projects, dry_run=dry_run)
+            if on_auto_post:
+                on_auto_post(posted)
+        except Exception:
+            logger.exception("watcher: auto-post sweep raised; retrying next cycle")
         await asyncio.sleep(interval)

@@ -7,6 +7,12 @@
 # Without it the sweep dies with "MONGODB_URI is not set".
 set -eu
 
+# launchd hands this /usr/bin:/bin:/usr/sbin:/sbin. Auto-posting a plan runs
+# the frontend's formatter under node, which lives in Homebrew's prefix; on
+# launchd's PATH every post would fail with "node is not on PATH".
+PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
+
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO"
 

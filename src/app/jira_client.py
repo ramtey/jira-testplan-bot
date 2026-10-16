@@ -3304,6 +3304,47 @@ class JiraClient:
             )
         return results
 
+    async def search_keys_entered_status(
+        self, project_key: str, status_name: str, *, within_hours: int
+    ) -> list[str]:
+        """Keys in `status_name` now that moved into it in the last `within_hours`.
+
+        "Moved into", not "sitting in": a ticket that has been in the column
+        for a week was there before anything here was watching it, and acting
+        on it now would act on a choice someone already made by hand.
+        """
+        if not re.match(r"^[A-Z][A-Z0-9_]*$", project_key):
+            raise ValueError(f"Invalid Jira project key: {project_key}")
+        escaped = status_name.replace("\\", "\\\\").replace('"', '\\"')
+        hours = max(1, int(within_hours))
+        payload = {
+            "jql": (
+                f'project = {project_key} AND status = "{escaped}" '
+                f'AND status CHANGED TO "{escaped}" AFTER -{hours}h '
+                "ORDER BY updated DESC"
+            ),
+            "fields": ["summary"],
+            "maxResults": 100,
+        }
+        url = f"{self.base_url}/rest/api/3/search/jql"
+        headers = {**self._headers(), "Content-Type": "application/json"}
+        try:
+            async with retrying_client(timeout=20) as client:
+                r = await client.post(url, headers=headers, json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for searching issues.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+        return [i.get("key", "") for i in (r.json().get("issues") or []) if i.get("key")]
+
     async def _fetch_issue_base_data(self, issue_key: str) -> tuple[dict, str]:
         """
         Single Jira `/rest/api/3/issue/{key}` GET. Shared by get_issue (full,

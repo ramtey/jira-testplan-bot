@@ -22,6 +22,22 @@ from .conftest import noop_get_db
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def stub_auto_post():
+    """Pull to testing auto-posts the plan, which reads the plan store. These
+    tests are about the transition, so the post is stubbed to a known outcome
+    and its own behaviour is pinned in test_auto_post.py."""
+    outcome = workflow_routes.auto_post.AutoPostOutcome(
+        "SK-42", "posted", None, "plan 7", 7
+    )
+    with patch.object(
+        workflow_routes.auto_post,
+        "auto_post_own_plan",
+        AsyncMock(return_value=outcome),
+    ) as stub:
+        yield stub
+
+
 def _jira_stub(**overrides):
     """Build a JiraClient stub prewired for the happy-path workflow calls.
 
@@ -353,3 +369,42 @@ def test_invalid_payload_json_returns_400():
     assert response.status_code == 400
     assert "Invalid payload JSON" in response.json()["detail"]
     jira.list_transitions.assert_not_awaited()
+
+
+def test_pull_to_testing_reports_the_auto_post(stub_auto_post):
+    """Entering In Testing posts the plan, and the response says what happened
+    so the banner never implies a post that didn't land."""
+    jira = _jira_stub()
+    with patch("src.app.workflow_routes.JiraClient", return_value=jira):
+        response = client.post("/issue/SK-42/workflow/pull-to-testing", files={})
+
+    assert response.status_code == 200
+    assert response.json()["auto_post"] == {
+        "action": "posted", "reason": None, "detail": "plan 7", "plan_id": 7,
+    }
+    stub_auto_post.assert_awaited_once_with(jira, "SK-42")
+
+
+def test_other_transitions_do_not_auto_post(stub_auto_post):
+    jira = _jira_stub()
+    with patch("src.app.workflow_routes.JiraClient", return_value=jira), patch.object(
+        workflow_routes, "_post_workflow_comment", AsyncMock(return_value=True)
+    ):
+        response = client.post(
+            "/issue/SK-42/workflow/fail-to-todo",
+            data={"payload": '{"reason": "broken", "note": "it broke"}'},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["auto_post"] is None
+    stub_auto_post.assert_not_awaited()
+
+
+def test_auto_post_can_be_switched_off(stub_auto_post, monkeypatch):
+    monkeypatch.setattr(workflow_routes.settings, "auto_post_status", "")
+    jira = _jira_stub()
+    with patch("src.app.workflow_routes.JiraClient", return_value=jira):
+        response = client.post("/issue/SK-42/workflow/pull-to-testing", files={})
+
+    assert response.json()["auto_post"] is None
+    stub_auto_post.assert_not_awaited()

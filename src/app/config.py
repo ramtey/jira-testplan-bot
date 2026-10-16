@@ -240,6 +240,14 @@ class Settings(BaseSettings):
     # within this window. Stops a ticket that fails every cycle — a timeout,
     # a malformed description — from burning a call every interval.
     watch_retry_cooldown_hours: int = 6
+    # Post the ticket's plan as its Jira comment when the ticket enters this
+    # status — from Pull to testing at once, from a board drag on the next
+    # sweep. Empty disables both.
+    auto_post_status: str = "In Testing"
+    # The sweep only considers tickets that entered `auto_post_status` within
+    # this window. Without it the first sweep would post onto every ticket
+    # already sitting in the column, including ones a tester chose not to post.
+    auto_post_lookback_hours: int = 24
 
     # Database (MongoDB)
     # Connection string for the QA bot's Mongo database. Point this at the NPE

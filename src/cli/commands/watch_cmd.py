@@ -11,7 +11,7 @@ from typing_extensions import Annotated
 
 from ..cli_config import config_manager
 from ...app.config import settings
-from ...app.services import queue_watcher
+from ...app.services import auto_post, queue_watcher
 
 console = Console()
 
@@ -91,6 +91,49 @@ def _render(result: queue_watcher.SweepResult, *, quiet: bool) -> None:
         f"{len(result.skipped)} skipped · "
         f"{len(result.failed)} failed[/dim]"
     )
+
+
+_AUTO_POST_LABEL = {
+    auto_post.SKIP_NO_OWN_PLAN: "no plan of its own yet",
+    auto_post.SKIP_EMPTY_PLAN: "plan has no cases — not posted",
+    auto_post.SKIP_ALREADY_LIVE: "a plan is already live",
+    auto_post.SKIP_COMMENT_EXISTS: "ticket already has a plan comment",
+    "dry_run": "would post",
+}
+
+
+def _render_auto_post(result: queue_watcher.AutoPostSweepResult, *, quiet: bool) -> None:
+    status = settings.auto_post_status
+    if result.queue_error:
+        console.print(f"[red]✗ Could not read \"{status}\":[/red] {result.queue_error}")
+
+    if quiet:
+        # Failures print even when quiet: a post that didn't land is the
+        # thing the log exists to show.
+        for o in result.outcomes:
+            if o.action == auto_post.POSTED:
+                print(f"posted {o.ticket_key} ({o.detail})")
+            elif o.action == auto_post.FAILED:
+                print(f"auto-post failed {o.ticket_key}: {o.reason} — {o.detail}")
+        return
+
+    if not result.outcomes:
+        console.print(
+            f"[dim]Nothing entered \"{status}\" in the last "
+            f"{settings.auto_post_lookback_hours}h.[/dim]"
+        )
+        return
+
+    table = Table(show_header=True, header_style="bold", title=f"Auto-post on \"{status}\"")
+    table.add_column("Ticket", style="cyan", no_wrap=True)
+    table.add_column("Action")
+    table.add_column("Detail", style="dim")
+    style = {auto_post.POSTED: "green", auto_post.SKIPPED: "dim", auto_post.FAILED: "red"}
+    for o in result.outcomes:
+        label = _AUTO_POST_LABEL.get(o.reason, o.reason or "")
+        detail = " — ".join(p for p in (label, o.detail) if p)
+        table.add_row(o.ticket_key, f"[{style.get(o.action, 'white')}]{o.action}[/]", detail)
+    console.print(table)
 
 
 def watch(
@@ -191,18 +234,25 @@ def watch(
         # production. check_tokens_if_due reads its clock from disk, so this
         # costs a file read on the sweeps where nothing is due.
         asyncio.run(queue_watcher.check_tokens_if_due())
-        result = asyncio.run(
-            queue_watcher.sweep_once(
+        async def _both():
+            # One event loop for both: the Mongo client binds to the loop that
+            # first used it, and a second asyncio.run would hand it a new one.
+            generated = await queue_watcher.sweep_once(
                 projects=projects,
                 status_name=status_name,
                 dry_run=dry_run,
                 max_per_cycle=max_per_sweep,
             )
-        )
+            return generated, await queue_watcher.sweep_auto_post(
+                projects=projects, dry_run=dry_run
+            )
+
+        result, posted = asyncio.run(_both())
         _render(result, quiet=quiet)
+        _render_auto_post(posted, quiet=quiet)
         # A queue we couldn't read is a failed sweep — exit non-zero so a
         # cron/launchd wrapper notices instead of logging a silent success.
-        if result.queue_error:
+        if result.queue_error or posted.queue_error:
             raise typer.Exit(1)
         return
 
@@ -218,6 +268,7 @@ def watch(
                 interval_seconds=every,
                 dry_run=dry_run,
                 on_result=lambda r: _render(r, quiet=quiet),
+                on_auto_post=lambda r: _render_auto_post(r, quiet=quiet),
             )
         )
     except KeyboardInterrupt:

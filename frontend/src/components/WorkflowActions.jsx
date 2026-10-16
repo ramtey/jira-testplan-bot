@@ -8,6 +8,7 @@ import {
 import Icon from './Icon'
 import { holdReasonLabel } from '../hooks/useTicketHold'
 import { Btn, Cbx, Alert, Modal } from './ui'
+import { describeAutoPost } from '../utils/autoPost'
 
 // Match the CSS exit duration so the feedback element stays in the DOM long enough.
 const MESSAGE_EXIT_MS = 220
@@ -1354,6 +1355,7 @@ function WorkflowActions({
       const cascadeText = cascadedCount > 0
         ? ` · ${cascadedCount} subtask${cascadedCount === 1 ? '' : 's'} moved`
         : ''
+      const autoPostText = describeAutoPost(data.auto_post)
       const lead =
         isFailAction(action.id)
           ? `Bounced back to ${data.target_status}`
@@ -1363,7 +1365,7 @@ function WorkflowActions({
       setFeedback({
         kind: 'success',
         actionId: action.id,
-        text: `${lead} · ${assigneeText}${noteText}${parentText}${cascadeText}`,
+        text: `${lead} · ${assigneeText}${noteText}${parentText}${cascadeText}${autoPostText}`,
       })
       closeNoteForm()
       if (onActionComplete) onActionComplete(action.id)
