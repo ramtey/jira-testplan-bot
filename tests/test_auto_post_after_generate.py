@@ -35,6 +35,7 @@ async def test_queues_the_post_on_a_ticket_in_testing(monkeypatch):
     assert out == {"action": "queued"}
     assert [t.func for t in tasks] == [auto_post.auto_post_own_plan]
     assert tasks[0].args[1] == "SK-1"
+    assert tasks[0].kwargs == {"trigger": auto_post.TRIGGER_GENERATE}
 
 
 @pytest.mark.asyncio

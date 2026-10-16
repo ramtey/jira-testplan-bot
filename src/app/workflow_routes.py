@@ -756,7 +756,10 @@ async def run_workflow_action(
         # outcome is recorded, and the plan view refetches it.
         auto_posted_plan = None
         if _auto_posts_on(target_status):
-            background_tasks.add_task(auto_post.auto_post_own_plan, jira, issue_key)
+            background_tasks.add_task(
+                auto_post.auto_post_own_plan, jira, issue_key,
+                trigger=auto_post.TRIGGER_PULL,
+            )
             auto_posted_plan = {"action": "queued"}
         t_total = time.perf_counter() - t_start
 

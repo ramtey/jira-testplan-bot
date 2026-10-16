@@ -61,7 +61,9 @@ class _Harness:
             "dev_status_unavailable": dev_unavailable,
         }
         self.jira.get_issue = AsyncMock(return_value=object())
-        self.record = AsyncMock()
+        # What Mongo returns for a ticket's first-ever outcome.
+        self.record = AsyncMock(return_value=None)
+        self.add_event = AsyncMock()
 
     def __enter__(self):
         repo = auto_post.plan_repository
@@ -76,6 +78,7 @@ class _Harness:
             patch.object(auto_post.uat_readiness, "fetch_readiness", AsyncMock(return_value={})),
             patch.object(auto_post.plan_posting, "post_one", self.post_one),
             patch.object(auto_post.auto_post_repository, "record", self.record),
+            patch.object(auto_post.auto_post_repository, "add_event", self.add_event),
             patch.object(
                 auto_post.plan_service, "serialize_issue", lambda _issue: self.serialized
             ),
@@ -244,6 +247,94 @@ async def test_a_truncated_post_is_not_a_success():
     with _Harness(post_result={"recorded": True, "truncated": True}) as h:
         out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
     assert (out.action, out.reason) == (auto_post.FAILED, "truncated")
+
+
+async def test_a_new_problem_alerts_once():
+    alerts = []
+    with _Harness(rows=[_row(case_count=0)]) as h, patch(
+        "src.app.services.queue_watcher.notify", lambda t, m, **k: alerts.append((t, m))
+    ):
+        await auto_post.auto_post_own_plan(h.jira, "SK-1")
+        # The next sweep finds the same problem with the same plan: no repeat.
+        h.record.return_value = {"action": "skipped", "reason": "empty_plan", "plan_id": 7}
+        await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert alerts == [("Test Plan Bot: SK-1 not posted", "The plan has no cases, so it was not posted.")]
+
+
+async def test_a_problem_that_comes_back_alerts_again():
+    alerts = []
+    with _Harness(post_error=RuntimeError("Jira is down")) as h, patch(
+        "src.app.services.queue_watcher.notify", lambda t, m, **k: alerts.append(m)
+    ):
+        h.record.return_value = {"action": "posted", "reason": None, "plan_id": 7}
+        await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert len(alerts) == 1 and "Jira is down" in alerts[0]
+
+
+async def test_normal_outcomes_never_alert():
+    alerts = []
+    with patch(
+        "src.app.services.queue_watcher.notify", lambda *a, **k: alerts.append(a)
+    ):
+        with _Harness() as h:  # posted
+            await auto_post.auto_post_own_plan(h.jira, "SK-1")
+        with _Harness(rows=[]) as h:  # no plan of its own yet
+            await auto_post.auto_post_own_plan(h.jira, "SK-1")
+        with _Harness() as h:  # dry run records nothing, alerts nothing
+            await auto_post.auto_post_own_plan(h.jira, "SK-1", dry_run=True)
+    assert alerts == []
+
+
+async def test_a_stale_plan_alerts_with_the_way_out():
+    alerts = []
+    late = _merged("pr/2", "2026-10-16T09:00:00Z")
+    with _Harness(prs=[late]) as h, patch(
+        "src.app.services.queue_watcher.notify", lambda t, m, **k: alerts.append(m)
+    ):
+        await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert len(alerts) == 1 and "Regenerate" in alerts[0]
+
+
+async def test_an_alert_that_cannot_be_shown_changes_nothing():
+    def _boom(*a, **k):
+        raise RuntimeError("no notification centre")
+    with _Harness(rows=[_row(case_count=0)]) as h, patch(
+        "src.app.services.queue_watcher.notify", _boom
+    ):
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.reason == auto_post.SKIP_EMPTY_PLAN
+
+
+async def test_a_changed_outcome_is_logged_with_its_trigger():
+    with _Harness() as h:
+        await auto_post.auto_post_own_plan(h.jira, "SK-1", trigger=auto_post.TRIGGER_PULL)
+    event = h.add_event.await_args.kwargs["event"]
+    assert (event["action"], event["trigger"], event["plan_id"]) == (
+        auto_post.POSTED, auto_post.TRIGGER_PULL, 7,
+    )
+
+
+async def test_a_repeated_outcome_is_not_logged_again():
+    # Every sweep re-checks the ticket; the history must not fill with copies.
+    with _Harness(rows=[_row(case_count=0)]) as h:
+        h.record.return_value = {"action": "skipped", "reason": "empty_plan", "plan_id": 7}
+        await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    h.add_event.assert_not_awaited()
+
+
+async def test_manual_posts_are_logged_and_never_raise():
+    add = AsyncMock()
+    with patch.object(auto_post, "get_db", noop_get_db), \
+         patch.object(auto_post.auto_post_repository, "add_event", add):
+        await auto_post.log_manual_post("sk-1", {"plan_id": 9, "updated": True})
+        await auto_post.log_manual_post("sk-1", {"plan_id": None})
+        add.side_effect = RuntimeError("db down")
+        await auto_post.log_manual_post("sk-1", {"plan_id": 9})
+    first = add.await_args_list[0].kwargs
+    assert first["ticket_key"] == "sk-1"
+    assert first["event"]["trigger"] == auto_post.TRIGGER_MANUAL
+    assert first["event"]["detail"] == "updated"
+    assert add.await_count == 2  # the plan-less post was not logged
 
 
 # --- the board sweep --------------------------------------------------------

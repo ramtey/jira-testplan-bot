@@ -719,13 +719,15 @@ async def post_comment(request: PostCommentRequest):
     """
     jira = JiraClient()
     try:
-        return await plan_posting.post_one(
+        result = await plan_posting.post_one(
             jira,
             issue_key=request.issue_key,
             comment_text=request.comment_text,
             plan_id=request.plan_id,
             kind=PlanCommentKind.single,
         )
+        await auto_post.log_manual_post(request.issue_key, result)
+        return result
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except JiraAuthError as e:
@@ -773,6 +775,7 @@ async def post_plan(request: PostPlanRequest):
                 kind=PlanCommentKind.single,
             )
             result["scope"] = "single"
+            await auto_post.log_manual_post(keys[0], result)
             return result
         return await plan_posting.post_batch(
             jira,

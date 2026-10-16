@@ -136,7 +136,7 @@ async def queue_if_in_testing(background_tasks, ticket_key: str, plan: dict) -> 
         return None
     if (current or "").strip().lower() != status.lower():
         return None
-    background_tasks.add_task(auto_post_own_plan, JiraClient(), key)
+    background_tasks.add_task(auto_post_own_plan, JiraClient(), key, trigger=TRIGGER_GENERATE)
     return {"action": "queued"}
 
 
@@ -192,8 +192,43 @@ def _own_plan_row(ticket_key: str, rows: list[dict]) -> dict | None:
     return None
 
 
+# Which door an auto-post came through, for `testplan auto-post`.
+TRIGGER_PULL = "pull_to_testing"
+TRIGGER_GENERATE = "generate"
+TRIGGER_SWEEP = "sweep"
+TRIGGER_MANUAL = "manual"
+
+
+async def log_manual_post(ticket_key: str, result: dict) -> None:
+    """Record a Post to Jira click in the history. Never raises.
+
+    The point is the question auto-post leaves open: after a regeneration, do
+    people always click Update Jira? If so, that update should be automatic.
+    """
+    if result.get("plan_id") is None:
+        return
+    try:
+        await auto_post_repository.add_event(
+            get_db(),
+            ticket_key=ticket_key,
+            event={
+                "action": POSTED,
+                "reason": None,
+                "detail": "updated" if result.get("updated") else "new comment",
+                "plan_id": result["plan_id"],
+                "trigger": TRIGGER_MANUAL,
+            },
+        )
+    except Exception:
+        logger.exception("could not log the manual post on %s", ticket_key)
+
+
 async def auto_post_own_plan(
-    jira: JiraClient, ticket_key: str, *, dry_run: bool = False
+    jira: JiraClient,
+    ticket_key: str,
+    *,
+    dry_run: bool = False,
+    trigger: str = TRIGGER_SWEEP,
 ) -> AutoPostOutcome:
     """Post `ticket_key`'s own plan if nothing is live yet. Never raises.
 
@@ -211,14 +246,66 @@ async def auto_post_own_plan(
         )
     if not dry_run:
         try:
-            await auto_post_repository.record(
+            previous = await auto_post_repository.record(
                 get_db(), ticket_key=key, outcome=outcome.as_dict()
             )
         except Exception:
             # The outcome is still returned and logged; only the plan view's
-            # explanation of it is lost.
+            # explanation of it is lost. No alert either: without the previous
+            # outcome there is no telling a new problem from a repeat.
             logger.exception("auto-post: could not record the outcome for %s", key)
+        else:
+            if _is_new(outcome, previous):
+                _alert(outcome)
+                try:
+                    await auto_post_repository.add_event(
+                        get_db(), ticket_key=key,
+                        event={**outcome.as_dict(), "trigger": trigger},
+                    )
+                except Exception:
+                    logger.exception("auto-post: could not log the event for %s", key)
     return outcome
+
+
+# Outcomes worth interrupting someone for. Everything else is either a post,
+# a normal "nothing to do yet", or a choice a person already made.
+_ALERT_SKIPS = {SKIP_STALE_PLAN, SKIP_EMPTY_PLAN}
+
+
+def _alert_text(outcome: AutoPostOutcome) -> str:
+    if outcome.reason == SKIP_STALE_PLAN:
+        return f"{outcome.detail}. Regenerate, or post it as it is."
+    if outcome.reason == SKIP_EMPTY_PLAN:
+        return "The plan has no cases, so it was not posted."
+    if outcome.reason in ("partial", "truncated"):
+        return f"Incomplete in Jira: {outcome.detail}. Re-post from the app."
+    return f"Not posted: {outcome.detail or outcome.reason}."
+
+
+def _is_new(outcome: AutoPostOutcome, previous: dict | None) -> bool:
+    """Whether `outcome` differs from the one it replaced.
+
+    The sweep re-checks a ticket every few minutes for a day, so anything done
+    per outcome — an alert, a history row — would repeat hundreds of times.
+    New means a different action, reason or plan, so a fix followed by the
+    same failure counts again.
+    """
+    return previous is None or (
+        previous.get("action"), previous.get("reason"), previous.get("plan_id")
+    ) != (outcome.action, outcome.reason, outcome.plan_id)
+
+
+def _alert(outcome: AutoPostOutcome) -> None:
+    """A desktop alert for an outcome someone has to act on. Never raises."""
+    if outcome.action != FAILED and outcome.reason not in _ALERT_SKIPS:
+        return
+    try:
+        # Imported here: queue_watcher imports this module.
+        from src.app.services.queue_watcher import notify
+
+        notify(f"Test Plan Bot: {outcome.ticket_key} not posted", _alert_text(outcome))
+    except Exception:
+        logger.exception("auto-post: could not alert about %s", outcome.ticket_key)
 
 
 async def _decide_and_post(

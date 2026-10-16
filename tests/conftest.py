@@ -115,6 +115,19 @@ def block_real_jira_attachments(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def no_desktop_notifications(monkeypatch: pytest.MonkeyPatch):
+    """Keep every test off the real macOS notification centre.
+
+    Auto-post alerts and the watcher's token alerts both go through
+    ``queue_watcher.notify``, which shells out to terminal-notifier or
+    osascript. A test that reaches it unpatched would pop a real banner on
+    the developer's screen. Tests that assert on notifications replace
+    ``notify`` itself, which this does not affect.
+    """
+    monkeypatch.setenv("WATCH_NOTIFY", "off")
+
+
+@pytest.fixture(autouse=True)
 def reset_code_search_budget():
     """Give every test a fresh GitHub code-search budget.
 

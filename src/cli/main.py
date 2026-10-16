@@ -55,6 +55,7 @@ app.command(name="health")(commands.health)
 app.command(name="fetch")(commands.fetch)
 app.command(name="generate")(commands.generate)
 app.command(name="watch")(commands.watch)
+app.command(name="auto-post")(commands.auto_post_status)
 
 
 if __name__ == "__main__":

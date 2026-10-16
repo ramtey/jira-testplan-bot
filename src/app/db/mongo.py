@@ -228,6 +228,9 @@ _INDEX_SPEC: dict[str, list[dict[str, Any]]] = {
     "ticket_holds": [
         {"keys": [("ticket_key", ASCENDING)], "unique": True, "name": "uq_ticket_holds_key"},
     ],
+    "auto_post_events": [
+        {"keys": [("at", DESCENDING)], "name": "ix_auto_post_events_at"},
+    ],
 }
 
 

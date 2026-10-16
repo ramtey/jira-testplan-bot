@@ -383,7 +383,9 @@ def test_pull_to_testing_reports_the_auto_post(stub_auto_post):
     # check's 5-14s never sits on the transition. TestClient runs background
     # tasks before returning, so the call itself is still observable.
     assert response.json()["auto_post"] == {"action": "queued"}
-    stub_auto_post.assert_awaited_once_with(jira, "SK-42")
+    stub_auto_post.assert_awaited_once_with(
+        jira, "SK-42", trigger=workflow_routes.auto_post.TRIGGER_PULL
+    )
 
 
 def test_other_transitions_do_not_auto_post(stub_auto_post):

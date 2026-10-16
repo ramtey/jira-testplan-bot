@@ -449,7 +449,9 @@ async def sweep_auto_post(
     result.scanned = len(keys)
     for key in keys:
         result.outcomes.append(
-            await auto_post.auto_post_own_plan(jira, key, dry_run=dry_run)
+            await auto_post.auto_post_own_plan(
+                jira, key, dry_run=dry_run, trigger=auto_post.TRIGGER_SWEEP
+            )
         )
     return result
 
