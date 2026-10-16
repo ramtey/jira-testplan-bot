@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.app.config import settings
 from src.app.db.mongo import get_db
 from src.app.jira_client import JiraClient, PlanCommentKind, _comment_marker_kind
 from src.app.repositories import auto_post_repository, plan_repository
@@ -112,6 +113,31 @@ async def render_jira_text(plan: dict, walkthrough: dict | None) -> str:
     if not text.strip():
         raise PlanFormatError("the formatter produced an empty comment")
     return text
+
+
+async def queue_if_in_testing(background_tasks, ticket_key: str, plan: dict) -> dict | None:
+    """Queue the post for a plan just generated on a ticket already in testing.
+
+    Closes the gap where Pull to testing ran before a plan existed: the
+    transition's own post found nothing, and the plan generated afterwards
+    waited for the sweep. Same `auto_post_own_plan`, so the same refusals.
+
+    Returns {"action": "queued"} when queued, else None. A status read that
+    fails queues nothing and is logged; the sweep still picks the ticket up.
+    """
+    status = (settings.auto_post_status or "").strip()
+    if not status or plan.get("plan_id") is None or plan.get("no_source"):
+        return None
+    key = ticket_key.upper()
+    try:
+        current = await JiraClient().get_issue_status(key)
+    except Exception:
+        logger.warning("auto-post: could not read %s's status after generating", key, exc_info=True)
+        return None
+    if (current or "").strip().lower() != status.lower():
+        return None
+    background_tasks.add_task(auto_post_own_plan, JiraClient(), key)
+    return {"action": "queued"}
 
 
 def _parse_ts(value) -> datetime | None:

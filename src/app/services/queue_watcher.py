@@ -62,7 +62,11 @@ from ..config import settings
 from ..db.mongo import get_db
 from ..jira_client import JiraAuthError, JiraClient, JiraConnectionError
 from ..models import GenerateTestPlanRequest
-from ..repositories import plan_repository, ticket_hold_repository
+from ..repositories import (
+    plan_repository,
+    ticket_hold_repository,
+    watcher_heartbeat_repository,
+)
 from ..source_grounding import PR_STATE_MERGED, classify_pr_state
 from . import auto_post, plan_service
 
@@ -450,6 +454,30 @@ async def sweep_auto_post(
     return result
 
 
+async def record_heartbeat(
+    result: SweepResult, posted: AutoPostSweepResult, *, interval_seconds: int
+) -> None:
+    """Say the sweep ran, for `/health/watcher`. Never raises.
+
+    Written after both sweeps finish, whatever they found: an empty queue is a
+    healthy sweep. An unreadable queue is recorded as an error rather than
+    left out, so "ran but cannot see Jira" is not mistaken for "ran fine".
+    """
+    errors = [e for e in (result.queue_error, posted.queue_error) if e]
+    try:
+        await watcher_heartbeat_repository.record(
+            get_db(),
+            interval_seconds=interval_seconds,
+            queue_error="; ".join(errors) or None,
+            generated=len(result.generated),
+            posted=sum(1 for o in posted.outcomes if o.action == auto_post.POSTED),
+            failed=len(result.failed)
+            + sum(1 for o in posted.outcomes if o.action == auto_post.FAILED),
+        )
+    except Exception:
+        logger.exception("watcher: could not record the heartbeat")
+
+
 # Token-health state lives on disk, not in memory. In production the watcher
 # is a LaunchAgent running `testplan watch --once` — a fresh process every
 # five minutes — so an in-process timer would either never fire or fire on
@@ -689,6 +717,7 @@ async def watch(
     interval = interval_seconds or settings.watch_interval_seconds
     while True:
         await check_tokens_if_due()
+        result = posted = None
         try:
             result = await sweep_once(
                 projects=projects, status_name=status_name, dry_run=dry_run
@@ -703,4 +732,8 @@ async def watch(
                 on_auto_post(posted)
         except Exception:
             logger.exception("watcher: auto-post sweep raised; retrying next cycle")
+        # A sweep that raised is not a heartbeat: leaving it out lets the
+        # header say the watcher stopped working, which it has.
+        if result is not None and posted is not None and not dry_run:
+            await record_heartbeat(result, posted, interval_seconds=interval)
         await asyncio.sleep(interval)

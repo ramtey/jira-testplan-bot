@@ -3,8 +3,9 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime, timezone
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .attachment_types import (
@@ -46,7 +47,7 @@ from .repositories import (
     walkthrough_repository,
 )
 from .runs_routes import router as runs_router
-from .services import plan_adoption, plan_posting, plan_service
+from .services import auto_post, plan_adoption, plan_posting, plan_service
 from .services import mark_carryover
 from .services import progress_key as progress_key_service
 from .services.plan_service import NonTestableIssueError, SourceLookupUnavailableError
@@ -162,6 +163,55 @@ async def health(response: Response):
         return {"status": "degraded", "database": database}
 
     return {"status": "ok", "database": database}
+
+
+# A sweep is "late" after this many missed intervals. One missed sweep is a
+# laptop waking up or a slow Jira; three is a job that is not running.
+WATCHER_LATE_INTERVALS = 3
+
+
+@app.get("/health/watcher")
+async def check_watcher():
+    """When the queue watcher last swept, and whether that is too long ago.
+
+    `state` is one of:
+    - "never": no sweep has ever been recorded. A team that does not run the
+      watcher sees nothing, rather than an alarm about a job it never set up.
+    - "ok": swept within WATCHER_LATE_INTERVALS intervals and read Jira fine.
+    - "error": swept recently but could not read the queue.
+    - "late": the last sweep is older than that. Plans for Ready to Test
+      tickets and board-drag auto-posts have stopped.
+
+    A store that cannot be read is a 503, never "never" or "ok".
+    """
+    from .repositories import watcher_heartbeat_repository
+
+    try:
+        beat = await watcher_heartbeat_repository.get(get_db())
+    except Exception:
+        logger.exception("health: watcher heartbeat unreadable")
+        raise HTTPException(status_code=503, detail="Watcher status unavailable")
+    if beat is None or beat.get("at") is None:
+        return {"state": "never", "last_sweep_at": None}
+
+    interval = int(beat.get("interval_seconds") or settings.watch_interval_seconds)
+    age = (datetime.now(timezone.utc) - beat["at"]).total_seconds()
+    if age > interval * WATCHER_LATE_INTERVALS:
+        state = "late"
+    elif beat.get("queue_error"):
+        state = "error"
+    else:
+        state = "ok"
+    return {
+        "state": state,
+        "last_sweep_at": beat["at"].isoformat(),
+        "minutes_since": int(age // 60),
+        "interval_seconds": interval,
+        "queue_error": beat.get("queue_error"),
+        "generated": beat.get("generated", 0),
+        "posted": beat.get("posted", 0),
+        "failed": beat.get("failed", 0),
+    }
 
 
 @app.get("/health/tokens")
@@ -576,7 +626,9 @@ async def summarize_issues_batch(request: dict):
 
 
 @app.post("/generate-test-plan")
-async def generate_test_plan(request: GenerateTestPlanRequest):
+async def generate_test_plan(
+    request: GenerateTestPlanRequest, background_tasks: BackgroundTasks
+):
     """Generate a structured test plan from an already-assembled ticket payload.
 
     The browser holds the ticket data it fetched from ``GET /issue/{key}``, so
@@ -585,13 +637,17 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
     assembly — see ``services/plan_service`` for why that matters.
     """
     try:
-        return await plan_service.generate_single(request)
+        plan = await plan_service.generate_single(request)
     except NonTestableIssueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SourceLookupUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    queued = await auto_post.queue_if_in_testing(background_tasks, request.ticket_key, plan)
+    if queued:
+        plan["auto_post"] = queued
+    return plan
 
 
 @app.post("/generate-test-plan/multi")
@@ -617,7 +673,7 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
 
 
 @app.post("/tickets/{ticket_key}/plan")
-async def generate_plan_for_ticket(ticket_key: str):
+async def generate_plan_for_ticket(ticket_key: str, background_tasks: BackgroundTasks):
     """Generate a test plan from a ticket *key* alone — the automation door.
 
     Fetches the ticket's context server-side (dev info, comments, parent,
@@ -629,7 +685,7 @@ async def generate_plan_for_ticket(ticket_key: str):
     if not keys:
         raise HTTPException(status_code=400, detail="No ticket key supplied.")
     try:
-        return await plan_service.generate_for_tickets(keys)
+        plan = await plan_service.generate_for_tickets(keys)
     except NonTestableIssueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SourceLookupUnavailableError as e:
@@ -642,6 +698,12 @@ async def generate_plan_for_ticket(ticket_key: str):
         raise HTTPException(status_code=502, detail=str(e))
     except LLMError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    # A batch plan is never auto-posted; only a plan for one ticket is.
+    if len(keys) == 1:
+        queued = await auto_post.queue_if_in_testing(background_tasks, keys[0], plan)
+        if queued:
+            plan["auto_post"] = queued
+    return plan
 
 
 @app.post("/jira/post-comment")

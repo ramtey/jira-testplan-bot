@@ -20,6 +20,7 @@ import RunHistoryBanner from './components/RunHistoryBanner'
 import UntrackedPlanNotice from './components/UntrackedPlanNotice'
 import HistoricalPlanPreview from './components/HistoricalPlanPreview'
 import StalePlanNotice from './components/StalePlanNotice'
+import WatcherStatus from './components/WatcherStatus'
 import EpicChildrenList from './components/EpicChildrenList'
 import BatchSummary from './components/BatchSummary'
 import JiraBrowser from './components/JiraBrowser'
@@ -620,7 +621,12 @@ function App() {
     if (tickets.length === 0) return null
     bugLens.reset()
     const plan = await testPlan.generate(tickets)
-    if (plan && tickets.length === 1) loadRunHistory(tickets[0].key)
+    if (plan && tickets.length === 1) {
+      loadRunHistory(tickets[0].key)
+      // Generated on a ticket already in testing: the server posts it after
+      // responding, and the Post control should catch up when it lands.
+      if (plan.auto_post?.action === 'queued') pollPostState(tickets[0].key)
+    }
     return plan
   }
 
@@ -652,6 +658,7 @@ function App() {
         </div>
         <div className="hdr-spacer" />
         <div className="hdr-actions">
+          <WatcherStatus />
           <TokenStatus />
         </div>
       </header>

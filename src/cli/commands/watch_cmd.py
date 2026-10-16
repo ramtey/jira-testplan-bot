@@ -243,9 +243,17 @@ def watch(
                 dry_run=dry_run,
                 max_per_cycle=max_per_sweep,
             )
-            return generated, await queue_watcher.sweep_auto_post(
+            posted = await queue_watcher.sweep_auto_post(
                 projects=projects, dry_run=dry_run
             )
+            # A dry run shows what a sweep would do; it says nothing about
+            # whether the launchd job is alive, so it leaves no heartbeat.
+            if not dry_run:
+                await queue_watcher.record_heartbeat(
+                    generated, posted,
+                    interval_seconds=interval or settings.watch_interval_seconds,
+                )
+            return generated, posted
 
         result, posted = asyncio.run(_both())
         _render(result, quiet=quiet)

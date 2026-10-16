@@ -2432,7 +2432,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
                       </span>
                     )}
                     {!isMulti && single.warning && !postNotification && (
-                      <span className="tip">
+                      <span className="tip" data-align="end">
                         <span
                           tabIndex={0}
                           aria-label={single.hint}
@@ -2448,7 +2448,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
                           <Icon name="alert" size={11} />
                           {single.warning}
                         </span>
-                        <span className="tip-body">{single.hint}</span>
+                        <span className="tip-body" style={{ whiteSpace: 'normal', width: 320 }}>{single.hint}</span>
                       </span>
                     )}
                     <span className="tip" data-align="end">

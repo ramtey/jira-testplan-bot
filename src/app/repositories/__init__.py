@@ -9,6 +9,7 @@ from src.app.repositories import (
     ticket_hold_repository,
     user_repository,
     walkthrough_repository,
+    watcher_heartbeat_repository,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "ticket_hold_repository",
     "user_repository",
     "walkthrough_repository",
+    "watcher_heartbeat_repository",
 ]
