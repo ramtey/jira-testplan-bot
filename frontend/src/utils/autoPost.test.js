@@ -20,3 +20,7 @@ test('a failure is named with its reason, never dropped', () => {
 test('an unknown skip reason still shows up', () => {
   assert.match(describeAutoPost({ action: 'skipped', reason: 'something_new' }), /something_new/)
 })
+
+test('a queued post says it is on its way, not that it landed', () => {
+  assert.equal(describeAutoPost({ action: 'queued' }), ' · posting the plan to Jira')
+})

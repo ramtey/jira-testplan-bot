@@ -3305,23 +3305,37 @@ class JiraClient:
         return results
 
     async def search_keys_entered_status(
-        self, project_key: str, status_name: str, *, within_hours: int
+        self,
+        project_key: str,
+        status_name: str,
+        *,
+        within_hours: int,
+        settle_minutes: int = 0,
     ) -> list[str]:
         """Keys in `status_name` now that moved into it in the last `within_hours`.
 
         "Moved into", not "sitting in": a ticket that has been in the column
         for a week was there before anything here was watching it, and acting
         on it now would act on a choice someone already made by hand.
+
+        `settle_minutes` leaves out a move made in the last few minutes. The
+        exclusion is `NOT ... AFTER`, not `DURING`: DURING rounds a relative
+        bound, and on 2026-10-16 matched a move made before its own start.
         """
         if not re.match(r"^[A-Z][A-Z0-9_]*$", project_key):
             raise ValueError(f"Invalid Jira project key: {project_key}")
         escaped = status_name.replace("\\", "\\\\").replace('"', '\\"')
         hours = max(1, int(within_hours))
+        settle = (
+            f'AND NOT status CHANGED TO "{escaped}" AFTER -{int(settle_minutes)}m '
+            if settle_minutes > 0
+            else ""
+        )
         payload = {
             "jql": (
                 f'project = {project_key} AND status = "{escaped}" '
                 f'AND status CHANGED TO "{escaped}" AFTER -{hours}h '
-                "ORDER BY updated DESC"
+                f"{settle}ORDER BY updated DESC"
             ),
             "fields": ["summary"],
             "maxResults": 100,

@@ -15,7 +15,7 @@ import time
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from .attachment_types import (
@@ -594,6 +594,7 @@ async def _post_workflow_comment(
 async def run_workflow_action(
     issue_key: str,
     action: str,
+    background_tasks: BackgroundTasks,
     payload: str | None = Form(default=None),
     images: list[UploadFile] | None = File(default=None),
 ):
@@ -739,23 +740,24 @@ async def run_workflow_action(
                 jira, issue_key, target_status, parent_pre_status
             )
 
-        async def _do_auto_post() -> dict | None:
-            if not _auto_posts_on(target_status):
-                return None
-            outcome = await auto_post.auto_post_own_plan(jira, issue_key)
-            return outcome.as_dict()
-
         (
             comment_posted,
             (parent_transitioned, parent_key),
             cascaded_subtasks,
-            auto_posted_plan,
         ) = await asyncio.gather(
             _do_comment(),
             _do_parent_transition(),
             _do_cascade(),
-            _do_auto_post(),
         )
+
+        # After the response, not inside it: the freshness check reads the
+        # development panel, 5-14s on a real ticket, and the tester would be
+        # watching a spinner on a transition that already happened. The
+        # outcome is recorded, and the plan view refetches it.
+        auto_posted_plan = None
+        if _auto_posts_on(target_status):
+            background_tasks.add_task(auto_post.auto_post_own_plan, jira, issue_key)
+            auto_posted_plan = {"action": "queued"}
         t_total = time.perf_counter() - t_start
 
         logger.info(
@@ -778,8 +780,9 @@ async def run_workflow_action(
             "parent_transitioned": parent_transitioned,
             "parent_key": parent_key if parent_transitioned else None,
             "cascaded_subtasks": cascaded_subtasks,
-            # None when this transition doesn't auto-post; otherwise what
-            # happened to the plan, skips and failures included.
+            # None when this transition doesn't auto-post. Otherwise
+            # {"action": "queued"}: the outcome lands in post_state on
+            # /runs/by-ticket once the background post finishes.
             "auto_post": auto_posted_plan,
         }
     except JiraNotFoundError as e:

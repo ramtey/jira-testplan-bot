@@ -39,8 +39,15 @@ def _stored(plan_id=7):
     )
 
 
+def _merged(url="pr/1", merged_at="2026-10-15T00:00:00Z"):
+    return {"url": url, "status": "MERGED", "merged_at": merged_at}
+
+
 class _Harness:
-    def __init__(self, *, rows=None, live=(), comments=(), post_result=None, post_error=None):
+    def __init__(
+        self, *, rows=None, live=(), comments=(), post_result=None, post_error=None,
+        prs=None, dev_unavailable=False,
+    ):
         self.rows = [_row()] if rows is None else rows
         self.live = list(live)
         self.comments = list(comments)
@@ -48,6 +55,13 @@ class _Harness:
         self.post_error = post_error
         self.jira = MagicMock()
         self.jira.get_comments = AsyncMock(return_value=self.comments)
+        # The plan was written 2026-10-16; by default its only PR merged before.
+        self.serialized = {
+            "development_info": {"pull_requests": [_merged()] if prs is None else prs},
+            "dev_status_unavailable": dev_unavailable,
+        }
+        self.jira.get_issue = AsyncMock(return_value=object())
+        self.record = AsyncMock()
 
     def __enter__(self):
         repo = auto_post.plan_repository
@@ -61,6 +75,10 @@ class _Harness:
             patch.object(repo, "get_plan_with_cases", AsyncMock(return_value=(_stored(), []))),
             patch.object(auto_post.uat_readiness, "fetch_readiness", AsyncMock(return_value={})),
             patch.object(auto_post.plan_posting, "post_one", self.post_one),
+            patch.object(auto_post.auto_post_repository, "record", self.record),
+            patch.object(
+                auto_post.plan_service, "serialize_issue", lambda _issue: self.serialized
+            ),
         ]
         for p in self._patches:
             p.start()
@@ -153,6 +171,81 @@ async def test_no_node_is_a_failure_with_a_reason():
     h.post_one.assert_not_awaited()
 
 
+async def test_every_real_outcome_is_recorded_for_the_plan_view():
+    with _Harness(rows=[_row(case_count=0)]) as h:
+        await auto_post.auto_post_own_plan(h.jira, "sk-1")
+    kwargs = h.record.await_args.kwargs
+    assert kwargs["ticket_key"] == "SK-1"
+    assert kwargs["outcome"]["reason"] == auto_post.SKIP_EMPTY_PLAN
+    assert kwargs["outcome"]["plan_id"] == 7
+
+
+async def test_a_dry_run_records_nothing():
+    with _Harness() as h:
+        await auto_post.auto_post_own_plan(h.jira, "SK-1", dry_run=True)
+    h.record.assert_not_awaited()
+
+
+async def test_a_failure_keeps_the_plan_it_was_for():
+    # Without the id the plan view cannot tell this failure belongs to the
+    # plan on screen, and would not show it.
+    with _Harness(post_error=RuntimeError("Jira is down")) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.plan_id == 7
+    assert h.record.await_args.kwargs["outcome"]["plan_id"] == 7
+
+
+async def test_a_recording_failure_does_not_change_the_outcome():
+    with _Harness() as h:
+        h.record.side_effect = RuntimeError("db down")
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.action == auto_post.POSTED
+
+
+async def test_a_plan_older_than_its_merged_code_is_not_posted():
+    late = _merged("pr/2", "2026-10-16T09:00:00Z")
+    with _Harness(prs=[_merged(), late]) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert (out.action, out.reason) == (auto_post.SKIPPED, auto_post.SKIP_STALE_PLAN)
+    assert "pr/2" in out.detail
+    h.post_one.assert_not_awaited()
+
+
+async def test_an_unreadable_development_panel_is_not_fresh():
+    with _Harness(dev_unavailable=True) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert (out.action, out.reason) == (auto_post.FAILED, auto_post.FAIL_FRESHNESS_UNKNOWN)
+    h.post_one.assert_not_awaited()
+
+
+async def test_a_merged_pr_without_a_merge_time_is_not_fresh():
+    with _Harness(prs=[_merged(merged_at=None)]) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.reason == auto_post.FAIL_FRESHNESS_UNKNOWN
+    h.post_one.assert_not_awaited()
+
+
+async def test_open_prs_do_not_make_a_plan_stale():
+    open_pr = {"url": "pr/3", "status": "OPEN", "merged_at": None}
+    with _Harness(prs=[_merged(), open_pr]) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.action == auto_post.POSTED
+
+
+async def test_a_post_that_stopped_partway_is_not_a_success():
+    result = {"recorded": True, "parts": 3, "posted_parts": 1, "part_error": "Jira 500"}
+    with _Harness(post_result=result) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert (out.action, out.reason) == (auto_post.FAILED, "partial")
+    assert "1 of 3" in out.detail and "Jira 500" in out.detail
+
+
+async def test_a_truncated_post_is_not_a_success():
+    with _Harness(post_result={"recorded": True, "truncated": True}) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert (out.action, out.reason) == (auto_post.FAILED, "truncated")
+
+
 # --- the board sweep --------------------------------------------------------
 
 
@@ -165,7 +258,10 @@ async def test_sweep_asks_only_for_tickets_that_entered_the_status(monkeypatch):
          patch.object(queue_watcher.auto_post, "auto_post_own_plan", post):
         result = await queue_watcher.sweep_auto_post(projects=["SK"])
 
-    search.assert_awaited_once_with("SK", "In Testing", within_hours=24)
+    search.assert_awaited_once_with(
+        "SK", "In Testing", within_hours=24,
+        settle_minutes=queue_watcher.AUTO_POST_SETTLE_MINUTES,
+    )
     assert [o.action for o in result.outcomes] == [auto_post.POSTED]
 
 
@@ -184,3 +280,46 @@ async def test_an_unreadable_board_is_not_an_empty_one(monkeypatch):
     with patch.object(queue_watcher.JiraClient, "search_keys_entered_status", search):
         result = await queue_watcher.sweep_auto_post(projects=["SK"])
     assert "offline" in result.queue_error
+
+
+async def test_the_search_excludes_old_and_fresh_moves_in_jql():
+    """The JQL is the backfill guard and the duplicate guard both. `DURING`
+    was tried and rejected: it rounds relative bounds and matched a move made
+    before its own start, so the exclusion has to be `NOT ... AFTER`."""
+    from src.app import jira_client as jc
+
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"issues": [{"key": "SK-1"}]}
+
+        def raise_for_status(self):
+            pass
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            sent["jql"] = json["jql"]
+            return _Resp()
+
+    with patch.object(jc, "retrying_client", lambda **_: _Client()):
+        keys = await jc.JiraClient().search_keys_entered_status(
+            "SK", "In Testing", within_hours=24, settle_minutes=2
+        )
+
+    assert keys == ["SK-1"]
+    assert sent["jql"] == (
+        'project = SK AND status = "In Testing" '
+        'AND status CHANGED TO "In Testing" AFTER -24h '
+        'AND NOT status CHANGED TO "In Testing" AFTER -2m '
+        "ORDER BY updated DESC"
+    )
+    assert "DURING" not in sent["jql"]

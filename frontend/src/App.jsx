@@ -157,9 +157,24 @@ function App() {
   // array suppresses. Kept apart so the app can say which one it is instead of
   // showing no Jira status at all.
   const [runHistoryAvailable, setRunHistoryAvailable] = useState(true)
+  // What the server says is live in Jira, for the Post control. Tagged with
+  // its ticket and never persisted: a stale or foreign copy would tell the
+  // tester a plan is live when it is not.
+  const [postState, setPostState] = useState(null)
+  const takePostState = (key, data) =>
+    setPostState(data?.post_state ? { ...data.post_state, ticketKey: key.toUpperCase() } : null)
 
   useEffect(() => saveStored(STORAGE_KEYS.issueKey, issueKey), [issueKey])
   useEffect(() => saveStored(STORAGE_KEYS.ticketsData, ticketsData), [ticketsData])
+  // The single ticket on screen, for timers that outlive the render that set
+  // them. A timer firing after a switch must not load one ticket's history
+  // into another ticket's view.
+  const shownKeyRef = useRef(null)
+  useEffect(() => {
+    shownKeyRef.current = ticketsData.length === 1 ? ticketsData[0].key.toUpperCase() : null
+  }, [ticketsData])
+  const postPollRef = useRef([])
+  useEffect(() => () => postPollRef.current.forEach(clearTimeout), [])
   useEffect(() => {
     const key = ticketsData.length === 1 ? ticketsData[0].key : null
     saveStored(
@@ -262,16 +277,19 @@ function App() {
       if (!res.ok) {
         setRunHistory([])
         setRunHistoryAvailable(false)
+        setPostState(null)
         return []
       }
       const data = await res.json()
       const runs = Array.isArray(data.runs) ? data.runs : []
       setRunHistory(runs)
       setRunHistoryAvailable(true)
+      takePostState(key, data)
       return runs
     } catch {
       setRunHistory([])
       setRunHistoryAvailable(false)
+      setPostState(null)
       return []
     }
   }
@@ -367,6 +385,7 @@ function App() {
       testPlan.reset()
       bugLens.reset()
       setRunHistory([])
+      setPostState(null)
       setHistoryPreview(null)
     }
 
@@ -487,9 +506,24 @@ function App() {
     await fetchTicketsByKeys(normalized)
   }
 
+  // Pull to testing posts the plan after it responds (the freshness check
+  // takes 5-14s), so the Post control re-reads what is live a few times
+  // rather than showing the state from before the post.
+  const pollPostState = (key) => {
+    postPollRef.current.forEach(clearTimeout)
+    const seq = fetchSeqRef.current
+    const upper = key.toUpperCase()
+    postPollRef.current = [10000, 25000, 50000].map((ms) =>
+      setTimeout(() => {
+        if (seq === fetchSeqRef.current && shownKeyRef.current === upper) loadRunHistory(key)
+      }, ms)
+    )
+  }
+
   const refreshCurrentTicket = async (actionId) => {
     if (ticketsData.length !== 1) return
     const key = ticketsData[0].key
+    if (actionId === 'pull-to-testing') pollPostState(key)
     let refreshed
     // Same reasoning as the initial fetch: the post-action refresh re-reads the
     // ticket and the stored runs, and a Generate click landing in that window
@@ -512,6 +546,9 @@ function App() {
     if (actionId !== 'pull-to-testing') return
     if (NON_TESTABLE_ISSUE_TYPES.has(refreshed.issue_type) || testPlan.plan) {
       setHydrating(false)
+      // Pull to testing may just have posted the plan on screen. Without the
+      // refetch the Post control keeps offering to post what is already live.
+      if (testPlan.plan) loadRunHistory(key)
       return
     }
     try {
@@ -519,6 +556,7 @@ function App() {
       const data = res.ok ? await res.json() : { runs: [] }
       const runs = Array.isArray(data.runs) ? data.runs : []
       setRunHistory(runs)
+      takePostState(key, data)
       if (runs.length > 0) {
         // A plan already exists — the watcher's, or an earlier session's.
         // Reusing it is the point (no second LLM spend), but it has to be
@@ -569,6 +607,7 @@ function App() {
     testPlan.reset()
     bugLens.reset()
     setRunHistory([])
+    setPostState(null)
     setHistoryPreview(null)
   }
 
@@ -788,6 +827,8 @@ function App() {
                         testPlan={testPlan.plan}
                         ticketData={ticketData}
                         ticketsData={isMultiTicket ? ticketsData : null}
+                        postState={isMultiTicket ? null : postState}
+                        runHistory={isMultiTicket ? null : runHistory}
                         onPosted={({ ticketKey }) => {
                           if (ticketKey) loadRunHistory(ticketKey)
                         }}

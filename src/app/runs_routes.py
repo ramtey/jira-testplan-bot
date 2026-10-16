@@ -10,8 +10,9 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from .config import settings
 from .db.mongo import get_db
-from .repositories import jira_ticket_repository, plan_repository
+from .repositories import auto_post_repository, jira_ticket_repository, plan_repository
 from .services import progress_key as progress_key_service
 
 logger = logging.getLogger(__name__)
@@ -43,9 +44,47 @@ async def runs_by_ticket(ticket_key: str):
     return {
         "ticket_key": key,
         "runs": runs,
+        "post_state": await _post_state(db, key),
         "auto_bug_analysis_dispatched_at": (
             auto_dispatched_at.isoformat() if auto_dispatched_at else None
         ),
+    }
+
+
+async def _post_state(db, key: str) -> dict | None:
+    """What the plan view needs to word its Post control.
+
+    The live own-plan comes from `list_live_plans_for_ticket`, not from the
+    runs list above: that list stops at 20 rows and the live plan can sit past
+    them. None means "could not look", which the view must not read as "not
+    live" — it falls back to the plain Post button instead.
+    """
+    try:
+        live = await plan_repository.list_live_plans_for_ticket(db, ticket_key=key)
+        last = await auto_post_repository.get_last(db, ticket_key=key)
+    except Exception:
+        logger.exception("post state unavailable for %s", key)
+        return None
+    own = next(
+        ((run, plan) for run, plan in live if len(run.ticket_keys or []) == 1), None
+    )
+    return {
+        "live_own_plan": (
+            {
+                "plan_id": own[1].id,
+                "version": own[1].version,
+                # So the view can tell whether the last auto-post outcome is
+                # about the post that is live now or one a re-post replaced.
+                "posted_at": own[1].posted_at.isoformat() if own[1].posted_at else None,
+            }
+            if own
+            else None
+        ),
+        "last_auto_post": last,
+        # Where in the workflow auto-post fires, so the view can promise it
+        # only on a ticket that is actually headed there.
+        "auto_post_status": settings.auto_post_status or None,
+        "queue_status": settings.watch_status or None,
     }
 
 

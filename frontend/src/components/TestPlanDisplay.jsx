@@ -10,6 +10,7 @@ import { useTicketWalkthrough } from '../hooks/useTicketWalkthrough'
 import Icon from './Icon'
 import MarkCarryOverModal from './MarkCarryOverModal'
 import { Btn, Chip, ACTag, Pri, Cbx, Alert } from './ui'
+import { planPostState } from '../utils/postState'
 
 const API_BASE = API_BASE_URL
 
@@ -1628,7 +1629,7 @@ function ProgressTrackingNotice({ status, shapeDrift, storedFingerprint, shownFi
 }
 
 
-function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
+function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHistory, onPosted }) {
   const isMulti = !!(ticketsData && ticketsData.length > 1)
 
   const allKeys = isMulti ? ticketsData.map((t) => t.key) : []
@@ -2349,6 +2350,17 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                 const postTone = postNotification?.type
                 const postIcon =
                   { success: 'check', warning: 'alert', error: 'alert-circle' }[postTone] || 'send'
+                // Single-ticket only: auto-post handles the first post, so
+                // the control is loud only when something is left to do.
+                const single = isMulti
+                  ? null
+                  : planPostState({
+                      plan: testPlan,
+                      ticketKey: ticketData?.key,
+                      ticketStatus: ticketData?.status,
+                      postState,
+                      runs: runHistory,
+                    })
                 const postLabel = postNotification
                   ? postNotification.message
                   : isMulti
@@ -2357,7 +2369,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                           ? `, pointer on ${selectedKeys.size - 1} more`
                           : ''
                       }`
-                    : 'Post to Jira'
+                    : single.label
                 // Said here because this is now the only Post control most
                 // plans render — the bar at the foot of the page that used to
                 // carry the sentence is gone for the single-ticket case.
@@ -2365,13 +2377,18 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                   ? null
                   : isMulti
                     ? `The plan goes on ${plannedHostKey} once; the other tickets get a short pointer to it. Each ticket's own test plan comment is a separate comment and is left alone.`
-                    : 'Updates the existing bot comment instead of duplicating.'
+                    : single.hint
                 const postStyle =
                   postTone === 'error'
                     ? { ...base, background: 'var(--danger-soft)', borderColor: 'rgba(239,68,68,.5)', color: 'var(--danger)' }
                     : postTone === 'warning'
                       ? { ...base, background: 'var(--warning-soft)', borderColor: 'rgba(245,158,11,.5)', color: 'var(--warning)' }
-                      : primary
+                      : isMulti || single.prominent
+                        ? primary
+                        : base
+                // Text, not just an icon, whenever the state asks for a
+                // decision; an icon-only control hides what it would do.
+                const postText = !isMulti && !postNotification ? single.buttonText : null
                 return (
                   <>
                     <span className="tip">
@@ -2399,11 +2416,47 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                       </button>
                       <span className="tip-body">Download .md</span>
                     </span>
+                    {!isMulti && single.chip && !postNotification && (
+                      <span
+                        style={{
+                          ...base,
+                          gap: 4,
+                          cursor: 'default',
+                          color: 'var(--success)',
+                          borderColor: 'rgba(34,197,94,.45)',
+                          background: 'var(--success-soft)',
+                        }}
+                      >
+                        <Icon name="check" size={11} />
+                        {single.chip}
+                      </span>
+                    )}
+                    {!isMulti && single.warning && !postNotification && (
+                      <span className="tip">
+                        <span
+                          tabIndex={0}
+                          aria-label={single.hint}
+                          style={{
+                            ...base,
+                            gap: 4,
+                            cursor: 'default',
+                            color: 'var(--warning)',
+                            borderColor: 'rgba(245,158,11,.5)',
+                            background: 'var(--warning-soft)',
+                          }}
+                        >
+                          <Icon name="alert" size={11} />
+                          {single.warning}
+                        </span>
+                        <span className="tip-body">{single.hint}</span>
+                      </span>
+                    )}
                     <span className="tip" data-align="end">
                       <button
                         type="button"
                         style={{
                           ...postStyle,
+                          gap: postText ? 4 : undefined,
                           opacity: postDisabled ? 0.5 : 1,
                           cursor: postDisabled ? 'not-allowed' : 'pointer',
                         }}
@@ -2416,6 +2469,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, onPosted }) {
                         ) : (
                           <Icon name={postIcon} size={12} />
                         )}
+                        {postText && <span>{postText}</span>}
                       </button>
                       <span className="tip-body">
                         {postLabel}

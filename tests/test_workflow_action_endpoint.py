@@ -372,16 +372,17 @@ def test_invalid_payload_json_returns_400():
 
 
 def test_pull_to_testing_reports_the_auto_post(stub_auto_post):
-    """Entering In Testing posts the plan, and the response says what happened
-    so the banner never implies a post that didn't land."""
+    """Entering In Testing posts the plan; the response says it is on its way,
+    never that it landed."""
     jira = _jira_stub()
     with patch("src.app.workflow_routes.JiraClient", return_value=jira):
         response = client.post("/issue/SK-42/workflow/pull-to-testing", files={})
 
     assert response.status_code == 200
-    assert response.json()["auto_post"] == {
-        "action": "posted", "reason": None, "detail": "plan 7", "plan_id": 7,
-    }
+    # Queued, not awaited: the post runs after the response so the freshness
+    # check's 5-14s never sits on the transition. TestClient runs background
+    # tasks before returning, so the call itself is still observable.
+    assert response.json()["auto_post"] == {"action": "queued"}
     stub_auto_post.assert_awaited_once_with(jira, "SK-42")
 
 

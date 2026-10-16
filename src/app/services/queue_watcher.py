@@ -396,6 +396,13 @@ async def sweep_once(
     return result
 
 
+# Pull to testing posts within seconds of its own transition. A sweep that
+# reached the same ticket inside that window would find nothing live yet and
+# post a second comment beside the first, so it leaves fresh moves alone; a
+# board drag is picked up one sweep later.
+AUTO_POST_SETTLE_MINUTES = 2
+
+
 @dataclass
 class AutoPostSweepResult:
     outcomes: list[auto_post.AutoPostOutcome] = field(default_factory=list)
@@ -428,6 +435,7 @@ async def sweep_auto_post(
                     project_key,
                     status_name,
                     within_hours=settings.auto_post_lookback_hours,
+                    settle_minutes=AUTO_POST_SETTLE_MINUTES,
                 )
             )
         except Exception as e:

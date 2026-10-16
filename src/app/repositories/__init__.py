@@ -1,4 +1,5 @@
 from src.app.repositories import (
+    auto_post_repository,
     bug_analysis_repository,
     feedback_repository,
     jira_ticket_repository,
@@ -11,6 +12,7 @@ from src.app.repositories import (
 )
 
 __all__ = [
+    "auto_post_repository",
     "bug_analysis_repository",
     "feedback_repository",
     "jira_ticket_repository",
