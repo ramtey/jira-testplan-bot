@@ -3,7 +3,6 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -181,9 +180,11 @@ async def check_watcher():
     - "error": swept recently but could not read the queue.
     - "late": the last sweep is older than that. Plans for Ready to Test
       tickets and board-drag auto-posts have stopped.
+    - "paused": outside WATCH_ACTIVE_DAYS / WATCH_ACTIVE_HOURS, by design.
 
     A store that cannot be read is a 503, never "never" or "ok".
     """
+    from . import watch_schedule
     from .repositories import watcher_heartbeat_repository
 
     try:
@@ -194,9 +195,24 @@ async def check_watcher():
     if beat is None or beat.get("at") is None:
         return {"state": "never", "last_sweep_at": None}
 
+    # One reading of the clock for every comparison below.
+    now = watch_schedule.current_time()
+    try:
+        opened = watch_schedule.window_start(now)
+        active = watch_schedule.is_active(now)
+    except watch_schedule.ScheduleError as e:
+        return {"state": "error", "last_sweep_at": beat["at"].isoformat(),
+                "queue_error": f"bad watcher schedule: {e}"}
+
     interval = int(beat.get("interval_seconds") or settings.watch_interval_seconds)
-    age = (datetime.now(timezone.utc) - beat["at"]).total_seconds()
-    if age > interval * WATCHER_LATE_INTERVALS:
+    age = (now - beat["at"]).total_seconds()
+    # Lateness counts from when the watcher was last due: the last sweep, or
+    # the moment today's window opened if that is later. Without the second,
+    # 07:01 on a Monday would read "stopped 61h ago".
+    due_since = max(beat["at"], opened) if opened else beat["at"]
+    if not active:
+        state = "paused"
+    elif (now - due_since).total_seconds() > interval * WATCHER_LATE_INTERVALS:
         state = "late"
     elif beat.get("queue_error"):
         state = "error"

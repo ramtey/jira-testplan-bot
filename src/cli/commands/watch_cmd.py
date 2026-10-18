@@ -10,6 +10,7 @@ from rich.table import Table
 from typing_extensions import Annotated
 
 from ..cli_config import config_manager
+from ...app import watch_schedule
 from ...app.config import settings
 from ...app.services import auto_post, queue_watcher
 
@@ -183,6 +184,13 @@ def watch(
         bool,
         typer.Option("--quiet", "-q", help="Print only the keys that got a plan."),
     ] = False,
+    anytime: Annotated[
+        bool,
+        typer.Option(
+            "--anytime",
+            help="Sweep even outside WATCH_ACTIVE_DAYS / WATCH_ACTIVE_HOURS.",
+        ),
+    ] = False,
 ):
     """
     Pre-generate test plans for tickets sitting in the QA queue.
@@ -227,6 +235,24 @@ def watch(
             f"[bold blue]Watching[/bold blue] {', '.join(projects)} "
             f'for tickets in "{status_name}" [dim]({mode})[/dim]'
         )
+
+    try:
+        active = anytime or watch_schedule.is_active()
+    except watch_schedule.ScheduleError as e:
+        # A schedule that cannot be read must not quietly mean "always" or
+        # "never" — either would hide the mistake for days.
+        console.print(f"[red]✗ Bad watcher schedule:[/red] {e}")
+        raise typer.Exit(1)
+
+    if once and not active:
+        # launchd still fires every five minutes; this is the cheap exit.
+        # Quiet keeps the log to its timestamp header overnight.
+        if not quiet:
+            console.print(
+                f"[dim]Outside active hours ({watch_schedule.describe()}) — "
+                "nothing swept. Pass --anytime to sweep now.[/dim]"
+            )
+        return
 
     if once:
         # launchd runs exactly this path every five minutes, so the token

@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .. import watch_schedule
 from ..config import settings
 from ..db.mongo import get_db
 from ..jira_client import JiraAuthError, JiraClient, JiraConnectionError
@@ -438,7 +439,11 @@ async def sweep_auto_post(
                 await jira.search_keys_entered_status(
                     project_key,
                     status_name,
-                    within_hours=settings.auto_post_lookback_hours,
+                    # Reaches back across the schedule's off period, so a
+                    # weekend drag is seen on Monday morning.
+                    within_hours=watch_schedule.lookback_hours(
+                        settings.auto_post_lookback_hours
+                    ),
                     settle_minutes=AUTO_POST_SETTLE_MINUTES,
                 )
             )
@@ -718,6 +723,9 @@ async def watch(
     """
     interval = interval_seconds or settings.watch_interval_seconds
     while True:
+        if not watch_schedule.is_active():
+            await asyncio.sleep(interval)
+            continue
         await check_tokens_if_due()
         result = posted = None
         try:

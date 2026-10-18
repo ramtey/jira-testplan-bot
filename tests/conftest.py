@@ -128,6 +128,20 @@ def no_desktop_notifications(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def no_watch_schedule(monkeypatch: pytest.MonkeyPatch):
+    """Run every test as if the watcher had no active hours.
+
+    ``.env`` may set WATCH_ACTIVE_DAYS / WATCH_ACTIVE_HOURS, and a suite that
+    inherited them would pass on a weekday afternoon and fail at night.
+    Schedule tests set their own.
+    """
+    from src.app.config import settings
+
+    monkeypatch.setattr(settings, "watch_active_days", "")
+    monkeypatch.setattr(settings, "watch_active_hours", "")
+
+
+@pytest.fixture(autouse=True)
 def reset_code_search_budget():
     """Give every test a fresh GitHub code-search budget.
 

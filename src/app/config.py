@@ -214,6 +214,12 @@ class Settings(BaseSettings):
     watch_projects: list[str] = []
     # The status that means "landed in the QA queue" — the trigger moment.
     watch_status: str = "Ready to Test"
+    # When the watcher may sweep, in this machine's local time: days like
+    # "mon-fri" and hours like "07:00-18:00". Empty means always. Outside the
+    # window a sweep does nothing (no plans, no posts, no token checks); the
+    # first sweep after it looks back across the whole gap for board moves.
+    watch_active_days: str = ""
+    watch_active_hours: str = ""
     # Seconds between sweeps. Jira's own board moves on human timescales,
     # so polling faster than this buys nothing but API calls.
     watch_interval_seconds: int = 300
