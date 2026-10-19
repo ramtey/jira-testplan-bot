@@ -1,5 +1,7 @@
 """The watcher's working hours, and the three things that must agree on them:
 the sweep, the auto-post lookback, and /health/watcher."""
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
@@ -21,6 +23,16 @@ TZ = ZoneInfo("America/Los_Angeles")
 def at(day, hour, minute=0):
     # 2026-10-19 is a Monday.
     return datetime(2026, 10, 19 + day, hour, minute, tzinfo=TZ)
+
+
+@pytest.fixture(autouse=True)
+def _local_zone_is_la(monkeypatch):
+    # The schedule reads the machine's local zone; CI runs in UTC.
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.fixture
@@ -112,7 +124,7 @@ def _cli(args, *, active):
          patch("src.cli.commands.watch_cmd.queue_watcher.check_tokens_if_due", AsyncMock()):
         cfg.is_configured.return_value = True
         cfg.load.return_value.jira_url = ""
-        result = runner.invoke(cli, ["watch", *args])
+        result = runner.invoke(cli, ["watch", "--project", "SK", *args])
     return result, sweep
 
 
@@ -142,6 +154,6 @@ def test_a_bad_schedule_fails_the_sweep_loudly(monkeypatch):
          patch("src.cli.commands.watch_cmd._apply_config_env"):
         cfg.is_configured.return_value = True
         cfg.load.return_value.jira_url = ""
-        result = runner.invoke(cli, ["watch", "--once"])
+        result = runner.invoke(cli, ["watch", "--project", "SK", "--once"])
     assert result.exit_code == 1
     assert "Bad watcher schedule" in result.output
