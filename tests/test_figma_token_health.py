@@ -141,3 +141,87 @@ class TestARejectedTokenIsStillARejectedToken:
         status = await TokenHealthService().validate_figma_token()
         assert status.is_valid
         assert status.error_type == TokenErrorType.VALID
+
+
+class TestTheProbeDoesNotSpendTheQuotaItChecks:
+    """Pinned 2026-10-20. The probe reads a real file, and the header pill
+    asked for it every five minutes per open tab. The watcher log showed the
+    file-read quota refill and be spent again on a ~4-day cycle for a month,
+    with not one "working again" in between. Every caller now shares one
+    answer, and nothing probes while Figma's Retry-After is still running."""
+
+    @pytest.fixture
+    def counting(self, figma, monkeypatch):
+        install, seen, ts = figma
+        monkeypatch.setattr(ts.settings, "figma_healthcheck_file_key", "REALKEY123", raising=False)
+        monkeypatch.setattr(ts.settings, "figma_probe_min_hours", 6.0, raising=False)
+        calls = {"n": 0}
+
+        def respond(response):
+            async def _get(self, url, **kwargs):
+                calls["n"] += 1
+                return response
+            monkeypatch.setattr(httpx.AsyncClient, "get", _get)
+        return respond, calls, ts
+
+    @pytest.mark.asyncio
+    async def test_repeat_checks_inside_the_interval_reuse_one_probe(self, counting):
+        respond, calls, _ = counting
+        respond(_resp(200, json_body={"name": "Buyer Home Estimate"}))
+        for _ in range(5):
+            status = await TokenHealthService().validate_figma_token()
+        assert calls["n"] == 1
+        assert status.is_valid
+        assert status.details["cached"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_429_is_not_reprobed_before_its_retry_after(self, counting, monkeypatch):
+        respond, calls, ts = counting
+        respond(_resp(429, headers={"retry-after": str(3 * 86400)}))
+        first = await TokenHealthService().validate_figma_token()
+        assert first.error_type == TokenErrorType.RATE_LIMITED
+
+        # Past the normal interval, still inside Figma's penalty.
+        real_time = ts.time.time
+        monkeypatch.setattr(ts.time, "time", lambda: real_time() + 2 * 86400)
+        again = await TokenHealthService().validate_figma_token()
+        assert calls["n"] == 1
+        assert again.error_type == TokenErrorType.RATE_LIMITED
+        assert not again.is_valid
+        # The countdown is from now, not frozen at the probe's number.
+        assert "expected in 24.0 hours" in again.error_message
+
+    @pytest.mark.asyncio
+    async def test_it_probes_again_once_the_answer_is_stale(self, counting, monkeypatch):
+        respond, calls, ts = counting
+        respond(_resp(200, json_body={"name": "f"}))
+        await TokenHealthService().validate_figma_token()
+        real_time = ts.time.time
+        monkeypatch.setattr(ts.time, "time", lambda: real_time() + 7 * 3600)
+        await TokenHealthService().validate_figma_token()
+        assert calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_new_token_is_a_new_question(self, counting, monkeypatch):
+        respond, calls, ts = counting
+        respond(_resp(429, headers={"retry-after": "300000"}))
+        await TokenHealthService().validate_figma_token()
+        monkeypatch.setattr(ts.settings, "figma_token", "fresh-token", raising=False)
+        respond(_resp(200, json_body={"name": "f"}))
+        status = await TokenHealthService().validate_figma_token()
+        assert calls["n"] == 2  # the stale 429 was not reused
+        assert status.is_valid
+
+    @pytest.mark.asyncio
+    async def test_a_network_failure_is_not_remembered(self, counting, monkeypatch):
+        respond, calls, _ = counting
+
+        async def _boom(self, url, **kwargs):
+            calls["n"] += 1
+            raise httpx.ConnectError("offline")
+        monkeypatch.setattr(httpx.AsyncClient, "get", _boom)
+        await TokenHealthService().validate_figma_token()
+        respond(_resp(200, json_body={"name": "f"}))
+        status = await TokenHealthService().validate_figma_token()
+        assert status.is_valid
+        assert "cached" not in (status.details or {})

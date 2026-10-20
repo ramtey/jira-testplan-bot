@@ -215,3 +215,17 @@ def no_previous_plan(monkeypatch: pytest.MonkeyPatch):
         return None, None
 
     monkeypatch.setattr(plan_service, "_load_previous_plan", _none)
+
+
+@pytest.fixture(autouse=True)
+def isolated_figma_probe_cache(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """Give every test its own Figma probe cache.
+
+    The real one lives in ~/.jira-testplan-bot and is shared with the running
+    app: a test reading it would see yesterday's verdict instead of its mock,
+    and a test writing it would tell the live header pill a made-up answer.
+    """
+    from src.app import token_service
+
+    monkeypatch.setattr(token_service, "FIGMA_PROBE_CACHE_PATH",
+                        tmp_path / "figma-probe.json")

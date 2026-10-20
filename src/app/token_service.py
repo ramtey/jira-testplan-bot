@@ -12,10 +12,15 @@ Provides detailed status information including:
 - Service availability and rate limits
 """
 
+import hashlib
+import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 
 import httpx
 
@@ -35,6 +40,95 @@ _FIGMA_PROBE_MISS_KEY = "000000000000000000000000"
 #: 2026-09-16 meant a Retry-After of 241725s (2.8 days) with design context
 #: silently missing from every plan the whole time.
 _FIGMA_THROTTLE_TOLERANCE_S = 3600
+
+
+#: One Figma verdict shared by every process that asks (API, watcher, CLI).
+#: The probe reads a real file and so spends the quota it is checking; it
+#: must not run more often than settings.figma_probe_min_hours.
+FIGMA_PROBE_CACHE_PATH = Path(
+    os.environ.get("FIGMA_PROBE_CACHE",
+                   Path.home() / ".jira-testplan-bot" / "figma-probe.json")
+)
+
+
+def _figma_rate_limited_message(wait: int | None) -> str:
+    return (
+        "Figma file reads are rate limited. The token itself is fine, but "
+        "design context is missing from every plan with a Figma link until "
+        f"the limit clears — expected in {_humanize_seconds(wait)}."
+    )
+
+
+def _figma_probe_fingerprint() -> str:
+    """A new token or probe file is a new question; the old answer is void."""
+    raw = f"{settings.figma_token}|{settings.figma_healthcheck_file_key or ''}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _read_figma_probe_cache() -> "TokenStatus | None":
+    """The last real probe's verdict while it is still fresh, else None."""
+    try:
+        cached = json.loads(FIGMA_PROBE_CACHE_PATH.read_text())
+    except Exception:
+        return None
+    now = time.time()
+    if cached.get("fingerprint") != _figma_probe_fingerprint():
+        return None
+    if now >= float(cached.get("expires_at") or 0):
+        return None
+    try:
+        error_type = TokenErrorType(cached["error_type"]) if cached.get("error_type") else None
+    except ValueError:
+        return None
+    message = cached.get("error_message")
+    retry_until = cached.get("retry_until")
+    if error_type == TokenErrorType.RATE_LIMITED and retry_until:
+        # Count down from now, not from when the probe ran.
+        message = _figma_rate_limited_message(max(0, int(float(retry_until) - now)))
+    details = dict(cached.get("details") or {})
+    details["cached"] = True
+    checked_at = float(cached.get("checked_at") or now)
+    return TokenStatus(
+        service_name="Figma",
+        is_valid=bool(cached.get("is_valid")),
+        is_required=False,
+        error_type=error_type,
+        error_message=message,
+        help_url=cached.get("help_url"),
+        last_checked=datetime.fromtimestamp(checked_at),
+        details=details,
+    )
+
+
+def _write_figma_probe_cache(status: "TokenStatus") -> None:
+    now = time.time()
+    ttl = max(settings.figma_probe_min_hours, 0) * 3600
+    retry_until = None
+    if status.error_type == TokenErrorType.RATE_LIMITED:
+        wait = (status.details or {}).get("retry_after_seconds")
+        if wait:
+            retry_until = now + wait
+            # Probing before Figma said to is a guaranteed 429 that may
+            # itself extend the penalty.
+            ttl = max(ttl, wait)
+    record = {
+        "fingerprint": _figma_probe_fingerprint(),
+        "checked_at": now,
+        "expires_at": now + ttl,
+        "retry_until": retry_until,
+        "is_valid": status.is_valid,
+        "error_type": getattr(status.error_type, "value", status.error_type),
+        "error_message": status.error_message,
+        "help_url": status.help_url,
+        "details": {k: v for k, v in (status.details or {}).items() if k != "error"},
+    }
+    try:
+        FIGMA_PROBE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        FIGMA_PROBE_CACHE_PATH.write_text(json.dumps(record, indent=2))
+    except Exception:
+        logger.warning("could not persist the Figma probe result to %s; the "
+                       "next check will probe again", FIGMA_PROBE_CACHE_PATH,
+                       exc_info=True)
 
 
 def _retry_after_seconds(response) -> int | None:
@@ -601,6 +695,18 @@ class TokenHealthService:
                 last_checked=last_checked,
             )
 
+        cached = _read_figma_probe_cache()
+        if cached is not None:
+            return cached
+        status = await self._probe_figma(service_name, last_checked)
+        # Network trouble says nothing about the token or the quota; caching
+        # it would hide a recovery for hours.
+        if status.error_type != TokenErrorType.SERVICE_UNAVAILABLE:
+            _write_figma_probe_cache(status)
+        return status
+
+    async def _probe_figma(self, service_name: str, last_checked: datetime) -> TokenStatus:
+        """One real read against Figma. Spends quota — call via validate_figma_token."""
         # Probe the endpoint the app actually calls. /v1/me answers a
         # different question — it needs current_user:read, which this bot
         # never asks for — so it keeps reporting a healthy token while real
@@ -675,12 +781,7 @@ class TokenHealthService:
                         is_valid=brief,
                         is_required=False,
                         error_type=TokenErrorType.RATE_LIMITED,
-                        error_message=(
-                            "Figma file reads are rate limited. The token itself is "
-                            "fine, but design context is missing from every plan with "
-                            "a Figma link until the limit clears — expected in "
-                            f"{_humanize_seconds(wait)}."
-                        ),
+                        error_message=_figma_rate_limited_message(wait),
                         last_checked=last_checked,
                         details={"retry_after_seconds": wait},
                     )

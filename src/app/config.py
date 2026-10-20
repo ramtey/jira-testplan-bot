@@ -152,6 +152,12 @@ class Settings(BaseSettings):
     # Figma bills /v1/files by what it returns, so a nonexistent key answers
     # 404 even while the quota for real files is exhausted.
     figma_healthcheck_file_key: str | None = None
+    # Hours between real Figma probes. Reading that file spends the same
+    # file-read quota plans need, and the header pill used to re-read it every
+    # five minutes per open tab — by October the probe was plausibly what kept
+    # the quota spent. Every caller (UI, watcher, CLI) shares one cached
+    # answer; a 429 is kept until its Retry-After passes, whichever is longer.
+    figma_probe_min_hours: float = 6.0
     # An "owner/repo" the GitHub health check reads, to prove the token can
     # still see the code plans are written from. /user answers 200 for a token
     # that has lost every org repo (2026-10-12) and from a machine the org's
