@@ -386,3 +386,14 @@ async def test_an_analysis_with_no_regression_tests_is_not_offered_as_a_seed(db)
     assert await bug_analysis_repository.find_seed_regression_tests(
         db, ticket_key="SK-11", parent_key="SK-100"
     ) == []
+
+
+@pytest.mark.asyncio
+async def test_run_trigger_round_trips(db):
+    user = await user_repository.get_or_create_by_email(db, email="qa@example.com")
+    run = await run_repository.create(
+        db, user_id=user.id, run_type=RunType.test_plan, ticket_keys=["SK-1"],
+        model="claude-opus-5", llm_provider="claude", trigger="watcher",
+    )
+    stored = await db["runs"].find_one({"_id": run.id})
+    assert stored["trigger"] == "watcher"

@@ -653,7 +653,7 @@ async def generate_test_plan(
     assembly — see ``services/plan_service`` for why that matters.
     """
     try:
-        plan = await plan_service.generate_single(request)
+        plan = await plan_service.generate_single(request, trigger="ui")
     except NonTestableIssueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SourceLookupUnavailableError as e:
@@ -679,7 +679,7 @@ async def generate_multi_ticket_test_plan(request: MultiTicketGenerateRequest):
       behaviour.
     """
     try:
-        return await plan_service.generate_multi(request.tickets)
+        return await plan_service.generate_multi(request.tickets, trigger="ui")
     except NonTestableIssueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SourceLookupUnavailableError as e:
@@ -701,7 +701,7 @@ async def generate_plan_for_ticket(ticket_key: str, background_tasks: Background
     if not keys:
         raise HTTPException(status_code=400, detail="No ticket key supplied.")
     try:
-        plan = await plan_service.generate_for_tickets(keys)
+        plan = await plan_service.generate_for_tickets(keys, trigger="api")
     except NonTestableIssueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SourceLookupUnavailableError as e:

@@ -6,6 +6,7 @@ from .fetch_cmd import fetch
 from .generate_cmd import generate
 from .health_cmd import health
 from .setup_cmd import setup
+from .timings_cmd import timings
 from .watch_cmd import watch
 
-__all__ = ["auto_post_status", "config_app", "health", "fetch", "generate", "setup", "watch"]
+__all__ = ["auto_post_status", "config_app", "health", "fetch", "generate", "setup", "timings", "watch"]

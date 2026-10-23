@@ -67,6 +67,7 @@ class _Harness:
         self.plan = plan or {"happy_path": [{"title": "t"}], "plan_id": 7}
         self.generate_error = generate_error
         self.generated: list[str] = []
+        self.triggers: list[str | None] = []
         self.bug_lens_calls: list[str] = []
 
     def __enter__(self):
@@ -80,6 +81,7 @@ class _Harness:
             if self.generate_error:
                 raise self.generate_error
             self.generated.append(request.ticket_key)
+            self.triggers.append(kwargs.get("trigger"))
             return self.plan
 
         async def _hold():
@@ -143,6 +145,8 @@ async def test_generates_for_a_fresh_ticket_with_a_pr():
     assert h.generated == ["SK-1"]
     assert [o.action for o in result.outcomes] == ["generated"]
     assert result.scanned == 1
+    # `testplan timings` splits generation time by what started the run.
+    assert h.triggers == ["watcher"]
 
 
 @pytest.mark.asyncio

@@ -532,7 +532,7 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
     badges, no AC coverage and no run history.
     """
     try:
-        test_plan_dict = await plan_service.generate_for_ticket(ticket_key)
+        test_plan_dict = await plan_service.generate_for_ticket(ticket_key, trigger="mcp")
 
         # Build Jira-formatted block (same as UI's formatTestPlanAsJira)
         jira_text = _format_test_plan_for_jira(test_plan_dict)

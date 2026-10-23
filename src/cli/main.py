@@ -56,6 +56,7 @@ app.command(name="fetch")(commands.fetch)
 app.command(name="generate")(commands.generate)
 app.command(name="watch")(commands.watch)
 app.command(name="auto-post")(commands.auto_post_status)
+app.command(name="timings")(commands.timings)
 
 
 if __name__ == "__main__":

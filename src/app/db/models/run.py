@@ -50,6 +50,10 @@ class Run(DocumentBase):
     llm_provider: str
 
     latency_ms: int = 0
+    # What started the run, so generation time can be read per path:
+    # "watcher", "ui", "api", "cli" or "mcp". None on runs recorded before
+    # 2026-10-23 and on Bug Lens runs.
+    trigger: str | None = None
     prompt_tokens: int = 0
     output_tokens: int = 0
     # Stored as BSON Decimal128 so fractional cents survive a round trip exactly

@@ -350,7 +350,7 @@ async def sweep_once(
 
         try:
             plan = await plan_service.generate_single(
-                GenerateTestPlanRequest(**payload)
+                GenerateTestPlanRequest(**payload), trigger="watcher"
             )
         except plan_service.NonTestableIssueError:
             result.outcomes.append(

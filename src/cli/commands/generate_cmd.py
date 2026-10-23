@@ -170,7 +170,8 @@ def generate(
                             **plan_service.prompt_payload(
                                 plan_service.serialize_issue(issue)
                             )
-                        )
+                        ),
+                        trigger="cli",
                     )
                 )
 

@@ -77,6 +77,7 @@ async def start_run(
     ticket_parent_key: str | None = None,
     source_provenance: dict | None = None,
     batch_host_key: str | None = None,
+    trigger: str | None = None,
 ) -> RunContext:
     started = perf_counter()
     ticket_keys_list = list(ticket_keys)
@@ -110,6 +111,7 @@ async def start_run(
             comment_count=comment_count,
             source_provenance=source_provenance,
             batch_host_key=batch_host_key,
+            trigger=trigger,
         )
         return RunContext(run_id=run.id, started_at=started)
     except Exception as exc:

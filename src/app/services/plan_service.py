@@ -581,7 +581,7 @@ async def _explore_code(request, llm) -> dict | None:
 
 
 async def generate_single(
-    request: GenerateTestPlanRequest, *, llm=None
+    request: GenerateTestPlanRequest, *, llm=None, trigger: str | None = None
 ) -> dict:
     """Generate, critique, score and persist a single-ticket test plan.
 
@@ -636,6 +636,7 @@ async def generate_single(
         ticket_issue_type=request.issue_type,
         ticket_parent_key=parent_key_clean,
         source_provenance=provenance,
+        trigger=trigger,
         **flags,
     )
 
@@ -1191,7 +1192,9 @@ def _log_remap(ticket_key: str, remap: dict) -> None:
         )
 
 
-async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
+async def generate_multi(
+    tickets: list[TicketInput], *, llm=None, trigger: str | None = None
+) -> dict:
     """Generate a unified plan across several related tickets.
 
     Two modes:
@@ -1258,6 +1261,7 @@ async def generate_multi(tickets: list[TicketInput], *, llm=None) -> dict:
         llm_provider=settings.llm_provider,
         source_provenance=provenance,
         batch_host_key=batch_host_key,
+        trigger=trigger,
         **aggregated_flags,
     )
 
@@ -1636,17 +1640,19 @@ def _innermost_app_frame(exc: BaseException) -> str | None:
 # --------------------------------------------------------------------------
 
 
-async def generate_for_ticket(ticket_key: str) -> dict:
+async def generate_for_ticket(ticket_key: str, *, trigger: str | None = None) -> dict:
     """Fetch `ticket_key` from Jira and generate its plan, critics and all.
 
     The one-call equivalent of what the browser does across
     ``GET /issue/{key}`` + ``POST /generate-test-plan``.
     """
     payload = await fetch_ticket_payload(ticket_key)
-    return await generate_single(GenerateTestPlanRequest(**payload))
+    return await generate_single(GenerateTestPlanRequest(**payload), trigger=trigger)
 
 
-async def generate_for_tickets(ticket_keys: list[str]) -> dict:
+async def generate_for_tickets(
+    ticket_keys: list[str], *, trigger: str | None = None
+) -> dict:
     """Fetch several tickets and generate one unified plan across them.
 
     A single key routes to the single-ticket pipeline so callers don't
@@ -1657,10 +1663,10 @@ async def generate_for_tickets(ticket_keys: list[str]) -> dict:
     if not ticket_keys:
         raise ValueError("generate_for_tickets requires at least one ticket key")
     if len(ticket_keys) == 1:
-        return await generate_for_ticket(ticket_keys[0])
+        return await generate_for_ticket(ticket_keys[0], trigger=trigger)
 
     jira = JiraClient()
     payloads = await asyncio.gather(
         *[fetch_ticket_payload(key, jira=jira) for key in ticket_keys]
     )
-    return await generate_multi([TicketInput(**p) for p in payloads])
+    return await generate_multi([TicketInput(**p) for p in payloads], trigger=trigger)

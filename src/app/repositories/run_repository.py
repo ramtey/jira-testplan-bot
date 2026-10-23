@@ -25,6 +25,7 @@ async def create(
     comment_count: int = 0,
     source_provenance: dict | None = None,
     batch_host_key: str | None = None,
+    trigger: str | None = None,
 ) -> Run:
     run = Run(
         user_id=user_id,
@@ -41,6 +42,7 @@ async def create(
         comment_count=comment_count,
         source_provenance=source_provenance,
         batch_host_key=batch_host_key,
+        trigger=trigger,
     )
     return await crud.insert(db, run)
 
