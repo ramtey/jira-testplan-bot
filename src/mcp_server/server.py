@@ -15,6 +15,7 @@ from mcp.types import Tool, TextContent
 from ..app.config import settings
 from ..app.jira_client import JiraClient, JiraAuthError, JiraNotFoundError
 from ..app.llm_client import LLMError
+from ..app.case_disposition import render_out_of_uat_lines
 from ..app.evidence_checks import render_evidence_lines
 from ..app.services import plan_service
 from ..app.services.plan_service import NonTestableIssueError
@@ -517,6 +518,9 @@ def _format_test_plan_for_jira(test_plan_dict: dict) -> str:
         jira += "\n"
 
     jira += _needs_spec_text(test_plan_dict)
+    out_of_uat = render_out_of_uat_lines(test_plan_dict, markdown=False)
+    if out_of_uat:
+        jira += "\n".join(out_of_uat) + "\n"
 
     return jira
 
@@ -639,6 +643,7 @@ async def _generate_test_plan(ticket_key: str) -> list[TextContent]:
         if needs_spec:
             output.append(needs_spec)
             output.append("")
+        output.extend(render_out_of_uat_lines(test_plan_dict, markdown=False))
 
         warnings = test_plan_dict.get("grounding_warnings") or []
         if warnings:

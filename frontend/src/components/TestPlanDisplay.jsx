@@ -4,7 +4,9 @@
  */
 
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { formatTestPlanAsMarkdown, formatTestPlanAsJira } from '../utils/markdown'
+import {
+  formatTestPlanAsMarkdown, formatTestPlanAsJira, CODE_REVIEW_BLURB, PRE_EXISTING_BLURB, LOW_CONFIDENCE_BLURB,
+} from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 import { useTicketWalkthrough } from '../hooks/useTicketWalkthrough'
 import Icon from './Icon'
@@ -1523,6 +1525,87 @@ function NeedsSpecSection({ cases }) {
 }
 
 /**
+ * Plan shape v2 (src/app/case_disposition.py): what the plan concluded a
+ * tester cannot grade. No case ids, not in the checklist or the progress key.
+ */
+const OUT_OF_UAT = [
+  { key: 'code_review_checks', id: 'sect-code-review', icon: 'code', color: '#93c5fd',
+    title: 'Verify by code review / unit test', tag: 'Not UAT', blurb: CODE_REVIEW_BLURB },
+  { key: 'pre_existing_behaviour', id: 'sect-pre-existing', icon: 'info', color: 'var(--fg-subtle)',
+    title: 'Pre-existing behaviour — notes', tag: 'Not counted', blurb: PRE_EXISTING_BLURB },
+  { key: 'regression_low_confidence', id: 'sect-low-confidence', icon: 'alert', color: '#fcd34d',
+    title: 'Low-confidence regression ideas', tag: 'Not in checklist', blurb: LOW_CONFIDENCE_BLURB },
+]
+
+function OutOfUatEntry({ item, kind }) {
+  const line = (label, text) => text ? (
+    <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)' }}>
+      <strong style={{ fontWeight: 600 }}>{label}</strong> {text}
+    </span>
+  ) : null
+  if (kind === 'regression_low_confidence') {
+    return <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{item.line}</span>
+  }
+  return (
+    <>
+      <span style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+        {typeof item.title === 'string' ? item.title : JSON.stringify(item.title)}
+      </span>
+      {kind === 'code_review_checks' && (
+        <>
+          {line('Why not UAT:', item.why_not_uat)}
+          {line('Verify:', item.what_to_verify)}
+          {line('Suggested test:', item.suggested_test)}
+        </>
+      )}
+      {kind === 'pre_existing_behaviour' && item.note !== item.title && line('', item.note)}
+      {item.code_refs?.length > 0 && line('Code:', item.code_refs.join(', '))}
+    </>
+  )
+}
+
+function OutOfUatSection({ plan, section }) {
+  const [open, setOpen] = useState(false)
+  const items = Array.isArray(plan?.[section.key]) ? plan[section.key] : []
+  if (items.length === 0) return null
+  return (
+    <section id={section.id} style={{ marginTop: 'var(--s-8)' }}>
+      <header
+        onClick={() => setOpen((v) => !v)}
+        style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: open ? 'var(--s-4)' : 0, cursor: 'pointer' }}
+      >
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} style={{ color: 'var(--fg-muted)' }} />
+        <Icon name={section.icon} size={16} style={{ color: section.color }} />
+        <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-muted)' }}>
+          {section.title}
+        </h2>
+        <Chip size="sm">{items.length}</Chip>
+        <span style={{ flex: 1 }} />
+        <span style={{ color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>{section.tag}</span>
+      </header>
+      {open && (
+        <div className="card" style={{ padding: 'var(--s-5) var(--s-6)' }}>
+          <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', marginBottom: 'var(--s-4)' }}>
+            {section.blurb}
+          </div>
+          {items.map((item, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 0',
+                borderBottom: i < items.length - 1 ? '1px solid var(--divider)' : 'none',
+              }}
+            >
+              <OutOfUatEntry item={item} kind={section.key} />
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/**
  * What replaces the plan when nothing grounded it. Names where the bot looked,
  * so a reader can tell a missing PR from a broken Jira-GitHub integration.
  */
@@ -2654,6 +2737,9 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
       })}
 
       <NeedsSpecSection cases={testPlan.needs_spec_cases} />
+      {OUT_OF_UAT.map((section) => (
+        <OutOfUatSection key={section.key} plan={testPlan} section={section} />
+      ))}
 
       <CoveredByUnitTestsSection
         cases={coveredCases}

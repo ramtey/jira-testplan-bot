@@ -429,6 +429,12 @@ class TestPlan:
     # something QA can mark pass or fail. Each entry:
     # {"gap": "...", "impact": "...", "evidence": "infra/staging/x.yaml:18"}
     risks_and_gaps: list[dict] | None = None
+    # Rule L: behaviour the generator concluded no tester can produce in the
+    # product (a defensive branch, an input no caller sends). Not cases — a
+    # tester cannot grade them — so case_disposition.route_out_of_uat merges
+    # them into the plan's "verify by code review / unit test" list. Each:
+    # {"title", "why_not_uat", "what_to_verify", "suggested_test", "code_refs"}
+    code_review_checks: list[dict] | None = None
     # The model's answers to evidence rules A, B and E — ``requirement_check``,
     # ``deployment_status`` and ``note_disagreements`` — kept as it returned
     # them. Never shown as is: evidence_checks turns them into the plan's

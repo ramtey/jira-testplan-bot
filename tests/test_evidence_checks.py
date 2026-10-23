@@ -115,13 +115,20 @@ async def test_the_test_file_is_read_whole_at_the_merge_commit():
 
 
 @pytest.mark.asyncio
-async def test_suite_is_not_run_in_ci():
-    """No workflow files, and the image build's `npm test` is a no-op."""
+async def test_no_ci_found_is_unknown_not_not_run():
+    """No CI pipeline in the repo, and the image build's `npm test` is a no-op.
+
+    Until 2026-10-23 this was "not run in CI". Finding no CI is not a fact
+    about CI: SK-2719's plan said mobile-api had no CI while an Argo pipeline
+    in the deployments repo ran `npm test` on master. So it is "unknown", the
+    no-op image step is still named, and rule C still refuses it as proof.
+    """
     [entry] = await _evidence()
     build = entry["build"]
-    assert build["suites"][UNIT_TEST_FILE]["status"] == "not_run"
-    finding = next(f for f in build["findings"] if f["kind"] == "tests_not_run_in_ci")
-    assert finding["finding"].startswith("Tests exist but are not run in CI")
+    assert build["suites"][UNIT_TEST_FILE]["status"] == "unknown"
+    assert not any(f["kind"] == "tests_not_run_in_ci" for f in build["findings"])
+    finding = next(f for f in build["findings"] if f["kind"] == "ci_unknown")
+    assert "no CI pipeline was found" in finding["finding"]
     assert "exit 0" in finding["finding"]
 
 
@@ -221,7 +228,7 @@ async def test_a_well_formed_claim_still_needs_ci():
     [entry] = await _evidence()
     demoted, _ = ev.enforce_unit_test_coverage(plan, entry["test_sources"], entry["build"]["suites"])
     reason = next(d["reason"] for d in demoted if d["case_id"] == "edge_cases:2")
-    assert "tests exist but are not run in CI" in reason
+    assert "could not confirm CI runs" in reason and "not treated as proof" in reason
 
 
 def test_a_quote_that_is_not_in_the_named_test_is_rejected():
@@ -364,7 +371,7 @@ async def test_generate_single_replaying_v1_produces_the_evidence_sections():
     async def _deploy(*a, **k):
         return copy.deepcopy(INPUTS["deploy_state"])
 
-    async def _repo(dev_info, mentioned):
+    async def _repo(dev_info, mentioned, deployments=None):
         return await ev.gather_repo_evidence(FakeGitHub(), dev_info["pull_requests"], mentioned)
 
     request = GenerateTestPlanRequest(
@@ -397,13 +404,19 @@ async def test_generate_single_replaying_v1_produces_the_evidence_sections():
 
     # (2) not deployed, and a deploy check where a deployment is assumed
     assert response["deployment_status"]["status"] == "not_deployed"
-    assert "Deploy check first" in response["regression_checklist"][9]
+    # v1's regression lines predate the rule that each cites the changed code
+    # it guards (case_disposition): the bounce re-walk names no file, so it
+    # is kept visible as low-confidence and out of the core checklist.
+    low = [x["line"] for x in response["regression_low_confidence"]]
+    assert any("Bounce-back re-walk" in line for line in low)
+    assert not any("Bounce-back re-walk" in line for line in response["regression_checklist"])
+    assert any("utils/http.js" in line for line in response["regression_checklist"])
     # (3) nothing unproven left as covered
     for section in ("happy_path", "edge_cases", "integration_tests"):
         assert not any(c.get("covered_by_unit_test") for c in response[section])
     # (4) and (6)
     kinds = {f["kind"] for f in response["build_and_ci"]}
-    assert {"tests_not_run_in_ci", "lockfile_not_shipped"} <= kinds
+    assert {"ci_unknown", "lockfile_not_shipped"} <= kinds
     # (5) the model assessed nothing, so every requirement is a gap
     gaps = {g["requirement"] for g in response["acceptance_gaps"]}
     assert any("explicit byte limit" in g for g in gaps)
@@ -430,8 +443,8 @@ def test_prompt_carries_the_note_the_repo_facts_and_the_requirements():
     assert f"**Comment {TESTING_NOTE} by Dev Agent**" in prompt
     assert "PRIMARY SOURCE (testing notes)" in prompt
     assert "webhook-traffic-generator" in prompt and "set image tag main-2824789" in prompt
-    assert f"TEST FILE {UNIT_TEST_FILE} — CI status: NOT_RUN" in prompt
-    assert "Tests exist but are not run in CI" in prompt
+    assert f"TEST FILE {UNIT_TEST_FILE} — CI status: UNKNOWN" in prompt
+    assert "Could not tell whether CI runs" in prompt
     assert "does not use the committed lockfile" in prompt
     assert "#5: NOT INCLUDED" in prompt
     assert 'explicit byte limit' in prompt and "requirement_check" in prompt

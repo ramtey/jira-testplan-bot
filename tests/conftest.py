@@ -199,6 +199,12 @@ def no_live_repo_evidence(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(plan_service, "_read_repo_evidence", _none)
 
+    async def _nothing_found(*_args, **_kwargs):
+        return {"deployments_repos": [], "deploy_sources": {}, "pipelines": {}, "errors": []}
+
+    # Deployments-repo discovery (src/app/build_targets.py) lists trees too.
+    monkeypatch.setattr(plan_service, "_discover_deployments", _nothing_found)
+
 
 @pytest.fixture(autouse=True)
 def no_previous_plan(monkeypatch: pytest.MonkeyPatch):

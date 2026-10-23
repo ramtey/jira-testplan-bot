@@ -90,6 +90,26 @@ plan that shipped wrong before the rule existed.
 - **Linked Confluence specs**: Confluence URLs in the Jira description or comments are fetched and injected into the LLM prompt as a LINKED SPECS section so quoted requirements come from the actual spec page, not just the ticket body. Best-effort — per-page failures don't block plan generation
 - **Covered-by-unit-tests flag**: cases whose behavior an existing unit test already exercises are flagged and moved into a collapsed section, and excluded from the Jira comment by default
 
+### Build checks, CI facts and plan shape v2 (2026-10-23)
+
+Written against SK-2719 (plan 1) and SK-2889 (plan 2); the regression fixtures are `tests/fixtures/sk2719` and `sk2889`, and `evals/replay_store_plans.py <plan ids>` replays stored plans through the same stages (read-only, no model calls).
+
+- **CI from every source.** `evidence_checks.analyze_build` recognises GitHub Actions, Argo Workflows, Jenkins, Bitbucket Pipelines, Codefresh, GitLab, CircleCI, Tekton, Bitrise, Codemagic, Xcode Cloud and Fastlane lanes in the repo, plus pipelines kept in a deployments repo (`<team>/pipelines/<service>/values.yaml`, found by `build_targets.discover_deployments`). A suite is `not_run` only when a pipeline was found, read, and runs no tests; finding no CI anywhere is `unknown`, never "no CI". A case that says CI does not run something is marked *unconfirmed* unless the build facts say `not_run`, and *contradicted* when they show CI runs it.
+- **Each repo's own merge commit, checked by containment.** `build_targets.build_targets` makes one target per code repo, with that repo's merge commit and platform. A case's build check names the repos the case exercises (from the files and repo names it cites), and a deployed build passes when its commit *contains* the merge (`gh api repos/<repo>/compare/<merge>...<deployed>` is `ahead`/`identical`), whatever the tag is called. An exact image tag a case pins is rewritten to "a build that contains <merge>". The check is code-built: a deploy-check step the model wrote is replaced in place (no renumbering).
+- **The check fits the platform.** Backend: the deployed image contains the merge. iOS: the installed app's `CFBundleShortVersionString`/`CFBundleVersion` (`plutil -p …/Info.plist`, `xcrun simctl listapps booted`) are at least `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` at the merge commit (project.pbxproj, then project.yml), and the build comes from a commit that contains it. Android: `adb shell dumpsys package` versionName/versionCode. Web: the served bundle's commit. An app build never gets an image or ArgoCD check, and the deployment banner says it is an app instead of "no deployment source configured".
+- **Deployment sources without configuration.** `DEPLOYMENTS_REPOS` (plus the repos `DEPLOY_STATE_SOURCES` points at, plus any deployments repo a ticket PR goes to) are searched for `<team>/<service>/<env>/values.yaml`; `DEPLOY_STATE_SOURCES` still wins for a repo it names.
+- **Error bodies.** A case about how a client handles error responses gets an "Error-body variants" step for any of the empty-body and non-JSON variants it does not already cover (`src/app/error_variants.py`; adds a step, never a case).
+
+**Plan shape v2 — what leaves the checklist.** `src/app/case_disposition.py` runs after the reachability critic and moves into top-level lists, beside `needs_spec_cases`:
+
+| List | What goes there |
+|---|---|
+| `code_review_checks` | Cases the plan concluded no tester can produce through the product (critic verdict, the generator's `reachable: false`, or the rule-L wording), and the generator's own `code_review_checks`. Each carries `why_not_uat`, `what_to_verify`, `suggested_test`, `code_refs`. |
+| `pre_existing_behaviour` | Cases with `pre_existing: true` (rule H) and regression lines labelled pre-existing. |
+| `regression_low_confidence` | Regression lines that cite no changed file, no class named after one, no module the diff references, and no call site the explorer found. |
+
+None of these lists is in `progress_key.CHECKLIST_KEYS`, so they are outside the case count, the progress key and the UAT runner's case ids; they render after Needs-spec in the UI, the Jira comment, the CLI and MCP. New bodies carry `"plan_shape": 2`. **Compatibility:** a stored plan (no `plan_shape`) is untouched and keeps its key byte for byte — SK-2889 plan 2 is still `6-6-5-14`. A *regeneration* of it produces the v2 shape (`6-3-5-13`); `progress_remap` reports each moved case with status `code_review`, `pre_existing` or `low_confidence` instead of `gone`. Cases QA already passed in the previous version are never moved.
+
 ## Web UI
 
 - **Progressive ticket load**: fetching a ticket paints the header, description, labels, status, assignee, story points, and attachments in ~one Jira round-trip via `GET /issue/{key}/basic`, then continues enriching (dev info, comments, PR analysis, parent, children, linked issues, bounce history) in parallel in the background. The partial view stays on screen while enrichment lands so re-fetches don't blank the ticket — the fetch overlay is scoped to the first paint, not the refresh

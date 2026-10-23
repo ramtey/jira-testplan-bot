@@ -1,0 +1,409 @@
+{
+ "_about": "Sanitized regression fixture for SK-2719 plan 1 v1 (local bot store, 2026-10-23): a ticket spanning a backend (acme/mobile-api) and an iOS app (acme/ios-client), plus a deployments-repo PR. Trees and files are trimmed to what the build/CI/deploy stages read; patches and test bodies are stubs. The codefresh and Argo excerpts keep only the structure the CI detector reads.",
+ "ticket_key": "SK-2719",
+ "pull_requests": [
+  {
+   "repository": "acme/ios-client",
+   "number": 73,
+   "status": "MERGED",
+   "merge_commit_sha": "50aff26dc750aaaad397cf1eb872739a66b860b2",
+   "merged_at": "2026-10-14T19:38:04Z",
+   "head_sha": "f44a1ee67971652ebf6d431fddbbb0acc2debeab",
+   "files_changed": [
+    {
+     "filename": "Acme.xcodeproj/project.pbxproj",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Assets.xcassets/General/sign-in-person-action-icon.imageset/Contents.json",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Assets.xcassets/General/sign-in-person-action-icon.imageset/sign-in-person-action-icon.svg",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Models/Helpers/RemoteConfigKey.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Models/Model/Envelope.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Models/Model/Extensions/Envelope+Additions.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Alerts/AlertViewController/AlertWithActionViewController/AlertWithActionView/AlertWithActionView.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Alerts/AlertViewController/AlertWithActionViewController/AlertWithActionViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Alerts/AlertViewController/DissmissableAlertWithLinkViewController/DismissableAlertWithLinkViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/BulkFill/WebController/BulkFillWebView/BulkFillWebView.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/BulkFill/WebController/WebKitViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/BulkFill/WebController/WebKitViewModel.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/AllEnvelopesViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/AllEnvelopesViewModel.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/EnvelopesViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSignersViewController.swift",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/EnvelopesModule/SignersViewController/SignerCell/SignerCell.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionEnvelopes/TransactionEnvelopesViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionEnvelopes/TransactionEnvelopesViewModel.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionForms/TransactionFormsViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionForms/TransactionFormsViewModel.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Resources/R.generated.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/FeatureManager.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/Networking/API/Helpers/ObservableType+Mapping.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/Networking/API/NetworkProvider.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/Networking/API/Targets/EnvelopeTarget.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/Networking/APIService.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/Networking/APIServiceable.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/Routing/SSRouter.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/Routing/SSRouterable.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "docs/threat-model.md",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    }
+   ]
+  },
+  {
+   "repository": "acme/mobile-api",
+   "number": 29,
+   "status": "MERGED",
+   "merge_commit_sha": "e2f422900b2c94a64fa46c279874786eeb5c7090",
+   "merged_at": "2026-10-14T15:21:20Z",
+   "head_sha": "bc65657003c92af2bfbecdffe801e37a1d587fbf",
+   "files_changed": [
+    {
+     "filename": "docs/threat-model.md",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/controllers/envelopes.controller.ts",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/helpers/queryEnvelopes.ts",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/interfaces/envelopes.interface.ts",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/middlewares/auth.middleware.ts",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/routes/envelopes.route.ts",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/services/envelopesService.ts",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/tests/unit/controllers/envelopes.controller.test.ts",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/tests/unit/helpers/queryEnvelopes.test.ts",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/tests/unit/middlewares/auth.middleware.test.ts",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/tests/unit/middlewares/error.middleware.test.ts",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "src/tests/unit/services/envelopesService.test.ts",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    }
+   ]
+  },
+  {
+   "repository": "acme/acme-deployments",
+   "number": 398,
+   "status": "MERGED",
+   "merge_commit_sha": "ce622f131e2ba219e9b6c9b826c205266d6627ab",
+   "merged_at": "2026-10-09T19:10:39Z",
+   "head_sha": "ce622f131e2ba219e9b6c9b826c205266d6627ab",
+   "files_changed": [
+    {
+     "filename": "mobile/mobile-api/integ-west/values.yaml",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    }
+   ]
+  }
+ ],
+ "repo_trees": {
+  "acme/mobile-api": [
+   ".dockerignore",
+   ".env.example",
+   ".github/CODEOWNERS",
+   ".github/pull_request_template.md",
+   ".gitignore",
+   ".husky/commit-msg",
+   ".husky/pre-commit",
+   ".lintstagedrc.mjs",
+   ".prettierignore",
+   ".prettierrc.mjs",
+   ".s4.toml",
+   ".swcrc",
+   "AGENTS.md",
+   "CLAUDE.md",
+   "CODEOWNERS",
+   "Dockerfile",
+   "README.md",
+   "commitlint.config.mjs",
+   "deployment/codefresh/pipeline.yaml",
+   "eslint.config.mjs",
+   "jest.config.js",
+   "nodemon.json",
+   "package-lock.json",
+   "package.json",
+   "src/controllers/envelopes.controller.ts",
+   "src/helpers/queryEnvelopes.ts",
+   "src/interfaces/envelopes.interface.ts",
+   "src/middlewares/auth.middleware.ts",
+   "src/routes/envelopes.route.ts",
+   "src/services/envelopesService.ts",
+   "src/tests/unit/controllers/auth.profiles.controller.test.ts",
+   "src/tests/unit/controllers/contacts.controller.test.ts",
+   "src/tests/unit/controllers/envelopes.controller.test.ts",
+   "src/tests/unit/controllers/listingContacts.controller.test.ts",
+   "src/tests/unit/controllers/managedFields.controller.test.ts",
+   "src/tests/unit/controllers/salesContacts.controller.test.ts",
+   "src/tests/unit/controllers/user.controller.test.ts",
+   "src/tests/unit/helpers/queryEnvelopes.test.ts",
+   "src/tests/unit/middlewares/auth.middleware.test.ts",
+   "src/tests/unit/middlewares/error.middleware.test.ts",
+   "src/tests/unit/services/envelopesService.test.ts",
+   "src/tests/unit/services/templatesService.test.ts",
+   "src/tests/unit/utils/parseParams.test.ts",
+   "src/tests/unit/utils/searchByIdDTO.test.ts",
+   "src/tests/unit/utils/searchDTO.test.ts",
+   "src/tests/unit/utils/transactionsDTO.test.ts",
+   "src/tests/unit/utils/transformManagedFields.test.ts",
+   "swagger.yaml",
+   "tsconfig.json"
+  ],
+  "acme/ios-client": [
+   "Acme.xcodeproj/project.pbxproj",
+   "Acme/Application/Info.plist",
+   "Acme/Assets.xcassets/General/sign-in-person-action-icon.imageset/Contents.json",
+   "Acme/Assets.xcassets/General/sign-in-person-action-icon.imageset/sign-in-person-action-icon.svg",
+   "Acme/Classes/Models/Helpers/RemoteConfigKey.swift",
+   "Acme/Classes/Models/Model/Envelope.swift",
+   "Acme/Classes/Models/Model/Extensions/Envelope+Additions.swift",
+   "Acme/Classes/ViewControllers/Alerts/AlertViewController/AlertWithActionViewController/AlertWithActionView/AlertWithActionView.swift",
+   "Acme/Classes/ViewControllers/Alerts/AlertViewController/AlertWithActionViewController/AlertWithActionViewController.swift",
+   "Acme/Classes/ViewControllers/Alerts/AlertViewController/DissmissableAlertWithLinkViewController/DismissableAlertWithLinkViewController.swift",
+   "Acme/Classes/ViewControllers/BulkFill/WebController/BulkFillWebView/BulkFillWebView.swift",
+   "Acme/Classes/ViewControllers/BulkFill/WebController/WebKitViewController.swift",
+   "Acme/Classes/ViewControllers/BulkFill/WebController/WebKitViewModel.swift",
+   "Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/AllEnvelopesViewController.swift",
+   "Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/AllEnvelopesViewModel.swift",
+   "Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/EnvelopesViewController.swift",
+   "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSignersViewController.swift",
+   "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift",
+   "Acme/Classes/ViewControllers/EnvelopesModule/SignersViewController/SignerCell/SignerCell.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionEnvelopes/TransactionEnvelopesViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionEnvelopes/TransactionEnvelopesViewModel.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionForms/TransactionFormsViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionForms/TransactionFormsViewModel.swift",
+   "Acme/Resources/R.generated.swift",
+   "Acme/Services/FeatureManager.swift",
+   "Acme/Services/Networking/API/Helpers/ObservableType+Mapping.swift",
+   "Acme/Services/Networking/API/NetworkProvider.swift",
+   "Acme/Services/Networking/API/Targets/EnvelopeTarget.swift",
+   "Acme/Services/Networking/APIService.swift",
+   "Acme/Services/Networking/APIServiceable.swift",
+   "Acme/Services/Routing/SSRouter.swift",
+   "Acme/Services/Routing/SSRouterable.swift",
+   "docs/threat-model.md",
+   "fastlane/Fastfile",
+   "project.yml"
+  ]
+ },
+ "repo_files": {
+  "acme/mobile-api": {
+   "package.json": "{\"name\": \"mobile-api\", \"scripts\": {\"test\": \"NODE_ENV=integ jest\"}}",
+   "deployment/codefresh/pipeline.yaml": "version: '1.0'\nstages:\n  - build\n  - integ\nsteps:\n  test:\n    stage: build\n    title: Test\n    image: node:20-alpine\n    commands:\n      - npm ci\n      - npm test\n    when:\n      condition:\n        all:\n          testing: \"${{SKIP_TEST}} == false\"\n",
+   "src/tests/unit/controllers/auth.profiles.controller.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/controllers/contacts.controller.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/controllers/envelopes.controller.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/controllers/listingContacts.controller.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/controllers/managedFields.controller.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/controllers/salesContacts.controller.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/controllers/user.controller.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/helpers/queryEnvelopes.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/middlewares/auth.middleware.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/middlewares/error.middleware.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/services/envelopesService.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/services/templatesService.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/utils/parseParams.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/utils/searchByIdDTO.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/utils/searchDTO.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/utils/transactionsDTO.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n",
+   "src/tests/unit/utils/transformManagedFields.test.ts": "describe('stub', () => { it('is a stub', () => { expect(true).toBe(true); }); });\n"
+  },
+  "acme/ios-client": {
+   "Acme.xcodeproj/project.pbxproj": "\t\t\t\tCURRENT_PROJECT_VERSION = 1;\n\t\t\t\tMARKETING_VERSION = 2.13.0;\n\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.acme.mobile.integ;\n\t\t\t\tMARKETING_VERSION = 1.0.0;\n\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.acme.AcmeTests;\n",
+   "project.yml": "name: Acme\nsettings:\n    CURRENT_PROJECT_VERSION: 1\n    MARKETING_VERSION: 1.0.0\n",
+   "fastlane/Fastfile": "platform :ios do\n  lane :build_release_integ do\n    gym(scheme: 'Integ')\n    upload_to_testflight\n  end\nend\n"
+  }
+ },
+ "deployments_tree": [
+  "_argo-apps/Chart.yaml",
+  "_argo-apps/values.yaml",
+  "mobile/mobile-api/Chart.yaml",
+  "mobile/mobile-api/values.yaml",
+  "mobile/mobile-api/integ-west/values.yaml",
+  "mobile/mobile-api/staging-west/values.yaml",
+  "mobile/mobile-api/ss-prod-west/values.yaml",
+  "mobile/pipelines/mobile-api/values.yaml",
+  "mobile/pipelines/Chart.yaml",
+  "mobile/other-service/integ-west/values.yaml"
+ ],
+ "deployments_files": {
+  "mobile/mobile-api/integ-west/values.yaml": "acme-app:\n  image:\n    tag: master-6447b19\n",
+  "mobile/mobile-api/staging-west/values.yaml": "acme-app:\n  image:\n    tag: master-12414e5\n",
+  "mobile/mobile-api/ss-prod-west/values.yaml": "acme-app:\n  image:\n    tag: master-12414e5\n",
+  "mobile/pipelines/mobile-api/values.yaml": "argo-pipeline:\n  pipelines:\n    mobile-api:\n      trigger:\n        repoName: mobile-api\n      simpleSteps:\n        steps:\n          - - type: git-clone\n          - - type: harbor\n          - - name: test\n              image: node:24-alpine\n              commands: |\n                npm ci\n                npm test\n              when: \"{{workflow.parameters.skipTest}} == false\"\n"
+ },
+ "compare": {
+  "mobile-api": {
+   "e2f4229:6447b19": "ahead",
+   "e2f4229:12414e5": "behind"
+  }
+ }
+}

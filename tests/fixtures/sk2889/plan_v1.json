@@ -1,0 +1,457 @@
+{
+ "_about": "Generator + reachability-critic output for SK-2889 plan 2 v1, sanitized. edge_cases[0] and [4] carry the critic's unreachable verdict (rule L), edge_cases[3] the generator's pre-existing label (rule H). Code-added deploy steps and 'Unverified — assumption' line prefixes removed.",
+ "happy_path": [
+  {
+   "title": "Cold-start acme:// deep link lands on the right transaction and tab (killed app, logged in and logged out)",
+   "priority": "critical",
+   "preconditions": "Confirm the installed build is from develop at or after merge commit b485dad (check the build number in the app's About/Settings screen against the TestFlight/Xcode build for that commit) — no deployment source is configured for this repo, so the build must be verified by hand. Test account: a non-production QA account with at least one transaction.",
+   "steps": [
+    "Force-quit the app so the process is killed.",
+    "While logged in, open a acme://transactions deep link that names a transaction id and a tab (from Notes or Safari).",
+    "Observe where the app lands after the splash screen.",
+    "Unverified — assumption (“sign-out / sign-in flow” not found in the linked code): Force-quit the app again, sign out, force-quit once more, then open the same deep link and sign in when prompted.",
+    "Observe where the app lands after sign-in completes."
+   ],
+   "expected": "In both runs the app launches and lands on the named transaction, on the tab named in the link. Logged in: the link is queued at willConnect (SceneDelegate.swift:27-33 forwards connectionOptions.urlContexts to coordinator.open(url:)) and replayed once start() has run and auth is satisfied (DeepLinkManager.swift:20-54 / AppCoordinator pendingDeepLinkURL). Logged out: the link is held and replayed after authorization, not dropped — no silent landing on the default home screen and no error.",
+   "test_data": "Deep link form: acme://transactions?id=<id of a QA transaction>&tab=<a tab name the app uses>. Record the exact URL used so the warm-start case (integration tests) uses the identical one.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build (BuildConfig selects the Firebase plist per scheme) installed on an iPhone Duo and, separately, an iPad.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/SceneDelegate.swift:27-33",
+   "grounded_in": [
+    "pr:Acme/Classes/SceneDelegate.swift",
+    "pr:Acme/Classes/AppCoordinator.swift"
+   ],
+   "trigger": "Opening a acme:// URL with the process dead delivers it in UIScene.ConnectionOptions.urlContexts → SceneDelegate.scene(_:willConnectTo:options:) (Acme/Classes/SceneDelegate.swift:27-33) → AppCoordinator.open(url:) (Acme/Classes/AppCoordinator.swift:88-95) → DeepLinkManager (Acme/Classes/DeepLinkManager.swift:20-54), which queues until hasStarted && authorized.",
+   "assertion_type": "destination"
+  },
+  {
+   "title": "Home-screen quick action opens its flow exactly once, on cold start and on warm start",
+   "priority": "critical",
+   "preconditions": "Build verified as above (b485dad or later). Logged in on the device.",
+   "steps": [
+    "Force-quit the app, then long-press the app icon on the Home screen and choose a quick action from the list the app offers.",
+    "Wait through the splash screen and observe which screen opens and how many times.",
+    "Return to the Home screen so the app is backgrounded (not killed), long-press the icon and choose the same quick action.",
+    "Observe which screen opens and how many times."
+   ],
+   "expected": "Cold start: the quick action is stored as coordinator.pendingQuickAction at willConnect (SceneDelegate.swift:35-37) and executed at the end of AppCoordinator.start() — the flow opens exactly once, after the splash, with no duplicate presentation. Warm start: windowScene(_:performActionFor:completionHandler:) (SceneDelegate.swift:56-59) calls processQuickAction immediately and the same flow opens exactly once. The completion handler returns true in both cases (no 'action failed' behaviour from the system).",
+   "test_data": "Use whichever quick action(s) the app's Home-screen long-press menu actually lists on this build — run the case once per listed action and record the labels observed.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo (and repeat on iPad).",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/SceneDelegate.swift:35-37",
+   "grounded_in": [
+    "pr:Acme/Classes/SceneDelegate.swift",
+    "pr:Acme/Classes/AppCoordinator.swift"
+   ],
+   "trigger": "Home-screen long-press → UIApplicationShortcutItem delivered either in connectionOptions.shortcutItem at SceneDelegate.scene(_:willConnectTo:options:) (Acme/Classes/SceneDelegate.swift:35-37) or to windowScene(_:performActionFor:completionHandler:) (Acme/Classes/SceneDelegate.swift:56-59) → AppCoordinator.processQuickAction (Acme/Classes/AppCoordinator.swift:80-147).",
+   "assertion_type": "destination"
+  },
+  {
+   "title": "Bottom sheets (filters, user library, item selection, create-transaction prompt) are sized from the presenter's window and fit inside the safe area",
+   "priority": "critical",
+   "preconditions": "Build verified as above. Logged in, on a Duo in the folded (phone-width) state to start.",
+   "steps": [
+    "Open the Transactions list and open its filter sheet.",
+    "Note that the sheet's bottom edge sits above the home indicator (safe-area inset applied) and that the sheet does not extend past the top of the usable screen area.",
+    "Repeat for the Prime Files list filter sheet and the Checklist Items filter sheet.",
+    "Open a transaction's forms area and open the user-library selection sheet.",
+    "Open a sheet that presents the item-selection list.",
+    "Start the create-transaction flow and open the create-transaction prompt sheet.",
+    "For each sheet, compare the rendered result against the design for that sheet: every row/control is present, nothing is clipped at the bottom, and the sheet is not taller than the window's safe area."
+   ],
+   "expected": "Every sheet's height is computed from the presenting controller's own window rather than an app-level window. Filter sheets use sheetHeight(fitting:hostedIn:) and are capped at the window's safe-area height minus a 20 pt margin, with scrolling enabled only when that cap applies (SSCollectionViewController.swift:80-106). Item-selection and user-library sheets add the window's bottom safe-area inset. No sheet is clipped, overlaps the home indicator, or runs off the top of the screen.",
+   "test_data": "Use a filter sheet whose content is short (fits without the cap) and one whose content is long enough to hit the cap — e.g. a checklist-items filter on a file with many filter options. Record for each whether the sheet scrolls.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift:80-106",
+   "grounded_in": [
+    "pr:Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift",
+    "pr:Acme/Classes/ViewControllers/Filtering/FiltersViewController/FiltersViewController.swift",
+    "pr:Acme/Classes/ViewControllers/Alerts/AlertViewController/ItemSelectionAlertViewController/ItemSelectionAlertViewController.swift",
+    "pr:Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryList/UserLibraryListViewController.swift",
+    "pr:Acme/Classes/ViewControllers/TransactionModule/Transactions/CreateTransactionPrompt/CreateTransactionPromptViewController.swift"
+   ],
+   "trigger": "Tapping the filter affordance on a list calls getHeight(hostedIn: view.window) on the filter controller before presenting a FloatingViewController (Acme/Classes/ViewControllers/Checklists/PrimeFileDetails/PrimeFileChecklistItems/PrimeFileChecklistItems/PrimeFileChecklistItemsViewController.swift:125-130, Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/AllEnvelopesViewController.swift:106-111, Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryForms/UserLibraryFormsViewController.swift:143-148) → SSCollectionViewController.sheetHeight(fitting:hostedIn:) (Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift:80-106).",
+   "assertion_type": "content"
+  },
+  {
+   "title": "Side menu width follows the window after fold/unfold and rotation",
+   "priority": "high",
+   "preconditions": "Build verified as above. Logged in, on an unfolded iPhone Duo.",
+   "steps": [
+    "With the device unfolded, open the side menu and note how wide it is relative to the window.",
+    "Close the side menu, fold the device, then open the side menu again.",
+    "Close the side menu, unfold the device, then open the side menu again.",
+    "On the unfolded device, rotate to landscape, open the side menu, rotate back to portrait with the menu closed, and open it again.",
+    "Repeat steps 1-4 on an iPad using rotation (and a multitasking size change if available)."
+   ],
+   "expected": "Each time the menu is revealed it is sized for the window the app is currently in — never the width from before the fold/unfold or rotation. RootSideMenuController updates SideMenuController.preferences.basic.menuWidth on every viewWillTransition (RootSideMenuController.swift:1-23), replacing the old orientation-notification + delayed handleScreenSizeChange rebuild. No flash of the old width, and the content area under the menu is laid out to the new window size.",
+   "test_data": "Fold/unfold at least twice in a row to catch a width that updates only on the first transition.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo and on iPad.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/RootControllers/RootSideMenuController.swift:1-23",
+   "grounded_in": [
+    "pr:Acme/Classes/ViewControllers/RootControllers/RootSideMenuController.swift",
+    "pr:Acme/Classes/ViewControllers/SideMenuViewController/SideMenuViewController.swift"
+   ],
+   "trigger": "Folding/unfolding or rotating the device resizes the scene's window → UIKit calls viewWillTransition(to:with:) on the window's root controller, RootSideMenuController (Acme/Classes/ViewControllers/RootControllers/RootSideMenuController.swift:1-23), which rewrites SideMenuController.preferences.basic.menuWidth. The old path (SideMenuViewController.viewWillTransition → AppCoordinator.handleScreenSizeChange) was deleted in Acme/Classes/ViewControllers/SideMenuViewController/SideMenuViewController.swift:56-61.",
+   "assertion_type": "content"
+  },
+  {
+   "title": "Foreground/background work still runs after the move to UIScene notifications (badge clear, app-open check, session dismiss)",
+   "priority": "high",
+   "preconditions": "Build verified as above. Logged in, with the app badge non-zero (send the test account a push, or leave an unread notification so the icon shows a badge).",
+   "steps": [
+    "With the Prime Files list visible, background the app (swipe to Home) and then reopen it.",
+    "Check the app icon badge after returning to the foreground.",
+    "Repeat with the Transactions list visible: background the app, wait a few seconds, reopen it, and confirm the list behaves as before (refresh/app-open handling runs, no stuck spinner, no duplicate presentation).",
+    "Open the biometric/authorization prompt screen, background the app and reopen it, and observe the Face ID prompt behaviour.",
+    "Open a screen that hosts the in-app web view, background the app and reopen it, and confirm the web content resumes as before."
+   ],
+   "expected": "All four observers now fire from the scene's lifecycle rather than the application's: badge is cleared on sceneWillEnterForeground (SceneDelegate.swift:45-51); the Prime Files list runs its app-open check on UIScene.willEnterForegroundNotification and its activate work on UIScene.didActivateNotification (PrimeFilesListViewController.swift:169-188); the Face ID prompt re-triggers on UIScene.willEnterForegroundNotification (AuthorizationPromptViewController.swift:62-69); the web view's willEnterForeground handler runs (WebKitViewController.swift:87-92). Nothing that used to happen on returning to the foreground is now skipped.",
+   "test_data": "Background for both a short (~2 s) and a longer (~60 s) interval, since the Transactions list path adds a 0.5 s delay before acting.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo (repeat the badge step on iPad).",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/SceneDelegate.swift:45-51",
+   "grounded_in": [
+    "pr:Acme/Classes/SceneDelegate.swift",
+    "pr:Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift",
+    "pr:Acme/Classes/ViewControllers/Authorization/AuthorizationPrompt/AuthorizationPromptViewController.swift",
+    "pr:Acme/Classes/ViewControllers/BulkFill/WebController/WebKitViewController.swift"
+   ],
+   "trigger": "Backgrounding and reopening the app posts UIScene.willEnterForegroundNotification / UIScene.didActivateNotification and calls SceneDelegate.sceneWillEnterForeground (Acme/Classes/SceneDelegate.swift:45-51); the list and prompt controllers subscribe to those notifications in viewDidLoad/viewWillAppear (Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift:169-188, Acme/Classes/ViewControllers/Authorization/AuthorizationPrompt/AuthorizationPromptViewController.swift:62-69).",
+   "assertion_type": "behavior"
+  },
+  {
+   "title": "the IdP sign-in returns into the app and completes login (cold and warm)",
+   "priority": "critical",
+   "preconditions": "Build verified as above. Signed out, app force-quit.",
+   "steps": [
+    "Unverified — assumption (“sign-in entry point” not found in the linked code): Launch the app from the Home screen and start the sign-in flow.",
+    "Complete authentication in the browser/authentication sheet that opens.",
+    "Observe whether control returns to the app and the session completes.",
+    "Sign out, background the app without killing it, foreground it, and repeat the sign-in flow.",
+    "Confirm the app reaches the logged-in home state in both runs."
+   ],
+   "expected": "Sign-in completes and the app reaches its authenticated home state in both runs; the callback is not swallowed by the new scene-level URL routing. NOTE — this is the highest-risk case in the plan: AppCoordinator.open(url:) handles only the acme scheme and .pdf file URLs (AppCoordinator.swift:88-95), so if the the IdP callback is delivered to the app as a URL open rather than handled inside the IdpOidc session, it would now be dropped. If sign-in hangs in the browser or returns to a signed-out app, record it as a blocking defect of this migration, not a flake.",
+   "test_data": "Use a QA the IdP test user for the environment under test; do not use any account named in the ticket or comments.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/AppCoordinator.swift:88-95",
+   "grounded_in": [
+    "pr:Acme/Classes/AppCoordinator.swift",
+    "pr:Acme/Classes/AppDelegate.swift"
+   ],
+   "trigger": "Tapping sign-in starts the IdpOidc browser session; the redirect returns either through the IdpOidc session's own handler or through a scene URL open → SceneDelegate.scene(_:openURLContexts:) (Acme/Classes/SceneDelegate.swift:52-54) → AppCoordinator.open(url:) (Acme/Classes/AppCoordinator.swift:88-95). AppDelegate no longer owns a window (Acme/Classes/AppDelegate.swift:13), and it previously held idpChallengeWindow/idpChallengePreviousKeyWindow references.",
+   "assertion_type": "behavior"
+  }
+ ],
+ "edge_cases": [
+  {
+   "title": "Sheet requested while the presenter's view is not yet in a window gets an unclamped height",
+   "priority": "critical",
+   "category": "boundary",
+   "preconditions": "Build verified as above. Logged in, on an iPhone Duo folded.",
+   "steps": [
+    "From a transaction, open and then dismiss a modal, and immediately (before the dismissal animation settles) tap the control that opens the user-library selection sheet.",
+    "Observe the presented sheet's height against the bottom of the screen.",
+    "Repeat the same immediately-after-dismiss timing for a filter sheet and for the item-selection sheet.",
+    "Repeat while a push navigation transition is still animating: start a push, then immediately trigger a sheet from the outgoing/incoming screen."
+   ],
+   "expected": "Not reachable in the running app — nothing a tester can do produces this condition, so this case cannot pass or fail on the change (rule L): The branch needs view.window == nil at present time. I read the call sites: the sheets are opened from @objc button actions on the presenter's own visible view (UserLibraryFormsViewController.filterButtonTapped at UserLibraryFormsViewController.swift:138-149, and the identical filter-button handlers in PrimeFileChecklistItemsViewController.swift:125-130 / AllEnvelopesViewController.swift:106-111). To tap that control the presenter's view must be on screen, i.e. attached to the scene's window — during a modal dismissal or a push transition the presenting/participating views are in the window hierarchy, so view.window is non-nil. I found no code path in the repo that presents these sheets programmatically from a controller whose view is detached (no timer/callback-driven presentation of FloatingViewController). The tester cannot produce the nil-window input that the unclamped-height branch handles. — The sheet must still be clamped to the window's safe area and must not extend past the top or under the home indicator. RISK being probed: sheetHeight(fitting:hostedIn:) and clampedSheetHeight(...) return the raw content height (or content + 24) when the passed window is nil (SSCollectionViewController.swift:57-106), and every new call site passes view.window — so a presenter whose view is not yet in a window yields an unclamped, visibly too-tall sheet. Record the observed height and whether the sheet is clipped; a too-tall sheet here is a defect of this change, not a pre-existing one.",
+   "test_data": "Trigger each sheet twice: once from a settled screen (control) and once in the transitional timing above. Compare the two heights for the same content.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift:57-106",
+   "grounded_in": [
+    "pr:Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift",
+    "pr:Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryForms/UserLibraryFormsViewController.swift",
+    "pr:Acme/Classes/ViewControllers/Alerts/AlertViewController/ItemSelectionAlertViewController/ItemSelectionAlertViewController.swift"
+   ],
+   "trigger": "Presenting a sheet from a controller whose view has not yet been added to a window: the call sites read view.window at present time (e.g. Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryForms/UserLibraryFormsViewController.swift:143-148) and pass nil into SSCollectionViewController.sheetHeight(fitting:hostedIn:) (Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift:57-106).",
+   "reachability": {
+    "reachable": false,
+    "reason": "The branch needs view.window == nil at present time. I read the call sites: the sheets are opened from @objc button actions on the presenter's own visible view (UserLibraryFormsViewController.filterButtonTapped at UserLibraryFormsViewController.swift:138-149, and the identical filter-button handlers in PrimeFileChecklistItemsViewController.swift:125-130 / AllEnvelopesViewController.swift:106-111). To tap that control the presenter's view must be on screen, i.e. attached to the scene's window — during a modal dismissal or a push transition the presenting/participating views are in the window hierarchy, so view.window is non-nil. I found no code path in the repo that presents these sheets programmatically from a controller whose view is detached (no timer/callback-driven presentation of FloatingViewController). The tester cannot produce the nil-window input that the unclamped-height branch handles.",
+    "original_title": "Sheet requested while the presenter's view is not yet in a window gets an unclamped height",
+    "original_expected": "The sheet must still be clamped to the window's safe area and must not extend past the top or under the home indicator. RISK being probed: sheetHeight(fitting:hostedIn:) and clampedSheetHeight(...) return the raw content height (or content + 24) when the passed window is nil (SSCollectionViewController.swift:57-106), and every new call site passes view.window — so a presenter whose view is not yet in a window yields an unclamped, visibly too-tall sheet. Record the observed height and whether the sheet is clipped; a too-tall sheet here is a defect of this change, not a pre-existing one."
+   },
+   "assertion_type": "content"
+  },
+  {
+   "title": "Fold/unfold while a sheet or custom alert is already on screen",
+   "priority": "critical",
+   "category": "boundary",
+   "preconditions": "Build verified as above. Logged in, on an iPhone Duo.",
+   "steps": [
+    "Folded, open the Transactions filter sheet; with it open, unfold the device.",
+    "Observe the sheet: whether it resizes to the new window, is clipped, leaves a gap, or keeps the pre-fold height; and whether it becomes scrollable/non-scrollable appropriately for the new available height.",
+    "Fold again with the sheet still open and observe the same points.",
+    "Repeat with the custom alert-with-action sheet and with the dismissable alert-with-link sheet.",
+    "Repeat with the item-selection sheet and the create-transaction prompt sheet."
+   ],
+   "expected": "Each presented sheet/alert should end up correctly sized for the window it is now in, inside the safe area, with no clipping and no content hidden behind the home indicator. RISK being probed: the new sizing reads getHeight(hostedIn: view.window) once at presentation (e.g. PrimeFileChecklistItemsViewController.swift:125-130) and nothing in this diff re-runs it on a size transition, so a sheet opened before the fold may keep the pre-fold height. Record exactly what each sheet does; a sheet that keeps the pre-fold height is a gap against the ticket's fold/unfold acceptance criterion.",
+   "test_data": "Use one short-content sheet and one long-content sheet (a filter sheet with many options) so both the capped and uncapped paths are exercised across the fold.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift:80-106",
+   "grounded_in": [
+    "pr:Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift",
+    "pr:Acme/Classes/ViewControllers/Alerts/AlertViewController/AlertWithActionViewController/CustomAlertWithActionViewController.swift",
+    "pr:Acme/Classes/ViewControllers/Alerts/AlertViewController/DissmissableAlertWithLinkViewController/DismissableAlertWithLinkViewController.swift",
+    "pr:Acme/Classes/ViewControllers/Filtering/FiltersViewController/FiltersViewController.swift"
+   ],
+   "trigger": "Folding/unfolding with a sheet presented resizes the scene window; SSCollectionViewController's viewDidLayoutSubviews/viewWillTransition drive windowDidChangeSize(size:) (Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift:57-106) but the height itself was computed once at present time via getHeight(hostedIn:) (Acme/Classes/Models/Extensions/UIViewController+Additions.swift:25-45).",
+   "assertion_type": "content"
+  },
+  {
+   "title": "Keyboard layout animates against the host window after a fold/unfold",
+   "priority": "high",
+   "category": "boundary",
+   "preconditions": "Build verified as above. Logged in, on an iPhone Duo.",
+   "steps": [
+    "Open a screen with a text field low in a scrollable form and tap the field so the keyboard appears.",
+    "Confirm the field stays visible above the keyboard and the layout does not jump.",
+    "With the keyboard still up, unfold the device; observe the field and the keyboard-driven spacing.",
+    "Dismiss the keyboard, fold the device, and tap the field again; observe the same points.",
+    "Repeat on iPad with a rotation instead of a fold."
+   ],
+   "expected": "The keyboard-driven constraint animates the controller's own host window (KeyboardLayoutConstraint.swift:62-80, self.hostWindow?.layoutIfNeeded()) rather than the app-wide key window, so the focused field stays visible and the layout does not jump or scroll away from the field after a fold/unfold or rotation. Any residual offset left over from the pre-fold window size is a defect of this change.",
+   "test_data": "Use a form where the field is near the bottom of the screen in the folded state so an incorrect offset is visible.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo and iPad.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/Models/Helpers/KeyboardLayoutConstraint.swift:62-80",
+   "grounded_in": [
+    "pr:Acme/Classes/Models/Helpers/KeyboardLayoutConstraint.swift"
+   ],
+   "trigger": "Focusing a text field posts the keyboard notifications handled in KeyboardLayoutConstraint (Acme/Classes/Models/Helpers/KeyboardLayoutConstraint.swift:62-80), which now animates self.hostWindow instead of UIApplication.shared.windows.first(where: \\.isKeyWindow).",
+   "assertion_type": "content"
+  },
+  {
+   "title": "Split editor max height does not update when the host height crosses the 852-point threshold while open (reviewer-raised)",
+   "priority": "medium",
+   "category": "boundary",
+   "preconditions": "Build verified as above. Logged in on an iPhone Duo, on a transaction with a split that can be edited.",
+   "steps": [
+    "Folded (host height at or below the threshold), open the split editor and expand it to its maximum height; note how far up the screen it reaches as a proportion of the host view.",
+    "With the editor still open, unfold the device so the host height crosses above 852 points.",
+    "Expand the editor to its maximum again and note the proportion.",
+    "Close and reopen the editor while still unfolded, expand to maximum, and compare with step 3."
+   ],
+   "expected": "Pre-existing behaviour, not changed by this ticket: EditSplitView computes maxHeightRatio(forHostHeight:) from the hosting view's height (EditSplitView.swift:17-22,32-36), but the ratio is assigned in onAppear only, so crossing the 852-point threshold while the editor is open does not re-run it — the editor keeps the ratio from the host height it appeared at, and only picks up the new ratio after it is closed and reopened (step 4). The PR author confirmed in review that this onAppear-only assignment exists on develop and was not introduced here. Record the observed behaviour; do not file it as a regression caused by SK-2889.",
+   "test_data": "Fold state gives a host height at or below 852 pt; unfolded gives a host height above 852 pt. The ratio changes from 0.5 (≤852) to 0.4 (>852) on iPhone; iPad is always 0.3.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/SplitAndAssign/EditSplitView.swift:17-22",
+   "grounded_in": [
+    "pr:Acme/Classes/ViewControllers/SplitAndAssign/EditSplitView.swift"
+   ],
+   "trigger": "Opening the split editor renders EditSplitView inside a GeometryReader that supplies the host height to maxHeightRatio(forHostHeight:) (Acme/Classes/ViewControllers/SplitAndAssign/EditSplitView.swift:17-22,32-36); the ratio is consumed in an onAppear that does not re-run on a size change, as raised by @Copilot and confirmed by @piradukunda in the PR discussion.",
+   "pre_existing": true,
+   "assertion_type": "content"
+  },
+  {
+   "title": "Non-PDF file import and unknown-scheme URLs are no longer accepted by the app",
+   "priority": "high",
+   "category": "error_handling",
+   "preconditions": "Build verified as above. Logged in with a Prime-enabled QA account.",
+   "steps": [
+    "From the Files app, use the share sheet to send a non-PDF document (for example a .docx or an image) to the app, with the app force-quit.",
+    "Observe what the app does on launch.",
+    "Repeat with the app backgrounded rather than killed.",
+    "Record whether the app appears in the share sheet at all for that file type, and whether anything is presented after launch."
+   ],
+   "expected": "Not reachable in the running app — nothing a tester can do produces this condition, so this case cannot pass or fail on the change (rule L): The case needs iOS to hand the app a non-PDF file URL (or an unknown-scheme URL). I read Acme/Application/Info.plist: CFBundleDocumentTypes declares exactly one type, \"PDF Document\" with LSItemContentTypes com.adobe.pdf (Info.plist:99-111), and CFBundleURLTypes registers only the \"acme\" scheme (Info.plist:25-35). With no other document type or scheme declared, the system never offers the app in the share sheet for a .docx/image and never opens an unknown-scheme URL in it, so no non-PDF file URL or foreign-scheme URL can be delivered to SceneDelegate/AppCoordinator.open(url:) — the filtered-out branch cannot be exercised from the running app. — AppCoordinator.open(url:) accepts only the acme scheme and file URLs whose extension is .pdf (AppCoordinator.swift:88-95,361-366), so a non-PDF file URL is now silently dropped where the old AppDelegate open-url path returned true for any file URL. Expected observable result: the app launches to its normal home state and presents no share/import screen and no error. Record whether the app is still offered in the system share sheet for non-PDF types — if it is offered and then does nothing, that is a user-visible dead end introduced by this migration and should be raised.",
+   "test_data": "One .docx (or .txt) and one image file; the same flow with a .pdf as the control (covered by the integration case).",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/AppCoordinator.swift:88-95",
+   "grounded_in": [
+    "pr:Acme/Classes/AppCoordinator.swift",
+    "pr:Acme/Classes/SceneDelegate.swift"
+   ],
+   "trigger": "Sharing a file to the app delivers a file URL in connectionOptions.urlContexts (cold) or scene(_:openURLContexts:) (warm) — Acme/Classes/SceneDelegate.swift:27-33,52-54 → AppCoordinator.open(url:) (Acme/Classes/AppCoordinator.swift:88-95), which filters on the acme scheme and the .pdf extension.",
+   "reachability": {
+    "reachable": false,
+    "reason": "The case needs iOS to hand the app a non-PDF file URL (or an unknown-scheme URL). I read Acme/Application/Info.plist: CFBundleDocumentTypes declares exactly one type, \"PDF Document\" with LSItemContentTypes com.adobe.pdf (Info.plist:99-111), and CFBundleURLTypes registers only the \"acme\" scheme (Info.plist:25-35). With no other document type or scheme declared, the system never offers the app in the share sheet for a .docx/image and never opens an unknown-scheme URL in it, so no non-PDF file URL or foreign-scheme URL can be delivered to SceneDelegate/AppCoordinator.open(url:) — the filtered-out branch cannot be exercised from the running app.",
+    "original_title": "Non-PDF file import and unknown-scheme URLs are no longer accepted by the app",
+    "original_expected": "AppCoordinator.open(url:) accepts only the acme scheme and file URLs whose extension is .pdf (AppCoordinator.swift:88-95,361-366), so a non-PDF file URL is now silently dropped where the old AppDelegate open-url path returned true for any file URL. Expected observable result: the app launches to its normal home state and presents no share/import screen and no error. Record whether the app is still offered in the system share sheet for non-PDF types — if it is offered and then does nothing, that is a user-visible dead end introduced by this migration and should be raised."
+   },
+   "assertion_type": "behavior"
+  },
+  {
+   "title": "Backgrounding before the pending shared PDF is consumed discards it",
+   "priority": "medium",
+   "category": "error_handling",
+   "preconditions": "Build verified as above. Logged in with a Prime-enabled QA account, app force-quit.",
+   "steps": [
+    "Share a PDF into the app from the Files app so the app cold-launches.",
+    "Immediately background the app (swipe to Home) before the Share-to-Acme screen appears.",
+    "Foreground the app again and observe whether the share screen appears.",
+    "Force-quit and repeat, this time letting the share screen appear, then background and foreground, and observe whether it appears a second time."
+   ],
+   "expected": "The pending shared PDF is cleared on UIScene.didEnterBackgroundNotification (PrimeFilesListViewController.swift:171-188,251-256), so backgrounding before it is consumed discards the pending URL: the share screen does not appear after returning to the foreground, and nothing is presented twice in the second run. Record the exact behaviour — a share screen that reappears after the URL should have been cleared, or one that never appears in a run where it should, both indicate the scene-notification wiring is off.",
+   "test_data": "One small PDF. Run each variant twice to confirm the behaviour is consistent rather than a race.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift:251-256",
+   "grounded_in": [
+    "pr:Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift",
+    "pr:Acme/Classes/SceneDelegate.swift"
+   ],
+   "trigger": "Backgrounding posts UIScene.didEnterBackgroundNotification and calls SceneDelegate.sceneDidEnterBackground (Acme/Classes/SceneDelegate.swift:49-51); PrimeFilesListViewController subscribes to that notification to clear the pending shared PDF (Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift:251-256).",
+   "assertion_type": "behavior"
+  }
+ ],
+ "integration_tests": [
+  {
+   "title": "Push-notification tap opens the right content on cold and warm start now that AppDelegate no longer owns the window",
+   "priority": "critical",
+   "steps": [
+    "Force-quit the app while logged in.",
+    "Send the test account a push notification of a type the app deep-links from, and tap it from the lock screen / notification centre.",
+    "Observe where the app lands after the splash screen and whether the badge clears.",
+    "Background the app (not killed), send another push, tap it, and observe where the app lands.",
+    "Repeat step 4 with the app in the foreground on a different screen."
+   ],
+   "expected": "Push handling stays on AppDelegate (it keeps Firebase and the notification delegates, AppDelegate.swift:13-45) while the window and routing now live on the scene, so the tap must still reach the same destination screen in all three states. Badge is cleared on sceneWillEnterForeground (SceneDelegate.swift:45-51). A push tap that lands on the default home screen instead of the notification's target, or that shows no UI at all, indicates the notification route lost its path to the root now that AppDelegate no longer stores a window.",
+   "test_data": "Use the push types the QA tooling can send for this environment; record the destination each one is expected to reach before running.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/AppDelegate.swift:13",
+   "grounded_in": [
+    "pr:Acme/Classes/AppDelegate.swift",
+    "pr:Acme/Classes/SceneDelegate.swift"
+   ],
+   "trigger": "Tapping a notification calls the UNUserNotificationCenter delegate on AppDelegate (Acme/Classes/AppDelegate.swift:13-45), which must now route through SSRouter/AppCoordinator whose window comes from SceneDelegate.scene(_:willConnectTo:options:) (Acme/Classes/SceneDelegate.swift:19-33) rather than AppDelegate.window (removed at Acme/Classes/AppDelegate.swift:13).",
+   "assertion_type": "destination"
+  },
+  {
+   "title": "Shared PDF reaches the Share-to-Acme screen exactly once, from both the Transactions list and the Prime Files list, Prime and non-Prime",
+   "priority": "critical",
+   "steps": [
+    "As a Prime QA account with the app force-quit, share a PDF into the app from the Files app; let the app cold-launch with the Prime Files list as the screen that becomes visible.",
+    "Count how many times the Share-to-Acme screen is presented.",
+    "Force-quit, navigate so the Transactions list is the visible screen, background the app, and share the same PDF in; count the presentations again.",
+    "Repeat steps 1 and 3 with a non-Prime QA account and record what happens."
+   ],
+   "expected": "Prime account: the share screen is presented exactly once in each run — never zero times (the scene can activate before the list controllers subscribe in viewDidLoad) and never twice (both PrimeFilesListViewController, lines 171-188, and TransactionListViewController, lines 306-324, carry identical UIScene.didActivateNotification subscriptions and both may be alive). Non-Prime account: didReceivePDF stores pendingSharePdfURL only when getPrimeUserStatus() is true (AppCoordinator.swift:361-366), so nothing is presented — confirm the user is not left on a blank or stuck screen and record whether any message is shown.",
+   "test_data": "One small PDF, shared from the Files app. Run the Prime cold-start variant at least three times — the zero/twice outcomes are timing-dependent.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/AppCoordinator.swift:361-366",
+   "grounded_in": [
+    "pr:Acme/Classes/AppCoordinator.swift",
+    "pr:Acme/Classes/SceneDelegate.swift",
+    "pr:Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift"
+   ],
+   "trigger": "Sharing a PDF delivers a file URL via connectionOptions.urlContexts / scene(_:openURLContexts:) (Acme/Classes/SceneDelegate.swift:27-33,52-54) → AppCoordinator.open(url:) → didReceivePDF storing pendingSharePdfURL (Acme/Classes/AppCoordinator.swift:88-95,361-366), consumed on UIScene.didActivateNotification by the list controllers (Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift:171-188).",
+   "assertion_type": "behavior"
+  },
+  {
+   "title": "Warm-start deep links (transactions and voice-confetti) route through the scene",
+   "priority": "high",
+   "steps": [
+    "With the app backgrounded (not killed) and logged in, open the same acme://transactions link used in the cold-start case.",
+    "Confirm the app foregrounds and lands on that transaction and tab.",
+    "Background the app again and open a acme://voice-confetti link.",
+    "Confirm the app foregrounds and performs that link's behaviour.",
+    "Repeat step 1 while the app is in the foreground on an unrelated screen."
+   ],
+   "expected": "Warm-start URLs arrive at scene(_:openURLContexts:) (SceneDelegate.swift:52-54) and are forwarded to AppCoordinator.open(url:) (AppCoordinator.swift:88-95), which resolves them through DeepLinkManager via rootController.sideMenuController (DeepLinkManager.swift:20-54). Because hasStarted and authorization are already satisfied, each link acts immediately with no queueing delay and lands on the correct destination. A link that does nothing in the warm case while working cold indicates the openURLContexts path is not wired.",
+   "test_data": "acme://transactions?id=<QA transaction id>&tab=<tab name> (identical to the cold-start case) and acme://voice-confetti.",
+   "surface": "mobile",
+   "environment": "Integ or Staging iOS build on iPhone Duo.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/SceneDelegate.swift:52-54",
+   "grounded_in": [
+    "pr:Acme/Classes/SceneDelegate.swift",
+    "pr:Acme/Classes/AppCoordinator.swift"
+   ],
+   "trigger": "Opening a acme:// URL while the process is alive delivers it to SceneDelegate.scene(_:openURLContexts:) (Acme/Classes/SceneDelegate.swift:52-54) → AppCoordinator.open(url:) (Acme/Classes/AppCoordinator.swift:88-95) → DeepLinkManager (Acme/Classes/DeepLinkManager.swift:20-54).",
+   "assertion_type": "destination"
+  },
+  {
+   "title": "[Backend] Repo-wide audit: no app-level window or screen reads remain for layout",
+   "priority": "high",
+   "steps": [
+    "Check out acme/ios-client at the merge commit b485dad.",
+    "Grep the app sources (excluding Pods/third-party) for each of: `(UIApplication.shared.delegate as? AppDelegate)?.window`, `UIApplication.shared.windows`, `UIApplication.shared.keyWindow`, `AppDelegate.window`, and `UIScreen.main`.",
+    "For every remaining hit, record the file:line and classify it as layout-affecting or not (e.g. a non-layout scale/brightness read).",
+    "Specifically check the files the ticket named that are not visible in the PR diff: PickerField, RegularTextField, PDFPageView, SplitPDFView, SSColor, SSRouter, DeepLinkManager, ChecklistItemsFiltersViewController, PrimeFilesFiltersViewController, TransactionFiltersViewController.",
+    "Record the result as a list of remaining hits with a verdict per hit."
+   ],
+   "expected": "Zero layout-affecting hits for AppDelegate.window, UIApplication.shared.windows, UIApplication.shared.keyWindow and UIScreen.main in app code. Known expected finding to classify rather than fail on: UIEdgeInset+Extensions.swift:20 resolves UIApplication.shared.activeKeyWindow (a scene-derived helper added in UIApplication+Additions.swift) rather than the view's own window — that is an app-level lookup and should be recorded as a gap against the AC even though it no longer touches UIApplication.shared.windows directly. Any other remaining hit in the files listed in step 4 is an unmet-AC finding, since the PR diff shown here does not prove they were converted.",
+   "test_data": "Suggested command shape: `grep -rn \"UIScreen.main\\|UIApplication.shared.windows\\|UIApplication.shared.keyWindow\\|as? AppDelegate)?.window\" Acme/Classes`. Run on macOS (BSD grep) or Linux (GNU grep) — the pattern above behaves identically on both.",
+   "surface": "cli",
+   "environment": "Local checkout of acme/ios-client at merge commit b485dad (no deployed environment needed).",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/Models/Extensions/UIEdgeInset+Extensions.swift:20",
+   "grounded_in": [
+    "pr:Acme/Classes/Models/Extensions/UIEdgeInset+Extensions.swift",
+    "pr:Acme/Classes/Models/Extensions/UIApplication+Additions.swift",
+    "ticket:SK-2889-desc"
+   ],
+   "assertion_type": "state"
+  },
+  {
+   "title": "[Backend] Scene reconnect reinstalls the retained root instead of the splash controller",
+   "priority": "medium",
+   "steps": [
+    "Write a unit/integration test around AppCoordinator.attach(to:) (AppCoordinator.swift:80-147).",
+    "Case 1: call attach(to:) on a fresh coordinator (rootSideMenuController is nil) with a stub UIWindow and assert the window's rootViewController is the splash controller.",
+    "Case 2: run start() so rootSideMenuController is built, then call attach(to:) again with a second stub UIWindow and assert the window's rootViewController is the same retained RootSideMenuController instance, not a new splash controller.",
+    "Case 3: assert that attach(to:) on reconnect does not re-run the side-menu configuration or re-execute a previously consumed pendingQuickAction."
+   ],
+   "expected": "attach(to:) installs the retained rootSideMenuController when it is non-nil and the splash controller otherwise (AppCoordinator.swift:80-147), so the reconnect case restores the user's root rather than restarting at the splash. This is covered at the unit level deliberately: with UIApplicationSupportsMultipleScenes = false in Info.plist, a scene disconnect/reconnect while the process stays alive is not something a tester can produce from the UI, so there is no manual case for it.",
+   "test_data": "No test file for the changed code exists at merge commit b485dad (per the repo's Tests/CI facts), so this test has to be created; suggested location alongside the AppCoordinator sources.",
+   "surface": "cli",
+   "environment": "Local checkout of acme/ios-client at merge commit b485dad, run via Xcode/xcodebuild test.",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/AppCoordinator.swift:80-147",
+   "grounded_in": [
+    "pr:Acme/Classes/AppCoordinator.swift",
+    "pr:Acme/Application/Info.plist"
+   ],
+   "assertion_type": "state"
+  }
+ ],
+ "security_negative_tests": [],
+ "regression_checklist": [
+  "🔴 App launches to the correct root from a plain Home-screen tap (no URL, no quick action, no push) on iPhone Duo folded and unfolded, and on iPad — the window is now created by SceneDelegate rather than AppDelegate (Acme/Classes/SceneDelegate.swift:19-33).",
+  "🔴 Sign-in and sign-out still complete and the app returns to the correct root after each, now that AppDelegate no longer stores a window (Acme/Classes/AppDelegate.swift:13).",
+  "🔴 The side menu opens, scrolls and navigates to each of its destinations as before, with RootSideMenuController as the window's root (Acme/Classes/ViewControllers/RootControllers/RootSideMenuController.swift:1-23).",
+  "🔴 Transactions list and Prime Files list load, refresh and navigate into a record as before after the lifecycle observers moved to UIScene notifications (Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift:169-188).",
+  "🟡 The app icon badge is cleared when the app returns to the foreground (Acme/Classes/SceneDelegate.swift:45-51).",
+  "🟡 The transaction tab bar and the Prime File tab bar render their border and switch tabs as before after the UIScreen.main scale comment was removed from the border width (Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TabBarController/TransactionTabBarController.swift:175, Acme/Classes/ViewControllers/Checklists/PrimeFileDetails/TabBar/PrimeFileTabBarController.swift:138).",
+  "🟡 The dismissable alert-with-link sheet is full window width on iPhone and 500 pt wide on iPad, centred, after the width moved to sheetWidthConstraint(in:) (Acme/Classes/Models/Extensions/UIView+Constraints.swift:204-212).",
+  "🟡 The custom alert-with-action sheet presents at the correct height for both its small and large variants (Acme/Classes/ViewControllers/Alerts/AlertViewController/AlertWithActionViewController/CustomAlertWithActionViewController.swift:16-30,79-108).",
+  "🟡 The create-transaction prompt sheet still shows at its iPhone and iPad heights with and without the buyer-agreement button (Acme/Classes/ViewControllers/TransactionModule/Transactions/CreateTransactionPrompt/CreateTransactionPromptViewController.swift:59-66).",
+  "🟡 The All Envelopes filter sheet and the user-library forms sheet open and apply their selections as before, now sized from view.window (Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/AllEnvelopesViewController.swift:106-111, Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryForms/UserLibraryFormsViewController.swift:143-148).",
+  "🟡 The buyer-representation flow's library selection sheet opens and applies selections as before (Acme/Classes/ViewControllers/TransactionModule/Transactions/BuyerRepresentation/BuyerRepresentationFlowViewController.swift:143-150).",
+  "🟢 SwiftUI screens that read the safe-area-insets environment value render with correct top/bottom padding on Duo folded and unfolded, now that the default comes from UIApplication.shared.activeKeyWindow (Acme/Classes/Models/Extensions/UIEdgeInset+Extensions.swift:17-21).",
+  "🟢 Dark/light appearance switching still recolours screens correctly after the trait-collection source changed (Acme/Classes/ViewControllers/SideMenuViewController/SideMenuViewController.swift:59-62 setColors path).",
+  "🟢 Phone-sized screens remain portrait-only and large screens (unfolded Duo, iPad) rotate in all orientations, per the epic's stated decision — confirm the scene migration did not alter the supported-orientation behaviour."
+ ],
+ "stored_deployment_status": {
+  "status": "unknown",
+  "deployed_envs": [],
+  "warnings": [
+   "No deployment source is configured for acme/ios-client, and no comment states where the merged commit is running; every device case must start by confirming the installed build is from develop at or after merge commit b485dad (Settings/About build number or the TestFlight build notes). (Deployment state: 'not read — no deployment source is configured for this repo')"
+  ]
+ },
+ "stored_progress_key": "SK-2889:6-6-5-14"
+}

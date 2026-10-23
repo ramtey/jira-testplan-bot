@@ -1074,6 +1074,16 @@ context and quote what it actually returns.
 ❌ BAD (convention): expected: "Request with an invalid API key returns 401 Unauthorized"
 ✅ GOOD (read from code): expected: "Request with a well-formed but non-allowlisted key returns 403 with body {'error':'forbidden_client'} (verified against src/middleware/auth.ts:64). A separate case covers the absent-header path, which returns 401."
 
+- **An error response has more than one body shape.** Whenever a case checks how
+  a client (an app, a web UI, an SDK, a calling service) handles error
+  responses, cover the empty-body and non-JSON variants beside the usual error
+  shape: an upstream 401 for an invalid or expired token often has an empty
+  body, a gateway or proxy error is HTML or plain text, and an error middleware
+  that passes the downstream status and body through hands each of those to
+  the client unchanged. Say how to produce each (an invalid token, a stopped
+  upstream, a proxy rule) and expect a handled error — not a crash, a raw
+  decode error, a blank screen or a hang.
+
 **2. STATE THE AUTH MODEL EXPLICITLY; DON'T INVENT ONE.**
 API key, OAuth2 client_credentials, user session cookie, and signed webhook are
 NOT interchangeable, and a case written against the wrong one is unrunnable.
@@ -1140,14 +1150,31 @@ you drop), record it in `note_disagreements` — never drop a note silently.
 ❌ BAD: "Exercise the import end-to-end in a test environment" when a note gives the seed script, the account to use and the query that shows the result.
 ✅ GOOD: steps that run the note's seed script as that account and check the note's query, with `source_comment_ids: ["10234"]`.
 
-**B. Deployment is a precondition, not an assumption.** A case that needs a
-deployed environment (integ, staging, prod, a device build, a preview URL)
-starts with a step that checks the merged commit is actually running there and
-says HOW (the deployment repo's image tag, the ArgoCD app's image, the pod
-image, the app's version endpoint or build number). If the sources say it is
-not deployed — the deployment state shows NOT INCLUDED, or a note says "not
-deployed" — set `deployment_status` to deployed "no" with the statement and its
-source, and do not write cases that assume the deployment.
+**B. A running build is a precondition, not an assumption.** A case that needs
+a deployed environment or an installed app build (integ, staging, prod, a device
+or simulator build, a preview URL) starts with a check that the build CONTAINS
+the merge commit of the repo that case exercises. Each repo has its own merge
+commit (the BUILD/CI FACTS name it per repo); never use one repo's commit for
+another. Containment, not identity: any later build that contains the merge
+passes, so never require an exact image tag, build number or deploy name. A
+deployments-repo PR linked to the ticket records a deploy that happened once,
+not what runs now. Choose the check from the platform the case runs on:
+- backend service: the deployed image's commit (the tag in the deployment
+  values file, the ArgoCD app's image, the pod's image) contains the merge —
+  `gh api repos/<repo>/compare/<merge>...<deployed commit> --jq .status` is
+  `ahead` or `identical`;
+- iOS app: the installed app's CFBundleShortVersionString / CFBundleVersion
+  (`plutil -p <App>/Info.plist`, `xcrun simctl listapps booted`) are at least
+  what MARKETING_VERSION / CURRENT_PROJECT_VERSION hold at the merge commit,
+  and the build was made from a commit that contains it;
+- Android app: versionName / versionCode (`adb shell dumpsys package <id>`),
+  the same way; web app: the served bundle's commit or version.
+An app build has no image, ArgoCD app or pod: never send a tester to one.
+Downstream code writes this first step for every such case (and replaces one
+you wrote), so write the rest of the case as if it is there. If the sources
+say it is not deployed — the deployment state shows NOT INCLUDED, or a note
+says "not deployed" — set `deployment_status` to deployed "no" with the
+statement and its source, and do not write cases that assume the deployment.
 
 **C. Prove unit-test coverage from the test code.** `covered_by_unit_test: true`
 only after you read the test body and found an assertion that checks the case's
@@ -1162,8 +1189,15 @@ in `unit_test_gap`.
 ❌ BAD: case "total is rounded to cents AND the currency is shown" marked covered by a test that asserts only the rounding.
 
 **D. Check that CI runs the suite.** Before calling a case covered, or deferring
-anything "to CI", check the CI status shown for that test file. Not run means:
-say "tests exist but are not run in CI" and treat the test as no proof.
+anything "to CI", check the CI status shown for that test file. CI is read from
+every source code could find — workflows and pipeline files in the repo
+(GitHub Actions, Argo, Jenkins, Bitbucket, Codefresh, Fastlane lanes, …) and
+pipelines kept in a deployments repo. NOT_RUN means CI was found and read and
+nothing in it runs the file: say "tests exist but are not run in CI" and treat
+the test as no proof. UNKNOWN means no one could tell: never write that CI does
+or does not run it, and never let a case's reasoning (what to run by hand, what
+the unit tests prove) rest on it — say "CI status unknown" and treat the test
+as unproven.
 
 **E. Acceptance gaps.** Compare every requirement the ticket states ("What to
 change", "Done when", acceptance criteria — listed for you with ids) with the
@@ -1213,6 +1247,10 @@ not changed by this ticket:" (for a regression line, start the line with it). De
 expected result from the CURRENT code at the commit under test, run on the
 platform operators actually use (rule G), not from what the code "should" do.
 A failure on a pre-existing case must never read as a regression the ticket caused.
+A pre-existing case is not a UAT case: downstream code moves it (and a
+pre-existing regression line) to the plan's "Pre-existing behaviour" notes,
+outside the runnable cases and the pass/fail count. Write one only when a
+tester needs to know about that behaviour to read the other results.
 ❌ BAD: a case asserting an input-validation guard's behaviour, written from what a reviewer expected, when the guard is in a file the diff did not change.
 ✅ GOOD: pre_existing: true, expected: "Pre-existing behaviour, not changed by this ticket: the guard at run.sh:4 (unchanged since before this commit) accepts any MODE with a matching conf file; on macOS that includes `prod`."
 
@@ -1272,8 +1310,14 @@ sends belong in unit coverage:
   - a test file shown to you asserts that branch, and CI runs it → write the
     case at the unit level and mark it `covered_by_unit_test` (rules C and D),
     with title and expected stating the unit-level claim, not a UI outcome;
-  - no test asserts it → a `risks_and_gaps` entry ("<branch> has no test and
-    nothing in the app reaches it today"), not a case a tester performs.
+  - no test asserts it → not a case: a `code_review_checks` entry with what to
+    verify in review and `suggested_test` (the unit test that would prove it:
+    the file, the input it builds by hand, the assertion). That list is shown
+    as "verify by code review / unit test", outside the case count.
+If you find, while writing a case, that its condition cannot be produced
+through the product, set `reachable: false` on it (and `suggested_test`):
+downstream code moves it to that list. Never keep it as a runnable case that
+says, in its own expected result, it cannot pass or fail.
 Never send a tester to force the condition with tooling (DevTools blocking,
 editing storage, a proxy) unless you checked that the same tooling produces
 the condition the branch handles. A blocked request is not the same failure
@@ -1990,7 +2034,9 @@ Return ONLY valid JSON (no markdown, no code blocks):
       "environment": "Environment name AND base URL, e.g. 'staging — https://api-staging.example.com'",
       "expected_verified": true,
       "expected_source": "REQUIRED when expected_verified is true — the <file>:<line> the expected result was read from, e.g. 'src/middleware/auth.ts:64'. Omit when expected_verified is false.",
-      "pre_existing": "OPTIONAL: true when the diff did not touch the code behind this behaviour (rule H); then expected starts 'Pre-existing behaviour, not changed by this ticket:'",
+      "pre_existing": "OPTIONAL: true when the diff did not touch the code behind this behaviour (rule H); then expected starts 'Pre-existing behaviour, not changed by this ticket:'. The case is moved to the plan's pre-existing notes.",
+      "reachable": "OPTIONAL: false when you conclude no tester can produce this case's condition through the product (rule L); the case is moved to code_review_checks. Prefer writing a code_review_checks entry directly.",
+      "suggested_test": "OPTIONAL, with reachable false: the unit test that would prove this branch (file, hand-built input, assertion)",
       "trigger": "REQUIRED for web_ui, mobile and manual_only cases (rule L): the user action or setup step that produces this case's condition in the running app, and the path to the changed code, e.g. 'Submit the invoice form (src/ui/InvoiceForm.tsx:88) → POST /invoices → parseDate (src/lib/parseDate.ts:12)'",
       "data_shape": {
         "shape": "OPTIONAL: only when this case needs a specific input shape rather than ordinary data",
@@ -2046,6 +2092,15 @@ Return ONLY valid JSON (no markdown, no code blocks):
     "🔴 Critical feature that must still work (be specific)",
     "🟡 Important related feature",
     "🟢 Additional validation item"
+  ],
+  "code_review_checks": [
+    {
+      "title": "Behaviour no tester can produce through the product (rule L)",
+      "why_not_uat": "What you searched or read that shows nothing in the product reaches it",
+      "what_to_verify": "What a reviewer or a unit test must confirm",
+      "suggested_test": "The unit test that would prove it: file, hand-built input, assertion",
+      "code_refs": ["<file>:<line>"]
+    }
   ],
   "risks_and_gaps": [
     {
@@ -2113,6 +2168,13 @@ reuses (rule A).
 
 **REGRESSION CHECKLIST RULES:**
 The regression checklist must contain ONLY runtime behaviors that can be manually tested.
+
+**Every line cites what puts that area at risk.** Name the changed file, or the
+call site of changed code, that the area depends on, as `<path>[:<line>]` — a
+file in the PR diff, or code the change calls or that calls it ("— at risk via
+src/serializers/order.ts:12, which this PR changed"). A line that can cite
+neither is a guess about adjacency: leave it out. Downstream code moves any line
+without such a citation out of the core checklist into a low-confidence list.
 
 ❌ DO NOT INCLUDE build-time validations:
 - "TypeScript compilation completes without errors"
@@ -4187,6 +4249,7 @@ class OllamaClient(LLMClient):
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
+                    code_review_checks=test_plan_data.get("code_review_checks") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -4258,6 +4321,7 @@ class OllamaClient(LLMClient):
                     superseded_acs=test_plan_data.get("superseded_acs") or None,
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
+                    code_review_checks=test_plan_data.get("code_review_checks") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -4607,7 +4671,15 @@ TEST_CASE_SCHEMA = {
         },
         "trigger": {
             "type": "string",
-            "description": "Rule L. Required when `surface` is web_ui, mobile or manual_only: the user action or setup step that produces this case's condition in the running app, and the path from it to the changed code, with `<file>:<line>` for each hop you read. Checked against the framework's real behaviour and the repo, not against the branch's own test. If no trigger reaches the branch, this is not a UI case: make it unit coverage or a risks_and_gaps entry instead.",
+            "description": "Rule L. Required when `surface` is web_ui, mobile or manual_only: the user action or setup step that produces this case's condition in the running app, and the path from it to the changed code, with `<file>:<line>` for each hop you read. Checked against the framework's real behaviour and the repo, not against the branch's own test. If no trigger reaches the branch, this is not a UI case: make it unit coverage or a `code_review_checks` entry instead.",
+        },
+        "reachable": {
+            "type": "boolean",
+            "description": "Rule L. Set false when you conclude no tester can produce this case's condition through the product. Such a case is not a UAT case: it is moved to the plan's code-review / unit-test list, outside the case count. Prefer writing it as a `code_review_checks` entry in the first place.",
+        },
+        "suggested_test": {
+            "type": "string",
+            "description": "With `reachable: false`: the unit test that would prove this branch — the file it belongs in, the input it builds by hand, and the assertion.",
         },
         "pre_existing": {
             "type": "boolean",
@@ -4858,6 +4930,7 @@ SUBMIT_TEST_PLAN_TOOL = {
             },
             "regression_checklist": {
                 "type": "array",
+                "description": "Runtime behaviour adjacent to the change that must still work. Every line cites the changed file or the call site of changed code that puts it at risk, as `<path>[:<line>]`; a line without one is moved out of the core checklist as low-confidence.",
                 "items": {"type": "string"},
             },
             "superseded_acs": {
@@ -4950,6 +5023,21 @@ SUBMIT_TEST_PLAN_TOOL = {
                         "why": {"type": "string"},
                     },
                     "required": ["comment_id", "note_says", "plan_does", "why"],
+                },
+            },
+            "code_review_checks": {
+                "type": "array",
+                "description": "Rule L. Behaviour in the diff that no tester can produce through the product — a defensive branch, a fallback for an error nothing raises, an input no caller sends — and no test you were shown asserts. Shown as 'verify by code review / unit test', outside the runnable cases, the case count and the progress key. Never also write it as a case.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "The behaviour, stated at the code level."},
+                        "why_not_uat": {"type": "string", "description": "What you searched or read showing nothing in the product reaches it."},
+                        "what_to_verify": {"type": "string", "description": "What a reviewer or a unit test must confirm."},
+                        "suggested_test": {"type": "string", "description": "The unit test that would prove it: the file, the input built by hand, the assertion."},
+                        "code_refs": {"type": "array", "items": {"type": "string"}, "description": "`<file>:<line>` for the branch."},
+                    },
+                    "required": ["title", "why_not_uat", "suggested_test"],
                 },
             },
             "risks_and_gaps": {
@@ -5505,6 +5593,7 @@ class ClaudeClient(LLMClient):
                 superseded_acs=test_plan_data.get("superseded_acs") or None,
                 grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
+                code_review_checks=test_plan_data.get("code_review_checks") or None,
                 cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -5609,6 +5698,7 @@ class ClaudeClient(LLMClient):
                 superseded_acs=test_plan_data.get("superseded_acs") or None,
                 grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
+                code_review_checks=test_plan_data.get("code_review_checks") or None,
                 cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,

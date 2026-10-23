@@ -120,6 +120,15 @@ class Settings(BaseSettings):
     # DEPLOY_STATE_SOURCES='{"acme/web": {"integ": "acme/deploys/web/integ/values.yaml"}}'
     # Empty means not checked. See src/app/deploy_state.py.
     deploy_state_sources: dict[str, dict[str, str]] = {}
+    # Repos ("owner/name") that record deployments and, on some teams, CI
+    # pipelines: per-environment values files (<team>/<service>/<env>/values.yaml)
+    # and Argo pipeline charts (<team>/pipelines/<service>/values.yaml). Read at
+    # their default branch to find a service's deploy sources and CI when
+    # DEPLOY_STATE_SOURCES does not name it. The repos DEPLOY_STATE_SOURCES
+    # points at, and any deployments repo a ticket PR goes to, are read too.
+    # JSON list, e.g. DEPLOYMENTS_REPOS='["acme/deployments"]'. See
+    # src/app/build_targets.py.
+    deployments_repos: list[str] = []
 
     # Read-only LaunchDarkly access, so a plan states what each flag the ticket
     # touches serves per environment instead of guessing (or telling testers to

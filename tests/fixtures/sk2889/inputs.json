@@ -1,0 +1,284 @@
+{
+ "_about": "Sanitized regression fixture for SK-2889 plan 2 v1 (local bot store, 2026-10-23): an iOS-only change. No deployment source exists for an app, and the plan said so.",
+ "ticket_key": "SK-2889",
+ "pull_requests": [
+  {
+   "repository": "acme/ios-client",
+   "number": 72,
+   "status": "MERGED",
+   "merge_commit_sha": "b485dad1be95a8662635e1a5a72dceb4d73f322d",
+   "merged_at": "2026-10-14T16:02:45Z",
+   "head_sha": "115128039208c845a4fab97c50d8ea48d689ce12",
+   "files_changed": [
+    {
+     "filename": "Acme.xcodeproj/project.pbxproj",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Application/Info.plist",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/AppCoordinator.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/AppDelegate.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Models/Extensions/UIApplication+Additions.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Models/Extensions/UIEdgeInset+Extensions.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Models/Extensions/UIView+Constraints.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Models/Extensions/UIViewController+Additions.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Models/Helpers/KeyboardLayoutConstraint.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/SceneDelegate.swift",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Alerts/AlertViewController/AlertWithActionViewController/CustomAlertWithActionViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Alerts/AlertViewController/DissmissableAlertWithLinkViewController/DismissableAlertWithLinkViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Alerts/AlertViewController/ItemSelectionAlertViewController/ItemSelectionAlertViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Authorization/AuthorizationPrompt/AuthorizationPromptViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Authorization/NewUserRegistration/NewUserRegistrationIntroViewController/NewUserRegistrationIntroViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/BulkFill/WebController/WebKitViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Checklists/PrimeFileDetails/PrimeFileChecklistItems/PrimeFileChecklistItems/PrimeFileChecklistItemsViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Checklists/PrimeFileDetails/TabBar/PrimeFileTabBarController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/AllEnvelopesViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/Filtering/FiltersViewController/FiltersViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/RootControllers/RootSideMenuController.swift",
+     "status": "added",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/SideMenuViewController/SideMenuViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/SplitAndAssign/EditSplitView.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TabBarController/TransactionTabBarController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryForms/UserLibraryFormsViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryList/UserLibraryListViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/Transactions/BuyerRepresentation/BuyerRepresentationFlowViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/Transactions/CreateTransactionPrompt/CreateTransactionPromptViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/Transactions/Filters/ChecklistItemsFilters/ChecklistItemsFiltersViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/Transactions/Filters/PrimeFilesFilters/PrimeFilesFiltersViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/Transactions/Filters/TransactionFiltersViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/ViewControllers/TransactionModule/Transactions/TransactionList/TransactionListViewController.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Views/CustomViews/SwiftUI/FormFields/PickerField.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Views/CustomViews/SwiftUI/PDF/PDFPageView.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Views/CustomViews/SwiftUI/PDF/SplitPDFView.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Classes/Views/CustomViews/SwiftUI/TextFields/RegularTextField.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Resources/Colors/SSColor.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Resources/R.generated.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "Acme/Services/Routing/SSRouter.swift",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    },
+    {
+     "filename": "docs/threat-model.md",
+     "status": "modified",
+     "patch": "@@ -1,1 +1,1 @@ (diff elided from the public fixture)"
+    }
+   ]
+  }
+ ],
+ "repo_trees": {
+  "acme/ios-client": [
+   "Acme.xcodeproj/project.pbxproj",
+   "Acme/Application/Info.plist",
+   "Acme/Classes/AppCoordinator.swift",
+   "Acme/Classes/AppDelegate.swift",
+   "Acme/Classes/Models/Extensions/UIApplication+Additions.swift",
+   "Acme/Classes/Models/Extensions/UIEdgeInset+Extensions.swift",
+   "Acme/Classes/Models/Extensions/UIView+Constraints.swift",
+   "Acme/Classes/Models/Extensions/UIViewController+Additions.swift",
+   "Acme/Classes/Models/Helpers/KeyboardLayoutConstraint.swift",
+   "Acme/Classes/SceneDelegate.swift",
+   "Acme/Classes/ViewControllers/Alerts/AlertViewController/AlertWithActionViewController/CustomAlertWithActionViewController.swift",
+   "Acme/Classes/ViewControllers/Alerts/AlertViewController/DissmissableAlertWithLinkViewController/DismissableAlertWithLinkViewController.swift",
+   "Acme/Classes/ViewControllers/Alerts/AlertViewController/ItemSelectionAlertViewController/ItemSelectionAlertViewController.swift",
+   "Acme/Classes/ViewControllers/Authorization/AuthorizationPrompt/AuthorizationPromptViewController.swift",
+   "Acme/Classes/ViewControllers/Authorization/NewUserRegistration/NewUserRegistrationIntroViewController/NewUserRegistrationIntroViewController.swift",
+   "Acme/Classes/ViewControllers/BulkFill/WebController/WebKitViewController.swift",
+   "Acme/Classes/ViewControllers/Checklists/PrimeFileDetails/PrimeFileChecklistItems/PrimeFileChecklistItems/PrimeFileChecklistItemsViewController.swift",
+   "Acme/Classes/ViewControllers/Checklists/PrimeFileDetails/TabBar/PrimeFileTabBarController.swift",
+   "Acme/Classes/ViewControllers/Checklists/PrimeFilesList/PrimeFilesListViewController.swift",
+   "Acme/Classes/ViewControllers/EnvelopesModule/AllEnvelopesViewController/AllEnvelopesViewController.swift",
+   "Acme/Classes/ViewControllers/Filtering/FiltersViewController/FiltersViewController.swift",
+   "Acme/Classes/ViewControllers/RootControllers/RootSideMenuController.swift",
+   "Acme/Classes/ViewControllers/RootControllers/SSCollectionViewController.swift",
+   "Acme/Classes/ViewControllers/SideMenuViewController/SideMenuViewController.swift",
+   "Acme/Classes/ViewControllers/SplitAndAssign/EditSplitView.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TabBarController/TransactionTabBarController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryForms/UserLibraryFormsViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/UserLibraryList/UserLibraryListViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/Transactions/BuyerRepresentation/BuyerRepresentationFlowViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/Transactions/CreateTransactionPrompt/CreateTransactionPromptViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/Transactions/Filters/ChecklistItemsFilters/ChecklistItemsFiltersViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/Transactions/Filters/PrimeFilesFilters/PrimeFilesFiltersViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/Transactions/Filters/TransactionFiltersViewController.swift",
+   "Acme/Classes/ViewControllers/TransactionModule/Transactions/TransactionList/TransactionListViewController.swift",
+   "Acme/Classes/Views/CustomViews/SwiftUI/FormFields/PickerField.swift",
+   "Acme/Classes/Views/CustomViews/SwiftUI/PDF/PDFPageView.swift",
+   "Acme/Classes/Views/CustomViews/SwiftUI/PDF/SplitPDFView.swift",
+   "Acme/Classes/Views/CustomViews/SwiftUI/TextFields/RegularTextField.swift",
+   "Acme/Resources/Colors/SSColor.swift",
+   "Acme/Resources/R.generated.swift",
+   "Acme/Services/Routing/SSRouter.swift",
+   "docs/threat-model.md",
+   "fastlane/Fastfile",
+   "project.yml"
+  ]
+ },
+ "repo_files": {
+  "acme/ios-client": {
+   "Acme.xcodeproj/project.pbxproj": "\t\t\t\tCURRENT_PROJECT_VERSION = 1;\n\t\t\t\tMARKETING_VERSION = 2.13.0;\n\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.acme.mobile.integ;\n\t\t\t\tMARKETING_VERSION = 1.0.0;\n\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.acme.AcmeTests;\n",
+   "project.yml": "name: Acme\nsettings:\n    CURRENT_PROJECT_VERSION: 1\n    MARKETING_VERSION: 1.0.0\n",
+   "fastlane/Fastfile": "platform :ios do\n  lane :build_release_integ do\n    gym(scheme: 'Integ')\n    upload_to_testflight\n  end\nend\n"
+  }
+ },
+ "deployments_tree": [],
+ "deployments_files": {},
+ "compare": {}
+}

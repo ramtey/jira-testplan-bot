@@ -55,6 +55,8 @@ UNREACHABLE_MARKER = (
 )
 CI_UNCITED_MARKER = "Unverified — this claim about CI names no CI file; check it before relying on it (rule M):"
 CI_CONTRADICTED_MARKER = "Contradicted by the CI config — {why} (rule M):"
+CI_UNCONFIRMED_MARKER = ("Unconfirmed — this says CI does not run something, and the build facts do not "
+                         "show that ({why}); do not base this case on it (rule M):")
 
 MAX_TURNS = 6
 MAX_SEARCHES = 8
@@ -100,6 +102,7 @@ For each case:
 Verdicts:
 - "reachable": give the trigger and the path to the changed code, with file:line for hops you read. For a case about an error or an input, name the code or framework mechanism that PRODUCES that exact error or input (not only the boundary that receives it), with the file you found it in. If you searched for the producer and found none, the answer is "unreachable", not "unsure".
 - "unreachable": when the framework's normal behaviour does not produce the condition AND you searched the repo for the producer it would need (rule 4) and found none. That search coming back empty is the evidence; you do not also need to prove a negative about the framework. Say what you searched and read and what it showed. If one of the TEST FILES below asserts that branch, also give `unit_test_ref` as "<file> › <exact test name as written>", `coverage_evidence` as only the assertion line(s) (the `expect(...)` / `assert ...` lines) copied verbatim from inside that test's body — not the `it(...)` / `it.each(...)` header or the test table, and a unit-level rewrite of the case: `unit_title` and `unit_expected` state only what that test proves (no UI outcome), `unit_steps` say how to run that test file.
+  If no test asserts it, give `suggested_test`: the unit test that would prove the branch — the file it belongs in, the input it builds by hand, and the assertion — since the case leaves the tester's checklist for a code-review / unit-test list.
 - "unsure": when you could not look (search budget spent, a file you needed could not be read), or when the producer may exist in code you found but could not follow. Not for "I searched and found no producer" — that is "unreachable". Never answer "unreachable" without having searched.
 
 Spend your searches on the cases whose producer is not obvious from the diff (an error type or message, a regex alternative, a defensive guard); a plain user action on a screen the diff changes needs no search.
@@ -126,6 +129,7 @@ REPORT_REACHABILITY_TOOL = {
                         "unit_title": {"type": "string"},
                         "unit_expected": {"type": "string"},
                         "unit_steps": {"type": "array", "items": {"type": "string"}},
+                        "suggested_test": {"type": "string", "description": "For unreachable with no test that asserts the branch: the unit test that would (file, hand-built input, assertion)."},
                     },
                     "required": ["id", "verdict", "reason"],
                 },
@@ -268,15 +272,15 @@ def apply_reachability_verdicts(test_plan: Any, items: list[dict], verdicts: dic
         case["reachability"] = record
         if has_test:
             case["reachability"]["unit_test_ref"] = v["unit_test_ref"].strip()
-        elif isinstance(gaps, list):
-            gaps.append({
-                "gap": f"No test covers a branch nothing in the app reaches: {record['original_title']}",
-                "impact": "The branch is untested, and no tester can exercise it, so a regression in it would ship unseen.",
-                "evidence": reason,
-                "follow_up": True,
-                "owner": _owner(pull_requests or []),
-                "suggested_ticket": f"Add a unit test for: {record['original_title']}",
-            })
+        else:
+            # The case leaves the checklist for the code-review / unit-test
+            # list (case_disposition.route_out_of_uat), which carries the test
+            # to write and who writes it. Before that list existed this was a
+            # risks_and_gaps follow-up beside a case a tester still had to mark.
+            if (v.get("suggested_test") or "").strip():
+                record["suggested_test"] = v["suggested_test"].strip()
+            record["owner"] = _owner(pull_requests or [])
+            record["suggested_ticket"] = f"Add a unit test for: {record['original_title']}"
         marked.append(item["id"])
     return {"converted": converted, "marked": marked, "confirmed": confirmed, "unsure": unsure}
 
@@ -338,7 +342,8 @@ _CI_POSITIVE = re.compile(
 _HAS_CI_WORD = re.compile(rf"\b{_CI_WORD}\b", re.I)
 _CI_FILE_CITED = re.compile(
     r"\.github/workflows/|\bJenkinsfile\b|\.gitlab-ci\.yml|\b[\w.-]*ci[\w.-]*\.ya?ml\b|buildspec"
-    r"|azure-pipelines|bitbucket-pipelines|\.circleci/|\.buildkite/|\bDockerfile\b",
+    r"|azure-pipelines|bitbucket-pipelines|\.circleci/|\.buildkite/|\bDockerfile\b"
+    r"|codefresh|/pipelines/[\w.-]+/|\bFastfile\b|\.argo|bitrise\.ya?ml|codemagic\.ya?ml",
     re.I,
 )
 # "on Linux CI" is rule G naming a platform, not a claim about what CI runs.
@@ -357,13 +362,40 @@ def _ci_claim(text: str) -> bool:
     return bool(_negative_ci_sentences(text)) or any(_CI_POSITIVE.search(x) for x in _sentences(text))
 
 
+# A sentence about "the suite" or "these tests" is about every suite the plan was given.
+_GENERIC_SUITE = re.compile(r"\b(?:this file|these (?:files|tests)|the (?:unit )?(?:suite|tests)|the test suite)\b", re.I)
+
+
 def _contradiction(text: str, suites: dict[str, dict]) -> str | None:
     """The CI-run evidence for a test file a sentence says CI does not run."""
     for sentence in _negative_ci_sentences(text):
         for path, st in suites.items():
             if st.get("status") == "runs" and (path in sentence or posixpath.basename(path) in sentence
-                                               or "this file" in sentence or "these tests" in sentence):
+                                               or _GENERIC_SUITE.search(sentence)):
                 return st.get("why") or f"CI runs {path}"
+    return None
+
+
+def _unconfirmed_negative(text: str, suites: dict[str, dict]) -> str | None:
+    """Why a "CI does not run it" sentence is not backed by the build facts.
+
+    Naming the files that are missing ("no .github/workflows, Jenkinsfile")
+    is not a citation: SK-2719's plan said mobile-api had no CI while Argo ran
+    `npm test` on master. A negative claim stands only when the build facts
+    found CI, read it, and say the file is ``not_run``.
+    """
+    sentences = _negative_ci_sentences(text)
+    if not sentences:
+        return None
+    not_run = {p: st for p, st in suites.items() if st.get("status") == "not_run"}
+    for sentence in sentences:
+        named = [p for p in suites if p in sentence or posixpath.basename(p) in sentence]
+        if named and all(p in not_run for p in named):
+            continue
+        if not named and not_run and len(not_run) == len(suites):
+            continue
+        other = next((st for p, st in suites.items() if p not in not_run), None)
+        return (other or {}).get("why") or "no CI status was established for these tests"
     return None
 
 
@@ -391,6 +423,9 @@ def flag_ci_claims(test_plan: Any, repo_evidence: list[dict] | None) -> list[dic
         why = _contradiction(text, suites)
         if why:
             return "contradicted", CI_CONTRADICTED_MARKER.format(why=why)
+        why = _unconfirmed_negative(text, suites)
+        if why:
+            return "unconfirmed", CI_UNCONFIRMED_MARKER.format(why=why[:240])
         if _ci_claim(text) and not _CI_FILE_CITED.search(text):
             return "uncited", CI_UNCITED_MARKER
         return None

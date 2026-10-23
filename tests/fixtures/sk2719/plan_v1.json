@@ -1,0 +1,169 @@
+{
+ "_about": "Generator output for SK-2719 plan 1 v1, sanitized: happy_path[0] and integration_tests[0,1,2,5] of the stored plan (security cases and integration_tests[3,4] left out), code-added deploy steps and critic markers removed, so the pipeline stages re-run on it.",
+ "happy_path": [
+  {
+   "title": "Sign In Person appears in the envelope more menu and opens the recipient picker with the agent excluded",
+   "priority": "critical",
+   "preconditions": "iOS Acme Integ build containing commit 50aff26 installed on a device/simulator; logged in as an agent test account; Firebase Remote Config keys sign_in_person = true and sign_now = true (Acme/Services/FeatureManager.swift); a SENT SV3 envelope on a transaction that has at least one non-agent recipient with role Signer who has not yet signed.",
+   "steps": [
+    "Confirm the build under test contains the merged change: in the app's About/Settings build info note the build number, and confirm with the release owner that it is built from feature/SK-2719-sign-in-person (merge commit 50aff26). Also confirm the mobile-api integ-west deployment is running image tag SK-2719-in-person-session-4a6351a.",
+    "Open the transaction and go to the Forms / Envelopes list, locate the sent envelope and open its more (action) menu.",
+    "Observe the action list and confirm a 'Sign In Person' row is present with the sign-in-person action icon.",
+    "Tap 'Sign In Person'.",
+    "On the recipient picker screen/modal that opens, list every row shown (name + email).",
+    "Compare that list against the envelope's recipients (more menu → Signers)."
+   ],
+   "expected": "The more menu contains a 'Sign In Person' action (TransactionActionItem.ActionType.signInPerson, icon R.image.signInPersonActionIcon). Tapping it presents the in-person signer picker (InPersonSignersViewController). The rows shown are exactly the active Signer recipients whose title is not 'Me' and whose email does not match the logged-in agent's email — the agent's own recipient row must NOT appear. The screen heading is expected to read \"Who's signing?\" per the AC, but the heading string could not be located in the visible diff — open the Figma (not available to this plan) or confirm with the designer before failing on heading wording.",
+   "test_data": "Envelope with 3 recipients: the logged-in agent (Signer, same email as the login), and two non-agent signers (e.g. a buyer and a seller test contact). Expected picker rows: exactly the two non-agent signers; the agent row absent.",
+   "surface": "mobile",
+   "environment": "Acme Integ — iOS app against mobile-api integ-west (image SK-2719-in-person-session-4a6351a)",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift (SigningRecipientResolver.inPersonSigners filters out title == \"Me\" and the agent email)",
+   "grounded_in": [
+    "pr:Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift",
+    "pr:Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift",
+    "pr:Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSignersViewController.swift",
+    "pr:Acme/Services/FeatureManager.swift",
+    "pr:mobile/mobile-api/integ-west/values.yaml"
+   ],
+   "trigger": "Agent taps the envelope more menu on the Forms/Envelopes screen → AllEnvelopesViewController.resolveActionItems / TransactionEnvelopesViewController action switch case .signInPerson → showInPersonSigners(envelope) → InPersonSignersViewController backed by InPersonSigningViewModel.",
+   "assertion_type": "content"
+  }
+ ],
+ "integration_tests": [
+  {
+   "title": "In-person session endpoint returns only signingUrl and expiresAt with no-store headers and no accessToken",
+   "priority": "critical",
+   "preconditions": "mobile-api integ-west running image SK-2719-in-person-session-4a6351a (confirm via the deployment values file / the running pod image before starting). A valid agent bearer token obtained from the IdP. An envelope external id and a signer id for a sent envelope the agent owns, where it is that signer's turn.",
+   "steps": [
+    "Verify the deployed image: check mobile/mobile-api/integ-west/values.yaml (or the running pod) shows image tag SK-2719-in-person-session-4a6351a.",
+    "Obtain an the IdP bearer token for the agent test account (password grant, as used by src/tests/contract_tests/src/helpers/auth.js).",
+    "POST {baseUrl}/envelopes/{envelopeId}/signers/{signerId}/in-person-session with header Authorization: Bearer <agent token> and an empty body.",
+    "Record the HTTP status, the full response body and the response headers.",
+    "Search the entire response body (including nested objects) for the key 'accessToken'.",
+    "Repeat the same request against {baseUrl}/envelopes/{envelopeId}/signers/{agentSignerId}/signing-session using the agent's own signer id."
+   ],
+   "expected": "HTTP 200 with body {statusCode:'OK', errors:[], result:{signingUrl, expiresAt}} and nothing else under result; no 'accessToken' key appears anywhere in the body. Response carries Cache-Control: no-store, private and Vary: Authorization (set in src/controllers/envelopes.controller.ts startInPersonSession before the service call). The same holds for the /signing-session route.",
+   "test_data": "Envelope external id and signer id from an integ envelope the agent owns. Capture signingUrl and expiresAt for use in the expiry test.",
+   "surface": "backend_http",
+   "environment": "integ — mobile-api integ-west base URL",
+   "expected_verified": true,
+   "expected_source": "src/controllers/envelopes.controller.ts:241-252",
+   "grounded_in": [
+    "pr:src/controllers/envelopes.controller.ts",
+    "pr:src/services/envelopesService.ts",
+    "pr:src/routes/envelopes.route.ts",
+    "pr:mobile/mobile-api/integ-west/values.yaml"
+   ],
+   "covered_by_unit_test": false,
+   "unit_test_gap": "src/tests/unit/controllers/envelopes.controller.test.ts and src/tests/unit/services/envelopesService.test.ts assert the header setting and the accessToken stripping against mocks, but BUILD/CI FACT: the mobile-api repo has no CI configuration, so those files are NOT_RUN and prove nothing about the deployed build. This end-to-end check against integ is still required.",
+   "assertion_type": "content"
+  },
+  {
+   "title": "GET /envelopes/{id}/recipients returns the status, title, isActive fields the iOS picker filters on",
+   "priority": "critical",
+   "preconditions": "mobile-api integ-west running SK-2719-in-person-session-4a6351a; agent bearer token; a sent envelope with the agent plus at least two non-agent signers.",
+   "steps": [
+    "GET {baseUrl}/envelopes/{envelopeId}/recipients with Authorization: Bearer <agent token>.",
+    "For each object in result, record whether the keys role, email, group, status, title and isActive are present and what values they carry.",
+    "Identify which recipients satisfy the iOS eligibility rule: status non-null AND isActive == true AND group non-null AND role equal to 'Signer' (case-insensitive).",
+    "From that eligible set, remove any whose title equals 'Me' (case-insensitive) or whose email equals the agent's login email — this is the expected in-person picker list.",
+    "Open the same envelope in the iOS app → more menu → 'Sign In Person' and compare the rows shown against the list computed in the previous step, by name and email."
+   ],
+   "expected": "Every recipient object carries role, email, group, status, title and isActive (mobile-api getRecipients is a pass-through with no field mapping, src/services/envelopesService.ts:134-137 — if SignSvc omits these in integ the iOS filtering silently changes). The iOS picker shows exactly the recipients computed by the eligibility rule, identified by name and email — no extra rows and none missing, and the agent's row absent.",
+   "test_data": "Envelope with 3+ recipients including the agent. Record the exact set of (name, email) pairs expected and compare set-for-set, not by count.",
+   "surface": "backend_http",
+   "environment": "integ — mobile-api integ-west base URL, plus the iOS Integ build for the comparison step",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift (activeSigningRecipients + inPersonSigners)",
+   "grounded_in": [
+    "pr:src/services/envelopesService.ts",
+    "pr:Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift",
+    "pr:Acme/Classes/Models/Model/Envelope.swift"
+   ],
+   "assertion_type": "content"
+  },
+  {
+   "title": "Documented downstream failure statuses reach the iOS app as a handled error, not a crash",
+   "priority": "high",
+   "preconditions": "mobile-api integ-west running SK-2719-in-person-session-4a6351a; agent bearer token; an envelope/signer combination that is NOT eligible for an in-person session (e.g. it is not that signer's turn, or the signer has already signed) and a signer id that does not exist on the envelope.",
+   "steps": [
+    "POST {baseUrl}/envelopes/{envelopeId}/signers/{signerId}/in-person-session for a signer whose turn it is not. Record the status code, the body shape and the response headers.",
+    "POST the same route with a well-formed but non-existent signer id. Record status, body shape and headers.",
+    "For each response, note whether the body matches the mobile-api CommonResponse shape {statusCode, errors, result} or SignSvc's own shape.",
+    "Confirm Cache-Control: no-store, private is present on each error response.",
+    "Reproduce the first scenario through the iOS app: select that signer in the 'Sign In Person' picker and tap 'Start Signing'. Record what the app shows and confirm it does not crash or hang."
+   ],
+   "expected": "errorMiddleware passes error.response.status through (defaulting to 500) and sends error.response.data verbatim (src/middlewares/error.middleware.ts:8-33), so the documented 403/404/409/422 statuses come from SignSvc and their bodies are SignSvc's shape, NOT the CommonResponse shape the 200 path returns. Record the actual status and body for each scenario. Cache-Control: no-store, private is set on the response before the downstream call, so it should still be present on errors — verify. The iOS app must render a readable error rather than crashing on decode; a crash or a blank stuck screen is a defect.",
+   "test_data": "Scenario A: signer whose turn has not come. Scenario B: well-formed signer id that was never issued on this envelope (e.g. a signer id copied from a different envelope).",
+   "surface": "backend_http",
+   "environment": "integ — mobile-api integ-west base URL, plus the iOS Integ build for the last step",
+   "expected_verified": true,
+   "expected_source": "src/middlewares/error.middleware.ts:8-33",
+   "grounded_in": [
+    "pr:src/controllers/envelopes.controller.ts",
+    "pr:src/routes/envelopes.route.ts"
+   ],
+   "covered_by_unit_test": false,
+   "unit_test_gap": "src/tests/unit/middlewares/error.middleware.test.ts asserts a 409 passthrough against a mocked error object, but BUILD/CI FACT: the repo has no CI configuration so that file is NOT_RUN, and it says nothing about what the iOS client does with a non-CommonResponse body.",
+   "assertion_type": "behavior"
+  },
+  {
+   "title": "[Backend] 502 branch and accessToken stripping for a malformed SignSvc session payload",
+   "priority": "medium",
+   "preconditions": "mobile-api repo checked out at e2f4229; jest runnable locally (BUILD/CI FACT: the repo has no CI configuration, so these tests are NOT_RUN in any pipeline — run them by hand).",
+   "steps": [
+    "Run the existing suite locally: `npx jest src/tests/unit/services/envelopesService.test.ts` and record the result.",
+    "Confirm the parameterized case covers a downstream payload missing signingUrl, one missing expiresAt, and a null body, for startInPersonSession.",
+    "Confirm an equivalent malformed-payload case exists for startSigningSession (the current file has only the null-body variant for that method) and add the missing-signingUrl / missing-expiresAt rows if not.",
+    "Confirm an assertion exists that a successful response drops accessToken for BOTH startInPersonSession and startSigningSession."
+   ],
+   "expected": "toSigningSessionResponse throws a locally-constructed 502 with errors ['Signing session response was missing required data'] whenever signingUrl or expiresAt is absent, including a null body, and a success returns only {signingUrl, expiresAt} (src/services/envelopesService.ts:139-163). This branch depends entirely on a malformed downstream SignSvc payload and cannot be produced from the app, so it is covered here rather than as a UAT case. The suite is NOT run by CI, so record that it was executed manually and by whom.",
+   "test_data": "src/tests/unit/services/envelopesService.test.ts — existing it.each rows ['signingUrl'], ['expiresAt'], ['response body', null] for startInPersonSession; startSigningSession currently has only the null-body row.",
+   "surface": "cli",
+   "environment": "local developer machine, mobile-api @ e2f4229",
+   "expected_verified": true,
+   "expected_source": "src/services/envelopesService.ts:139-163",
+   "grounded_in": [
+    "pr:src/services/envelopesService.ts",
+    "pr:src/tests/unit/services/envelopesService.test.ts"
+   ],
+   "covered_by_unit_test": false,
+   "unit_test_gap": "The tests exist and assert the 502 and the accessToken stripping, but BUILD/CI FACT: the repo has no CI configuration (no .github/workflows, Jenkinsfile), so the file is NOT_RUN and a passing assertion is not proof about the shipped build until someone runs it. startSigningSession also lacks the per-missing-field rows that startInPersonSession has.",
+   "assertion_type": "behavior"
+  }
+ ],
+ "edge_cases": [],
+ "security_negative_tests": [],
+ "regression_checklist": [
+  "🔴 More menu → 'Signers' on an envelope still lists every signer with the correct name, email and signed check-mark after the SignerCell changes (new AccessoryStyle/displayName/displayEmail), and tapping a row still does nothing — no in-person session starts (acme/ios-client:Acme/Classes/ViewControllers/Filtering/FiltersViewController/SignersViewController.swift:43-60).",
+  "🔴 Legacy flag-off path: with sign_in_person off and sign_now on, the immediate post-send Sign Now button appears and starts the agent's signing session exactly as it did before this change (Acme/Services/FeatureManager.swift).",
+  "🔴 Legacy flag-off path: with both sign_in_person and sign_now off, the envelope more menu contains neither 'Sign Now' nor 'Sign In Person' and every other action behaves as before.",
+  "🔴 Downloading an envelope's single PDF still completes and the file opens in the app after the move to the Documents root with no transaction argument (Acme/Classes/Models/Model/Extensions/Envelope+Additions.swift, TransactionFormsViewModel).",
+  "🔴 Downloading an envelope zip still completes and the archive opens after the same filename/location change.",
+  "🟡 Sharing a downloaded envelope PDF from the Forms screen still opens the share sheet with a valid file (Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/TransactionForms/TransactionFormsViewController.swift sharePDF).",
+  "🟡 Downloading an envelope certificate still completes and the file opens.",
+  "🟡 'Already downloaded' detection still works: after downloading an envelope, re-opening it shows the document without re-downloading (checkIfEnvelopeDownloaded / checkIfEnvelopeCertificateDownloaded in the envelope view models).",
+  "🟡 Existing envelope more-menu actions unchanged by this ticket still work: Envelope History, Resend Envelope, Correct, Print, Archive/Restore (Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift).",
+  "🟡 Bulk Fill in the web view still loads and completes normally — WebKitViewController/WebKitViewModel/BulkFillWebView were all modified by this PR and are shared with the signing session.",
+  "🟡 Pre-existing behaviour, not changed by this ticket: GET /envelopes/{id}/recipients still returns 200 with the recipient list under `result` for an authenticated agent (src/services/envelopesService.ts:134-137) — it is the data source the new in-person picker depends on.",
+  "🟡 The in-person signing flow and the signer picker render correctly in dark mode and at the smallest supported device width (no clipped text, no overlapping controls).",
+  "🟢 The all-envelopes list and the transaction envelopes tab both still open their more menus promptly for envelopes with no signing actions available."
+ ],
+ "stored_build_and_ci": [
+  {
+   "kind": "tests_not_run_in_ci",
+   "finding": "Tests exist but are not run in CI: src/tests/unit/controllers/envelopes.controller.test.ts, src/tests/unit/helpers/queryEnvelopes.test.ts, src/tests/unit/middlewares/auth.middleware.test.ts, src/tests/unit/middlewares/error.middleware.test.ts, src/tests/unit/services/envelopesService.test.ts, src/tests/contract_tests/src/helpers/auth.js. The repo has no CI configuration (no .github/workflows, Jenkinsfile, …). A passing assertion in these files is not proof that the shipped build behaves that way until someone runs them.",
+   "evidence": "no CI files in the repo tree",
+   "repo": "acme/mobile-api"
+  }
+ ],
+ "stored_case_ids": {
+  "integration_tests": [
+   0,
+   1,
+   2,
+   5
+  ]
+ }
+}

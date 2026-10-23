@@ -135,14 +135,20 @@ def test_a_passed_case_is_marked_never_rewritten():
     assert case["reachability"]["unit_test_ref"].startswith(TEST_FILE)
 
 
-def test_an_unreachable_case_without_a_test_is_marked_and_gets_a_follow_up():
+def test_an_unreachable_case_without_a_test_is_marked_with_its_follow_up():
+    """The owner and the test to write ride on the case's reachability record,
+    which case_disposition turns into a code-review entry; no separate
+    risks_and_gaps entry duplicates it."""
     plan = _plan(edge_cases=[_ui_case()])
-    verdict = {"id": "edge_cases:0", "verdict": "unreachable", "reason": "nothing sends that form"}
+    verdict = {"id": "edge_cases:0", "verdict": "unreachable", "reason": "nothing sends that form",
+               "suggested_test": "parseDate.test.ts: parseDate('01/02/2020') returns 2020-01-02"}
     rc.apply_reachability_verdicts(plan, rc.collect_reachability_items(plan), {"edge_cases:0": verdict},
                                    pull_requests=PRS)
     assert plan.edge_cases[0]["expected"].startswith(rc.UNREACHABLE_MARKER)
-    [gap] = plan.risks_and_gaps
-    assert gap["follow_up"] is True and "acme/web" in gap["owner"] and gap["suggested_ticket"]
+    record = plan.edge_cases[0]["reachability"]
+    assert record["reachable"] is False and "acme/web" in record["owner"] and record["suggested_ticket"]
+    assert record["suggested_test"].startswith("parseDate.test.ts")
+    assert plan.risks_and_gaps == []
 
 
 def test_unsure_changes_nothing_and_reachable_fills_a_missing_trigger():
@@ -216,8 +222,17 @@ def _cli_case(expected, **kw):
     return {"title": "Run the suite", "surface": "cli", "steps": ["run it"], "expected": expected, **kw}
 
 
-def test_an_uncited_ci_claim_is_marked_unverified():
+def test_an_unbacked_negative_ci_claim_is_marked_unconfirmed():
+    """A "CI does not run it" claim no build fact confirms is unconfirmed,
+    which is stronger than uncited: the case must not argue from it."""
     plan = _plan(integration_tests=[_cli_case("No CI configuration in the repo runs a test command.")])
+    flagged = rc.flag_ci_claims(plan, [])
+    assert flagged == [{"location": "integration_tests:0", "kind": "unconfirmed"}]
+    assert plan.integration_tests[0]["expected"].startswith("Unconfirmed — this says CI does not run")
+
+
+def test_an_uncited_positive_ci_claim_is_marked_unverified():
+    plan = _plan(integration_tests=[_cli_case("CI runs these tests on every push.")])
     flagged = rc.flag_ci_claims(plan, [])
     assert flagged == [{"location": "integration_tests:0", "kind": "uncited"}]
     assert plan.integration_tests[0]["expected"].startswith(rc.CI_UNCITED_MARKER)
@@ -247,7 +262,7 @@ def test_naming_ci_as_a_platform_is_not_a_ci_claim():
 def test_a_regression_line_keeps_its_priority_emoji_first():
     plan = _plan(regression_checklist=["🟡 CI does not run the web tests"])
     rc.flag_ci_claims(plan, [])
-    assert plan.regression_checklist[0].startswith("🟡 " + rc.CI_UNCITED_MARKER)
+    assert plan.regression_checklist[0].startswith("🟡 Unconfirmed — this says CI does not run")
 
 
 def test_asking_to_check_the_ci_scope_is_not_a_negative_claim():

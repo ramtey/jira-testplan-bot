@@ -244,15 +244,42 @@ def is_test_path(path: str) -> bool:
     return bool(_TEST_NAME_RE.search(parts[-1]))
 
 
+# Every CI provider whose config lives in the repo. SK-2719's plan said
+# mobile-api "has no CI configuration" while deployment/codefresh/pipeline.yaml
+# ran `npm test` at the merge commit (and an Argo pipeline kept in the
+# deployments repo ran it on master, see build_targets.discover_deployments):
+# the list knew GitHub Actions, Jenkins and a few hosted CIs and nothing else.
 _CI_PATH_RE = re.compile(
-    r"^(\.github/workflows/[^/]+\.ya?ml|\.gitlab-ci\.yml|Jenkinsfile[^/]*|\.circleci/config\.ya?ml"
+    r"^(\.github/workflows/[^/]+\.ya?ml|\.gitlab-ci\.yml|(?:.*/)?Jenkinsfile[^/]*|\.circleci/config\.ya?ml"
     r"|azure-pipelines\.ya?ml|bitbucket-pipelines\.yml|buildspec[^/]*\.ya?ml|\.buildkite/[^/]+\.ya?ml"
-    r"|\.drone\.ya?ml|cloudbuild\.ya?ml|\.travis\.yml)$"
+    r"|\.drone\.ya?ml|cloudbuild\.ya?ml|\.travis\.yml"
+    r"|(?:.*/)?codefresh[^/]*\.ya?ml|(?:.*/)?codefresh/[^/]+\.ya?ml"
+    r"|(?:.*/)?\.?argo[\w-]*/(?:[^/]+/)*[^/]+\.ya?ml|\.tekton/[^/]+\.ya?ml"
+    r"|bitrise\.ya?ml|codemagic\.ya?ml|appveyor\.ya?ml|\.semaphore/[^/]+\.ya?ml|\.woodpecker(?:/[^/]+)?\.ya?ml"
+    r"|ci_scripts/[^/]+\.sh|(?:.*/)?fastlane/Fastfile)$"
 )
+# Fastlane defines lanes; it says nothing about what runs on a commit. A
+# Fastfile that runs tests is evidence they CAN run in CI, and one that does
+# not is no evidence that nothing else does.
+_LANE_PATH_RE = re.compile(r"(?:^|/)fastlane/Fastfile$")
 
 
 def is_ci_path(path: str) -> bool:
     return bool(_CI_PATH_RE.match(path or ""))
+
+
+def _ci_provider(path: str, text: str = "") -> str:
+    p = (path or "").lower()
+    for needle, name in ((".github/workflows", "GitHub Actions"), ("bitbucket-pipelines", "Bitbucket Pipelines"),
+                         ("jenkinsfile", "Jenkins"), ("codefresh", "Codefresh"), ("fastfile", "Fastlane"),
+                         ("argo", "Argo Workflows"), (".gitlab-ci", "GitLab CI"), (".circleci", "CircleCI"),
+                         ("azure-pipelines", "Azure Pipelines"), ("bitrise", "Bitrise"),
+                         ("codemagic", "Codemagic"), ("ci_scripts", "Xcode Cloud"), (".tekton", "Tekton")):
+        if needle in p:
+            return name
+    if re.search(r"argo-?pipeline|argoproj|\bWorkflowTemplate\b|workflow\.parameters", text or ""):
+        return "Argo Workflows"
+    return "CI"
 
 
 def is_dockerfile(path: str) -> bool:
@@ -375,7 +402,9 @@ _TEST_CMD_RE = re.compile(
     r"\b(?:(?:npm|npx|yarn|pnpm|bun|turbo|nx|lerna|rush)\b[^\n#]*" + _TEST_TASK
     + r"|jest\b|vitest\b|mocha\b|pytest\b|go\s+test\b"
     r"|dotnet\s+test\b|(?:gradlew?|mvn)\b[^\n]*\btest\b|xcodebuild\b[^\n]*\btest\b|make\s+test\b"
-    r"|tox\b|cargo\s+test\b|rspec\b|phpunit\b)"
+    r"|tox\b|cargo\s+test\b|rspec\b|phpunit\b|swift\s+test\b"
+    # Fastlane actions: scan / run_tests run XCTest, gradle(task: "test") runs JUnit.
+    r"|\b(?:run_tests|scan)\s*\(|\bgradle\s*\(\s*task:\s*[\"'][\w:]*test)"
 )
 _PKG_TEST_RE = re.compile(r"\b(?:npm|yarn|pnpm)\s+(?:run\s+)?test\b")
 _INSTALL_RE = re.compile(r"\b(?:npm\s+(?:i|install|ci)|yarn(?:\s+install)?|pnpm\s+(?:i|install))\b")
@@ -405,30 +434,42 @@ def analyze_build(
     changed: list[str],
     test_paths: list[str],
     mentioned: str = "",
+    external_ci: list[dict] | None = None,
+    searched_elsewhere: list[str] | None = None,
 ) -> dict:
     """What CI and the image build actually do with the change and its tests.
 
     ``files`` holds the CI files, Dockerfiles and manifests that were read.
+    ``external_ci`` holds pipelines defined outside the repo, each
+    ``{"source": "owner/repo/path", "text"}`` (an Argo pipeline in a
+    deployments repo); ``searched_elsewhere`` names the repos looked in.
     Returns ``{"suites": {test_path: {"status", "why"}}, "findings": [...],
     "ci_files": [...], "dockerfiles": [...]}``. A suite's status is ``runs``
     (a CI test command or a real image-build test step reaches it),
-    ``not_run`` (nothing does), or ``unknown`` (a file needed to tell could
-    not be read).
+    ``not_run`` (CI was found and read, and nothing in it does), or
+    ``unknown`` (no CI was found, or a file needed to tell could not be read).
+    Finding no CI is never "not run": CI can be defined where this check does
+    not look.
     """
     tree_set = set(tree)
     ci_files = sorted(p for p in tree if is_ci_path(p))
     ci_unread = [p for p in ci_files if p not in files]
+    ci_sources = [(p, files.get(p) or "") for p in ci_files] + [
+        (x["source"], x.get("text") or "") for x in external_ci or [] if x.get("source")]
+    # A pipeline (something that runs on a commit), as opposed to a Fastfile's
+    # lane library. Only a pipeline that was read and runs no tests is "not run".
+    pipelines_read = [p for p, _ in ci_sources if not _LANE_PATH_RE.search(p) and p not in ci_unread]
     ci_test_cmds = []
     # Lines that name a test task in a way the command pattern does not
     # recognise (a job called `test`, a wrapper script). They make the answer
     # "could not tell", never "not run": a pattern miss is not a fact about CI.
     ci_test_hints = []
-    for p in ci_files:
-        for line in (files.get(p) or "").splitlines():
+    for p, text in ci_sources:
+        for line in text.splitlines():
             if line.strip().startswith("#"):
                 continue
             if _TEST_CMD_RE.search(line):
-                ci_test_cmds.append({"file": p, "line": line.strip()})
+                ci_test_cmds.append({"file": p, "line": line.strip(), "provider": _ci_provider(p, text)})
                 break
             if not ci_test_hints and re.search(_TEST_TASK, line):
                 ci_test_hints.append({"file": p, "line": line.strip()})
@@ -537,8 +578,10 @@ def analyze_build(
             continue
         if ci_test_cmds:
             c = ci_test_cmds[0]
+            also = "".join(f"; {o['provider']} {o['file']} runs `{o['line']}`" for o in ci_test_cmds[1:3])
             suites[t] = {"status": "runs",
-                         "why": f"{c['file']} runs `{c['line']}` (check that its scope includes {t})"}
+                         "why": f"{c['provider']} {c['file']} runs `{c['line']}`{also} "
+                                f"(check that its scope includes {t})"}
             continue
         hit = next((r for r in docker_runners if _copied(t, r["copies"], r["ctx"])), None)
         if not hit and ci_test_hints:
@@ -553,9 +596,18 @@ def analyze_build(
                          "why": f"{hit['dockerfile']} runs `{hit['cmd']}` but its package.json could not be read"}
         elif hit:
             suites[t] = {"status": "runs", "why": f"{hit['dockerfile']} runs `{hit['cmd']}` during the image build"}
+        elif not pipelines_read:
+            where = " and in " + ", ".join(searched_elsewhere) if searched_elsewhere else ""
+            lanes = [p for p in ci_files if _LANE_PATH_RE.search(p)]
+            why = (f"no CI pipeline was found in the repo (GitHub Actions, Argo, Jenkins, Bitbucket, "
+                   f"Codefresh, GitLab, CircleCI and others were looked for){where}"
+                   + (f"; {', '.join(lanes)} defines Fastlane lanes, none of which runs tests"
+                      if lanes else "")
+                   + (f"; {docker_noops[0][1]}" if docker_noops else "")
+                   + f". CI may be defined where this check does not look, so whether it runs {t} is unknown")
+            suites[t] = {"status": "unknown", "why": why}
         else:
-            reasons = [f"none of the CI files ({', '.join(ci_files)}) runs a test command"
-                       if ci_files else "the repo has no CI configuration (no .github/workflows, Jenkinsfile, …)"]
+            reasons = [f"none of the CI pipelines ({', '.join(pipelines_read)}) runs a test command"]
             if docker_noops:
                 reasons.append(docker_noops[0][1])
                 if len(docker_noops) > 1:
@@ -576,7 +628,7 @@ def analyze_build(
                 "A passing assertion in these files is not proof that the shipped build "
                 "behaves that way until someone runs them."
             ),
-            "evidence": "; ".join(ci_files) or "no CI files in the repo tree",
+            "evidence": "; ".join(pipelines_read),
         })
     unknown = [t for t, s in suites.items() if s["status"] == "unknown"]
     if unknown:
@@ -585,7 +637,17 @@ def analyze_build(
             "finding": f"Could not tell whether CI runs {', '.join(unknown)}: {suites[unknown[0]]['why']}.",
             "evidence": "",
         })
+    # Say where the tests DO run, so a plan never has to guess it: SK-2719's
+    # plan argued from "no CI" that the unit tests proved nothing.
+    if ci_test_cmds and any(s["status"] == "runs" for s in suites.values()):
+        findings.append({
+            "kind": "ci_runs_tests",
+            "finding": "CI runs the test suite: " + "; ".join(
+                f"{c['provider']} {c['file']} runs `{c['line']}`" for c in ci_test_cmds[:3]) + ".",
+            "evidence": "; ".join(c["file"] for c in ci_test_cmds[:3]),
+        })
     return {"suites": suites, "findings": findings, "ci_files": ci_files,
+            "external_ci": [x["source"] for x in external_ci or [] if x.get("source")],
             "dockerfiles": relevant_docker}
 
 
@@ -887,6 +949,21 @@ def needs_deployed_env(case: dict) -> bool:
     )
 
 
+#: A first step that IS a deploy check (and nothing else), so the code's check
+#: may take its place. Looser matches (a step that mentions a commit) are left
+#: alone: replacing a real step would drop part of the case.
+_DEPLOY_STEP_RE = re.compile(
+    r"^\s*(?:deploy(?:ment)?\s+check|build\s+check|verify\s+the\s+deploy|confirm\s+the\s+deploy|"
+    r"check\s+the\s+deploy)|\b(?:image\s+tag|argo\s?cd\s+app|pod'?s?\s+image|values\.ya?ml\b[^.]*\btag)",
+    re.I,
+)
+
+
+def is_model_deploy_step(step: str) -> bool:
+    return isinstance(step, str) and bool(_DEPLOY_STEP_RE.search(step)) and bool(
+        re.search(r"\b(confirm|check|verify|make sure|ensure)\b", step, re.I))
+
+
 def has_deploy_check_first(case: dict) -> bool:
     steps = case.get("steps") or []
     first = steps[0] if steps and isinstance(steps[0], str) else ""
@@ -904,20 +981,60 @@ def deploy_check_step(commit: str | None, how: str | None) -> str:
             f"contains it) — {how}. If it does not, stop: the case is blocked on deployment.")
 
 
-def enforce_deploy_precondition(test_plan, commit: str | None, how: str | None,
-                                extra_cases: list[dict] | None = None) -> list[str]:
-    """Put a deploy check first in every case that needs a deployed environment.
+def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str | None = None,
+                                extra_cases: list[dict] | None = None, *,
+                                targets: list[dict] | None = None,
+                                when: str | None = None) -> list[str]:
+    """Put a build check first in every case that needs a running build.
+
+    With ``targets`` (``build_targets.build_targets``) the check is chosen per
+    case: the repos the case exercises, each with its OWN merge commit, each
+    checked the way its platform ships — a deployed image that contains the
+    merge (an ancestor check, not an exact tag) for a service, the installed
+    app's version and source commit for an iOS or Android build. Without
+    targets it is the single-commit check older callers relied on.
+
+    The check is the code's, not the model's. A first step the model wrote as
+    its own deploy check is replaced rather than kept: on SK-2719 that step
+    demanded one exact image tag, and on SK-2889 an iOS case's precondition
+    checked a build number while the step code added asked for an ArgoCD app.
+    Replacing in place keeps the step count, so nothing is renumbered. An
+    exact image tag a case pins in its preconditions, environment or steps is
+    rewritten to "a build that contains <merge commit>".
 
     Runs before step grounding, so the warnings that pass writes ("step 3
     names …") count the added step.
     """
+    from .build_targets import build_check_step, short_requirement, targets_for_case, unpin_tags
+
     fixed = []
-    targets = list(iter_cases(test_plan)) + [("needs_spec_cases", i, c)
-                                              for i, c in enumerate(extra_cases or [])]
-    for section, i, case in targets:
-        if not isinstance(case, dict) or not needs_deployed_env(case) or has_deploy_check_first(case):
+    cases = list(iter_cases(test_plan)) + [("needs_spec_cases", i, c)
+                                            for i, c in enumerate(extra_cases or [])]
+    for section, i, case in cases:
+        if not isinstance(case, dict):
             continue
-        case["steps"] = [deploy_check_step(commit, how)] + list(case.get("steps") or [])
+        mine = targets_for_case(case, targets) if targets else []
+        if mine:
+            for key in ("preconditions", "environment"):
+                if isinstance(case.get(key), str):
+                    case[key], n = unpin_tags(case[key], mine)
+                    if n:
+                        case["pinned_tag_replaced"] = True
+        if not needs_deployed_env(case):
+            continue
+        step = build_check_step(mine, when) if mine else deploy_check_step(commit, how)
+        steps = list(case.get("steps") or [])
+        if has_deploy_check_first(case):
+            if not targets or steps[0] == step or not is_model_deploy_step(steps[0]):
+                continue
+            # The model's own check: replaced in place, so step numbers hold.
+            case["steps"] = [step] + [unpin_tags(s, mine)[0] if isinstance(s, str) else s
+                                      for s in steps[1:]]
+            case["deploy_check_replaced"] = True
+            fixed.append(f"{section}:{i}")
+            continue
+        case["steps"] = [step] + [unpin_tags(s, mine)[0] if (mine and isinstance(s, str)) else s
+                                  for s in steps]
         case["deploy_check_added"] = True
         # step_grounding numbers steps from 1 (0 is the preconditions); the
         # new first step moves every numbered one down by one.
@@ -934,10 +1051,18 @@ def enforce_deploy_precondition(test_plan, commit: str | None, how: str | None,
     for i, line in enumerate(lines):
         if not isinstance(line, str) or not _ENV_NAME_RE.search(line):
             continue
-        if "Deploy check first" in line or (sha and sha in line):
+        if "Deploy check first" in line or "Build check first" in line:
             continue
-        what = f"merged commit {sha}" if sha else "the merged change"
-        prefix = f"Deploy check first: confirm the environment runs {what} or later. "
+        if targets:
+            mine = targets_for_case({"expected": line}, targets)
+            if not mine or all(t["commit"] and t["commit"][:7] in line for t in mine):
+                continue
+            prefix = f"Build check first: confirm {short_requirement(mine)}. "
+        else:
+            if sha and sha in line:
+                continue
+            what = f"merged commit {sha}" if sha else "the merged change"
+            prefix = f"Deploy check first: confirm the environment runs {what} or later. "
         m = re.match(r"^(\s*(?:🔴|🟡|🟢)\s*)", line)
         head = m.group(1) if m else ""
         lines[i] = head + prefix + line[len(head):]
@@ -946,9 +1071,25 @@ def enforce_deploy_precondition(test_plan, commit: str | None, how: str | None,
 
 
 def build_deployment_status(deploy_state: list[dict] | None, model_status: dict | None,
-                            repos: list[str], when: str) -> dict:
-    """The banner at the top of the plan: is the change running anywhere?"""
+                            repos: list[str], when: str, targets: list[dict] | None = None) -> dict:
+    """The banner at the top of the plan: is the change running anywhere?
+
+    With ``targets``, an app repo (iOS, Android) is never said to lack a
+    deployment source: an app has no deployment, and its cases check the
+    installed build instead. A deployments repo is not a target at all.
+    """
     warnings, deployed_envs = [], []
+    if targets is not None:
+        from .build_targets import short_requirement
+
+        for t in targets:
+            if t["platform"] in ("ios", "android"):
+                warnings.append(
+                    f"{t['repo']} is an {'iOS' if t['platform'] == 'ios' else 'Android'} app, so there "
+                    f"is no deployment to read: every case on it starts by checking that "
+                    f"{short_requirement([t])}."
+                )
+        repos = [t["repo"] for t in targets if t["platform"] not in ("ios", "android")]
     for e in deploy_state or []:
         if e.get("error"):
             warnings.append(f"Could not check {e['env']} ({e['repo']}): {e['error']}.")
@@ -968,18 +1109,27 @@ def build_deployment_status(deploy_state: list[dict] | None, model_status: dict 
     if (ms.get("deployed") in ("no", "unknown")) and (ms.get("statement") or "").strip():
         src = f" ({ms['source']})" if ms.get("source") else ""
         warnings.append(f"{ms['statement'].strip()}{src}")
-    if deployed_envs and not warnings:
-        status = "deployed"
-    elif any(w.startswith("Not deployed") for w in warnings) or ms.get("deployed") == "no":
-        status = "not_deployed"
-    else:
-        status = "unknown"
-    if not deploy_state and not warnings:
+    checked = {e.get("repo") for e in deploy_state or []}
+    unchecked = [r for r in repos if r not in checked]
+    if unchecked and targets is not None:
+        warnings.append(
+            f"Deployment was not checked: no deployment source is configured or was found for "
+            f"{', '.join(unchecked)}. Every case that needs a deployed environment "
+            "starts with a deploy check."
+        )
+    elif targets is None and not deploy_state and not warnings:
         warnings.append(
             f"Deployment was not checked: no deployment source is configured for "
             f"{', '.join(repos) or 'this repo'}. Every case that needs a deployed environment "
             "starts with a deploy check."
         )
+    if deployed_envs and not [w for w in warnings if not w.startswith(tuple(
+            t["repo"] for t in targets or [] if t["platform"] in ("ios", "android")))]:
+        status = "deployed"
+    elif any(w.startswith("Not deployed") for w in warnings) or ms.get("deployed") == "no":
+        status = "not_deployed"
+    else:
+        status = "unknown"
     return {"status": status, "deployed_envs": deployed_envs, "warnings": warnings}
 
 
@@ -1035,26 +1185,37 @@ def _ref_for(prs: list[dict]) -> str | None:
     return open_[0]["head_sha"] if open_ else None
 
 
-async def gather_repo_evidence(github, pull_requests: list[dict] | None, mentioned: str = "") -> list[dict]:
+async def gather_repo_evidence(github, pull_requests: list[dict] | None, mentioned: str = "",
+                               deployments: dict | None = None) -> list[dict]:
     """Read tests, CI config, Dockerfiles and manifests at each repo's merge commit.
 
-    One entry per repo the ticket's PRs touch::
+    One entry per code repo the ticket's PRs touch::
 
         {"repo", "ref", "error", "test_sources": {path: text},
-         "truncated": [paths], "build": analyze_build(...)}
+         "truncated": [paths], "build": analyze_build(...),
+         "platform": "backend" | "ios" | "android" | "web" | "unknown",
+         "app_version": build_targets.parse_app_version(...) or None}
 
-    ``error`` is set, and nothing else is claimed about the repo, when its
-    tree could not be listed.
+    ``ref`` is that repo's OWN merge commit, never another repo's.
+    ``deployments`` (``build_targets.discover_deployments``) adds the CI
+    pipelines kept outside the repo and names the deployments repos, which
+    are skipped: nothing a tester runs is built from them. ``error`` is set,
+    and nothing else is claimed about the repo, when its tree could not be
+    listed.
     """
+    from .build_targets import detect_platform, parse_app_version, version_files
+
+    deployments = deployments or {}
+    skip = set(deployments.get("deployments_repos") or [])
     by_repo: dict[str, list[dict]] = {}
     for pr in pull_requests or []:
-        if isinstance(pr, dict) and pr.get("repository"):
+        if isinstance(pr, dict) and pr.get("repository") and pr["repository"] not in skip:
             by_repo.setdefault(pr["repository"], []).append(pr)
     out = []
     for repo, prs in by_repo.items():
         ref = _ref_for(prs)
         entry = {"repo": repo, "ref": ref, "error": None, "test_sources": {},
-                 "truncated": [], "build": None}
+                 "truncated": [], "build": None, "platform": None, "app_version": None}
         out.append(entry)
         tree = await github.list_tree(repo, ref) if (github and ref) else None
         if tree is None:
@@ -1066,7 +1227,16 @@ async def gather_repo_evidence(github, pull_requests: list[dict] | None, mention
         tests = select_test_files(tree, changed)
         dockerfiles = [p for p in tree if is_dockerfile(p)][:20]
         ci = [p for p in tree if is_ci_path(p)][:12]
+        entry["platform"] = detect_platform(tree, changed)
+        versions = version_files(tree, entry["platform"])
         first = await github.fetch_files_at_ref(repo, ref, tests + dockerfiles + ci)
+        # An app's project.pbxproj is routinely past the 300 KB cap that keeps
+        # generated blobs out of prompts; read below the cap, it fell back to
+        # project.yml's placeholder 1.0.0 where Xcode builds 2.13.0.
+        version_texts = await github.fetch_files_at_ref(repo, ref, versions, max_bytes=8_000_000) \
+            if versions else {}
+        entry["app_version"] = parse_app_version(
+            entry["platform"], {p: version_texts[p] for p in versions if p in version_texts})
         # Manifests the Dockerfiles copy, plus the root one.
         manifests = {"package.json"} if "package.json" in tree else set()
         for df in dockerfiles:
@@ -1084,7 +1254,11 @@ async def gather_repo_evidence(github, pull_requests: list[dict] | None, mention
                     text = text[:_TEST_FILE_MAX_CHARS]
                     entry["truncated"].append(t)
                 entry["test_sources"][t] = text
-        entry["build"] = analyze_build(tree, files, changed, list(entry["test_sources"]), mentioned)
+        entry["build"] = analyze_build(
+            tree, files, changed, list(entry["test_sources"]), mentioned,
+            external_ci=(deployments.get("pipelines") or {}).get(repo),
+            searched_elsewhere=sorted(skip),
+        )
         unread_tests = [t for t in tests if t not in files]
         if unread_tests:
             entry["build"]["findings"].append({
@@ -1106,6 +1280,14 @@ def render_repo_evidence(entries: list[dict]) -> str:
             lines.append(f"COULD NOT CHECK: {e['error']}. Do not call any case covered by a "
                          "unit test, and make no claim about CI or what ships.")
             continue
+        if e.get("platform") and e["platform"] != "unknown":
+            app = e.get("app_version") or {}
+            ver = (f"; an app build at this commit reports version {app['version']}"
+                   + (f" ({app['build']})" if app.get("build") else "") + f", from {app['file']}"
+                   if app.get("version") else "")
+            lines.append(f"- BUILD/CI FACT: ships as a {e['platform']} "
+                         f"{'app build' if e['platform'] in ('ios', 'android') else 'deployment'}; its merge "
+                         f"commit is {(e['ref'] or '?')[:7]}{ver}.")
         for f in (e["build"] or {}).get("findings") or []:
             lines.append(f"- BUILD/CI FACT: {f['finding']}")
         suites = (e["build"] or {}).get("suites") or {}

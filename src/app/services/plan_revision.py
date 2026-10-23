@@ -42,6 +42,8 @@ from src.app.services.mark_carryover import _similarity
 # that do, so it is stripped before comparing.
 _ADDED_BY_CODE = re.compile(
     r"Deploy check first: confirm the environment runs merged commit \S+ or later\.\s*"
+    # build_targets.short_requirement; a dot before a digit is a version's.
+    r"|Build check first: confirm (?:[^.]|\.(?=\d))*\.\s*"
     r"|Unverified — assumption(?: \([^)]*\))?:\s*"
     r"|Pre-existing behaviour, not changed by this ticket:\s*"
     r"|Platform-dependent — [^:]*:\s*"
@@ -137,9 +139,25 @@ def _score(left: str, right: str) -> float:
     return max(_similarity(left, right), _dice(left, right))
 
 
+#: Lists beside the numbered sections a regenerated case can land in, with the
+#: remap status that names each. ``case_disposition`` fills the last three.
+_OUT_OF_SECTION = (("needs_spec_cases", "needs_spec"), ("code_review_checks", "code_review"),
+                   ("pre_existing_behaviour", "pre_existing"), ("regression_low_confidence", "low_confidence"))
+MOVED_OUT_STATUSES = tuple(status for _, status in _OUT_OF_SECTION)
+
+
 def _needs_spec_titles(body: Any) -> list[str]:
+    return [t for t, status in _out_of_section_titles(body) if status == "needs_spec"]
+
+
+def _out_of_section_titles(body: Any) -> list[tuple[str, str]]:
     plan = progress_key_service._as_plan_dict(body)
-    return [c.get("title") or "" for c in plan.get("needs_spec_cases") or [] if isinstance(c, dict)]
+    out = []
+    for key, status in _OUT_OF_SECTION:
+        for c in plan.get(key) or []:
+            if isinstance(c, dict) and (c.get("title") or c.get("line")):
+                out.append((c.get("title") or c.get("line"), status))
+    return out
 
 
 def map_case_ids(old_body: Any, new_body: Any) -> list[dict]:
@@ -178,13 +196,14 @@ def map_case_ids(old_body: Any, new_body: Any) -> list[dict]:
         matched[oi] = (ni, score)
         taken.add(ni)
 
-    quarantined = [(t, _norm(t)) for t in _needs_spec_titles(new_body)]
+    moved_out = [(t, _norm(t), status) for t, status in _out_of_section_titles(new_body)]
     mapping = []
     for oi, meta in old.items():
         if oi not in matched:
-            best = max(((_score(old_text[oi], qt), t) for t, qt in quarantined), default=(0.0, None))
+            best = max(((_score(old_text[oi], qt), t, st) for t, qt, st in moved_out),
+                       default=(0.0, None, None))
             if best[0] >= MATCH_THRESHOLD:
-                mapping.append({"from": oi, "to": None, "status": "needs_spec",
+                mapping.append({"from": oi, "to": None, "status": best[2],
                                 "from_title": meta.get("title"), "to_title": best[1],
                                 "similarity": round(best[0], 3), "confident": best[0] >= CONFIDENT})
                 continue
@@ -245,7 +264,7 @@ def build_progress_remap(
         "old_key": old_key,
         "new_key": new_key,
         "key_changed": key_changed,
-        "ids_changed": any(m["status"] in ("moved", "gone", "needs_spec") for m in mapping)
+        "ids_changed": any(m["status"] in ("moved", "gone") + MOVED_OUT_STATUSES for m in mapping)
         or len(new_ids) != len(mapping),
         "mapping": mapping,
         "new_ids": sorted(new_ids - {m["to"] for m in mapping if m["to"]}),

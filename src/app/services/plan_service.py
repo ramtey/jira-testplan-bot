@@ -69,6 +69,8 @@ from ..repositories import (
     test_plan_progress_repository,
 )
 from ..scope_checks import run_platform_critic, run_scope_checks
+from ..case_disposition import OUT_OF_UAT_KEYS, PLAN_SHAPE, route_out_of_uat
+from ..error_variants import require_error_body_variants
 from ..reachability_checks import flag_ci_claims, run_reachability_critic, summarize as summarize_reachability
 from ..seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from ..security_surfaces import audit_persona_split
@@ -505,9 +507,45 @@ async def _write_from_acs(
     return request.model_copy(update={"development_info": dev}), provenance, spec_only
 
 
-async def _read_deploy_state(development_info: dict | None) -> list[dict]:
-    """Deployment state for the ticket's PRs; [] when none is configured."""
-    sources = settings.deploy_state_sources
+async def _discover_deployments(development_info: dict | None) -> dict:
+    """Deploy sources and CI pipelines recorded in deployments repos.
+
+    See ``build_targets.discover_deployments``. Never raises: a failed
+    discovery returns nothing found plus the error, so the plan says the
+    deployments repo was not read instead of saying there is no CI.
+    """
+    prs = [p for p in ((development_info or {}).get("pull_requests") or []) if isinstance(p, dict)]
+    empty = {"deployments_repos": [], "deploy_sources": {}, "pipelines": {}, "errors": []}
+    if not prs:
+        return empty
+    from ..build_targets import discover_deployments
+    from ..github_client import GitHubClient
+
+    try:
+        return await discover_deployments(
+            GitHubClient(), prs, configured_sources=settings.deploy_state_sources,
+            deployments_repos=settings.deployments_repos,
+        )
+    except Exception as e:
+        logger.warning("deployments discovery failed: %s", e)
+        return {**empty, "errors": [f"deployments repos could not be read ({type(e).__name__})"]}
+
+
+async def _read_build_evidence(development_info: dict | None, mentioned: str) -> tuple[dict, list[dict], list[dict]]:
+    """``(deployments, deploy_state, repo_evidence)``: discovery first, since
+    both reads use what it finds, then the two reads side by side."""
+    deployments = await _discover_deployments(development_info)
+    deploy_state, repo_evidence = await asyncio.gather(
+        _read_deploy_state(development_info, deployments),
+        _read_repo_evidence(development_info, mentioned, deployments),
+    )
+    return deployments, deploy_state, repo_evidence
+
+
+async def _read_deploy_state(development_info: dict | None, deployments: dict | None = None) -> list[dict]:
+    """Deployment state for the ticket's PRs; [] when no source is configured
+    or was found in a deployments repo."""
+    sources = {**((deployments or {}).get("deploy_sources") or {}), **settings.deploy_state_sources}
     prs = (development_info or {}).get("pull_requests") or []
     if not sources or not prs:
         return []
@@ -519,7 +557,8 @@ async def _read_deploy_state(development_info: dict | None) -> list[dict]:
         return []
 
 
-async def _read_repo_evidence(development_info: dict | None, mentioned: str) -> list[dict]:
+async def _read_repo_evidence(development_info: dict | None, mentioned: str,
+                              deployments: dict | None = None) -> list[dict]:
     """Tests, CI config, Dockerfiles and lockfiles at the merge commit (rules C, D, F).
 
     Never raises: a repo that could not be read comes back with ``error`` set,
@@ -531,7 +570,7 @@ async def _read_repo_evidence(development_info: dict | None, mentioned: str) -> 
     from ..github_client import GitHubClient
 
     try:
-        return await gather_repo_evidence(GitHubClient(), prs, mentioned)
+        return await gather_repo_evidence(GitHubClient(), prs, mentioned, deployments)
     except Exception as e:
         logger.warning("repo evidence read failed: %s", e)
         return [{"repo": r, "ref": None, "error": f"repo evidence read failed: {type(e).__name__}",
@@ -715,7 +754,7 @@ async def generate_single(
             + [f.get("patch") or "" for pr in ((request.development_info or {}).get("pull_requests") or [])
                if isinstance(pr, dict) for f in (pr.get("files_changed") or []) if isinstance(f, dict)]
         )
-        images, (resolved_slack, slack_gaps), deliverable, deploy_state, flag_state, repo_evidence, exploration = await asyncio.gather(
+        images, (resolved_slack, slack_gaps), deliverable, (deployments, deploy_state, repo_evidence), flag_state, exploration = await asyncio.gather(
             _download_images(request.image_urls),
             resolve_slack_messages_in_text(request.description, request.comments),
             classify_deliverable(
@@ -726,16 +765,16 @@ async def generate_single(
                 issue_type=request.issue_type,
                 development_info=request.development_info,
             ),
-            _read_deploy_state(request.development_info),
+            _read_build_evidence(request.development_info, mentioned),
             _read_flag_state(request),
-            _read_repo_evidence(request.development_info, mentioned),
             _explore_code(request, llm),
         )
         # Sources the ticket points at that we could not read. Recorded on the
         # plan and handed to the generator so it writes around nothing in
         # silence. Confluence gaps are added inside the client, which is where
         # those pages are fetched.
-        context_gaps = list(slack_gaps)
+        context_gaps = list(slack_gaps) + list(deployments.get("errors") or [])
+        _record_deployments(provenance, deployments)
         # Which test environment runs which of the ticket's PRs. Read at
         # generation time, because it is the one input that goes stale fastest.
         if deploy_state:
@@ -942,6 +981,15 @@ async def generate_single(
             repo_evidence=repo_evidence, exploration=exploration,
             protected_titles=passed_titles, label=request.ticket_key,
         )
+        # What the plan itself says a tester cannot grade — unreachable cases
+        # (rule L), pre-existing behaviour (rule H), regression lines that cite
+        # no changed code — leaves the numbered sections before the evidence
+        # checks add build checks to it (src/app/case_disposition.py).
+        out_of_uat = route_out_of_uat(
+            test_plan, dev_infos=[request.development_info], exploration=exploration,
+            protected_titles=passed_titles,
+        )
+        _record_out_of_uat(provenance, out_of_uat)
         # Evidence rules B–F, after the critics and before the step check:
         # covered_by_unit_test claims are proven from the test code and CI or
         # reverted, and every case that needs a deployed environment gets a
@@ -954,6 +1002,7 @@ async def generate_single(
             requirements=requirements,
             dev_info=request.development_info,
             when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            deployments=deployments,
         )
         if evidence["critic_gap"]:
             provenance.setdefault("critics_unavailable", []).append(evidence["critic_gap"])
@@ -961,6 +1010,13 @@ async def generate_single(
             provenance["coverage_reverted"] = evidence["coverage_reverted"]
         if evidence["deploy_checks_added"]:
             provenance["deploy_checks_added"] = len(evidence["deploy_checks_added"])
+        if evidence.get("build_targets"):
+            provenance["build_targets"] = evidence["build_targets"]
+        # A client's error handling is tested against empty and non-JSON
+        # bodies too (src/app/error_variants.py). Adds a step, never a case.
+        variants = require_error_body_variants(test_plan)
+        if variants:
+            provenance["error_body_variants_added"] = variants
         # Step check, after the critics and before quarantine: a step naming
         # a control, action or flag that only the ticket text backs is marked
         # where it stands and warned on, and a step-level one sets the
@@ -1079,6 +1135,10 @@ async def generate_single(
                 getattr(test_plan, "security_negative_tests", None) or []
             ),
             "needs_spec_cases": needs_spec_cases,
+            # Plan shape v2 (docs/FEATURES.md): outside the checklist, the
+            # case count and the progress key.
+            **{k: out_of_uat[k] for k in OUT_OF_UAT_KEYS},
+            "plan_shape": PLAN_SHAPE,
             "ac_coverage": ac_coverage,
             "grounding_warnings": normalize_grounding_warnings(test_plan),
             "regression_grounding_notes": (
@@ -1160,6 +1220,26 @@ async def _check_reachability(llm, test_plan, dev_infos: list, provenance: dict,
         provenance["reachability"]["ids_are"] = "raw body positions before quarantine"
     if changes.get("usage"):
         logger.info("reachability critic for %s: %s", label, summarize_reachability(changes))
+
+
+def _record_out_of_uat(provenance: dict, out_of_uat: dict) -> None:
+    if out_of_uat.get("moved"):
+        provenance["moved_out_of_uat"] = {
+            "ids": out_of_uat["moved"],
+            "ids_are": "raw body positions before quarantine",
+            **{k: len(out_of_uat[k]) for k in OUT_OF_UAT_KEYS if out_of_uat[k]},
+        }
+
+
+def _record_deployments(provenance: dict, deployments: dict) -> None:
+    """What the deployments repos told us, by file, so a plan can show its source."""
+    found = {
+        "deployments_repos": deployments.get("deployments_repos") or [],
+        "deploy_sources": deployments.get("deploy_sources") or {},
+        "pipelines": {r: [p["source"] for p in ps] for r, ps in (deployments.get("pipelines") or {}).items()},
+    }
+    if any(found.values()) or deployments.get("errors"):
+        provenance["deployments_discovered"] = {**found, "errors": deployments.get("errors") or []}
 
 
 def _record_ci_claims(provenance: dict, flagged: list[dict]) -> None:
@@ -1347,10 +1427,9 @@ async def generate_multi(
             + [f.get("patch") or "" for pr in batch_prs for f in (pr.get("files_changed") or [])
                if isinstance(f, dict)]
         )
-        batch_deploy_state, batch_repo_evidence = await asyncio.gather(
-            _read_deploy_state(batch_dev_info),
-            _read_repo_evidence(batch_dev_info, batch_mentioned),
-        )
+        batch_deployments, batch_deploy_state, batch_repo_evidence = await _read_build_evidence(
+            batch_dev_info, batch_mentioned)
+        _record_deployments(provenance, batch_deployments)
         for t in tickets_data:
             dev = dict(t.get("development_info") or {})
             dev["deploy_state"] = batch_deploy_state
@@ -1452,6 +1531,11 @@ async def generate_multi(
             llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
             repo_evidence=batch_repo_evidence, exploration=None, label="batch",
         )
+        # See generate_single.
+        out_of_uat = route_out_of_uat(
+            test_plan, dev_infos=[d.get("development_info") for d in multi_ticket_dev_info],
+        )
+        _record_out_of_uat(provenance, out_of_uat)
         # Evidence rules B–F; see generate_single.
         evidence = await run_evidence_checks(
             llm,
@@ -1461,6 +1545,7 @@ async def generate_multi(
             requirements=batch_requirements,
             dev_info=batch_dev_info,
             when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            deployments=batch_deployments,
         )
         if evidence["critic_gap"]:
             provenance.setdefault("critics_unavailable", []).append(evidence["critic_gap"])
@@ -1468,6 +1553,13 @@ async def generate_multi(
             provenance["coverage_reverted"] = evidence["coverage_reverted"]
         if evidence["deploy_checks_added"]:
             provenance["deploy_checks_added"] = len(evidence["deploy_checks_added"])
+        if evidence.get("build_targets"):
+            provenance["build_targets"] = evidence["build_targets"]
+        # A client's error handling is tested against empty and non-JSON
+        # bodies too (src/app/error_variants.py). Adds a step, never a case.
+        variants = require_error_body_variants(test_plan)
+        if variants:
+            provenance["error_body_variants_added"] = variants
         # Step check before quarantine; see generate_single.
         unbacked_steps = check_step_grounding(
             test_plan, readable_code_paths(multi_ticket_dev_info),
@@ -1555,6 +1647,10 @@ async def generate_multi(
                 getattr(test_plan, "security_negative_tests", None) or []
             ),
             "needs_spec_cases": needs_spec_cases,
+            # Plan shape v2 (docs/FEATURES.md): outside the checklist, the
+            # case count and the progress key.
+            **{k: out_of_uat[k] for k in OUT_OF_UAT_KEYS},
+            "plan_shape": PLAN_SHAPE,
             "ac_coverage": ac_coverage,
             "superseded_acs": ac_coverage.get("superseded_acs", []),
             "grounding_warnings": grounding_warnings,

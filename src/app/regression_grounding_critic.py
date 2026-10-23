@@ -292,6 +292,36 @@ _QUERY_STOPWORDS = frozenset({
 })
 
 
+def diff_hits_for_line(line: str, dev_infos: list[dict]) -> list[dict]:
+    """The PR's own patch for each changed file a line cites, as snippets.
+
+    SK-2889's twelve lines each named a file the PR changed
+    (``SceneDelegate.swift:19-33``), and every one came back "Unverified —
+    assumption (no code shows this)": the critic was only ever shown
+    code-search hits, search returned nothing, and "No snippets were
+    provided" read as no code. The diff is the most direct evidence there is
+    for a line about what the change touched, and it is already in hand.
+    """
+    from .build_targets import cited_paths, path_matches
+
+    cited = cited_paths(line)
+    if not cited:
+        return []
+    out = []
+    for dev in dev_infos or []:
+        for pr in ((dev or {}).get("development_info") or dev or {}).get("pull_requests") or []:
+            if not isinstance(pr, dict):
+                continue
+            for f in pr.get("files_changed") or []:
+                name = (f or {}).get("filename") if isinstance(f, dict) else None
+                if name and f.get("patch") and any(path_matches(c, name) for c in cited) \
+                        and all(h["path"] != name for h in out):
+                    out.append({"path": name, "ref": f"diff of {pr.get('repository') or ''} "
+                                                      f"#{pr.get('number') or ''}".strip(),
+                                "content": f["patch"]})
+    return out[:_MAX_FILES_IN_CRITIC_INPUT]
+
+
 def build_regression_grounding_inputs(
     test_plan,
     hits_by_line: dict[int, list[dict]],

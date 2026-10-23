@@ -14,6 +14,7 @@ from rich.syntax import Syntax
 from typing_extensions import Annotated
 
 from ..cli_config import config_manager
+from ...app.case_disposition import render_out_of_uat_lines
 from ...app.jira_client import (
     JiraAuthError,
     JiraClient,
@@ -621,6 +622,7 @@ def _format_test_plan(test_plan: dict, format: str, ticket_key: str) -> str:
         lines.append("")
 
     lines.extend(_needs_spec_lines(test_plan, format))
+    lines.extend(render_out_of_uat_lines(test_plan, markdown=format == "markdown"))
 
     return "\n".join(lines)
 

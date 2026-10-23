@@ -768,7 +768,18 @@ async def run_regression_grounding_critic(
         # there was genuinely nothing for this critic to check.
         return None
 
-    if not settings.github_token:
+    # A line that cites a file the PR changed is checked against that file's
+    # diff first; code search is only for lines the diff does not cover.
+    from ..regression_grounding_critic import diff_hits_for_line
+
+    hits_by_line: dict[int, list[dict]] = {}
+    for idx, line in candidates:
+        diff_hits = diff_hits_for_line(line, dev_infos)
+        if diff_hits:
+            hits_by_line[idx] = diff_hits
+    to_search = [(i, line) for i, line in candidates if i not in hits_by_line]
+
+    if to_search and not settings.github_token and not hits_by_line:
         return (
             "regression-grounding critic could not run (no GitHub token), so "
             "the regression checklist's named UI controls were not checked "
@@ -776,7 +787,7 @@ async def run_regression_grounding_critic(
         )
 
     repos = extract_repos(dev_infos)
-    if not repos:
+    if to_search and not repos and not hits_by_line:
         return (
             "regression-grounding critic could not run (no linked repo), so "
             "the regression checklist's named UI controls were not checked "
@@ -784,11 +795,10 @@ async def run_regression_grounding_critic(
         )
 
     from ..github_client import GitHubClient
-    client = GitHubClient()
+    client = GitHubClient() if (settings.github_token and repos) else None
 
-    hits_by_line: dict[int, list[dict]] = {}
     throttled = False
-    for idx, line in candidates:
+    for idx, line in to_search if client else []:
         query = build_regression_search_query(line)
         if not query:
             continue
@@ -854,6 +864,12 @@ async def run_regression_grounding_critic(
             "regression-grounding critic ran partially — GitHub code search "
             "was rate-limited, so some regression-checklist lines were left "
             "unchecked"
+        )
+    if to_search and client is None:
+        return (
+            "regression-grounding critic ran partially — lines that cite no "
+            "changed file could not be searched (no GitHub token or linked "
+            "repo), so they were left unchecked"
         )
     return None
 
@@ -1051,6 +1067,7 @@ async def run_evidence_checks(
     requirements: list[dict],
     dev_info: dict | None,
     when: str,
+    deployments: dict | None = None,
 ) -> dict:
     """Hold the plan to evidence rules B–F (see src/app/evidence_checks.py).
 
@@ -1066,6 +1083,7 @@ async def run_evidence_checks(
     Returns the plan fields and provenance to merge into the response. A
     coverage critic that could not run is reported in ``critic_gap``.
     """
+    from ..build_targets import build_targets
     from ..evidence_checks import (
         apply_coverage_verdicts,
         build_acceptance_gaps,
@@ -1105,16 +1123,17 @@ async def run_evidence_checks(
                     len(demoted), [d["case_id"] for d in demoted])
 
     prs = [p for p in ((dev_info or {}).get("pull_requests") or []) if isinstance(p, dict)]
-    merged = [p for p in prs if (p.get("status") or "").upper() == "MERGED" and p.get("merge_commit_sha")]
-    commit = (max(merged, key=lambda p: p.get("merged_at") or "")["merge_commit_sha"]
-              if merged else next((p.get("head_sha") for p in prs if p.get("head_sha")), None))
-    sources = sorted({e.get("source") for e in (deploy_state or []) if e.get("source") and not e.get("error")})
-    how = (f"read the image tag in {' or '.join(sources)}, or the ArgoCD app's / pod's image"
-           if sources else None)
-    deploy_checks_added = enforce_deploy_precondition(test_plan, commit, how)
+    # One target per code repo, each with its own merge commit and platform
+    # (src/app/build_targets.py). The newest merge across every repo used to
+    # stand for all of them, which put an iOS commit in a backend's deploy
+    # check, and every check asked for an image whether or not one existed.
+    targets = build_targets(prs, repo_evidence, deploy_state,
+                            (deployments or {}).get("deployments_repos") or [])
+    deploy_checks_added = enforce_deploy_precondition(test_plan, targets=targets, when=when)
 
-    repos = sorted({p.get("repository") for p in prs if p.get("repository")})
-    deployment = build_deployment_status(deploy_state, claims.get("deployment_status"), repos, when)
+    repos = [t["repo"] for t in targets]
+    deployment = build_deployment_status(deploy_state, claims.get("deployment_status"), repos, when,
+                                         targets=targets)
     gaps = build_acceptance_gaps(requirements, claims.get("requirement_check"))
 
     return {
@@ -1123,5 +1142,7 @@ async def run_evidence_checks(
         "build_and_ci": findings,
         "coverage_reverted": demoted,
         "deploy_checks_added": deploy_checks_added,
+        "build_targets": [{"repo": t["repo"], "commit": t["commit"], "platform": t["platform"],
+                           "app_version": (t.get("app") or {}).get("version")} for t in targets],
         "critic_gap": critic_gap,
     }

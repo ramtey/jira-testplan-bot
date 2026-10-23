@@ -727,6 +727,93 @@ const formatNeedsSpecJira = (plan) => {
   return jira
 }
 
+// ─── outside the UAT checklist (plan shape v2) ──────────────────────────────
+// What the plan itself concluded a tester cannot grade
+// (src/app/case_disposition.py): behaviour nothing in the product reaches,
+// behaviour that existed before the change, and regression lines that cite no
+// changed code. None of it has a case id, and none of it counts towards the
+// checklist or the progress key. Plans stored before shape v2 have none of
+// these lists; their cases render where they always did.
+
+const listOf = (plan, key) => (Array.isArray(plan?.[key]) ? plan[key] : [])
+
+export const outOfUatSections = (plan) => ({
+  codeReview: listOf(plan, 'code_review_checks'),
+  preExisting: listOf(plan, 'pre_existing_behaviour'),
+  lowConfidence: listOf(plan, 'regression_low_confidence'),
+})
+
+export const CODE_REVIEW_BLURB =
+  'Not UAT cases. The plan found that nothing a tester does in the product produces these conditions, so they cannot pass or fail in UAT. Verify each in code review or with the suggested unit test.'
+export const PRE_EXISTING_BLURB =
+  'Behaviour that existed before this change and that it did not touch. Shown for context; a result here is not a pass or fail for this ticket.'
+export const LOW_CONFIDENCE_BLURB =
+  'Regression ideas that cite no file the change touched and no call site of changed code. Kept out of the core checklist; check one only if you know why it is at risk.'
+
+const titleText = (t) => (typeof t === 'string' ? t : JSON.stringify(t))
+
+const formatOutOfUatMarkdown = (plan) => {
+  const { codeReview, preExisting, lowConfidence } = outOfUatSections(plan)
+  let md = ''
+  if (codeReview.length > 0) {
+    md += `## 🔍 Verify by Code Review / Unit Test (${codeReview.length})\n\n_${CODE_REVIEW_BLURB}_\n\n`
+    codeReview.forEach((c, i) => {
+      md += `${i + 1}. **${titleText(c.title)}**\n`
+      if (c.why_not_uat) md += `   - Why not UAT: ${c.why_not_uat}\n`
+      if (c.what_to_verify) md += `   - Verify: ${c.what_to_verify}\n`
+      if (c.suggested_test) md += `   - Suggested test: ${c.suggested_test}\n`
+      if (c.code_refs?.length) md += `   - Code: ${c.code_refs.map((r) => `\`${r}\``).join(', ')}\n`
+      if (c.owner) md += `   - Owner: ${c.owner}\n`
+    })
+    md += '\n'
+  }
+  if (preExisting.length > 0) {
+    md += `## 📎 Pre-existing Behaviour — Notes (${preExisting.length})\n\n_${PRE_EXISTING_BLURB}_\n\n`
+    preExisting.forEach((c, i) => {
+      md += `${i + 1}. **${titleText(c.title)}**\n`
+      if (c.note && c.note !== c.title) md += `   - ${c.note}\n`
+      if (c.code_refs?.length) md += `   - Code: ${c.code_refs.map((r) => `\`${r}\``).join(', ')}\n`
+    })
+    md += '\n'
+  }
+  if (lowConfidence.length > 0) {
+    md += `## 🌫️ Low-confidence Regression Ideas (${lowConfidence.length})\n\n_${LOW_CONFIDENCE_BLURB}_\n\n`
+    lowConfidence.forEach((c) => { md += `- ${c.line}\n` })
+    md += '\n'
+  }
+  return md
+}
+
+const formatOutOfUatJira = (plan) => {
+  const { codeReview, preExisting, lowConfidence } = outOfUatSections(plan)
+  let jira = ''
+  if (codeReview.length > 0) {
+    jira += `🔍 VERIFY BY CODE REVIEW / UNIT TEST (${codeReview.length})\n\n${CODE_REVIEW_BLURB}\n\n`
+    codeReview.forEach((c, i) => {
+      jira += `${i + 1}. ${titleText(c.title)}\n`
+      if (c.why_not_uat) jira += `   Why not UAT: ${c.why_not_uat}\n`
+      if (c.what_to_verify) jira += `   Verify: ${c.what_to_verify}\n`
+      if (c.suggested_test) jira += `   Suggested test: ${c.suggested_test}\n`
+      if (c.code_refs?.length) jira += `   Code: ${c.code_refs.join(', ')}\n`
+    })
+    jira += '\n'
+  }
+  if (preExisting.length > 0) {
+    jira += `📎 PRE-EXISTING BEHAVIOUR — NOTES (${preExisting.length})\n\n${PRE_EXISTING_BLURB}\n\n`
+    preExisting.forEach((c, i) => {
+      jira += `${i + 1}. ${titleText(c.title)}\n`
+      if (c.note && c.note !== c.title) jira += `   ${c.note}\n`
+    })
+    jira += '\n'
+  }
+  if (lowConfidence.length > 0) {
+    jira += `🌫️ LOW-CONFIDENCE REGRESSION IDEAS (${lowConfidence.length})\n\n${LOW_CONFIDENCE_BLURB}\n\n`
+    lowConfidence.forEach((c) => { jira += `  • ${c.line}\n` })
+    jira += '\n'
+  }
+  return jira
+}
+
 // Cases written against a PR that has not merged, flagged inline so a tester
 // who hits a mismatch knows the code may simply have moved on.
 const formatUnmergedGrounding = (test) => {
@@ -936,6 +1023,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
   markdown += formatRisksAndGaps(plan)
 
   markdown += formatNeedsSpecMarkdown(plan)
+  markdown += formatOutOfUatMarkdown(plan)
 
   const coveredCases = collectCoveredCasesWithOrigin(plan)
   if (coveredCases.length > 0) {
@@ -1354,6 +1442,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
   }
 
   jira += formatNeedsSpecJira(plan)
+  jira += formatOutOfUatJira(plan)
 
   // Always listed, never hidden behind a toggle any more. A covered case is
   // optional, not absent: it has an id (`covered_by_unit_test:<n>`) that a
