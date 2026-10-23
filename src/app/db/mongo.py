@@ -50,6 +50,18 @@ def _resolve_db_name(uri: str, override: str | None = None) -> str:
     return path or DEFAULT_DB_NAME
 
 
+def _uses_tls(uri: str) -> bool:
+    # +srv (every Atlas URI) implies TLS; a plain mongodb:// URI only when it
+    # says so. Passing tlsCAFile turns TLS on, so a local mongod would fail.
+    from urllib.parse import parse_qs, urlsplit
+
+    if uri.startswith("mongodb+srv://"):
+        return True
+    query = {k.lower(): v for k, v in parse_qs(urlsplit(uri).query).items()}
+    flag = (query.get("tls") or query.get("ssl") or ["false"])[-1]
+    return flag.lower() == "true"
+
+
 def init_client(
     mongodb_uri: str | None = None, db_name: str | None = None
 ) -> AsyncIOMotorDatabase:
@@ -67,7 +79,7 @@ def init_client(
         # Pinning it here rather than exporting SSL_CERT_FILE is deliberate: the
         # launchd watcher runs with a minimal environment, so a shell variable
         # would work interactively and leave the unattended sweep broken.
-        tlsCAFile=certifi.where(),
+        **({"tlsCAFile": certifi.where()} if _uses_tls(uri) else {}),
     )
     _db = _client[_resolve_db_name(uri, db_name)]
     _supports_transactions = None
