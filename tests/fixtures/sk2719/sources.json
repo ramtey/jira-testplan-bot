@@ -1,0 +1,133 @@
+{
+ "_about": "Grounding-verification inputs for SK-2719 plan 1 v1 (local bot store, 2026-10-23), sanitized for this public repo: excerpts of the cited iOS files at their real line numbers (pad_to = the line the excerpt starts on; everything above it is blank), the app's Okta configs with scopes and issuer renamed, the patches' added line ranges (bodies elided), and the stored plan's edge_cases[0..1], which plan_v1.json leaves out, with the code-added deploy step removed. Line numbers match ios-client 50aff26: the more-menu label is FromActionItem.swift:316, activeSigningRecipients is InPersonSigningViewModel.swift:49-68.",
+ "files": {
+  "acme/ios-client": {
+   "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift": {
+    "pad_to": 8,
+    "text": "import Combine\nimport Foundation\nimport Swinject\n\nenum SigningRecipientResolver {\n\n\tstatic func currentUserSigner(\n\t\tfrom recipients: [Envelope.Recipients],\n\t\tagentEmail: String?\n\t) -> Envelope.Recipients? {\n\t\tlet activeRecipients = activeSigningRecipients(from: recipients)\n\n\t\tif let normalizedAgentEmail = normalized(agentEmail), !normalizedAgentEmail.isEmpty {\n\t\t\tlet emailMatches = activeRecipients.filter {\n\t\t\t\tnormalized($0.email) == normalizedAgentEmail\n\t\t\t}\n\t\t\tif emailMatches.count == 1 {\n\t\t\t\treturn emailMatches[0]\n\t\t\t}\n\t\t\tif emailMatches.count > 1 {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t}\n\n\t\tlet titledMatches = activeRecipients.filter {\n\t\t\t$0.title?.caseInsensitiveCompare(\"Me\") == .orderedSame\n\t\t}\n\t\treturn titledMatches.count == 1 ? titledMatches[0] : nil\n\t}\n\n\tstatic func inPersonSigners(\n\t\tfrom recipients: [Envelope.Recipients],\n\t\tagentEmail: String?\n\t) -> [Envelope.Recipients] {\n\t\tlet normalizedAgentEmail = normalized(agentEmail)\n\t\treturn activeSigningRecipients(from: recipients).filter {\n\t\t\t$0.title?.caseInsensitiveCompare(\"Me\") != .orderedSame\n\t\t\t\t&& normalized($0.email) != normalizedAgentEmail\n\t\t}\n\t}\n\n\tprivate static func activeSigningRecipients(\n\t\tfrom recipients: [Envelope.Recipients]\n\t) -> [Envelope.Recipients] {\n\t\tlet candidates = recipients.filter {\n\t\t\tguard let status = $0.status,\n\t\t\t\t  $0.isActive == true,\n\t\t\t\t  $0.group != nil else {\n\t\t\t\treturn false\n\t\t\t}\n\n\t\t\treturn $0.role.caseInsensitiveCompare(\"Signer\") == .orderedSame\n\t\t\t\t&& status.caseInsensitiveCompare(\"InProgress\") == .orderedSame\n\t\t}\n\n\t\tguard let activeGroupOrder = candidates.compactMap(\\.group?.order).min() else {\n\t\t\treturn []\n\t\t}\n\n\t\treturn candidates.filter { $0.group?.order == activeGroupOrder }\n\t}\n\n\tprivate static func normalized(_ value: String?) -> String? {\n\t\tvalue?\n\t\t\t.trimmingCharacters(in: .whitespacesAndNewlines)\n\t\t\t.lowercased()\n\t}\n}\n"
+   },
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift": {
+    "pad_to": 306,
+    "text": "private extension Loc {\n\tstatic let selectButtonTitle = NSLocalizedString(\"TransactionAction.selectButtonTitle\", value: \"Select\", comment: \"\")\n\tstatic let unselectButtonTitle = NSLocalizedString(\"TransactionAction.unselectButtonTitle\", value: \"Unselect\", comment: \"\")\n\tstatic let downloadButtonTitle = NSLocalizedString(\"TransactionAction.downloadButtonTitle\", value: \"Download\", comment: \"\")\n\tstatic let printButtonTitle = NSLocalizedString(\"TransactionAction.printButtonTitle\", value: \"Print\", comment: \"\")\n\tstatic let removeButtonTitle = NSLocalizedString(\"TransactionAction.removeButtonTitle\", value: \"Remove\", comment: \"\")\n\tstatic let archiveButtonTitle = NSLocalizedString(\"TransactionAction.archiveButtonTitle\", value: \"Archive\", comment: \"\")\n\tstatic let restoreButtonTitle = NSLocalizedString(\"TransactionAction.restoreButtonTitle\", value: \"Restore\", comment: \"\")\n\tstatic let signersButtonTitle = NSLocalizedString(\"TransactionAction.signersButtonTitle\", value: \"Signers\", comment: \"\")\n\tstatic let signNowButtonTitle = NSLocalizedString(\"TransactionAction.signNowButtonTitle\", value: \"Sign Now\", comment: \"\")\n\tstatic let signInPersonButtonTitle = NSLocalizedString(\"TransactionAction.signInPersonButtonTitle\", value: \"Sign In-Person\", comment: \"\")\n\tstatic let envelopeHistoryButtonTitle = NSLocalizedString(\"TransactionAction.envelopeHistoryButtonTitle\", value: \"View History\", comment: \"\")\n\tstatic let downloadZipButtonTitle = NSLocalizedString(\"TransactionAction.downloadZipButtonTitle\", value: \"Download zip\", comment: \"\")\n\tstatic let downloadSinglePDFButtonTitle = NSLocalizedString(\"TransactionAction.downloadSinglePDFButtonTitle\", value: \"Download Single PDF\", comment: \"\")\n\tstatic let downloadCertificateButtonTitle = NSLocalizedString(\"TransactionAction.downloadCertificateButtonTitle\", value: \"Download Certificate\", comment: \"\")\n\tstatic let resendEnvelopeButtonTitle = NSLocalizedString(\"TransactionAction.resendEnvelopeButtonTitle\", value: \"Resend Envelope\", comment: \"\")\n\tstatic let cancelSigningButtonTitle = NSLocalizedString(\"TransactionAction.cancelSigningButtonTitle\", value: \"Cancel Signing\", comment: \"\")\n\tstatic let editButtonTitle = NSLocalizedString(\"TransactionAction.editButtonTitle\", value: \"Edit\", comment: \"\")\n\tstatic let previewButtonTitle = NSLocalizedString(\"TransactionAction.previewButtonTitle\", value: \"Preview\", comment: \"\")\n\tstatic let renameButtonTitle = NSLocalizedString(\"TransactionAction.renameButtonTitle\", value: \"Rename\", comment: \"\")\n\tstatic let shareButtonTitle = NSLocalizedString(\"TransactionAction.shareButtonTitle\", value: \"Share\", comment: \"\")\n}\n"
+   },
+   "Acme/Services/FeatureManager.swift": {
+    "pad_to": 11,
+    "text": "class FeatureManager {\n\tstatic let shared = FeatureManager()\n\tprivate let config = RemoteConfig.remoteConfig()\n\t\n\tfunc isAutoSplitAssignEnabled() -> Bool {\n\t\treturn config.configValue(forKey: RemoteConfigKey.splitAssign).boolValue\n\t}\n\t\n\tfunc isSignNowEnabled() -> Bool {\n\t\treturn config.configValue(forKey: RemoteConfigKey.signNow).boolValue\n\t}\n\n\tfunc isSignInPersonEnabled() -> Bool {\n\t\treturn config.configValue(forKey: RemoteConfigKey.signInPerson).boolValue\n\t}\n}\n"
+   },
+   "Acme/Classes/Models/Helpers/RemoteConfigKey.swift": {
+    "pad_to": 10,
+    "text": "enum RemoteConfigKey {\n\tstatic let splitAssign = \"split_assign\"\n\tstatic let signNow = \"sign_now\"\n\tstatic let signInPerson = \"sign_in_person\"\n}\n"
+   },
+   "Acme/Application/Okta/Okta-Integ.plist": {
+    "pad_to": 1,
+    "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>issuer</key>\n\t<string>https://id.example.com/oauth2/default</string>\n\t<key>clientId</key>\n\t<string>example-client-id</string>\n\t<key>redirectUri</key>\n\t<string>acme://callback</string>\n\t<key>logoutRedirectUri</key>\n\t<string>acme:/</string>\n\t<key>scopes</key>\n\t<string>openid email profile offline_access com.acme.forms.api com.acme.signsvc.userid com.acme.forms.accountid com.acme.groups com.acme.prime.subscriber com.acme.accounts.api okta.myAccount.appAuthenticator.manage</string>\n</dict>\n</plist>\n"
+   },
+   "Acme/Application/Okta/Okta-Prod.plist": {
+    "pad_to": 1,
+    "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>issuer</key>\n\t<string>https://id.example.com/oauth2/default</string>\n\t<key>clientId</key>\n\t<string>example-client-id</string>\n\t<key>redirectUri</key>\n\t<string>acme://callback</string>\n\t<key>logoutRedirectUri</key>\n\t<string>acme:/</string>\n\t<key>scopes</key>\n\t<string>openid email profile offline_access com.acme.forms.api com.acme.signsvc.userid com.acme.forms.accountid com.acme.groups com.acme.prime.subscriber com.acme.accounts.api okta.myAccount.appAuthenticator.manage</string>\n</dict>\n</plist>\n"
+   }
+  }
+ },
+ "patches": {
+  "acme/ios-client": {
+   "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift": "@@ -0,0 +1,75 @@\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+\n+",
+   "Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift": "@@ -315,0 +316,1 @@\n+"
+  }
+ },
+ "edge_cases": [
+  {
+   "title": "Feature-flag matrix: menu entries appear only for the flags that are on",
+   "priority": "critical",
+   "preconditions": "Integ build with the merged change; ability to change Firebase Remote Config values for sign_in_person and sign_now and force-refresh the app; a sent envelope where the agent IS a signer and at least one non-agent signer exists.",
+   "steps": [
+    "Set the flags to the first row of the table below in Remote Config, then cold-launch the app so the fetch is picked up.",
+    "Open the envelope more menu and record whether 'Sign Now' and 'Sign In Person' rows are present, and whether each is enabled or greyed.",
+    "Repeat for each remaining row of the table.",
+    "For the row with sign_in_person off but sign_now on, also send a new envelope and confirm the immediate post-send Sign Now button still appears (the PR states post-send Sign Now is preserved when Sign In Person is disabled).",
+    "For the row with both flags on, send a new envelope and record whether the post-send Sign Now button routes through the Envelopes screen (the PR states it does when both flags are enabled)."
+   ],
+   "expected": "'Sign In Person' is present only when sign_in_person is true; 'Sign Now' is present only when sign_now is true; the flags are independent (FeatureManager.isSignInPersonEnabled / isSignNowEnabled read separate Remote Config keys sign_in_person and sign_now, Acme/Services/FeatureManager.swift:19-66, Acme/Classes/Models/Helpers/RemoteConfigKey.swift). With both off, neither row appears. With sign_in_person off and sign_now on, the immediate post-send Sign Now button behaves as before; with both on it routes through Envelopes (per the PR description — behaviour claim, confirm on device).",
+   "test_data": "| sign_in_person | sign_now | expected 'Sign In Person' row | expected 'Sign Now' row |\n|---|---|---|---|\n| on | on | present | present |\n| on | off | present | absent |\n| off | on | absent | present |\n| off | off | absent | absent |",
+   "surface": "mobile",
+   "credentials": "Agent user session in the iOS app; Firebase Remote Config console access to toggle sign_in_person / sign_now.",
+   "environment": "Acme Integ — iOS app against mobile-api integ-west",
+   "expected_verified": true,
+   "expected_source": "Acme/Services/FeatureManager.swift:19-66",
+   "category": "boundary",
+   "covers_acs": [
+    "SK-2719-AC2",
+    "SK-2719-AC4"
+   ],
+   "grounded_in": [
+    "pr:Acme/Services/FeatureManager.swift",
+    "pr:Acme/Classes/Models/Helpers/RemoteConfigKey.swift",
+    "pr:Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift"
+   ],
+   "step_grounding": [
+    {
+     "step": 1,
+     "element": "sign_in_person / sign_now Remote Config flags",
+     "kind": "flag",
+     "source": "pr:Acme/Classes/Models/Helpers/RemoteConfigKey.swift"
+    },
+    {
+     "step": 2,
+     "element": "'Sign Now' / 'Sign In Person' more-menu rows",
+     "kind": "control",
+     "source": "pr:Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift"
+    }
+   ],
+   "trigger": "Cold launch reads Remote Config via FeatureManager.ensureActivated (Acme/Services/FeatureManager.swift:19-66); the more-menu action list is built in AllEnvelopesViewController.resolveActionItems / TransactionActionItem.actionItemsFor.",
+   "assertion_type": "content",
+   "source_comment_ids": [],
+   "needs_manual_verification": true,
+   "ac_grounding_disputed": true,
+   "deploy_check_added": true
+  },
+  {
+   "title": "Sign In Person availability on envelopes that are not sent (draft, completed, cancelled)",
+   "priority": "high",
+   "preconditions": "Integ build with the merged change; sign_in_person = true; one envelope in each of: draft (not yet sent), completed (all signers done), cancelled/voided.",
+   "steps": [
+    "Open the more menu on the DRAFT envelope and record whether 'Sign In Person' is present, and if present whether it is enabled.",
+    "Repeat on the COMPLETED envelope.",
+    "Repeat on the CANCELLED/voided envelope.",
+    "Where the row is present and enabled, tap it and record what the recipient picker shows (empty list, error, or rows)."
+   ],
+   "expected": "On envelopes with no signer eligible for an in-person session the picker has nothing to offer: SigningRecipientResolver.activeSigningRecipients only keeps recipients with a non-nil status, isActive == true, a non-nil group and role 'Signer', so a completed/cancelled/draft envelope should yield an empty eligible set. Record whether the app hides the row, greys it (ActionMenuView renders disabled rows at 0.5 opacity with taps blocked, Acme/Classes/ViewControllers/ActionMenu/ActionMenuView.swift:35-96), or shows an empty picker — the design was not available to this plan, so report the observed treatment and confirm the intended one with the designer rather than failing outright. An empty picker with no explanatory message is worth raising.",
+   "test_data": "One draft, one completed and one cancelled envelope on the same transaction.",
+   "surface": "mobile",
+   "credentials": "Agent user session in the iOS app.",
+   "environment": "Acme Integ — iOS app against mobile-api integ-west",
+   "expected_verified": true,
+   "expected_source": "Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift (activeSigningRecipients filter)",
+   "category": "boundary",
+   "covers_acs": [
+    "SK-2719-AC2",
+    "SK-2719-AC3"
+   ],
+   "grounded_in": [
+    "pr:Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift",
+    "pr:Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift"
+   ],
+   "step_grounding": [
+    {
+     "step": 1,
+     "element": "'Sign In Person' more-menu row",
+     "kind": "control",
+     "source": "pr:Acme/Classes/ViewControllers/TransactionModule/TransactionDetails/BaseController/Models/FromActionItem.swift"
+    },
+    {
+     "step": 4,
+     "element": "In-person signer picker",
+     "kind": "route",
+     "source": "pr:Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSignersViewController.swift"
+    }
+   ],
+   "trigger": "Agent opens the more menu on a non-sent envelope (AllEnvelopesViewController.resolveActionItems) → eligibility computed by SigningRecipientResolver (Acme/Classes/ViewControllers/EnvelopesModule/InPersonSigning/InPersonSigningViewModel.swift).",
+   "assertion_type": "access",
+   "source_comment_ids": [],
+   "deploy_check_added": true
+  }
+ ]
+}

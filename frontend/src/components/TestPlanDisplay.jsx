@@ -6,6 +6,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import {
   formatTestPlanAsMarkdown, formatTestPlanAsJira, CODE_REVIEW_BLURB, PRE_EXISTING_BLURB, LOW_CONFIDENCE_BLURB,
+  clientTokenParts, logicClaims,
 } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 import { useTicketWalkthrough } from '../hooks/useTicketWalkthrough'
@@ -336,6 +337,7 @@ function formatSingleTestForClipboard(test) {
     test.steps.forEach((s, i) => lines.push(`${i + 1}. ${s}`))
   }
   if (test.expected) lines.push('', 'Expected:', String(test.expected))
+  logicClaims(test).forEach((c) => lines.push('', `Rule, from the code${c.source ? ` (${c.source})` : ''}: ${c.rule}`))
   if (test.expected_verified === true) {
     lines.push('', `Expected verified against: ${test.expected_source || 'source not cited'}`)
     // The citation is a promise to stop checking. Say when its shape cannot
@@ -343,6 +345,8 @@ function formatSingleTestForClipboard(test) {
     if (test.expected_source_unconfirmed) {
       lines.push(`⚠️ Citation unconfirmed — ${test.expected_source_unconfirmed_reason}. Verify before treating a failure as a defect.`)
     }
+  } else if (test.expected_verified === false && test.expected_verification_downgraded) {
+    lines.push('', `Expected: UNVERIFIED — downgraded on re-read: it ${test.expected_verification_downgraded}.`)
   } else if (test.expected_verified === false) {
     lines.push('', 'Expected: UNVERIFIED — assumption, not read from the implementation.')
   }
@@ -362,6 +366,11 @@ function formatSingleTestForClipboard(test) {
     test.environment ? `environment: ${test.environment}` : null,
   ].filter(Boolean)
   if (runsOn.length > 0) lines.push('', 'Runs on:', runsOn.join(' · '))
+  const token = clientTokenParts(test)
+  if (token) {
+    lines.push('', `Token: must carry the ${token.client}'s scopes ${token.scopes}${token.source ? ` (from ${token.source})` : ''}`)
+    if (token.blocked) lines.push(`⛔ Needs client-equivalent token — ${token.reason}.`)
+  }
   return lines.join('\n')
 }
 
@@ -464,9 +473,19 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
                 {SURFACE_LABELS[test.surface] || test.surface}
               </span>
             )}
+            {test.needs_client_equivalent_token && (
+              <span
+                title={`Needs client-equivalent token — ${test.needs_client_equivalent_token_reason || 'no runner token carries the client app\'s scopes'}.`}
+                style={{ height: 18, padding: '0 6px', background: 'rgba(239,68,68,.10)', border: '1px solid rgba(239,68,68,.35)', color: '#fca5a5', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              >
+                Needs client token
+              </span>
+            )}
             {test.expected_verified === false && (
               <span
-                title="The expected result here was not read from the implementation — it is an assumption from the AC text or convention. Confirm it against the code before treating a failure as a defect."
+                title={test.expected_verification_downgraded
+                  ? `Downgraded on re-read: the plan claimed this was verified, but it ${test.expected_verification_downgraded}.`
+                  : 'The expected result here was not read from the implementation — it is an assumption from the AC text or convention. Confirm it against the code before treating a failure as a defect.'}
                 style={{ height: 18, padding: '0 6px', background: 'rgba(245,158,11,.10)', border: '1px solid rgba(245,158,11,.35)', color: '#fcd34d', borderRadius: 3, fontSize: 10.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 4 }}
               >
                 <Icon name="scan" size={10} />
@@ -673,6 +692,38 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
             </div>
           </>
         )}
+        {logicClaims(test).map((c, i) => (
+          <span key={`rule-${i}`} style={{ display: 'contents' }}>
+            <span className="lbl" style={{ marginTop: 2 }}>Rule</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>
+              {c.rule}
+              {c.source && <> (<code style={{ fontSize: 11 }}>{c.source}</code>)</>}
+            </div>
+          </span>
+        ))}
+        {Array.isArray(test.grounding_downgrades) && test.grounding_downgrades.length > 0 && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Re-read</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: '#fcd34d', display: 'grid', gap: 2 }}>
+              {test.grounding_downgrades.map((d, i) => (
+                <div key={i}>⚠️ {d.claim} — {d.reason}</div>
+              ))}
+            </div>
+          </>
+        )}
+        {clientTokenParts(test) && (() => {
+          const token = clientTokenParts(test)
+          return (
+            <>
+              <span className="lbl" style={{ marginTop: 2 }}>Token</span>
+              <div style={{ fontSize: 'var(--t-sm)', color: token.blocked ? '#fca5a5' : 'var(--fg-muted)' }}>
+                must carry the {token.client}&apos;s scopes <code style={{ fontSize: 11 }}>{token.scopes}</code>
+                {token.source && <> (from <code style={{ fontSize: 11 }}>{token.source}</code>)</>}
+                {token.blocked && <div>⛔ Needs client-equivalent token — {token.reason}.</div>}
+              </div>
+            </>
+          )
+        })()}
         {Array.isArray(test.source_comment_ids) && test.source_comment_ids.length > 0 && (
           <>
             <span className="lbl" style={{ marginTop: 2 }}>From notes</span>

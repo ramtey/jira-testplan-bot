@@ -161,3 +161,57 @@ def render_full_files(files: list[dict], *, total_budget: int, per_file_cap: int
     if note:
         out.append(note)
     return "\n\n".join(out)
+
+
+# --- what the generator was shown -------------------------------------------
+#
+# The prompt builders and the grounding verifier both need the budgets: the
+# builders to cut the diffs, the verifier to know which lines the generator
+# could have read before it claimed a rule was "verified" (SK-2719: the rule's
+# InProgress and min-group lines sat past a 600-character slice). One
+# definition, so the two can never disagree about what was shown.
+
+#: (total, per-file) patch characters, single-ticket and multi-ticket prompts.
+PATCH_BUDGET_SINGLE = (16_000, 4_000)
+PATCH_BUDGET_MULTI = (8_000, 2_000)
+
+
+def _patch_new_lines(patch: str) -> set[int]:
+    """New-file line numbers a (possibly cut) unified diff shows: context and
+    added lines, not removed ones."""
+    import re
+
+    out: set[int] = set()
+    n = 0
+    for line in patch.splitlines():
+        m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+        if m:
+            n = int(m.group(1))
+            continue
+        if not n or line.startswith("-"):
+            continue
+        out.add(n)
+        n += 1
+    return out
+
+
+def shown_patch_lines(files: list[dict], *, total_budget: int, per_file_cap: int) -> dict[str, set[int]]:
+    """filename → new-file lines whose text the budgeted diff put in the prompt."""
+    shown = allocate_patch_budget(
+        [f for f in files if f.get("patch")], total_budget=total_budget, per_file_cap=per_file_cap)
+    return {name: _patch_new_lines(text) for name, text, _ in shown}
+
+
+def shown_full_file_lines(files: list[dict], *, total_budget: int, per_file_cap: int = 60_000) -> dict[str, set[int]]:
+    """filename → lines of the whole-file section (``render_full_files``) shown."""
+    import re
+
+    numbered = [
+        {"filename": f["filename"],
+         "patch": "\n".join(f"{n:5d}| {line}" for n, line in enumerate(f["full_content"].splitlines(), 1))}
+        for f in files if f.get("full_content")
+    ]
+    out: dict[str, set[int]] = {}
+    for name, text, _ in allocate_patch_budget(numbered, total_budget=total_budget, per_file_cap=per_file_cap):
+        out[name] = {int(m.group(1)) for m in re.finditer(r"^\s*(\d+)\| ", text, re.M)}
+    return out

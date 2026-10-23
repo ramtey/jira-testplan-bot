@@ -163,7 +163,57 @@ const formatSurface = (test) => {
   if (typeof test.environment === 'string' && test.environment.trim()) {
     bits.push(`environment: ${test.environment.trim()}`)
   }
-  return bits.length > 0 ? `**Runs on:** ${bits.join(' · ')}\n\n` : ''
+  return (bits.length > 0 ? `**Runs on:** ${bits.join(' · ')}\n\n` : '') + formatClientToken(test)
+}
+
+// The token a backend case needs when it reproduces a client app's call, read
+// from that client's auth config by the grounding re-read
+// (src/app/grounding_verification.py). A runner with no such token reports the
+// case BLOCKED: with the wrong token the downstream answers 401 and the case
+// looks failed when it never ran.
+export const clientTokenParts = (test) => {
+  const t = test?.client_token
+  if (!t || typeof t !== 'object') return null
+  const scopes = Array.isArray(t.required_scopes) && t.required_scopes.length > 0
+    ? t.required_scopes
+    : (Array.isArray(t.scopes) ? t.scopes : [])
+  return {
+    client: t.platform ? `${t.platform} app` : (t.client || 'client app'),
+    scopes: scopes.join(' '),
+    audience: typeof t.audience === 'string' && t.audience ? t.audience : '',
+    source: typeof t.source === 'string' ? t.source : '',
+    runner: typeof t.runner_source === 'string' ? t.runner_source : '',
+    blocked: test.needs_client_equivalent_token === true,
+    reason: test.needs_client_equivalent_token_reason || '',
+  }
+}
+
+const formatClientToken = (test) => {
+  const p = clientTokenParts(test)
+  if (!p) return ''
+  let md = `**Token:** must carry the ${p.client}'s scopes \`${p.scopes}\``
+  if (p.audience) md += `, audience \`${p.audience}\``
+  if (p.source) md += ` (from \`${p.source}\`)`
+  if (p.runner) md += ` — runner token: ${p.runner}`
+  md += '\n\n'
+  if (p.blocked) {
+    md += `> ⛔ **Needs client-equivalent token** — ${p.reason || 'no runner token carries these scopes'}.\n\n`
+  }
+  return md
+}
+
+const formatClientTokenJira = (test) => {
+  const p = clientTokenParts(test)
+  if (!p) return ''
+  let out = `Token: must carry the ${p.client}'s scopes ${p.scopes}`
+  if (p.audience) out += `, audience ${p.audience}`
+  if (p.source) out += ` (from ${p.source})`
+  if (p.runner) out += ` — runner token: ${p.runner}`
+  out += '\n\n'
+  if (p.blocked) {
+    out += `⛔ NEEDS CLIENT-EQUIVALENT TOKEN — ${p.reason || 'no runner token carries these scopes'}.\n\n`
+  }
+  return out
 }
 
 // Whether the expected result was read out of the implementation or assumed.
@@ -227,12 +277,33 @@ const formatDataShapeJira = (test) => {
   return out
 }
 
-const formatExpectedVerification = (test) => {
+// The rule a case restates, written out whole with the lines it comes from
+// (the generator's logic_claims). The re-read checks it names every condition
+// in those lines, and the expected result may then refer to it in brief.
+export const logicClaims = (test) => (Array.isArray(test?.logic_claims) ? test.logic_claims : [])
+  .filter((c) => c && typeof c.rule === 'string' && c.rule.trim())
+
+const formatLogicClaims = (test, jira = false) => logicClaims(test)
+  .map((c) => {
+    const src = typeof c.source === 'string' && c.source.trim() ? c.source.trim() : ''
+    if (jira) return `Rule, from the code${src ? ` (${src})` : ''}: ${c.rule.trim()}\n\n`
+    return `**Rule, from the code**${src ? ` (\`${src}\`)` : ''}: ${c.rule.trim()}\n\n`
+  })
+  .join('')
+
+const formatExpectedVerification = (test) => formatLogicClaims(test) + formatExpectedVerificationOnly(test)
+
+const formatExpectedVerificationOnly = (test) => {
   if (test.expected_verified === true) {
     const src = typeof test.expected_source === 'string' && test.expected_source.trim()
       ? `\`${test.expected_source.trim()}\``
       : '_source not cited_'
     return `**Expected verified against:** ${src}\n\n`
+  }
+  if (test.expected_verified === false && test.expected_verification_downgraded) {
+    const src = typeof test.expected_source === 'string' && test.expected_source.trim()
+      ? ` against \`${test.expected_source.trim()}\`` : ''
+    return `> ⚠️ **Unverified — downgraded on re-read.** The plan claimed this was verified${src}, but it ${test.expected_verification_downgraded}. Confirm it against the code before treating a failure as a defect.\n\n`
   }
   if (test.expected_verified === false) {
     return '> ⚠️ **Unverified — assumption.** This expected result was not read from the implementation. Confirm it against the code before treating a failure as a defect.\n\n'
@@ -626,8 +697,23 @@ const formatProvenanceMarkdown = (plan) => {
   if (entries.some((e) => !e.used_as_grounding)) {
     md += '\n_Closed-unmerged pull requests were deliberately not used as source. Code that was abandoned cannot be tested._\n'
   }
+  const reread = groundingRereadLine(plan)
+  if (reread) md += `\n${reread}\n`
   md += '\n'
   return md
+}
+
+// How many code claims the re-read before save checked and downgraded
+// (source_provenance.grounding_verification, src/app/grounding_verification.py).
+export const groundingRereadLine = (plan) => {
+  const v = plan?.source_provenance?.grounding_verification
+  if (!v || typeof v !== 'object') return ''
+  if (v.error) return `⚠️ Grounding re-read did not run: ${v.error}. Labels, rules and citations below were not re-checked.`
+  const parts = [`${v.checked || 0} code claim(s) re-read against the cited files`, `${v.downgraded || 0} downgraded to unverified`]
+  if (v.unchecked) parts.push(`${v.unchecked} could not be re-read`)
+  const blocked = Array.isArray(v.needs_client_equivalent_token) ? v.needs_client_equivalent_token.length : 0
+  if (blocked) parts.push(`${blocked} case(s) need a client-equivalent token`)
+  return `Grounding re-read: ${parts.join(', ')}.`
 }
 
 const formatProvenanceJira = (plan) => {
@@ -652,6 +738,8 @@ const formatProvenanceJira = (plan) => {
   if (entries.some((e) => !e.used_as_grounding)) {
     jira += '\nClosed-unmerged pull requests were deliberately not used as source. Code that was abandoned cannot be tested.\n'
   }
+  const reread = groundingRereadLine(plan)
+  if (reread) jira += `\n${reread}\n`
   jira += '\n════════════════════════════════════════════\n\n'
   return jira
 }
@@ -1197,15 +1285,22 @@ const formatSurfaceJira = (test) => {
   if (typeof test.environment === 'string' && test.environment.trim()) {
     bits.push(`environment: ${test.environment.trim()}`)
   }
-  return bits.length > 0 ? `Runs on: ${bits.join(' · ')}\n\n` : ''
+  return (bits.length > 0 ? `Runs on: ${bits.join(' · ')}\n\n` : '') + formatClientTokenJira(test)
 }
 
-const formatExpectedVerificationJira = (test) => {
+const formatExpectedVerificationJira = (test) => formatLogicClaims(test, true) + formatExpectedVerificationJiraOnly(test)
+
+const formatExpectedVerificationJiraOnly = (test) => {
   if (test.expected_verified === true) {
     const src = typeof test.expected_source === 'string' && test.expected_source.trim()
       ? test.expected_source.trim()
       : 'source not cited'
     return `Expected verified against: ${src}\n\n`
+  }
+  if (test.expected_verified === false && test.expected_verification_downgraded) {
+    const src = typeof test.expected_source === 'string' && test.expected_source.trim()
+      ? ` against ${test.expected_source.trim()}` : ''
+    return `⚠️ Unverified — downgraded on re-read. The plan claimed this was verified${src}, but it ${test.expected_verification_downgraded}. Confirm against the code before treating a failure as a defect.\n\n`
   }
   if (test.expected_verified === false) {
     return '⚠️ Unverified — assumption. This expected result was not read from the implementation; confirm against the code before treating a failure as a defect.\n\n'

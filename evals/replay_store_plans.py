@@ -10,6 +10,8 @@ a runnable case — the ones that do not depend on the model:
   - what leaves the checklist (case_disposition.route_out_of_uat)
   - empty / non-JSON error-body variants (error_variants.py)
   - CI claims a case argues from (reachability_checks.flag_ci_claims)
+  - the grounding re-read: labels, flags, verified expected results and client
+    tokens checked against the cited files (grounding_verification.py)
 
 For each plan it prints what the stored plan said and what the stages say
 now. The stored plan is the model's output *after* the old stages ran, so the
@@ -41,6 +43,8 @@ from src.app import evidence_checks as ev  # noqa: E402
 from src.app.config import settings  # noqa: E402
 from src.app.deploy_state import read_deploy_state  # noqa: E402
 from src.app.error_variants import require_error_body_variants  # noqa: E402
+from src.app import grounding_verification as gv  # noqa: E402
+from src.app import source_facts as sf  # noqa: E402
 from src.app.github_client import GitHubClient  # noqa: E402
 from src.app.models import TestPlan  # noqa: E402
 from src.app.reachability_checks import flag_ci_claims  # noqa: E402
@@ -111,6 +115,14 @@ async def replay(plan_id: int, as_json: bool) -> None:
     variants = require_error_body_variants(plan)
     ci_flags = flag_ci_claims(plan, evidence)
     banner = ev.build_deployment_status(deploy_state, None, [t["repo"] for t in targets], when, targets=targets)
+    # What the generator was shown is replayed from the diffs alone: a stored
+    # plan predates the source-facts section, so its "not shown" verdicts are
+    # the ones its own prompt earned. Exploration findings are not stored, so
+    # a claim resting on one reads as not shown here.
+    index = await sf.read_source_index(gh, prs)
+    reread = await gv.run_grounding_verification(
+        plan, index, gh, shown=gv.shown_lines([{"pull_requests": prs}]),
+        token_sources=settings.runner_token_sources)
 
     new = {s: getattr(plan, s) for s in SECTIONS} | {"regression_checklist": plan.regression_checklist} | {
         k: out[k] for k in cd.OUT_OF_UAT_KEYS}
@@ -129,6 +141,11 @@ async def replay(plan_id: int, as_json: bool) -> None:
     print("banner     :", banner)
     print("moved out of UAT:", out["moved"])
     print("error-body variants added:", variants, "· CI claims flagged:", ci_flags)
+    print(f"grounding re-read: {reread.get('checked')} checked, {reread.get('downgraded')} downgraded, "
+          f"{reread.get('unchecked')} unchecked, client token needed by {reread.get('needs_client_equivalent_token')}"
+          + (f" — {reread['error']}" if reread.get("error") else ""))
+    for c in reread.get("downgraded_claims") or []:
+        print(f"  ↓ {c['case_id']} {c['kind']}: {c['claim'][:90]} — {c['reason'][:220]}")
     for s in SECTIONS:
         for i, c in enumerate(getattr(plan, s)):
             if c.get("deploy_check_added") or c.get("deploy_check_replaced"):

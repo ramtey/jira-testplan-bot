@@ -30,7 +30,14 @@ from .deploy_state import DEPLOY_STATE_GUIDANCE, render_deploy_state
 from .evidence_checks import render_repo_evidence
 from .flag_state import FLAG_STATE_GUIDANCE, render_flag_state
 from .code_exploration import EXPLORATION_GUIDANCE, render_findings
-from .diff_budget import allocate_patch_budget, omitted_note, render_full_files
+from .source_facts import render_source_facts
+from .diff_budget import (
+    PATCH_BUDGET_MULTI,
+    PATCH_BUDGET_SINGLE,
+    allocate_patch_budget,
+    omitted_note,
+    render_full_files,
+)
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
     FAST_MODE_BETA,
@@ -551,6 +558,57 @@ says it, the test exists — flag the uncertainty, don't omit the test.
 This rule is about elements you SAY THE USER INTERACTS WITH. Outcome text
 (toast messages, error copy) only needs grounding when you quote it verbatim
 in `expected_result`. If you paraphrase the outcome, no warning is needed.
+Whatever text you DO quote — in a step or in `expected` — is copied from the
+code's string literal, not the ticket's wording (see 'CODE CLAIMS', rule 1).
+"""
+
+
+CODE_CLAIMS_GUIDANCE = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧾 CODE CLAIMS — QUOTE THE CODE, RESTATE RULES WHOLE, NAME THE TOKEN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Every claim you mark as grounded is re-read against the cited file before the
+plan is saved. A claim the file does not support is downgraded in front of the
+tester — so make each one checkable.
+
+**1. On-screen text is quoted from a string literal, never from the ticket.**
+Any text a step tells the tester to find or tap — a button, a menu row, a
+heading, a toast, an empty state — is copied character for character from a
+string literal in the code you cite: an NSLocalizedString `value:`, a
+`.strings`/`.xcstrings` entry, an R.swift translation, an Android
+`strings.xml` value, JSX/TSX text, or an i18n JSON value. The UI STRINGS list
+in SOURCE FACTS has the ones this PR added, with file:line. Tickets paraphrase:
+a ticket's "Save Draft" may be the code's "Save as draft", and only the code's
+spelling is what the tester will see. Put the literal in
+`step_grounding[].ui_text` and its line in `step_grounding[].lines`. When you
+cannot find the literal, do not present the ticket's wording as grounded:
+write the step as "Unverified — label per ticket, not found in code: …" and
+leave `ui_text` empty.
+
+**2. A rule is restated from the whole function, every condition of it.**
+When a step or an expected result restates a predicate, filter or eligibility
+rule, read the whole function — the guard clause AND the later
+filter/map/min/max/sort steps in the same return path AND the helpers it calls
+— and name every condition. RULES IN THE CHANGED CODE lists each function's
+conditions; your restatement names all of them and nothing they do not
+contain. Cite the line range (`file:start-end`) in `expected_source`, and add a
+`logic_claims` entry `{rule, source, function}` whose `rule` is the exact
+wording your case uses. A guard clause is not the rule: an item that passes
+`guard let owner, isEnabled, region != nil` can still be dropped by a later
+`state == "Active"` or by a keep-only-the-newest step. If part of
+the logic is in code you were not shown (a helper in another file, a diff cut
+short), set `expected_verified: false` and say which part you could not read.
+
+**3. A backend case that reproduces a client's call needs the client's token.**
+When an API case replays a request a client app makes, the token the client
+sends decides whether the downstream accepts it. State in `credentials` the
+scopes (and audience, if any) that client's token carries, citing its auth
+config from CLIENT TOKENS, e.g. "user token with the iOS app's scopes
+`orders:read payments:write` (AuthConfig-Staging.plist:12)". Fill
+`client_token`. Say whether the case needs those scopes. If TOKENS THE RUNNER
+CAN OBTAIN has none that carries them, say "needs client-equivalent token" —
+the runner reports the case as blocked instead of guessing with a token the
+downstream will reject with 401.
 """
 
 
@@ -2802,7 +2860,7 @@ class LLMClient(ABC):
                             if files_with_patches:
                                 prompt += "\nCode diffs (use these to identify root cause and explain the fix):\n"
                                 budgeted = allocate_patch_budget(
-                                    files_with_patches, total_budget=16000, per_file_cap=4000)
+                                    files_with_patches, total_budget=PATCH_BUDGET_SINGLE[0], per_file_cap=PATCH_BUDGET_SINGLE[1])
                                 for fname, patch, was_cut in budgeted:
                                     if was_cut:
                                         patch += "\n...(truncated)"
@@ -3565,7 +3623,7 @@ TICKET INFORMATION
                         if files_with_patches:
                             prompt += "\n  📋 Key Code Changes (runtime files only):\n"
                             budgeted = allocate_patch_budget(
-                                files_with_patches, total_budget=16000, per_file_cap=4000)
+                                files_with_patches, total_budget=PATCH_BUDGET_SINGLE[0], per_file_cap=PATCH_BUDGET_SINGLE[1])
                             for fname, patch, was_cut in budgeted:
                                 if was_cut:
                                     patch += "\n     ...(truncated)"
@@ -3675,6 +3733,11 @@ TICKET INFORMATION
                 prompt += explore_text + "\n"
                 prompt += f"⚠️ REQUIRED: {EXPLORATION_GUIDANCE}\n"
 
+            facts_text = render_source_facts(development_info.get("source_facts"))
+            if facts_text:
+                prompt += "\n" + facts_text + "\n"
+                prompt += "⚠️ REQUIRED: apply 'CODE CLAIMS' below to every label, rule and token you cite.\n"
+
             # Add commit information
             commits = development_info.get("commits", [])
             if commits:
@@ -3771,6 +3834,7 @@ TICKET INFORMATION
         )
 
         prompt += UI_GROUNDING_GUIDANCE
+        prompt += CODE_CLAIMS_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
 
         # Copy-only shape rule. Single-ticket only: the budget is
@@ -3992,7 +4056,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                             prompt += "\n  📋 Key Code Changes:\n"
                             total_patch_chars = 0
                             budgeted = allocate_patch_budget(
-                                files_with_patches, total_budget=8000, per_file_cap=2000)
+                                files_with_patches, total_budget=PATCH_BUDGET_MULTI[0], per_file_cap=PATCH_BUDGET_MULTI[1])
                             for fname, patch, was_cut in budgeted:
                                 if was_cut:
                                     patch += "\n     ...(truncated)"
@@ -4025,6 +4089,15 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
                         prompt += f"  - {msg}\n"
 
                 prompt += "\n"
+
+            # Source facts are read once for the batch and attached to every
+            # ticket's development_info; render them once.
+            batch_facts = next((t["development_info"].get("source_facts") for t in tickets_with_dev
+                                if t["development_info"].get("source_facts")), None)
+            facts_text = render_source_facts(batch_facts)
+            if facts_text:
+                prompt += "\n" + facts_text + "\n"
+                prompt += "⚠️ REQUIRED: apply 'CODE CLAIMS' below to every label, rule and token you cite.\n\n"
 
             # UI navigation context — use first ticket that has it
             for ticket in tickets_with_dev:
@@ -4169,6 +4242,7 @@ Treat all tickets as parts of one combined feature. Do NOT produce separate test
         prompt += render_risk_profile_guidance(match_profiles_for_batch(tickets))
 
         prompt += UI_GROUNDING_GUIDANCE
+        prompt += CODE_CLAIMS_GUIDANCE
         prompt += API_SURFACE_PARITY_GUIDANCE
         if cross_project and (cross_project.get("verified_seams") or cross_project.get("suspected_seams")):
             prompt += CROSS_PROJECT_GUIDANCE
@@ -4640,8 +4714,40 @@ TEST_CASE_SCHEMA = {
                         "enum": ["control", "action", "route", "flag"],
                     },
                     "source": {"type": "string"},
+                    "ui_text": {
+                        "type": "string",
+                        "description": "The on-screen text of this element, copied character for character from the string literal in `source` (see 'CODE CLAIMS', rule 1). Empty when the step names no text or the literal was not found — never the ticket's wording.",
+                    },
+                    "lines": {
+                        "type": "string",
+                        "description": "Line or range in `source` where the element or its `ui_text` is defined, e.g. '316' or '49-68'.",
+                    },
                 },
                 "required": ["step", "element", "kind", "source"],
+            },
+        },
+        "logic_claims": {
+            "type": "array",
+            "description": "One entry per predicate, filter or eligibility rule this case's steps or expected result restate from code (see 'CODE CLAIMS', rule 2). `rule` is the exact wording the case uses; `source` is `<file>:<start>-<end>` covering the whole function; `function` is its name. Every condition in those lines (and the helpers they call) must appear in `rule`. Omit when the case restates no rule.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "rule": {"type": "string"},
+                    "source": {"type": "string"},
+                    "function": {"type": "string"},
+                },
+                "required": ["rule", "source"],
+            },
+        },
+        "client_token": {
+            "type": "object",
+            "description": "Backend cases that reproduce a call a client app makes (see 'CODE CLAIMS', rule 3): the token that call carries. Omit for cases that do not mirror a client call.",
+            "properties": {
+                "client": {"type": "string", "description": "The client repo or app, e.g. 'acme/ios-client'."},
+                "scopes": {"type": "array", "items": {"type": "string"}, "description": "Scopes the client's token requests, copied from its auth config."},
+                "audience": {"type": "string"},
+                "source": {"type": "string", "description": "<file>:<line> of the client's auth config."},
+                "requires_client_scopes": {"type": "boolean", "description": "True when the case only works with a token carrying these scopes."},
             },
         },
         "needs_manual_verification": {
@@ -4667,7 +4773,7 @@ TEST_CASE_SCHEMA = {
         },
         "expected_source": {
             "type": "string",
-            "description": "Required when `expected_verified` is true. The single primary `<file>:<line>` the expected result rests on, e.g. 'src/middleware/auth.ts:64'. Omit entirely when `expected_verified` is false.",
+            "description": "Required when `expected_verified` is true. The single primary `<file>:<line>` the expected result rests on, e.g. 'src/middleware/auth.ts:64', or `<file>:<start>-<end>` covering the whole function when the expected result restates a rule. It is re-read before the plan is saved; a line that does not say what `expected` says downgrades the case to unverified. Omit entirely when `expected_verified` is false.",
         },
         "trigger": {
             "type": "string",

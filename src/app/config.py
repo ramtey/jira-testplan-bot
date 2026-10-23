@@ -130,6 +130,16 @@ class Settings(BaseSettings):
     # src/app/build_targets.py.
     deployments_repos: list[str] = []
 
+    # Tokens a UAT runner can obtain for backend cases, and the scopes each
+    # carries. A backend case that reproduces a client app's call needs a token
+    # with that client's scopes (read from its auth config); when none of these
+    # carries them the case is marked "needs client-equivalent token" and the
+    # runner reports it blocked. Empty means none is known, which marks every
+    # such case. JSON list, e.g.
+    # RUNNER_TOKEN_SOURCES='[{"name": "contract-test", "scopes": ["orders:read"]}]'
+    # See src/app/grounding_verification.py.
+    runner_token_sources: list[dict] = []
+
     # Read-only LaunchDarkly access, so a plan states what each flag the ticket
     # touches serves per environment instead of guessing (or telling testers to
     # flip it). LD_FLAG_SOURCES maps a code repo to its LD project and to the

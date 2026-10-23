@@ -103,6 +103,8 @@ from .test_plan_generator import (
 from src.app.citation_integrity import flag_unconfirmed_citations
 from src.app.data_provisioning import flag_unactionable_data_asks
 from src.app.step_grounding import check_step_grounding, readable_code_paths
+from src.app.source_facts import build_source_facts, read_source_index
+from src.app.grounding_verification import run_grounding_verification, shown_lines
 from src.app.video_walkthrough import build_walkthrough
 
 logger = logging.getLogger(__name__)
@@ -578,6 +580,73 @@ async def _read_repo_evidence(development_info: dict | None, mentioned: str,
                 for r in sorted({p.get("repository") for p in prs if p.get("repository")})]
 
 
+async def _read_sources(development_info: dict | None):
+    """Changed files read whole, locale resources and client auth configs
+    (``source_facts.read_source_index``).
+
+    None when there are no PRs to read; a string saying why when the read
+    itself broke, so the plan reports the re-read as not run rather than as
+    clean."""
+    prs = [p for p in ((development_info or {}).get("pull_requests") or []) if isinstance(p, dict)]
+    if not prs:
+        return None
+    from ..github_client import GitHubClient
+    try:
+        return await read_source_index(GitHubClient(), prs)
+    except Exception as e:
+        logger.warning("source read failed: %s", e)
+        return f"the changed files could not be read whole ({type(e).__name__}), so no code claim was re-checked"
+
+
+def _attach_source_facts(dev: dict, index, provenance: dict, context_gaps: list[str]) -> dict | None:
+    """Put the source facts on ``dev`` for the prompt; record what was read."""
+    if isinstance(index, str):
+        context_gaps.append(index)
+        return None
+    if index is None:
+        return None
+    facts = build_source_facts(index, settings.runner_token_sources)
+    dev["source_facts"] = facts
+    provenance["source_facts"] = {
+        "files_read": len(index.files), "ui_strings": len(facts["ui_strings"]),
+        "rule_functions": len(facts["functions"]), "client_auth_configs": len(facts["client_auth"]),
+        "unreadable": len(index.unreadable),
+    }
+    if index.unreadable:
+        context_gaps.append(
+            f"{len(index.unreadable)} changed file(s) could not be read whole, so labels and rules "
+            "in them cannot be re-checked: " + ", ".join(p for _, p in list(index.unreadable)[:3]))
+    return facts
+
+
+async def _verify_grounding(test_plan, index, dev_infos: list, provenance: dict, *, multi: bool,
+                            facts: dict | None, repo_evidence, exploration, label: str) -> None:
+    """Re-read every code claim before the plan is saved (src/app/grounding_verification.py)."""
+    from ..github_client import GitHubClient
+    if index is None:
+        return  # no pull requests: nothing cites code
+    if isinstance(index, str):
+        provenance["grounding_verification"] = {"error": index, "checked": 0, "downgraded": 0, "unchecked": 0}
+        provenance.setdefault("critics_unavailable", []).append(index)
+        return
+    shown = shown_lines(
+        dev_infos, multi=multi, facts=facts, repo_evidence=repo_evidence, exploration=exploration,
+        full_file_budget=settings.full_file_budget_chars if settings.full_file_grounding else None,
+    )
+    report = await run_grounding_verification(
+        test_plan, index, GitHubClient(),
+        shown=shown, token_sources=settings.runner_token_sources,
+    )
+    provenance["grounding_verification"] = report
+    if report.get("error"):
+        provenance.setdefault("critics_unavailable", []).append(report["error"])
+    logger.info(
+        "grounding re-read for %s: %d checked, %d downgraded, %d unchecked, %d need a client token",
+        label, report.get("checked", 0), report.get("downgraded", 0), report.get("unchecked", 0),
+        len(report.get("needs_client_equivalent_token") or []),
+    )
+
+
 async def _read_flag_state(request) -> list[dict]:
     """What the flags this ticket touches serve per environment; [] when off."""
     sources = settings.ld_flag_sources
@@ -754,7 +823,7 @@ async def generate_single(
             + [f.get("patch") or "" for pr in ((request.development_info or {}).get("pull_requests") or [])
                if isinstance(pr, dict) for f in (pr.get("files_changed") or []) if isinstance(f, dict)]
         )
-        images, (resolved_slack, slack_gaps), deliverable, (deployments, deploy_state, repo_evidence), flag_state, exploration = await asyncio.gather(
+        images, (resolved_slack, slack_gaps), deliverable, (deployments, deploy_state, repo_evidence), flag_state, exploration, source_index = await asyncio.gather(
             _download_images(request.image_urls),
             resolve_slack_messages_in_text(request.description, request.comments),
             classify_deliverable(
@@ -768,6 +837,7 @@ async def generate_single(
             _read_build_evidence(request.development_info, mentioned),
             _read_flag_state(request),
             _explore_code(request, llm),
+            _read_sources(request.development_info),
         )
         # Sources the ticket points at that we could not read. Recorded on the
         # plan and handed to the generator so it writes around nothing in
@@ -813,6 +883,12 @@ async def generate_single(
                     "code outside the pull requests could not be fully explored "
                     f"({exploration['error']}), so sibling routes and callers may be missing"
                 )
+        # Labels, rules and client token scopes read from the whole changed
+        # files, for the prompt and for the re-read before save.
+        dev_for_prompt = dict(request.development_info or {})
+        source_facts = _attach_source_facts(dev_for_prompt, source_index, provenance, context_gaps)
+        if source_facts is not None:
+            request = request.model_copy(update={"development_info": dev_for_prompt})
         if flag_state:
             dev_for_prompt = dict(request.development_info or {})
             dev_for_prompt["flag_state"] = flag_state
@@ -1047,6 +1123,14 @@ async def generate_single(
         scope = run_scope_checks(test_plan, [request.development_info])
         _record_scope(provenance, scope, request.ticket_key)
         _record_ci_claims(provenance, flag_ci_claims(test_plan, repo_evidence))
+        # Re-read every label, element, expected result and client token the
+        # plan cites, after every pass that rewrites step text and before
+        # quarantine, so a downgraded expected result counts there.
+        await _verify_grounding(
+            test_plan, source_index, [request.development_info], provenance, multi=False,
+            facts=source_facts, repo_evidence=repo_evidence, exploration=exploration,
+            label=request.ticket_key,
+        )
         # Quarantine last: the code-grounding critic un-badges cases whose
         # behaviour it found in the repo, and those rescues have to land
         # before we decide what is ungrounded.
@@ -1427,11 +1511,17 @@ async def generate_multi(
             + [f.get("patch") or "" for pr in batch_prs for f in (pr.get("files_changed") or [])
                if isinstance(f, dict)]
         )
-        batch_deployments, batch_deploy_state, batch_repo_evidence = await _read_build_evidence(
-            batch_dev_info, batch_mentioned)
+        (batch_deployments, batch_deploy_state, batch_repo_evidence), batch_index = await asyncio.gather(
+            _read_build_evidence(batch_dev_info, batch_mentioned), _read_sources(batch_dev_info))
         _record_deployments(provenance, batch_deployments)
+        batch_gaps: list[str] = []
+        batch_facts = _attach_source_facts({}, batch_index, provenance, batch_gaps)
+        if batch_gaps:
+            provenance.setdefault("context_gaps", []).extend(batch_gaps)
         for t in tickets_data:
             dev = dict(t.get("development_info") or {})
+            if batch_facts is not None:
+                dev["source_facts"] = batch_facts
             dev["deploy_state"] = batch_deploy_state
             dev["repo_evidence"] = batch_repo_evidence
             dev["requirements"] = [r for r in batch_requirements
@@ -1581,6 +1671,10 @@ async def generate_multi(
         scope = run_scope_checks(test_plan, batch_dev_infos)
         _record_scope(provenance, scope, "batch")
         _record_ci_claims(provenance, flag_ci_claims(test_plan, batch_repo_evidence))
+        await _verify_grounding(
+            test_plan, batch_index, [batch_dev_info], provenance, multi=True,
+            facts=batch_facts, repo_evidence=batch_repo_evidence, exploration=None, label="batch",
+        )
         # See generate_single: quarantining runs after every critic so the
         # code-grounding recheck's rescues are respected.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)

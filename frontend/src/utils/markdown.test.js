@@ -208,3 +208,56 @@ test('a PR shared by several tickets in a batch is listed once', () => {
   assert.equal(jira.match(/envelope#92/g).length, 1)
   assert.equal(jira.match(/envelope#96/g).length, 1)
 })
+
+// ─── grounding re-read (src/app/grounding_verification.py) ──────────────────
+
+const REREAD = {
+  surface: 'backend_http',
+  credentials: 'User bearer token.',
+  expected_verified: false,
+  expected_source: 'Acme/InPersonSigningViewModel.swift (activeSigningRecipients)',
+  expected_verification_downgraded: 'restates the rule in InPersonSigningViewModel.swift:49-68 without status matches "InProgress" (line 60)',
+  client_token: {
+    platform: 'ios', scopes: ['openid', 'com.acme.forms.api', 'com.acme.signsvc.userid'],
+    required_scopes: ['com.acme.forms.api', 'com.acme.signsvc.userid'], source: 'Acme/Okta-Integ.plist:14',
+  },
+  needs_client_equivalent_token: true,
+  needs_client_equivalent_token_reason: 'no configured runner token source carries all of them — report this case as BLOCKED, not failed',
+}
+
+test('a case that mirrors a client call names the token and says it is blocked', () => {
+  const md = formatTestPlanAsMarkdown(planWith(REREAD), TICKET)
+  assert.match(md, /\*\*Token:\*\* must carry the ios app's scopes `com\.acme\.forms\.api com\.acme\.signsvc\.userid` \(from `Acme\/Okta-Integ\.plist:14`\)/)
+  assert.match(md, /⛔ \*\*Needs client-equivalent token\*\* — no configured runner token/)
+  const jira = formatTestPlanAsJira(planWith(REREAD), TICKET)
+  assert.match(jira, /Token: must carry the ios app's scopes com\.acme\.forms\.api com\.acme\.signsvc\.userid/)
+  assert.match(jira, /⛔ NEEDS CLIENT-EQUIVALENT TOKEN — /)
+})
+
+test('a downgraded expected result says why, not just "assumption"', () => {
+  const md = formatTestPlanAsMarkdown(planWith(REREAD), TICKET)
+  assert.match(md, /Unverified — downgraded on re-read\.\*\* The plan claimed this was verified against `Acme\/InPersonSigningViewModel\.swift \(activeSigningRecipients\)`, but it restates the rule/)
+  const jira = formatTestPlanAsJira(planWith(REREAD), TICKET)
+  assert.match(jira, /Unverified — downgraded on re-read\. The plan claimed this was verified against /)
+})
+
+test('the plan says how many claims the re-read downgraded', () => {
+  const plan = {
+    ...planWith({}),
+    source_provenance: {
+      pull_requests: [{ number: 73, repository: 'acme/ios-client', state: 'merged', used_as_grounding: true }],
+      grounding_verification: { checked: 28, downgraded: 11, unchecked: 2, needs_client_equivalent_token: ['integration_tests:1'] },
+    },
+  }
+  const line = 'Grounding re-read: 28 code claim(s) re-read against the cited files, 11 downgraded to unverified, 2 could not be re-read, 1 case(s) need a client-equivalent token.'
+  assert.ok(formatTestPlanAsMarkdown(plan, TICKET).includes(line))
+  assert.ok(formatTestPlanAsJira(plan, TICKET).includes(line))
+})
+
+test('a declared rule is shown whole beside the expected result', () => {
+  const rule = { rule: 'role is "Signer", status is "InProgress", and only the lowest group.order is kept', source: 'Acme/VM.swift:49-68' }
+  const md = formatTestPlanAsMarkdown(planWith({ expected_verified: true, expected_source: 'Acme/VM.swift:49-68', logic_claims: [rule] }), TICKET)
+  assert.ok(md.includes('**Rule, from the code** (`Acme/VM.swift:49-68`): role is "Signer", status is "InProgress", and only the lowest group.order is kept'))
+  const jira = formatTestPlanAsJira(planWith({ logic_claims: [rule] }), TICKET)
+  assert.ok(jira.includes('Rule, from the code (Acme/VM.swift:49-68): role is "Signer"'))
+})

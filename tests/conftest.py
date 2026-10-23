@@ -205,6 +205,14 @@ def no_live_repo_evidence(monkeypatch: pytest.MonkeyPatch):
     # Deployments-repo discovery (src/app/build_targets.py) lists trees too.
     monkeypatch.setattr(plan_service, "_discover_deployments", _nothing_found)
 
+    async def _not_read(*_args, **_kwargs):
+        return None
+
+    # So does the whole-file source read the grounding re-read uses
+    # (src/app/source_facts.py). None = nothing to re-read; tests of that path
+    # patch ``plan_service._read_sources`` themselves.
+    monkeypatch.setattr(plan_service, "_read_sources", _not_read)
+
 
 @pytest.fixture(autouse=True)
 def no_previous_plan(monkeypatch: pytest.MonkeyPatch):

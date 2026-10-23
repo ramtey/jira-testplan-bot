@@ -1,0 +1,123 @@
+{
+ "_about": "Synthetic, not from any real ticket: a React/TypeScript web client (i18n JSON labels, an OIDC config) and a Python/FastAPI backend, to show the grounding re-read is not iOS-specific. The plan makes the same three mistakes SK-2719's did: a label in the ticket's wording, a rule restated from part of a function, and a backend case that reproduces the web app's call without the web app's token scopes.",
+ "pull_requests": [
+  {
+   "repository": "acme/shop-web",
+   "number": 12,
+   "status": "MERGED",
+   "merged_at": "2026-10-01T00:00:00Z",
+   "head_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+   "merge_commit_sha": "b1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+   "files_changed": [
+    {
+     "filename": "src/components/OrderActions.tsx",
+     "status": "added",
+     "patch": "@@ -0,0 +1,15 @@\n+import { useTranslation } from \"react-i18next\";\n+import { refundableOrders } from \"../lib/refundEligibility\";\n+\n+export function OrderActions({ orders, now, onTrack, onRefund }: Props) {\n+  const { t } = useTranslation();\n+  const eligible = refundableOrders(orders, now);\n+  return (\n+    <Menu>\n+      <MenuItem onClick={onTrack}>Track package</MenuItem>\n+      <MenuItem disabled={eligible.length === 0} onClick={onRefund}>\n+        {t(\"orders.requestRefund\")}\n+      </MenuItem>\n+    </Menu>\n+  );\n+}"
+    },
+    {
+     "filename": "src/lib/refundEligibility.ts",
+     "status": "added",
+     "patch": "@@ -0,0 +1,19 @@\n+import type { Order } from \"./types\";\n+\n+const REFUND_WINDOW_DAYS = 30;\n+\n+function withinWindow(order: Order, now: Date): boolean {\n+  const ageDays = (now.getTime() - order.deliveredAt.getTime()) / 86_400_000;\n+  return ageDays <= REFUND_WINDOW_DAYS;\n+}\n+\n+export const refundableOrders = (\n+  orders: Order[],\n+  now: Date,\n+): Order[] => {\n+  const candidates = orders.filter(\n+    (o) => o.status === \"Delivered\" && o.refundedAt == null && o.isGift === false && withinWindow(o, now),\n+  );\n+  const newest = Math.max(...candidates.map((o) => o.deliveredAt.getTime()));\n+  return candidates.filter((o) => o.deliveredAt.getTime() === newest);\n+};"
+    },
+    {
+     "filename": "src/locales/en.json",
+     "status": "modified",
+     "patch": "@@ -1,3 +1,4 @@\n {\n   \"orders\": {\n+    \"requestRefund\": \"Request a refund\","
+    }
+   ]
+  },
+  {
+   "repository": "acme/shop-api",
+   "number": 40,
+   "status": "MERGED",
+   "merged_at": "2026-10-01T00:00:00Z",
+   "head_sha": "c1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+   "merge_commit_sha": "d1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+   "files_changed": [
+    {
+     "filename": "app/routes/refunds.py",
+     "status": "added",
+     "patch": "@@ -0,0 +1,12 @@\n+from fastapi import APIRouter, Depends, HTTPException\n+\n+router = APIRouter()\n+\n+@router.post(\"/refunds\")\n+async def create_refund(body: RefundRequest, user=Depends(require_scopes(\"refunds:write\"))):\n+    order = await orders.get(body.order_id)\n+    if order is None:\n+        raise HTTPException(404, \"Order not found\")\n+    if order.status != \"Delivered\":\n+        raise HTTPException(409, \"Only delivered orders can be refunded\")\n+    return await refunds.create(order)"
+    }
+   ]
+  }
+ ],
+ "repo_trees": {
+  "acme/shop-web": [
+   "package.json",
+   "vite.config.ts",
+   "src/main.tsx",
+   "src/components/OrderActions.tsx",
+   "src/lib/refundEligibility.ts",
+   "src/locales/en.json",
+   "src/auth/oidcConfig.ts"
+  ],
+  "acme/shop-api": [
+   "Dockerfile",
+   "pyproject.toml",
+   "app/routes/refunds.py"
+  ]
+ },
+ "files": {
+  "acme/shop-web": {
+   "src/components/OrderActions.tsx": "import { useTranslation } from \"react-i18next\";\nimport { refundableOrders } from \"../lib/refundEligibility\";\n\nexport function OrderActions({ orders, now, onTrack, onRefund }: Props) {\n  const { t } = useTranslation();\n  const eligible = refundableOrders(orders, now);\n  return (\n    <Menu>\n      <MenuItem onClick={onTrack}>Track package</MenuItem>\n      <MenuItem disabled={eligible.length === 0} onClick={onRefund}>\n        {t(\"orders.requestRefund\")}\n      </MenuItem>\n    </Menu>\n  );\n}\n",
+   "src/lib/refundEligibility.ts": "import type { Order } from \"./types\";\n\nconst REFUND_WINDOW_DAYS = 30;\n\nfunction withinWindow(order: Order, now: Date): boolean {\n  const ageDays = (now.getTime() - order.deliveredAt.getTime()) / 86_400_000;\n  return ageDays <= REFUND_WINDOW_DAYS;\n}\n\nexport const refundableOrders = (\n  orders: Order[],\n  now: Date,\n): Order[] => {\n  const candidates = orders.filter(\n    (o) => o.status === \"Delivered\" && o.refundedAt == null && o.isGift === false && withinWindow(o, now),\n  );\n  const newest = Math.max(...candidates.map((o) => o.deliveredAt.getTime()));\n  return candidates.filter((o) => o.deliveredAt.getTime() === newest);\n};\n",
+   "src/locales/en.json": "{\n  \"orders\": {\n    \"requestRefund\": \"Request a refund\",\n    \"refundTitle\": \"Which order?\"\n  }\n}\n",
+   "src/auth/oidcConfig.ts": "export const oidcConfig = {\n  authority: \"https://id.example.com/oauth2/default\",\n  client_id: \"shop-web\",\n  redirect_uri: `${window.location.origin}/callback`,\n  scope: \"openid profile orders:read refunds:write\",\n  audience: \"api://shop\",\n};\n"
+  },
+  "acme/shop-api": {
+   "app/routes/refunds.py": "from fastapi import APIRouter, Depends, HTTPException\n\nrouter = APIRouter()\n\n@router.post(\"/refunds\")\nasync def create_refund(body: RefundRequest, user=Depends(require_scopes(\"refunds:write\"))):\n    order = await orders.get(body.order_id)\n    if order is None:\n        raise HTTPException(404, \"Order not found\")\n    if order.status != \"Delivered\":\n        raise HTTPException(409, \"Only delivered orders can be refunded\")\n    return await refunds.create(order)\n"
+  }
+ },
+ "plan": {
+  "happy_path": [
+   {
+    "title": "Request a Refund is offered for a refundable order",
+    "priority": "critical",
+    "preconditions": "Signed in to the web app as a shopper with a delivered order.",
+    "steps": [
+     "Open Orders and open the order's actions menu.",
+     "Tap 'Request a Refund'.",
+     "Confirm the refund dialog opens."
+    ],
+    "expected": "The menu item is enabled only for orders whose status is 'Delivered' and that have not been refunded (refundedAt is null).",
+    "surface": "web_ui",
+    "credentials": "Shopper session.",
+    "expected_verified": true,
+    "expected_source": "src/lib/refundEligibility.ts:10-19",
+    "grounded_in": [
+     "pr:src/components/OrderActions.tsx",
+     "pr:src/lib/refundEligibility.ts"
+    ],
+    "step_grounding": [
+     {
+      "step": 2,
+      "element": "'Request a Refund' menu item",
+      "kind": "control",
+      "source": "pr:src/components/OrderActions.tsx"
+     }
+    ]
+   }
+  ],
+  "edge_cases": [],
+  "integration_tests": [
+   {
+    "title": "POST /refunds rejects an order that is not delivered",
+    "priority": "high",
+    "steps": [
+     "Pick an order the web app shows as not refundable because it is still in transit.",
+     "POST {baseUrl}/refunds with {\"order_id\": <id>} and Authorization: Bearer <user token>."
+    ],
+    "expected": "409 with detail 'Only delivered orders can be refunded'.",
+    "surface": "backend_http",
+    "credentials": "User bearer token.",
+    "expected_verified": true,
+    "expected_source": "app/routes/refunds.py:10-11",
+    "grounded_in": [
+     "pr:app/routes/refunds.py",
+     "pr:src/lib/refundEligibility.ts"
+    ]
+   }
+  ]
+ }
+}
