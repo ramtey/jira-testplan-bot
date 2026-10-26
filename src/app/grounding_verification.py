@@ -522,6 +522,13 @@ def _verify_logic_claim(lc: dict, index: SourceIndex, known_text: set[str]) -> t
         return set(), []
     restated = check_restatement(region, rule, known_text)
     if restated is None:
+        atoms = sf.condition_atoms(region.src.path, [
+            (n, region.src.lines[n - 1]) for f in region.functions for n in range(f.start + 1, f.end + 1)])
+        # A function with fewer than two conditions cannot be named "too
+        # little": there is no rule to summarise partially. Naming its one
+        # condition (or citing a condition-free helper) covers it.
+        if len(atoms) < 2 and len(sf.atoms_mentioned(atoms, rule)) == len(atoms):
+            return {f.name for f in region.functions}, []
         return set(), [f"its logic_claims rule names too little of {region.label()} to check"]
     problems = []
     if restated["missing"]:

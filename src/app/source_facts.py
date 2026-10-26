@@ -132,6 +132,8 @@ def _literal_res(path: str) -> list[re.Pattern]:
 
 
 def _unescape(s: str) -> str:
+    # \uXXXX first: 'Starting\u2026' is "Starting…" on screen, not "Startingu2026".
+    s = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), s)
     return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), s)
 
 
@@ -191,6 +193,10 @@ _DOT_STRINGS_RE = re.compile(r'^\s*"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"
 _XML_STRING_RE = re.compile(r'<string\s+name="([^"]+)"[^>]*>(.*?)</string>', re.S)
 # JSX/TSX/Vue text between tags, and the attributes that are shown.
 _JSX_TEXT_RE = re.compile(r">\s*([^<>{}\n]*[A-Za-z][^<>{}\n]*?)\s*<")
+# A `{…}` expression that is a child of an element: right after a tag's `>`
+# or right before the next `<`, with no nested braces.
+_JSX_EXPR_CHILD_RE = re.compile(r">\s*\{([^{}]*)\}|\{([^{}]*)\}\s*(?=<)")
+_JSX_EXPR_LITERAL_RE = re.compile(r"(['\"`])((?:(?!\1)[^\\\n]|\\.)+)\1")
 _JSX_ATTR_RE = re.compile(
     r'\b(?:title|label|placeholder|aria-label|alt|text|header|heading|message|buttonText|'
     r'confirmText|cancelText|emptyText|tooltip|description|helperText)\s*=\s*\{?\s*(["\'`])((?:(?!\1)[^\\\n]|\\.)*)\1')
@@ -291,6 +297,16 @@ def ui_strings(path: str, text: str) -> list[UIString]:
                 add(m.group(1), m.start(1))
         for m in _JSX_ATTR_RE.finditer(text):
             add(m.group(2), m.start(2))
+        # Text rendered from an expression between tags:
+        # `>{busy ? 'Starting…' : 'Sign In Person'}</Link>`. Only literals that
+        # read as words (a capital or a space), so class names and keys in the
+        # same braces stay out.
+        for m in _JSX_EXPR_CHILD_RE.finditer(text):
+            body = m.group(1) or m.group(2) or ""
+            for lit in _JSX_EXPR_LITERAL_RE.finditer(body):
+                v = lit.group(2)
+                if " " in v or (re.match(r"[A-Z]", v) and not re.fullmatch(r"[\w.$-]+", v)):
+                    add(v, m.start() + lit.start(2))
     return out
 
 
@@ -558,6 +574,9 @@ class Atom:
     literal: str | None = None
     fields: tuple[str, ...] = ()
     op: str | None = None
+    #: The object a predicate is read from (`userInfo` in `!userInfo.isDelegate`).
+    #: A rule naming the predicate implies that object's null check.
+    receiver: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {"kind": self.kind, "condition": self.display, "line": self.line}
@@ -787,7 +806,10 @@ def condition_atoms(path: str, body: list[tuple[int, str]]) -> list[Atom]:
             if m.group(1) in ("isEmpty", "isNotEmpty", "hasNext") or any(
                     m.group(1) in a.fields for a in atoms if a.line == n):
                 continue
-            add(Atom("predicate", f"{m.group(1)}", n, fields=(m.group(1),), op="call"))
+            owner = re.search(r"([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*)\??\.$", stripped[:m.start()])
+            receiver = tuple(re.split(r"\??\.", owner.group(1))) if owner else ()
+            add(Atom("predicate", f"{m.group(1)}", n, fields=(m.group(1),), op="call",
+                     receiver=receiver))
     return atoms
 
 
@@ -821,11 +843,18 @@ def literal_pattern(lit: str) -> str:
 
 def atoms_mentioned(atoms: list[Atom], prose: str) -> list[Atom]:
     """The atoms ``prose`` names. A field said to equal a value ("status is
-    InProgress") is also said to be set: the null check is implied."""
+    InProgress") is also said to be set: the null check is implied. So is the
+    check on an object whose property the prose names: "not a delegate"
+    (``!userInfo.isDelegate``) cannot hold unless ``userInfo`` is set, and on
+    SK-2687 demanding the guard separately downgraded correct expected results."""
     named = [a for a in atoms if atom_mentioned(a, prose)]
     valued = {f for a in named if a.kind in ("literal", "compare", "bool") for f in a.fields[-1:]}
+    parents = {a.fields[:i] for a in named if a.kind != "nonnull" for i in range(1, len(a.fields))}
+    parents |= {a.receiver[:i] for a in named for i in range(1, len(a.receiver) + 1)}
     for a in atoms:
-        if a not in named and a.kind == "nonnull" and a.op == "nonnull" and a.fields[-1:] and a.fields[-1] in valued:
+        if a in named or a.kind != "nonnull" or a.op != "nonnull" or not a.fields:
+            continue
+        if a.fields[-1] in valued or a.fields in parents:
             named.append(a)
     return named
 
