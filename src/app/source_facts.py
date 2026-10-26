@@ -499,17 +499,25 @@ def _extent(lines: list[str], start: int, python: bool) -> int:
             if s.strip():
                 end = n
         return end
-    depth, opened = 0, False
+    # Braces inside the parameter list are not the body: a React hook's
+    # `useSignNow({ flags, userInfo }: { flags?: F; userInfo: any }) {` closed
+    # its "body" at the parameter type's `}`, and its typed members ended the
+    # scan early as if `userInfo: any;` were an expression body.
+    depth, opened, parens = 0, False, 0
     for n in range(start, len(lines) + 1):
         s = _strip_strings_and_comments(lines[n - 1])
         for ch in s:
-            if ch == "{":
+            if ch == "(":
+                parens += 1
+            elif ch == ")":
+                parens = max(0, parens - 1)
+            elif parens == 0 and ch == "{":
                 depth, opened = depth + 1, True
-            elif ch == "}":
+            elif parens == 0 and ch == "}":
                 depth -= 1
                 if opened and depth == 0:
                     return n
-        if not opened and (s.rstrip().endswith(";") or (n > start and not s.strip())):
+        if not opened and parens == 0 and (s.rstrip().endswith(";") or (n > start and not s.strip())):
             return n  # an expression body: `=> expr;` or `fun f() = expr`
     return len(lines)
 

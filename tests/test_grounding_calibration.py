@@ -131,3 +131,37 @@ async def test_a_correct_expected_result_with_a_label_from_another_file_stays_ve
     outcomes = gv._verify_expected("happy_path:0", case, index, shown=None)
     assert case["expected_verified"] is True, case.get("expected_verification_downgraded")
     assert [o.status for o in outcomes] == ["verified"]
+
+
+# ── 4. a hook's typed parameter list is not its body ──────────────────────────
+
+HOOK = """export function useSignNow({
+  flags,
+  userInfo,
+}: {
+  flags?: Flags;
+  userInfo: any;
+}) {
+  const allowed = React.useMemo(() => {
+    if (!userInfo || !flags?.signNow || userInfo.isDelegate) return false;
+    return signers.some((s) => s.email === userInfo.senderEmail);
+  }, [userInfo, flags]);
+  return { allowed };
+}"""
+
+
+def test_a_hooks_destructured_typed_parameters_do_not_end_the_function():
+    fn = sf.function_named(sf.functions("use-sign-now.ts", HOOK), "useSignNow")
+    assert (fn.start, fn.end) == (1, 13)
+
+
+@pytest.mark.asyncio
+async def test_a_rule_the_extractor_cannot_read_is_not_downgraded():
+    gh = FakeGitHub({REPO: ["src/useSignNow.ts"]}, {REPO: {"src/useSignNow.ts": HOOK}})
+    prs = [{**PRS[0], "files_changed": [{"filename": "src/useSignNow.ts", "status": "modified",
+                                         "patch": "@@ +1 @@\n+x"}]}]
+    index = await sf.read_source_index(gh, prs)
+    names, problems = gv._verify_logic_claim(
+        {"rule": "no Sign Now when userInfo is null, the flag is off, or the caller is a delegate",
+         "source": "src/useSignNow.ts:1-13", "function": "useSignNow"}, index, set())
+    assert problems == []
