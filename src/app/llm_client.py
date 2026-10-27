@@ -161,6 +161,32 @@ def _evidence_claims(test_plan_data: dict) -> dict | None:
     return claims or None
 
 
+def _plan_tool_input(content: list, name: str = "submit_test_plan") -> dict | None:
+    """The plan from every ``name`` tool call in the response, merged.
+
+    The model can split one plan over several calls of the forced tool. Reading
+    only the first returned a fragment — on SK-2687 (2026-10-27) twice a plan
+    holding nothing but ``how_to_see_it``, which _require_cases then rightly
+    refused as empty. Lists are concatenated in call order; any other field
+    keeps the first non-empty value.
+    """
+    blocks = [b for b in content or [] if b.get("type") == "tool_use" and b.get("name") == name]
+    if not blocks:
+        return None
+    if len(blocks) > 1:
+        import logging
+        logging.getLogger(__name__).warning(
+            "plan arrived split over %d %s calls; merging them", len(blocks), name)
+    merged: dict = {}
+    for b in blocks:
+        for k, v in (b.get("input") or {}).items():
+            if isinstance(v, list):
+                merged[k] = (merged.get(k) or []) + v
+            elif k not in merged or not merged[k]:
+                merged[k] = v
+    return merged
+
+
 def _require_cases(test_plan_data: dict, response: dict) -> None:
     """Refuse a plan with nothing in any section.
 
@@ -176,7 +202,9 @@ def _require_cases(test_plan_data: dict, response: dict) -> None:
     raise LLMError(
         "Claude returned a test plan with no cases in any section "
         f"(stop_reason={response.get('stop_reason')!r}; non-empty fields: "
-        f"{', '.join(keys)}). Treating it as a failed generation, not an "
+        f"{', '.join(keys)}; plan tool calls: "
+        f"{sum(1 for b in response.get('content') or [] if b.get('type') == 'tool_use')}). "
+        "Treating it as a failed generation, not an "
         "empty plan.",
         error_type="service_unavailable",
     )
@@ -5691,16 +5719,13 @@ class ClaudeClient(LLMClient):
                     "split the ticket or narrow what it covers.",
                     error_type="service_unavailable",
                 )
-            tool_block = next(
-                (b for b in data["content"] if b.get("type") == "tool_use"),
-                None,
-            )
-            if tool_block is None:
+            plan_input = _plan_tool_input(data["content"])
+            if plan_input is None:
                 raise LLMError(
                     "Claude did not return a tool_use block. Unexpected response format.",
                     error_type="service_unavailable",
                 )
-            test_plan_data = _scrub_test_plan_data(tool_block["input"])
+            test_plan_data = _scrub_test_plan_data(plan_input)
             _require_cases(test_plan_data, data)
 
             return TestPlan(
@@ -5796,16 +5821,13 @@ class ClaudeClient(LLMClient):
                     + ". Try fewer tickets per batch or split high-AC tickets.",
                     error_type="service_unavailable",
                 )
-            tool_block = next(
-                (b for b in data["content"] if b.get("type") == "tool_use"),
-                None,
-            )
-            if tool_block is None:
+            plan_input = _plan_tool_input(data["content"])
+            if plan_input is None:
                 raise LLMError(
                     "Claude did not return a tool_use block. Unexpected response format.",
                     error_type="service_unavailable",
                 )
-            test_plan_data = _scrub_test_plan_data(tool_block["input"])
+            test_plan_data = _scrub_test_plan_data(plan_input)
             _require_cases(test_plan_data, data)
 
             return TestPlan(

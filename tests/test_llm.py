@@ -596,3 +596,21 @@ class TestFastMode:
         await client._post_messages({"model": "claude-opus-5"}, timeout=60.0)
 
         assert [b.get("speed") for _, b in sent] == ["fast", None, None]
+
+
+def test_a_plan_split_over_several_tool_calls_is_merged():
+    """SK-2687, 2026-10-27: the first submit_test_plan call held only
+    how_to_see_it; reading it alone refused a whole plan as empty."""
+    from src.app.llm_client import _plan_tool_input
+    content = [
+        {"type": "thinking", "thinking": ""},
+        {"type": "tool_use", "name": "submit_test_plan", "input": {"how_to_see_it": {"summary": "x"}}},
+        {"type": "tool_use", "name": "submit_test_plan",
+         "input": {"happy_path": [{"title": "a"}], "edge_cases": [{"title": "b"}], "how_to_see_it": {"summary": "y"}}},
+        {"type": "tool_use", "name": "submit_test_plan", "input": {"edge_cases": [{"title": "c"}]}},
+    ]
+    merged = _plan_tool_input(content)
+    assert [c["title"] for c in merged["edge_cases"]] == ["b", "c"]
+    assert merged["happy_path"] == [{"title": "a"}]
+    assert merged["how_to_see_it"] == {"summary": "x"}  # first non-empty wins
+    assert _plan_tool_input([{"type": "text", "text": "hi"}]) is None
