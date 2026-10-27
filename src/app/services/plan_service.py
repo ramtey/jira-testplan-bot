@@ -971,7 +971,7 @@ async def generate_single(
             coverage = await ensure_findings_covered(
                 llm, test_plan, exploration_data, summary=request.summary)
             provenance.setdefault("code_exploration", {}).update(coverage)
-            dropped = [f["id"] for f in coverage.get("findings", []) if f["status"] == "unaccounted"]
+            dropped = [f["id"] for f in coverage.get("finding_outcomes", []) if f["status"] == "unaccounted"]
             if dropped:
                 context_gaps.append(
                     f"{len(dropped)} finding(s) about code outside the pull requests "

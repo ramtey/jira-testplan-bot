@@ -249,7 +249,7 @@ async def test_a_dropped_finding_becomes_a_case_before_the_critics():
     record = await ensure_findings_covered(llm, plan, FOUND, summary="Owner only")
     assert plan.edge_cases[-1]["title"].startswith("Hand-off link")
     assert plan.edge_cases[-1]["added_for_findings"] is True and "section" not in plan.edge_cases[-1]
-    by_id = {f["id"]: f for f in record["findings"]}
+    by_id = {f["id"]: f for f in record["finding_outcomes"]}
     assert by_id["X2"] == {**by_id["X2"], "status": "added", "by": "edge_cases:0"}
     assert by_id["X1"]["status"] == "covered" and by_id["X3"]["status"] == "out_of_scope"
     # Only the dropped finding went to the repair call, with the plan's titles.
@@ -264,7 +264,7 @@ async def test_nothing_dropped_means_no_extra_call():
                   {"finding": "X3", "covered_by": "happy_path:0"}])
     llm = RepairLLM(raises=AssertionError("should not be called"))
     record = await ensure_findings_covered(llm, plan, FOUND, summary="s")
-    assert all(f["status"] == "covered" for f in record["findings"])
+    assert all(f["status"] == "covered" for f in record["finding_outcomes"])
 
 
 @pytest.mark.asyncio
@@ -273,7 +273,7 @@ async def test_a_failed_repair_keeps_the_plan_and_says_so():
     record = await ensure_findings_covered(RepairLLM(raises=RuntimeError("overloaded")), plan,
                                            FOUND, summary="s")
     assert record["repair_error"] == "RuntimeError: overloaded"
-    assert all(f["status"] == "unaccounted" for f in record["findings"])
+    assert all(f["status"] == "unaccounted" for f in record["finding_outcomes"])
     assert len(plan.happy_path) == 1
 
 

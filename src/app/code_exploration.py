@@ -473,7 +473,8 @@ async def ensure_findings_covered(llm, test_plan, exploration: dict | None, *, s
                 if status.get(fid, {}).get("status") == "unaccounted":
                     status[fid] = {"status": "added", "by": f"{section}:{len(rows) - 1}"}
     record = {
-        "findings": [
+        # Not "findings": provenance already keeps the count under that key.
+        "finding_outcomes": [
             {"id": f["id"], "kind": f.get("kind"), "where": f"{f['repo']}:{f['path']}:{f['lines']}",
              **status.get(f["id"], {"status": "unaccounted"})}
             for f in findings
