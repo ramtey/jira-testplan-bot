@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jira-testplan-bot.metrics</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO__/ops/launchd/metrics-refresh.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+
+  <!-- Hourly; the script itself decides whether there is anything to do
+       (weekday working hours, not yet refreshed this week). An interval rather
+       than a calendar time so a Mac asleep at 8am Monday still refreshes the
+       first hour it is awake. -->
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/jira-testplan-metrics.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/jira-testplan-metrics.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>
