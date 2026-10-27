@@ -54,7 +54,7 @@ from ..evidence_checks import (
     primary_notes,
 )
 from ..flag_state import LaunchDarklyReader, read_flag_state
-from ..code_exploration import ensure_findings_covered, explore, summary_line
+from ..code_exploration import explore, summary_line
 from ..deliverable_classifier import (
     aggregate_deliverables_for_critique,
     format_deliverable_hint,
@@ -962,22 +962,6 @@ async def generate_single(
             bounce_history=request.bounce_history,
             context_gaps=context_gaps or None,
         )
-
-        # Every exploration finding ends up in the plan: covered by a case the
-        # model names, ruled out with a reason, or written up as a case now —
-        # before the critics, so an added case is checked like any other.
-        exploration_data = (request.development_info or {}).get("code_exploration")
-        if exploration_data and exploration_data.get("findings"):
-            coverage = await ensure_findings_covered(
-                llm, test_plan, exploration_data, summary=request.summary)
-            provenance.setdefault("code_exploration", {}).update(coverage)
-            dropped = [f["id"] for f in coverage.get("finding_outcomes", []) if f["status"] == "unaccounted"]
-            if dropped:
-                context_gaps.append(
-                    f"{len(dropped)} finding(s) about code outside the pull requests "
-                    f"({', '.join(dropped)}) could not be written up as cases"
-                )
-                provenance["context_gaps"] = context_gaps
 
         # AC coverage for the single-ticket plan. Previously only the
         # multi-ticket endpoint computed this, so a plain Story (no children)
