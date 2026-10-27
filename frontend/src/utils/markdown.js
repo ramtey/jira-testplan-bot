@@ -534,8 +534,8 @@ const collectUatGuide = (plan, walkthrough) => {
     .filter((s) => s.url)
   const notes = walkthrough?.notes?.trim() || ''
   // What the UAT screen recording covers. Server-owned
-  // (src/app/video_walkthrough.py) so the Pass-to-UAT checklist, this comment
-  // and the UAT runner all describe the same recording.
+  // (src/app/video_walkthrough.py) so this comment
+  // and the UAT runner both describe the same recording.
   const wt = plan?.video_walkthrough
   const chapters = (Array.isArray(wt?.chapters) ? wt.chapters : [])
     .map((c) => ({

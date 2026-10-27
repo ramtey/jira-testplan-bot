@@ -10,6 +10,8 @@ callers — the planner's "steps to cover in the video" checklist in the
 Pass-to-UAT form, and the UAT runner deciding what to record — and until now
 only the first existed, derived in the browser (``videoChecklistSteps`` in
 ``frontend/src/App.jsx``) from ``plan.happy_path`` titles capped at six.
+(That form checklist was removed on 2026-10-27, because the narrated video now
+shows what it covers. The plan comment and the runner still read this module.)
 
 A browser-side derivation is the same mistake the progress key made: a second
 consumer appears, re-derives the rule, and the two drift with nothing to catch

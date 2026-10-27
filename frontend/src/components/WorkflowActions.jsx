@@ -807,7 +807,6 @@ function WorkflowActions({
   currentUserAccountId,
   childIssues,
   onActionComplete,
-  videoChecklistSteps,
   held = false,
   holdReason = null,
 }) {
@@ -870,12 +869,6 @@ function WorkflowActions({
   //   { message: string, retry: fn }  → prompt open, retry() resends with the
   //                                     override flag on confirm
   const [walkthroughOverridePrompt, setWalkthroughOverridePrompt] = useState(null)
-  // "Steps demonstrated in the video" checklist rendered inside the Notes
-  // block of the Pass-to-UAT form. On submit, ticked/unticked state is
-  // folded into the Jira comment (see composedSummary in onNoteSubmit).
-  // State resets when the form closes.
-  const [checklistTicked, setChecklistTicked] = useState(() => new Set())
-  const checklistSteps = Array.isArray(videoChecklistSteps) ? videoChecklistSteps : []
   // Refs so the "insert [[img:filename]]" chip button can drop the token
   // at the current caret position in whichever textarea the tester is
   // filling out: the Reason on fail-back, the Notes on pass-to-UAT.
@@ -1213,7 +1206,6 @@ function WorkflowActions({
     setSelectedPrImages(new Set())
     setPrContributor(null)
     userChoseAssigneeRef.current = false
-    setChecklistTicked(new Set())
   }
 
   // Drop a `[[img:filename]]` token at the caret in whichever textarea is
@@ -1437,19 +1429,7 @@ function WorkflowActions({
         (url) => selectedPrLooms.has(url) && !trimmedSummary.includes(url)
       )
       const prImages = discoveredPrImages.filter((url) => selectedPrImages.has(url))
-      // Fold the "steps demonstrated" checklist into the Jira comment when
-      // at least one box is ticked. Silent when nothing is checked so the
-      // comment stays clean for testers who don't engage with the widget.
-      const composedSummary = (() => {
-        if (checklistSteps.length === 0 || checklistTicked.size === 0) {
-          return trimmedSummary || null
-        }
-        const bullets = checklistSteps
-          .filter((_, i) => checklistTicked.has(i))
-          .map((step) => `- ${step}`)
-          .join('\n')
-        return trimmedSummary ? `${trimmedSummary}\n\n${bullets}` : bullets
-      })()
+      const composedSummary = trimmedSummary || null
       const hasAnyField =
         prLooms.length > 0 ||
         prImages.length > 0 ||
@@ -1727,61 +1707,11 @@ function WorkflowActions({
               <>
                 <span className="lbl">Notes</span>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {checklistSteps.length > 0 && (
-                    <div
-                      style={{
-                        border: '1px solid var(--border-muted)',
-                        borderRadius: 6,
-                        padding: '8px 10px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 6,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          fontSize: 'var(--t-sm)',
-                          color: 'var(--fg-muted)',
-                          fontWeight: 600,
-                        }}
-                      >
-                        Steps demonstrated in the video
-                        <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-subtle)', fontWeight: 500 }}>
-                          {checklistTicked.size} / {checklistSteps.length}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        {checklistSteps.map((step, i) => (
-                          <Cbx
-                            key={i}
-                            id={`video-checklist-${i}`}
-                            checked={checklistTicked.has(i)}
-                            onChange={(next) =>
-                              setChecklistTicked((prev) => {
-                                const copy = new Set(prev)
-                                if (next) copy.add(i)
-                                else copy.delete(i)
-                                return copy
-                              })
-                            }
-                            label={step}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
                   <textarea
                     ref={summaryInputRef}
                     className="inp"
                     rows={3}
-                    placeholder={
-                      checklistSteps.length > 0
-                        ? 'Additional notes (optional). Paste the video link here. Markdown supported.'
-                        : 'Optional. Paste the video link here. Markdown supported.'
-                    }
+                    placeholder="Optional. Paste the video link here. Markdown supported."
                     value={summary}
                     onChange={(e) => setSummary(e.target.value)}
                     disabled={pendingAction !== null}
