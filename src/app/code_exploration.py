@@ -32,9 +32,9 @@ from .diff_budget import allocate_patch_budget
 
 logger = logging.getLogger(__name__)
 
-MAX_TURNS = 10
-MAX_SEARCHES = 8
-MAX_READS = 14
+MAX_TURNS = 14
+MAX_SEARCHES = 12
+MAX_READS = 18
 READ_MAX_LINES = 300
 MAX_FINDINGS = 12
 
@@ -118,6 +118,8 @@ Look for, in this order of value:
 2. Guards and preconditions on the changed path that live in unchanged code: status checks, permission checks, feature flags, ordering rules. Note their exact responses (status codes, messages).
 3. Callers and consumers of what the PRs changed, where behaviour visible to a user depends on them.
 4. Reachability: for each condition a changed branch handles (an error type or message, a regex alternative, a defensive guard, an input format), check whether anything in the repo, or the framework as this repo uses it, actually produces it. Search for the producer: the code that raises that error, sends that input, or loads things the way the branch assumes. Report a branch nothing reaches today as kind "reachability" with what you searched, so the plan covers it with a unit test instead of a UI case.
+5. The authentication setup the changed routes rely on (auth middleware, token validation, startup or policy config): what a caller with no token, a malformed token or a token for another account actually gets back, with the status code and the line that decides it.
+6. Preconditions in UNCHANGED code that decide whether the changed control appears or works at all: ordering or grouping rules, consent or identity steps in a downstream flow (for example the signer app after a hand-off), and states in which the control is hidden on purpose. A tester who does not know these reads a missing control as a regression.
 
 Work like an engineer: search for specific identifiers, read the files that matter, follow one hop further when it pays. Prefer reading over guessing. Skip anything the diffs already show.
 
