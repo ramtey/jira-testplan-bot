@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from src.app.code_exploration import (
-    MAX_TURNS,
+    PER_EXPLORER,
     explore,
     render_findings,
 )
@@ -100,7 +100,7 @@ async def test_finds_a_sibling_and_keeps_only_what_it_read():
             finding("acme/user-service", "Never/Read.cs"),  # cited without reading
         ])],
     ])
-    result = await explore(llm, gh, summary="Owner only", description="", pull_requests=PRS)
+    result = await explore(llm, gh, summary="Owner only", description="", pull_requests=PRS, explorers=("siblings",))
     assert [f["path"] for f in result["findings"]] == ["Controllers/TokenController.cs"]
     assert result["dropped"] == 1
     assert result["searches"] == 1 and result["reads"] == 1 and result["error"] is None
@@ -115,7 +115,7 @@ async def test_pr_files_are_read_at_the_pr_commit_others_at_default():
          call("read_file", "b", repo="acme/envelope-api", path="Api/Other.cs")],
         [call("report_findings", "c", findings=[])],
     ])
-    await explore(llm, gh, summary="s", description="", pull_requests=PRS)
+    await explore(llm, gh, summary="s", description="", pull_requests=PRS, explorers=("siblings",))
     refs = {path: ref for _, ref, path in gh.reads}
     assert refs == {"Api/StartInPersonSessionHandler.cs": "6d9a355abc", "Api/Other.cs": None}
     # Both results went back in ONE user message, so parallel calls stay parallel.
@@ -130,7 +130,7 @@ async def test_reads_outside_the_prs_organizations_are_refused():
         [call("read_file", "a", repo="evil/repo", path="secrets.txt")],
         [call("report_findings", "b", findings=[finding("evil/repo", "secrets.txt")])],
     ])
-    result = await explore(llm, gh, summary="s", description="", pull_requests=PRS)
+    result = await explore(llm, gh, summary="s", description="", pull_requests=PRS, explorers=("siblings",))
     assert gh.reads == [] and result["findings"] == []
     assert "outside the organizations" in llm.sent[-1][-1]["content"][0]["content"]
 
@@ -139,16 +139,19 @@ async def test_reads_outside_the_prs_organizations_are_refused():
 async def test_a_throttled_search_is_not_no_matches():
     llm = ScriptedLLM([[call("search_code", "a", query="signerToken")],
                        [call("report_findings", "b", findings=[])]])
-    await explore(llm, FakeGitHub(throttle=True), summary="s", description="", pull_requests=PRS)
+    await explore(llm, FakeGitHub(throttle=True), summary="s", description="", pull_requests=PRS,
+                  explorers=("siblings",))
     told = llm.sent[-1][-1]["content"][0]["content"]
     assert "not 'no matches'" in told
 
 
 @pytest.mark.asyncio
 async def test_running_out_of_turns_is_reported():
-    llm = ScriptedLLM([[call("search_code", f"s{i}", query="x")] for i in range(MAX_TURNS + 1)])
-    result = await explore(llm, FakeGitHub(), summary="s", description="", pull_requests=PRS)
-    assert result["error"] == "explorer ran out of turns"
+    turns = PER_EXPLORER["max_turns"]
+    llm = ScriptedLLM([[call("search_code", f"s{i}", query="x")] for i in range(turns + 1)])
+    result = await explore(llm, FakeGitHub(), summary="s", description="", pull_requests=PRS,
+                           explorers=("siblings",))
+    assert result["error"] == "siblings explorer ran out of turns"
     # The last turn told it to stop and report.
     assert "Call report_findings now" in str(llm.sent[-1])
 
@@ -156,8 +159,8 @@ async def test_running_out_of_turns_is_reported():
 @pytest.mark.asyncio
 async def test_a_model_failure_is_reported_not_raised():
     result = await explore(ScriptedLLM([], raises=RuntimeError("overloaded")), FakeGitHub(),
-                           summary="s", description="", pull_requests=PRS)
-    assert result["error"] == "RuntimeError: overloaded" and result["findings"] == []
+                           summary="s", description="", pull_requests=PRS, explorers=("siblings",))
+    assert result["error"] == "siblings explorer: RuntimeError: overloaded" and result["findings"] == []
 
 
 @pytest.mark.asyncio
@@ -189,7 +192,8 @@ async def test_history_is_cached_and_usage_is_summed():
             return {**out, "usage": {"input_tokens": 100, "output_tokens": 10,
                                      "cache_read_input_tokens": 50}}
     llm = UsageLLM([[call("search_code", "a", query="x")], [call("report_findings", "b", findings=[])]])
-    result = await explore(llm, FakeGitHub(), summary="s", description="", pull_requests=PRS)
+    result = await explore(llm, FakeGitHub(), summary="s", description="", pull_requests=PRS,
+                           explorers=("siblings",))
     assert all(p["cache_control"] == {"type": "ephemeral"} for p in llm.payloads)
     assert result["usage"]["input_tokens"] == 200 and result["usage"]["cache_read_input_tokens"] == 100
 
@@ -309,3 +313,78 @@ def test_repair_runs_before_the_critics_so_added_cases_are_checked():
     src = inspect.getsource(plan_service.generate_single)
     assert src.index("repair_dropped_findings(") < src.index("run_grounding_critic(")
     assert src.index("repair_dropped_findings(") < src.index("quarantine_ungrounded_cases(")
+
+
+# ── two focused explorers and the package map ─────────────────────────────────
+
+from src.app.code_exploration import build_brief, package_map, package_of  # noqa: E402
+
+
+def test_packages_are_monorepo_folders_or_top_level_projects():
+    assert package_of("packages/signer-sdk/src/a.tsx") == "packages/signer-sdk"
+    assert package_of("apps/web/src/a.tsx") == "apps/web"
+    assert package_of("DigiSign.Sender.Envelope.Application/Controllers/X.cs") == \
+        "DigiSign.Sender.Envelope.Application"
+    assert package_of("README.md") is None and package_of(".github/workflows/ci.yml") is None
+
+
+def test_package_map_marks_changed_and_lists_the_rest_without_tests():
+    prs = [{"repository": "acme/ui", "files_changed": [{"filename": "packages/sender/src/a.ts"}]}]
+    tree = ["packages/sender/src/a.ts", "packages/signer-sdk/src/Modal.tsx", "packages/e2e/x.ts",
+            "docs/readme.md", "Api.Tests/T.cs", "package.json"]
+    m = package_map(prs, {"acme/ui": tree})
+    assert m == {"acme/ui": {"changed": ["packages/sender"], "others": ["packages/signer-sdk"]}}
+    brief = build_brief("s", "", prs, packages=m)
+    assert "acme/ui: *packages/sender, packages/signer-sdk" in brief
+
+
+class RoutedLLM(ScriptedLLM):
+    """Answers each explorer from its own script, picked by its system prompt."""
+
+    def __init__(self, scripts, raises_for=None):
+        super().__init__([])
+        self.scripts = {k: list(v) for k, v in scripts.items()}
+        self.raises_for = raises_for
+
+    async def _post_messages(self, payload, **kw):
+        system = payload["system"][0]["text"]
+        name = "downstream" if "Downstream flows" in system else "siblings"
+        if name == self.raises_for:
+            raise RuntimeError("overloaded")
+        turns = self.scripts.get(name) or []
+        return {"content": turns.pop(0) if turns else [{"type": "text", "text": "done"}]}
+
+
+class TreeGitHub(FakeGitHub):
+    async def list_tree(self, repo, ref):
+        return ["Api/StartInPersonSessionHandler.cs", "Signer/Modal.cs"]
+
+
+@pytest.mark.asyncio
+async def test_both_explorers_run_and_their_findings_merge_one_per_file():
+    gh = TreeGitHub(files={"acme/envelope-api:Signer/Modal.cs": "x",
+                           "acme/envelope-api:Api/Other.cs": "y"})
+    llm = RoutedLLM({
+        "siblings": [[call("read_file", "a", repo="acme/envelope-api", path="Api/Other.cs")],
+                     [call("report_findings", "b", findings=[finding("acme/envelope-api", "Api/Other.cs")])]],
+        "downstream": [[call("read_file", "c", repo="acme/envelope-api", path="Signer/Modal.cs"),
+                        call("read_file", "d", repo="acme/envelope-api", path="Api/Other.cs")],
+                       [call("report_findings", "e", findings=[
+                           finding("acme/envelope-api", "Signer/Modal.cs", kind="guard"),
+                           finding("acme/envelope-api", "Api/Other.cs")])]],
+    })
+    result = await explore(llm, gh, summary="s", description="", pull_requests=PRS)
+    assert sorted(f["path"] for f in result["findings"]) == ["Api/Other.cs", "Signer/Modal.cs"]
+    assert result["reads"] == 3 and result["error"] is None
+    assert result["packages"] == {"acme/envelope-api": {"changed": ["Api"], "others": ["Signer"]}}
+
+
+@pytest.mark.asyncio
+async def test_one_explorer_failing_keeps_the_others_findings_and_says_so():
+    gh = TreeGitHub(files={"acme/envelope-api:Api/Other.cs": "y"})
+    llm = RoutedLLM({"siblings": [[call("read_file", "a", repo="acme/envelope-api", path="Api/Other.cs")],
+                                  [call("report_findings", "b", findings=[finding("acme/envelope-api", "Api/Other.cs")])]]},
+                    raises_for="downstream")
+    result = await explore(llm, gh, summary="s", description="", pull_requests=PRS)
+    assert [f["path"] for f in result["findings"]] == ["Api/Other.cs"]
+    assert result["error"] == "downstream explorer: RuntimeError: overloaded"

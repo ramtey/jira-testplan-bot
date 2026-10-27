@@ -37,7 +37,7 @@ MAX_TURNS = 14
 MAX_SEARCHES = 12
 MAX_READS = 18
 READ_MAX_LINES = 300
-MAX_FINDINGS = 12
+MAX_FINDINGS = 14
 
 FINDING_KINDS = ["sibling_entry_point", "caller", "guard", "config", "reachability", "other"]
 
@@ -112,19 +112,31 @@ TOOLS = [
     },
 ]
 
-SYSTEM = """You explore a codebase before a QA test plan is written, to find what the pull requests' diffs do not show.
-
-Look for, in this order of value:
-1. Sibling entry points: other routes, handlers, UI actions or services that perform the SAME capability the ticket changes (another endpoint that mints the same token, another screen that offers the same action). Check whether each enforces the ticket's new rule. A sibling that does not is the most important thing you can find.
+_JOBS = {
+    "siblings": """1. Sibling entry points: other routes, handlers, UI actions or services that perform the SAME capability the ticket changes (another endpoint that mints the same token, another screen that offers the same action). Check whether each enforces the ticket's new rule. A sibling that does not is the most important thing you can find.
 2. Guards and preconditions on the changed path that live in unchanged code: status checks, permission checks, feature flags, ordering rules. Note their exact responses (status codes, messages).
 3. Callers and consumers of what the PRs changed, where behaviour visible to a user depends on them.
-4. Reachability: for each condition a changed branch handles (an error type or message, a regex alternative, a defensive guard, an input format), check whether anything in the repo, or the framework as this repo uses it, actually produces it. Search for the producer: the code that raises that error, sends that input, or loads things the way the branch assumes. Report a branch nothing reaches today as kind "reachability" with what you searched, so the plan covers it with a unit test instead of a UI case.
-5. The authentication setup the changed routes rely on (auth middleware, token validation, startup or policy config): what a caller with no token, a malformed token or a token for another account actually gets back, with the status code and the line that decides it.
-6. Preconditions in UNCHANGED code that decide whether the changed control appears or works at all: ordering or grouping rules, consent or identity steps in a downstream flow (for example the signer app after a hand-off), and states in which the control is hidden on purpose. A tester who does not know these reads a missing control as a regression.
+4. Reachability: for each condition a changed branch handles (an error type or message, a regex alternative, a defensive guard, an input format), check whether anything in the repo, or the framework as this repo uses it, actually produces it. Search for the producer: the code that raises that error, sends that input, or loads things the way the branch assumes. Report a branch nothing reaches today as kind "reachability" with what you searched, so the plan covers it with a unit test instead of a UI case.""",
+    "downstream": """1. Downstream flows in the packages the PRs did NOT change: what happens after the changed action hands off (for example the signer app after a hand-off, a worker after an enqueue). Visit every unchanged package listed in the brief at least once: search it for the feature's key terms and read what you find. Report steps a user meets there (consent or identity checks, confirmations, redirects).
+2. The authentication setup the changed routes rely on (auth middleware, token validation, startup or policy config): what a caller with no token, a malformed token or a token for another account actually gets back, with the status code and the line that decides it.
+3. Preconditions in UNCHANGED code that decide whether the changed control appears or works at all: ordering or grouping rules, states in which the control is hidden on purpose, and pre-existing behaviour a tester could misread as a regression.""",
+}
+
+_SYSTEM_HEAD = """You explore a codebase before a QA test plan is written, to find what the pull requests' diffs do not show. Another explorer covers other ground in parallel; stay on yours.
+
+Look for, in this order of value:
+"""
+_SYSTEM_TAIL = """
 
 Work like an engineer: search for specific identifiers, read the files that matter, follow one hop further when it pays. Prefer reading over guessing. Skip anything the diffs already show.
 
 Finish by calling report_findings once. Cite only files you read, with real line numbers. Report nothing rather than something you did not verify; an empty list is a valid answer. Every finding must say what a tester should check."""
+
+SYSTEMS = {name: _SYSTEM_HEAD + jobs + _SYSTEM_TAIL for name, jobs in _JOBS.items()}
+SYSTEM = SYSTEMS["siblings"]  # the single-explorer brief, kept for callers that use it
+
+#: Per explorer; two run in parallel.
+PER_EXPLORER = {"max_turns": 10, "max_searches": 7, "max_reads": 10}
 
 
 def _orgs(pull_requests: list[dict]) -> list[str]:
@@ -132,15 +144,70 @@ def _orgs(pull_requests: list[dict]) -> list[str]:
                    for pr in pull_requests if pr.get("repository")} - {""})
 
 
+_MONOREPO_DIRS = ("packages", "apps", "libs", "services", "modules")
+_NOT_PACKAGES = frozenset({"docs", "doc", "test", "tests", "scripts", "tools", "tooling", "build",
+                           "dist", "node_modules", "infra", "deploy", "deployments", "ci", "assets",
+                           "public", "fixtures", "e2e", "examples"})
+
+
+def package_of(path: str) -> str | None:
+    """The package or project a repo path belongs to: `packages/signer-sdk`
+    in a monorepo, the top-level project folder otherwise (`DigiSign.Api`),
+    None for root files."""
+    segs = [s for s in path.split("/") if s]
+    if len(segs) >= 3 and segs[0] in _MONOREPO_DIRS:
+        return f"{segs[0]}/{segs[1]}"
+    if len(segs) >= 2 and not segs[0].startswith("."):
+        return segs[0]
+    return None
+
+
+def package_map(pull_requests: list[dict], trees: dict[str, list[str] | None]) -> dict[str, dict]:
+    """repo → {"changed": [...], "others": [...]} packages, test projects left out."""
+    out: dict[str, dict] = {}
+    for pr in pull_requests:
+        repo = pr.get("repository")
+        if not repo:
+            continue
+        entry = out.setdefault(repo, {"changed": set(), "others": set()})
+        for f in pr.get("files_changed") or []:
+            pkg = package_of(f.get("filename") or "")
+            if pkg:
+                entry["changed"].add(pkg)
+    for repo, entry in out.items():
+        for path in trees.get(repo) or []:
+            pkg = package_of(path)
+            if pkg and pkg not in entry["changed"]:
+                leaf = pkg.split("/")[-1].lower()
+                if leaf in _NOT_PACKAGES or leaf.endswith((".tests", ".test", "tests", "-e2e")):
+                    continue
+                entry["others"].add(pkg)
+    return {r: {"changed": sorted(e["changed"]), "others": sorted(e["others"])[:15]}
+            for r, e in out.items()}
+
+
+def render_packages(packages: dict[str, dict]) -> str:
+    if not packages:
+        return ""
+    lines = ["Packages in each repo (the PRs changed the ones marked *):"]
+    for repo, e in packages.items():
+        names = [f"*{p}" for p in e["changed"]] + e["others"]
+        lines.append(f"- {repo}: " + ", ".join(names))
+    return "\n".join(lines)
+
+
 def build_brief(summary: str, description: str | None, pull_requests: list[dict],
-                diff_budget: int = 30_000) -> str:
-    """What the explorer starts from: the ticket, its PRs, and their diffs."""
+                diff_budget: int = 30_000, packages: dict[str, dict] | None = None) -> str:
+    """What the explorer starts from: the ticket, its PRs, their diffs, and the
+    packages around them."""
     lines = [f"Ticket: {summary}", "", (description or "")[:3000], "", "Pull requests:"]
     for pr in pull_requests:
         lines.append(f"- {pr.get('repository')} #{pr.get('number')} ({pr.get('status')}): "
                      f"{pr.get('title') or ''}")
         for f in (pr.get("files_changed") or [])[:40]:
             lines.append(f"    {f.get('status')} {f.get('filename')}")
+    if packages:
+        lines += ["", render_packages(packages)]
     lines.append("")
     lines.append("Diffs (may be cut to fit):")
     per_pr = diff_budget // max(1, len(pull_requests))
@@ -295,33 +362,77 @@ def _new_result() -> dict:
                       "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}
 
 
-async def explore(llm, github, *, summary: str, description: str | None,
-                  pull_requests: list[dict]) -> dict:
-    """Run the explorer. Never raises.
+async def _explore_one(llm, github, prs: list[dict], *, name: str, brief: str) -> tuple[dict, list[dict]]:
+    """One focused explorer. Returns its result record and the findings it kept."""
+    result = _new_result()
+    ws = Workspace(github, prs, max_searches=PER_EXPLORER["max_searches"],
+                   max_reads=PER_EXPLORER["max_reads"])
+    kept: list[dict] = []
+    try:
+        report = await run_tool_loop(
+            llm, ws, system=SYSTEMS[name], first_message=brief,
+            report_tool=TOOLS[2], max_turns=PER_EXPLORER["max_turns"], result=result)
+        if report is not None:
+            kept, result["dropped"] = ws.keep(report.get("findings") or [])
+        elif result["error"] == "ran out of turns":
+            result["error"] = f"{name} explorer ran out of turns"
+        else:
+            result["error"] = f"{name} explorer stopped without reporting findings"
+    except Exception as e:
+        logger.warning("code exploration (%s) failed: %s", name, e)
+        result["error"] = f"{name} explorer: {type(e).__name__}: {e}"
+    result["searches"], result["reads"] = ws.searches, ws.reads
+    return result, kept
 
-    Returns {"findings", "dropped", "searches", "reads", "turns", "error"}.
+
+async def explore(llm, github, *, summary: str, description: str | None,
+                  pull_requests: list[dict], explorers: tuple[str, ...] = tuple(SYSTEMS)) -> dict:
+    """Run two focused explorers in parallel and merge what they found. Never raises.
+
+    One run used to cover every job on one budget and spent it on the changed
+    package, so code downstream of it (the signer app after a hand-off) was
+    found in some runs and missed in others. One explorer now takes siblings,
+    guards, callers and reachability; the other takes downstream packages,
+    auth setup and hidden preconditions, and must visit every unchanged
+    package. Findings are merged, one per file.
+
+    Returns {"findings", "dropped", "searches", "reads", "turns", "error", "usage"}.
     """
     result = _new_result()
     prs = [pr for pr in pull_requests if pr.get("repository")]
     if not prs:
         result["error"] = "no pull requests with a repository to explore from"
         return result
-    ws = Workspace(github, prs)
+    packages: dict[str, dict] = {}
     try:
-        report = await run_tool_loop(
-            llm, ws, system=SYSTEM, first_message=build_brief(summary, description, prs),
-            report_tool=TOOLS[2], max_turns=MAX_TURNS, result=result)
-        if report is not None:
-            kept, dropped = ws.keep(report.get("findings") or [])
-            result.update(findings=kept, dropped=dropped)
-        elif result["error"] == "ran out of turns":
-            result["error"] = "explorer ran out of turns"
-        else:
-            result["error"] = "explorer stopped without reporting findings"
-    except Exception as e:
-        logger.warning("code exploration failed: %s", e)
-        result["error"] = f"{type(e).__name__}: {e}"
-    result["searches"], result["reads"] = ws.searches, ws.reads
+        refs = {pr["repository"]: pr.get("head_sha") for pr in prs if pr.get("head_sha")}
+        list_tree = getattr(github, "list_tree", None)
+        trees = dict(zip(refs, await asyncio.gather(
+            *(list_tree(repo, ref) for repo, ref in refs.items())))) if list_tree else {}
+        packages = package_map(prs, trees)
+    except Exception as e:  # without the map both explorers still run
+        logger.warning("package map for exploration failed: %s", e)
+    brief = build_brief(summary, description, prs, packages=packages)
+    runs = await asyncio.gather(*(_explore_one(llm, github, prs, name=n, brief=brief) for n in explorers))
+    seen: set[tuple[str, str]] = set()
+    merged: list[dict] = []
+    errors = []
+    for (sub, kept) in runs:
+        for k in ("searches", "reads", "turns", "dropped"):
+            result[k] += sub.get(k) or 0
+        for k, v in (sub.get("usage") or {}).items():
+            result["usage"][k] = result["usage"].get(k, 0) + v
+        if sub.get("error"):
+            errors.append(sub["error"])
+        for f in kept:
+            key = (f.get("repo"), f.get("path"))
+            if key not in seen:
+                seen.add(key)
+                merged.append(f)
+    result["findings"] = merged[:MAX_FINDINGS]
+    result["packages"] = packages
+    if errors:
+        result["error"] = "; ".join(errors)
     return result
 
 
