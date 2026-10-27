@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 from .diff_budget import allocate_patch_budget
 
@@ -351,3 +352,160 @@ def summary_line(exploration: dict) -> str:
     """One line for logs and provenance."""
     return json.dumps({k: exploration.get(k) for k in ("searches", "reads", "turns", "dropped", "error", "usage")}
                       | {"findings": len(exploration.get("findings") or [])})
+
+
+# --- findings the plan dropped ------------------------------------------------
+#
+# On SK-2687 (2026-10-27) the explorer found the signer's identity checkbox,
+# the active-group preconditions and the UI's 403/409 messages, and the plans
+# still lacked them. Asking the main plan call to account for every finding
+# (f02bd19) made that call fragile — empty plans in 3 of 8 attempts — so it was
+# reverted. This leaves the main call untouched: a text match finds the
+# findings no part of the plan mentions, and one separate call writes cases
+# for those alone, before the critics, so they are checked like any other.
+
+MAX_ADDED_CASES = 4
+_ADD_SECTIONS = ("happy_path", "edge_cases", "integration_tests")
+_GENERIC_STEMS = frozenset({"index", "utils", "util", "helpers", "helper", "types", "constants",
+                            "config", "api", "service", "services", "hooks", "styles", "main"})
+_BACKTICK_RE = re.compile(r"`([^`\s]{6,})`")
+
+
+def _plan_text(test_plan) -> str:
+    """Everything a tester or reviewer reads in the plan, as one string."""
+    parts = []
+    for key in ("happy_path", "edge_cases", "integration_tests", "security_negative_tests",
+                "risks_and_gaps", "code_review_checks", "regression_checklist"):
+        parts.append(json.dumps(getattr(test_plan, key, None) or [], default=str))
+    parts.append(json.dumps(getattr(test_plan, "evidence_claims", None) or {}, default=str))
+    return "\n".join(parts)
+
+
+def finding_tokens(f: dict) -> list[str]:
+    """Strings whose presence in the plan shows the finding was used: its file
+    (with its folder when the name alone is generic) and the identifiers it
+    quotes in backticks."""
+    path = f.get("path") or ""
+    segs = [s for s in path.split("/") if s]
+    tokens = []
+    if segs:
+        base = segs[-1]
+        stem = base.rsplit(".", 1)[0]
+        if stem.lower() in _GENERIC_STEMS and len(segs) > 1:
+            tokens.append(f"{segs[-2]}/{base}")
+            if stem.lower() == "index":
+                # SignatureSettingsModal/index.tsx: the folder is the component.
+                # A utils.ts folder name (inPersonSigning) is everywhere, so not that.
+                tokens.append(segs[-2])
+        else:
+            tokens.append(base)
+            if len(stem) >= 8:
+                tokens.append(stem)
+    for field in ("what_it_does", "suggested_check"):
+        tokens += _BACKTICK_RE.findall(f.get(field) or "")
+    return [t for t in dict.fromkeys(tokens) if t and t.lower() not in _GENERIC_STEMS]
+
+
+def dropped_findings(test_plan, exploration: dict | None) -> list[dict]:
+    """Findings no part of the plan mentions. Reachability findings are left
+    out: rule L routes those to unit coverage, not to a case."""
+    text = _plan_text(test_plan)
+    out = []
+    for f in (exploration or {}).get("findings") or []:
+        if f.get("kind") == "reachability":
+            continue
+        if not any(t in text for t in finding_tokens(f)):
+            out.append(f)
+    return out
+
+
+def _repair_tool() -> dict:
+    from .llm_client import TEST_CASE_SCHEMA  # llm_client imports this module
+    case = {**TEST_CASE_SCHEMA, "properties": {
+        **TEST_CASE_SCHEMA["properties"],
+        "section": {"type": "string", "enum": list(_ADD_SECTIONS)},
+        "covers_findings": {"type": "array", "items": {"type": "string"}},
+    }}
+    case["required"] = list(TEST_CASE_SCHEMA.get("required", [])) + ["section", "covers_findings"]
+    return {
+        "name": "add_cases",
+        "description": "Cases for findings the plan does not cover yet.",
+        "input_schema": {"type": "object", "properties": {"cases": {"type": "array", "items": case}},
+                         "required": ["cases"]},
+    }
+
+
+REPAIR_SYSTEM = f"""You add test cases to an existing QA test plan. Each finding below was verified by reading the code it cites, and the plan does not mention it yet.
+
+Write at most {MAX_ADDED_CASES} cases, the fewest that cover the findings worth testing for this ticket (one case may cover several when they are the same behaviour; skip a finding that does not belong to this ticket). Use "section": happy_path or edge_cases for something a tester does in the app, integration_tests for an API-level check, and list the finding ids each case covers in covers_findings. Take expected results from the cited file:line: set expected_verified true and expected_source to that file:line only when the cited code states the outcome; otherwise false. Never expect a behaviour the ticket is removing, and never repeat a case the plan already has (its titles are listed)."""
+
+
+async def write_cases_for(llm, test_plan, findings: list[dict], *, summary: str) -> list[dict]:
+    """One model call: cases for `findings`, each tagged with its section."""
+    titles = [c.get("title", "") for s in _ADD_SECTIONS + ("security_negative_tests",)
+              for c in (getattr(test_plan, s, None) or []) if isinstance(c, dict)]
+    listed = []
+    for f in findings:
+        listed.append(f"- {f['id']} [{f['kind']}] {f['repo']}:{f['path']}:{f['lines']} — {f['what_it_does']}")
+        listed.append(f"    Why it matters: {f['why_it_matters']}")
+        listed.append(f"    Check: {f['suggested_check']}")
+    brief = (f"Ticket: {summary}\n\nThe plan already has these cases:\n"
+             + "\n".join(f"- {t}" for t in titles)
+             + "\n\nFindings to cover:\n" + "\n".join(listed))
+    data = await llm._post_messages(
+        {
+            "model": llm.model,
+            "max_tokens": llm._budget(8192, thinking=8192),
+            "system": REPAIR_SYSTEM,
+            "messages": [{"role": "user", "content": brief}],
+            "tools": [_repair_tool()],
+            "tool_choice": {"type": "tool", "name": "add_cases"},
+        },
+        timeout=300,
+        retry_timeouts=True,
+    )
+    block = next((b for b in data.get("content") or [] if b.get("type") == "tool_use"), None)
+    cases = ((block or {}).get("input") or {}).get("cases") or []
+    return [c for c in cases if isinstance(c, dict) and c.get("section") in _ADD_SECTIONS][:MAX_ADDED_CASES]
+
+
+async def repair_dropped_findings(llm, test_plan, exploration: dict | None, *, summary: str) -> dict:
+    """Write cases for the findings the plan dropped; return the provenance record.
+
+    Never raises: a failed call keeps the plan as generated and says so.
+    """
+    findings = (exploration or {}).get("findings") or []
+    if not findings:
+        return {}
+    for i, f in enumerate(findings, 1):
+        f.setdefault("id", f"X{i}")
+    dropped = dropped_findings(test_plan, exploration)
+    dropped_ids = {f["id"] for f in dropped}
+    outcome = {f["id"]: ("skipped_reachability" if f.get("kind") == "reachability"
+                         else "dropped" if f["id"] in dropped_ids else "used") for f in findings}
+    record: dict = {}
+    if dropped:
+        try:
+            added = await write_cases_for(llm, test_plan, dropped, summary=summary)
+        except Exception as e:
+            logger.warning("could not write cases for dropped exploration findings: %s", e)
+            added, record["repair_error"] = [], f"{type(e).__name__}: {e}"
+        for case in added:
+            section = case.pop("section")
+            case["added_for_findings"] = True
+            rows = getattr(test_plan, section, None)
+            if rows is None:
+                rows = []
+                setattr(test_plan, section, rows)
+            rows.append(case)
+            for fid in case.get("covers_findings") or []:
+                fid = str(fid).strip().upper()
+                if outcome.get(fid) == "dropped":
+                    outcome[fid] = f"added:{section}:{len(rows) - 1}"
+        record["cases_added"] = len(added)
+    record["finding_outcomes"] = [
+        {"id": f["id"], "kind": f.get("kind"), "where": f"{f['repo']}:{f['path']}:{f['lines']}",
+         "outcome": outcome[f["id"]]}
+        for f in findings
+    ]
+    return record

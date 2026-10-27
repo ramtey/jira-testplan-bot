@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     # src/app/code_exploration.py). Off until measured: it adds minutes and
     # several model turns per plan.
     exploration_enabled: bool = False
+    # After generation, write cases (one separate call, at most 4) for the
+    # exploration findings no part of the plan mentions. Never changes the main
+    # plan call: adding duties to it made generation fail (f02bd19, reverted).
+    exploration_repair_enabled: bool = False
 
     # On a single-ticket regeneration, show the generator the previous plan and
     # its recorded QA marks so it rewords cases in place instead of moving them

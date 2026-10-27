@@ -54,7 +54,7 @@ from ..evidence_checks import (
     primary_notes,
 )
 from ..flag_state import LaunchDarklyReader, read_flag_state
-from ..code_exploration import explore, summary_line
+from ..code_exploration import explore, repair_dropped_findings, summary_line
 from ..deliverable_classifier import (
     aggregate_deliverables_for_critique,
     format_deliverable_hint,
@@ -962,6 +962,20 @@ async def generate_single(
             bounce_history=request.bounce_history,
             context_gaps=context_gaps or None,
         )
+
+        # Explorer findings the plan never mentions get cases from one separate
+        # call, before the critics, so they are checked like any other case.
+        exploration_data = (request.development_info or {}).get("code_exploration")
+        if settings.exploration_repair_enabled and exploration_data and exploration_data.get("findings"):
+            repair = await repair_dropped_findings(
+                llm, test_plan, exploration_data, summary=request.summary)
+            provenance.setdefault("code_exploration", {}).update(repair)
+            if repair.get("repair_error"):
+                context_gaps.append(
+                    "cases could not be written for explorer findings the plan missed "
+                    f"({repair['repair_error']})"
+                )
+                provenance["context_gaps"] = context_gaps
 
         # AC coverage for the single-ticket plan. Previously only the
         # multi-ticket endpoint computed this, so a plain Story (no children)

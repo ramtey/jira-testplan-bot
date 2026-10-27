@@ -192,3 +192,120 @@ async def test_history_is_cached_and_usage_is_summed():
     result = await explore(llm, FakeGitHub(), summary="s", description="", pull_requests=PRS)
     assert all(p["cache_control"] == {"type": "ephemeral"} for p in llm.payloads)
     assert result["usage"]["input_tokens"] == 200 and result["usage"]["cache_read_input_tokens"] == 100
+
+
+# ── findings the plan dropped get cases from a separate call ──────────────────
+
+from src.app.code_exploration import (  # noqa: E402
+    MAX_ADDED_CASES,
+    dropped_findings,
+    finding_tokens,
+    repair_dropped_findings,
+)
+from src.app.models import TestPlan  # noqa: E402
+
+
+def _plan(**sections):
+    return TestPlan(happy_path=sections.get("happy_path", []), edge_cases=sections.get("edge_cases", []),
+                    regression_checklist=[], integration_tests=sections.get("integration_tests", []),
+                    security_negative_tests=[], risks_and_gaps=sections.get("risks_and_gaps", []))
+
+
+def _found(*specs):
+    return {"findings": [{**finding("acme/ui", path, kind=kind), "what_it_does": what}
+                         for path, kind, what in specs]}
+
+
+MODAL = ("packages/signer-sdk/src/components/SignatureSettingsModal/index.tsx", "guard",
+         "renders `in-person-identity-checkbox` before Sign is enabled")
+UTILS = ("packages/sender/src/common/inPersonSigning/utils.ts", "guard", "keeps the active group only")
+REACH = ("packages/sender/src/x/Unreached.tsx", "reachability", "nothing produces this error")
+
+
+def test_tokens_name_the_component_not_a_generic_folder():
+    assert finding_tokens({"path": MODAL[0], "what_it_does": MODAL[2]}) == [
+        "SignatureSettingsModal/index.tsx", "SignatureSettingsModal", "in-person-identity-checkbox"]
+    assert finding_tokens({"path": UTILS[0], "what_it_does": ""}) == ["inPersonSigning/utils.ts"]
+
+
+def test_a_finding_the_plan_mentions_anywhere_is_not_dropped():
+    plan = _plan(edge_cases=[{"title": "x", "expected_source": "packages/.../SignatureSettingsModal/index.tsx:150"}],
+                 risks_and_gaps=[{"gap": "only `in-person-identity-checkbox`", "evidence": ""}])
+    assert dropped_findings(plan, _found(MODAL, UTILS, REACH)) == [
+        _found(UTILS)["findings"][0]]  # reachability is never repaired
+
+
+class RepairLLM(ScriptedLLM):
+    def __init__(self, cases=None, raises=None):
+        super().__init__([], raises=raises)
+        self.cases, self.calls = cases or [], 0
+
+    async def _post_messages(self, payload, **kw):
+        self.calls += 1
+        if self.raises:
+            raise self.raises
+        self.payload = payload
+        return {"content": [{"type": "tool_use", "id": "r", "name": "add_cases",
+                             "input": {"cases": self.cases}}]}
+
+
+def _case(n, section="edge_cases", covers=("X2",)):
+    return {"section": section, "covers_findings": list(covers), "title": f"case {n}", "steps": ["s"],
+            "expected": "e", "priority": "medium", "surface": "web_ui", "credentials": "owner",
+            "expected_verified": False}
+
+
+@pytest.mark.asyncio
+async def test_dropped_findings_get_cases_appended_and_recorded():
+    plan = _plan(happy_path=[{"title": "owner hands off", "steps": ["SignatureSettingsModal shows"]}])
+    llm = RepairLLM(cases=[_case(1)])
+    record = await repair_dropped_findings(llm, plan, _found(MODAL, UTILS, REACH), summary="Owner only")
+    assert plan.edge_cases[-1]["title"] == "case 1" and plan.edge_cases[-1]["added_for_findings"]
+    assert "section" not in plan.edge_cases[-1]
+    outcomes = {o["id"]: o["outcome"] for o in record["finding_outcomes"]}
+    assert outcomes == {"X1": "used", "X2": "added:edge_cases:0", "X3": "skipped_reachability"}
+    sent = llm.payload["messages"][0]["content"]
+    assert "X2" in sent and "SignatureSettingsModal" not in sent and "owner hands off" in sent
+
+
+@pytest.mark.asyncio
+async def test_nothing_dropped_means_no_call():
+    plan = _plan(happy_path=[{"title": "t", "steps": ["SignatureSettingsModal", "inPersonSigning/utils.ts"]}])
+    llm = RepairLLM()
+    record = await repair_dropped_findings(llm, plan, _found(MODAL, UTILS), summary="s")
+    assert llm.calls == 0 and "cases_added" not in record
+
+
+@pytest.mark.asyncio
+async def test_added_cases_are_capped():
+    plan = _plan()
+    llm = RepairLLM(cases=[_case(i) for i in range(MAX_ADDED_CASES + 3)])
+    await repair_dropped_findings(llm, plan, _found(UTILS), summary="s")
+    assert len(plan.edge_cases) == MAX_ADDED_CASES
+
+
+@pytest.mark.asyncio
+async def test_a_failed_repair_keeps_the_plan_and_says_so():
+    plan = _plan(happy_path=[{"title": "t"}])
+    record = await repair_dropped_findings(RepairLLM(raises=RuntimeError("overloaded")), plan,
+                                           _found(UTILS), summary="s")
+    assert record["repair_error"] == "RuntimeError: overloaded"
+    assert [o["outcome"] for o in record["finding_outcomes"]] == ["dropped"]
+    assert plan.happy_path == [{"title": "t"}]
+
+
+def test_the_main_plan_tool_stays_free_of_exploration_duties():
+    """f02bd19 added an exploration accounting field to submit_test_plan and
+    generation began failing as empty plans (3 of 8). Keep repair outside it."""
+    from src.app.llm_client import SUBMIT_TEST_PLAN_TOOL, TEST_CASE_SCHEMA
+    props = SUBMIT_TEST_PLAN_TOOL["input_schema"]["properties"]
+    assert not [k for k in props if "exploration" in k or "finding" in k]
+    assert "covers_findings" not in TEST_CASE_SCHEMA["properties"]
+
+
+def test_repair_runs_before_the_critics_so_added_cases_are_checked():
+    import inspect
+    from src.app.services import plan_service
+    src = inspect.getsource(plan_service.generate_single)
+    assert src.index("repair_dropped_findings(") < src.index("run_grounding_critic(")
+    assert src.index("repair_dropped_findings(") < src.index("quarantine_ungrounded_cases(")
