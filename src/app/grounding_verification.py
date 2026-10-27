@@ -420,6 +420,36 @@ def check_restatement(region: Region, prose: str, known_text: set[str] | None = 
     return {"atoms": atoms, "missing": missing, "extras": extras}
 
 
+# An expected result that says the thing does NOT happen: hidden, not offered,
+# refused. One failing condition is enough to explain an absence, so naming
+# the rule's other conditions is not required of it (a "shown only when all
+# hold" expectation still is). SK-2687, 2026-10-26: "the TC sees no Sign In
+# Person because they are not the owner" was downgraded for not also naming
+# the StartSafe condition.
+_NEGATIVE_HEAD_RE = re.compile(
+    r"\b(?:No|no|Never|never)\s+(?:['\"“‘]|[A-Z])"
+    r"|(?i:\b(?:is|are|was|be|stays?|remains?)\s+(?:not|never)\s+"
+    r"(?:shown|offered|visible|displayed|rendered|listed|available|enabled|reachable))"
+    r"|(?i:\b(?:does|do|did|must|should|will)\s+not\s+"
+    r"(?:appear|show|render|offer|display|list|start|mint|issue|allow))"
+    r"|(?i:\b(?:hidden|refused|denied|forbidden)\b)"
+    r"|\b40[13]\b"
+)
+# Wording that claims the whole rule ("only keeps recipients with …") is a
+# restatement whatever the outcome, and keeps the strict check (SK-2719).
+_EXHAUSTIVE_RE = re.compile(r"(?i)\bonly\s+(?:keeps?|when|if|for|shows?|returns?)\b|\brequires?\b")
+
+
+def _is_negative_expectation(text: str) -> bool:
+    """The headline outcome is an absence or a refusal, and the text does not
+    claim to state the whole rule."""
+    text = (text or "").strip()
+    if not text or _EXHAUSTIVE_RE.search(text):
+        return False
+    first = re.split(r"(?<=[.!?:;])\s", text, maxsplit=1)[0]
+    return bool(_NEGATIVE_HEAD_RE.search(first))
+
+
 def _verify_expected(case_id: str, case: dict, index: SourceIndex,
                      shown: dict[str, set[int]] | None) -> list[Outcome]:
     if case.get("expected_verified") is not True:
@@ -453,8 +483,9 @@ def _verify_expected(case_id: str, case: dict, index: SourceIndex,
     # the prose may refer to the rule ("because the picker keeps only the
     # lowest group") without repeating all of it.
     declared: set[str] = set()
+    negative = _is_negative_expectation(case.get("expected") or "")
     for lc in case.get("logic_claims") or []:
-        names, problems = _verify_logic_claim(lc, index, known_text)
+        names, problems = _verify_logic_claim(lc, index, known_text, negative=negative)
         reasons += problems
         if not problems:
             declared |= names
@@ -463,7 +494,7 @@ def _verify_expected(case_id: str, case: dict, index: SourceIndex,
         restated = (check_restatement(region, prose, known_text)
                     if region.functions and not covered else None)
         if restated:
-            if restated["missing"]:
+            if restated["missing"] and not negative:
                 reasons.append(
                     "restates the rule in " + region.label() + " without "
                     + "; ".join(f"{a.display} (line {a.line})" for a in restated["missing"]))
@@ -499,7 +530,8 @@ def _verify_expected(case_id: str, case: dict, index: SourceIndex,
     return [o]
 
 
-def _verify_logic_claim(lc: dict, index: SourceIndex, known_text: set[str]) -> tuple[set[str], list[str]]:
+def _verify_logic_claim(lc: dict, index: SourceIndex, known_text: set[str],
+                        negative: bool = False) -> tuple[set[str], list[str]]:
     """A declared ``logic_claims`` entry must name every condition of the code
     it cites, and add no value that code lacks. Returns the functions it
     covers and what is wrong with it.
@@ -533,7 +565,7 @@ def _verify_logic_claim(lc: dict, index: SourceIndex, known_text: set[str]) -> t
             return {f.name for f in region.functions}, []
         return set(), [f"its logic_claims rule names too little of {region.label()} to check"]
     problems = []
-    if restated["missing"]:
+    if restated["missing"] and not negative:
         problems.append("the claimed rule omits " + "; ".join(
             f"{a.display} (line {a.line})" for a in restated["missing"]))
     if restated["extras"]:

@@ -165,3 +165,34 @@ async def test_a_rule_the_extractor_cannot_read_is_not_downgraded():
         {"rule": "no Sign Now when userInfo is null, the flag is off, or the caller is a delegate",
          "source": "src/useSignNow.ts:1-13", "function": "useSignNow"}, index, set())
     assert problems == []
+
+
+# ── 5. an absence needs only the condition that fails ─────────────────────────
+
+def _case_with(expected: str) -> dict:
+    return {
+        "title": "TC on envelope history",
+        "steps": ["As the TC, open the owner's envelope history"],
+        "expected": expected,
+        "expected_verified": True,
+        "expected_source": "src/canSign.ts:1-3",
+        "logic_claims": [{"rule": "the flag inPersonSigning is on and the caller is not a delegate",
+                          "source": "src/canSign.ts:1-3", "function": "canSignInPerson"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_negative_expectation_naming_only_the_failing_condition_stays_verified():
+    index = await sf.read_source_index(_gh(), PRS)
+    case = _case_with("No 'Sign In Person' link: the caller is a delegate, so canSignInPerson is false.")
+    gv._verify_expected("happy_path:0", case, index, shown=None)
+    assert case["expected_verified"] is True, case.get("expected_verification_downgraded")
+
+
+@pytest.mark.asyncio
+async def test_a_positive_expectation_must_still_name_every_condition():
+    index = await sf.read_source_index(_gh(), PRS)
+    case = _case_with("The owner sees 'Sign In Person': the flag is on and the caller is not a delegate.")
+    gv._verify_expected("happy_path:0", case, index, shown=None)
+    assert case["expected_verified"] is False
+    assert "isStartSafe" in case["expected_verification_downgraded"]
