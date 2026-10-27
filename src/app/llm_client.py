@@ -156,7 +156,7 @@ def _render_batch_evidence(tickets: list[dict]) -> str:
 def _evidence_claims(test_plan_data: dict) -> dict | None:
     """The model's evidence-rule answers, or None when it gave none."""
     claims = {k: test_plan_data.get(k) for k in
-              ("requirement_check", "deployment_status", "note_disagreements")
+              ("requirement_check", "deployment_status", "note_disagreements", "exploration_coverage")
               if test_plan_data.get(k)}
     return claims or None
 
@@ -5116,6 +5116,19 @@ SUBMIT_TEST_PLAN_TOOL = {
                     "source": {"type": "string", "description": "Where that comes from: 'comment <id>' or the deployment config path."},
                 },
                 "required": ["deployed", "statement"],
+            },
+            "exploration_coverage": {
+                "type": "array",
+                "description": "Required when the prompt lists 'Related code outside the PR diffs' findings (X1, X2, …): one entry per finding id, saying where the plan covers it. A precondition or downstream step usually belongs inside an existing case's steps or expected result, and that case counts. Empty when no findings were listed.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "finding": {"type": "string", "description": "The finding id, e.g. 'X3'."},
+                        "covered_by": {"type": "string", "description": "The case that covers it, as '<section>:<index>' (e.g. 'edge_cases:2'), or 'risks_and_gaps:<index>'. Empty when out of scope."},
+                        "out_of_scope_reason": {"type": "string", "description": "Only when no case covers it: why this ticket's plan should not test it."},
+                    },
+                    "required": ["finding"],
+                },
             },
             "note_disagreements": {
                 "type": "array",

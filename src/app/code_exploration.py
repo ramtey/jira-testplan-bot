@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 from .diff_budget import allocate_patch_budget
 
@@ -312,6 +313,8 @@ async def explore(llm, github, *, summary: str, description: str | None,
             report_tool=TOOLS[2], max_turns=MAX_TURNS, result=result)
         if report is not None:
             kept, dropped = ws.keep(report.get("findings") or [])
+            for i, f in enumerate(kept, 1):
+                f["id"] = f"X{i}"
             result.update(findings=kept, dropped=dropped)
         elif result["error"] == "ran out of turns":
             result["error"] = "explorer ran out of turns"
@@ -331,7 +334,7 @@ def render_findings(exploration: dict | None) -> str:
         return ""
     lines = []
     for f in findings:
-        lines.append(f"- [{f['kind']}] {f['repo']}:{f['path']}:{f['lines']} — {f['what_it_does']}")
+        lines.append(f"- {f.get('id', '')} [{f['kind']}] {f['repo']}:{f['path']}:{f['lines']} — {f['what_it_does']}")
         lines.append(f"    Why it matters: {f['why_it_matters']}")
         lines.append(f"    Check: {f['suggested_check']}")
     return "\n".join(lines)
@@ -343,7 +346,10 @@ EXPLORATION_GUIDANCE = (
     "never its current behaviour; one that does not enforce the rule is also a risks_and_gaps "
     "entry. Cite the file:line given here in expected_source. A \"reachability\" finding says "
     "nothing in the app produces a condition the diff handles: cover that branch as unit coverage "
-    "(rule L), never as a UI case."
+    "(rule L), never as a UI case. Account for EVERY finding id in `exploration_coverage`: the "
+    "case that covers it ('<section>:<index>'), or, only when it truly falls outside this "
+    "ticket, an out_of_scope_reason. A finding left unaccounted is written up as a case after "
+    "the fact, so leaving one out does not shorten the plan."
 )
 
 
@@ -351,3 +357,128 @@ def summary_line(exploration: dict) -> str:
     """One line for logs and provenance."""
     return json.dumps({k: exploration.get(k) for k in ("searches", "reads", "turns", "dropped", "error", "usage")}
                       | {"findings": len(exploration.get("findings") or [])})
+
+
+# --- making sure findings reach the plan ---------------------------------------
+#
+# On SK-2687 (2026-10-27) the explorer found the signer's identity checkbox,
+# the active-group preconditions and the UI's 403/409 messages, and the plans
+# still lacked all three: the generator was told to use the findings and did
+# not, silently. Every finding now has to be accounted for, and one the plan
+# does not cover becomes a case after the fact.
+
+_COVER_SECTIONS = ("happy_path", "edge_cases", "integration_tests", "security_negative_tests",
+                   "risks_and_gaps")
+_ADD_SECTIONS = ("happy_path", "edge_cases", "integration_tests")
+
+
+def account_for_findings(test_plan, exploration: dict | None) -> dict[str, dict]:
+    """Each finding id → {"status": covered | out_of_scope | unaccounted, ...}.
+
+    "covered" needs a `covered_by` that names a case or risk the plan has; a
+    claim pointing past the end of a section is not coverage.
+    """
+    findings = (exploration or {}).get("findings") or []
+    out = {f["id"]: {"status": "unaccounted"} for f in findings if f.get("id")}
+    claims = (getattr(test_plan, "evidence_claims", None) or {}).get("exploration_coverage") or []
+    for c in claims:
+        if not isinstance(c, dict):
+            continue
+        fid = (c.get("finding") or "").strip().upper()
+        if fid not in out:
+            continue
+        by = (c.get("covered_by") or "").strip()
+        m = re.fullmatch(r"([a-z_]+):(\d+)", by)
+        if m and m.group(1) in _COVER_SECTIONS and int(m.group(2)) < len(getattr(test_plan, m.group(1)) or []):
+            out[fid] = {"status": "covered", "by": by}
+        elif not by and (c.get("out_of_scope_reason") or "").strip():
+            out[fid] = {"status": "out_of_scope", "reason": c["out_of_scope_reason"].strip()}
+    return out
+
+
+def _repair_tool() -> dict:
+    from .llm_client import TEST_CASE_SCHEMA  # llm_client imports this module
+    case = {**TEST_CASE_SCHEMA, "properties": {
+        **TEST_CASE_SCHEMA["properties"],
+        "section": {"type": "string", "enum": list(_ADD_SECTIONS)},
+        "covers_findings": {"type": "array", "items": {"type": "string"}},
+    }}
+    case["required"] = list(TEST_CASE_SCHEMA.get("required", [])) + ["section", "covers_findings"]
+    return {
+        "name": "add_cases",
+        "description": "Cases for findings the plan does not cover yet.",
+        "input_schema": {"type": "object", "properties": {"cases": {"type": "array", "items": case}},
+                         "required": ["cases"]},
+    }
+
+
+REPAIR_SYSTEM = """You add test cases to an existing QA test plan. Each finding below was verified by reading the code it cites, and the plan does not cover it yet.
+
+Write the fewest cases that cover every finding (one case may cover several when they are the same behaviour). Use "section": happy_path or edge_cases for something a tester does in the app, integration_tests for an API-level check. Take expected results from the cited file:line: set expected_verified true and expected_source to that file:line only when the cited code states the outcome; otherwise false. Never expect a behaviour the ticket is removing, and never repeat a case the plan already has (its titles are listed)."""
+
+
+async def write_cases_for(llm, test_plan, findings: list[dict], *, summary: str) -> list[dict]:
+    """One model call: cases for `findings`, each tagged with its section."""
+    titles = [c.get("title", "") for s in _ADD_SECTIONS + ("security_negative_tests",)
+              for c in (getattr(test_plan, s, None) or []) if isinstance(c, dict)]
+    brief = (f"Ticket: {summary}\n\nThe plan already has these cases:\n"
+             + "\n".join(f"- {t}" for t in titles)
+             + "\n\nFindings to cover:\n" + render_findings({"findings": findings}))
+    tool = _repair_tool()
+    data = await llm._post_messages(
+        {
+            "model": llm.model,
+            "max_tokens": llm._budget(8192, thinking=8192),
+            "system": REPAIR_SYSTEM,
+            "messages": [{"role": "user", "content": brief}],
+            "tools": [tool],
+            "tool_choice": {"type": "tool", "name": "add_cases"},
+        },
+        timeout=300,
+        retry_timeouts=True,
+    )
+    block = next((b for b in data.get("content") or [] if b.get("type") == "tool_use"), None)
+    cases = ((block or {}).get("input") or {}).get("cases") or []
+    return [c for c in cases if isinstance(c, dict) and c.get("section") in _ADD_SECTIONS]
+
+
+async def ensure_findings_covered(llm, test_plan, exploration: dict | None, *, summary: str) -> dict:
+    """Account for every finding, writing cases for the ones the plan dropped.
+
+    Returns the provenance record: one entry per finding with its outcome, and
+    an error when the repair call failed (the plan is kept either way).
+    """
+    findings = (exploration or {}).get("findings") or []
+    if not findings:
+        return {}
+    status = account_for_findings(test_plan, exploration)
+    missing = [f for f in findings if status.get(f["id"], {}).get("status") == "unaccounted"]
+    error = None
+    if missing:
+        try:
+            added = await write_cases_for(llm, test_plan, missing, summary=summary)
+        except Exception as e:
+            logger.warning("could not write cases for uncovered exploration findings: %s", e)
+            added, error = [], f"{type(e).__name__}: {e}"
+        for case in added:
+            section = case.pop("section")
+            case["added_for_findings"] = True
+            rows = getattr(test_plan, section, None)
+            if rows is None:
+                rows = []
+                setattr(test_plan, section, rows)
+            rows.append(case)
+            for fid in case.get("covers_findings") or []:
+                fid = str(fid).strip().upper()
+                if status.get(fid, {}).get("status") == "unaccounted":
+                    status[fid] = {"status": "added", "by": f"{section}:{len(rows) - 1}"}
+    record = {
+        "findings": [
+            {"id": f["id"], "kind": f.get("kind"), "where": f"{f['repo']}:{f['path']}:{f['lines']}",
+             **status.get(f["id"], {"status": "unaccounted"})}
+            for f in findings
+        ],
+    }
+    if error:
+        record["repair_error"] = error
+    return record
