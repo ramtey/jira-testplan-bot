@@ -1241,6 +1241,22 @@ class GitHubClient:
             for item in (response.json().get("items") or [])[:max_hits]
         ]
 
+    async def commit_before(self, repo: str, iso_time: str) -> str | None:
+        """The default branch's last commit before ``iso_time``; None when GitHub
+        would not say. Callers must not fall back to today's code on None."""
+        if not self.token:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(f"{self.base_url}/repos/{repo}/commits",
+                                     params={"until": iso_time, "per_page": 1}, headers=self._headers())
+        except httpx.HTTPError as e:
+            logger.warning("Commit lookup %s before %s failed: %s", repo, iso_time, e)
+            return None
+        if r.status_code != 200 or not r.json():
+            return None
+        return r.json()[0].get("sha")
+
     async def compare_commits(self, repo: str, base: str, head: str) -> dict | None:
         """GitHub's compare of `base...head` in `repo`: ``{"status", "ahead_by",
         "behind_by"}``, where status "ahead"/"identical" means `head` contains

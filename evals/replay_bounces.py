@@ -57,6 +57,11 @@ CONTEXT_RETRY_PAUSE_S = 20
 # grading call depends on.
 JUDGE_MODEL = os.environ.get("EVAL_JUDGE_MODEL", "claude-opus-4-8")
 
+# Code exploration in the replay, with every read pinned to the bounce cutoff.
+# Code search itself only sees today's index, so a hit can name a file that
+# did not exist then; the read of it is pinned and fails rather than leaking.
+EVAL_EXPLORATION = os.environ.get("EVAL_EXPLORATION") == "1"
+
 # Product risk profiles for this run: a directory, or unset for none. Read
 # from its own variable rather than RISK_PROFILES_DIR so the .env the live bot
 # uses cannot switch profiles on in a baseline run by accident.
@@ -421,8 +426,10 @@ async def phase_replay(rows, limit):
     settings.deploy_state_sources = {}
     # Flag state likewise: today's targeting, not the bounce's.
     settings.ld_flag_sources = {}
-    # Exploration reads today's default branches, not the code at the bounce.
-    settings.exploration_enabled = False
+    # Exploration reads default branches, which today may hold the fix. Off
+    # unless EVAL_EXPLORATION=1, which pins its reads to the bounce cutoff
+    # (settings.exploration_as_of, set per ticket below).
+    settings.exploration_enabled = EVAL_EXPLORATION
     # The ticket's stored plans were written after the bounce — some from the
     # very bounce reason being scored — so showing one to the generator leaks
     # the answer.
@@ -506,6 +513,7 @@ async def phase_replay(rows, limit):
                 development_info=serialized.get("development_info"),
                 profiles=held,
             )]
+            settings.exploration_as_of = cutoff.isoformat() if EVAL_EXPLORATION else None
             plan = await generate_single(
                 GenerateTestPlanRequest(**prompt_payload(serialized)))
             plan["_rewound_to"] = cutoff.isoformat()
@@ -528,6 +536,7 @@ async def phase_replay(rows, limit):
                 "context_gaps": prov.get("context_gaps") or [],
                 "critics_unavailable": prov.get("critics_unavailable") or [],
                 "fetch_retried": retried,
+                "exploration": EVAL_EXPLORATION,
                 "model": settings.llm_model,
                 # The profiles that matched this ticket, after its holdout.
                 # Empty for a no-profile run and for an unmatched ticket alike;

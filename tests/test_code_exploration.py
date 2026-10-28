@@ -388,3 +388,40 @@ async def test_one_explorer_failing_keeps_the_others_findings_and_says_so():
     result = await explore(llm, gh, summary="s", description="", pull_requests=PRS)
     assert [f["path"] for f in result["findings"]] == ["Api/Other.cs"]
     assert result["error"] == "downstream explorer: RuntimeError: overloaded"
+
+
+# ── replay: reads outside the PRs are pinned to the bounce cutoff ─────────────
+
+from src.app.code_exploration import Workspace  # noqa: E402
+
+
+class PinnedGitHub(FakeGitHub):
+    def __init__(self, sha="old1234", **kw):
+        super().__init__(**kw)
+        self.sha, self.asked = sha, []
+
+    async def commit_before(self, repo, iso):
+        self.asked.append((repo, iso))
+        return self.sha
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_read_uses_the_commit_before_the_cutoff():
+    gh = PinnedGitHub(files={"acme/envelope-api:Api/Other.cs": "x",
+                             "acme/envelope-api:Api/StartInPersonSessionHandler.cs": "y"})
+    ws = Workspace(gh, PRS, as_of="2026-03-02T09:34:00+00:00")
+    out = await ws.read_file("acme/envelope-api", "Api/Other.cs")
+    assert ("acme/envelope-api", "old1234", "Api/Other.cs") in gh.reads and "as of 2026-03-02" in out
+    # A PR's own file is still read at the PR's commit, not the pin.
+    await ws.read_file("acme/envelope-api", "Api/StartInPersonSessionHandler.cs")
+    assert ("acme/envelope-api", "6d9a355abc", "Api/StartInPersonSessionHandler.cs") in gh.reads
+    assert len(gh.asked) == 1  # one lookup per repo
+
+
+@pytest.mark.asyncio
+async def test_no_commit_before_the_cutoff_means_no_read_never_todays_code():
+    gh = PinnedGitHub(sha=None, files={"acme/envelope-api:Api/Other.cs": "today's fix"})
+    ws = Workspace(gh, PRS, as_of="2026-03-02T09:34:00+00:00")
+    out = await ws.read_file("acme/envelope-api", "Api/Other.cs")
+    assert gh.reads == [] and "was not read" in out
+    assert ("acme/envelope-api", "Api/Other.cs") not in ws.read_files

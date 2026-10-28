@@ -223,8 +223,12 @@ class Workspace:
     """The explorer's tools, with their budgets and the record of what was read."""
 
     def __init__(self, github, pull_requests: list[dict], *,
-                 max_searches: int = MAX_SEARCHES, max_reads: int = MAX_READS):
+                 max_searches: int = MAX_SEARCHES, max_reads: int = MAX_READS,
+                 as_of: str | None = None):
         self.github = github
+        # Replay: files outside the PRs are read as of this moment, never today's.
+        self.as_of = as_of
+        self._pinned: dict[str, str | None] = {}
         self.max_searches, self.max_reads = max_searches, max_reads
         self.orgs = _orgs(pull_requests)
         self.pr_refs: dict[tuple[str, str], str] = {}
@@ -266,6 +270,13 @@ class Workspace:
             return f"{repo} is outside the organizations this ticket belongs to."
         self.reads += 1
         ref = self.pr_refs.get((repo, path))
+        if ref is None and self.as_of:
+            if repo not in self._pinned:
+                self._pinned[repo] = await self.github.commit_before(repo, self.as_of)
+            ref = self._pinned[repo]
+            if ref is None:
+                return (f"Could not find {repo} as it was on {self.as_of[:10]}, so {path} was not "
+                        "read (today's version could contain later fixes).")
         files = await self.github.fetch_files_at_ref(repo, ref, [path])
         if path not in files:
             return f"Could not read {repo}:{path}" + (f" at {ref[:7]}" if ref else "") + "."
@@ -275,7 +286,8 @@ class Workspace:
         end = min(len(all_lines), start + READ_MAX_LINES - 1)
         body = "\n".join(f"{n:5d}| {all_lines[n - 1]}" for n in range(start, end + 1))
         tail = f"\n… lines {end + 1}-{len(all_lines)} not shown" if end < len(all_lines) else ""
-        at = f"PR commit {ref[:7]}" if ref else "default branch"
+        at = (f"PR commit {ref[:7]}" if (repo, path) in self.pr_refs
+              else f"as of {self.as_of[:10]} ({ref[:7]})" if self.as_of else "default branch")
         return f"{repo}:{path} ({at}, lines {start}-{end} of {len(all_lines)})\n{body}{tail}"
 
     def keep(self, findings: list) -> tuple[list[dict], int]:
@@ -365,8 +377,9 @@ def _new_result() -> dict:
 async def _explore_one(llm, github, prs: list[dict], *, name: str, brief: str) -> tuple[dict, list[dict]]:
     """One focused explorer. Returns its result record and the findings it kept."""
     result = _new_result()
+    from .config import settings
     ws = Workspace(github, prs, max_searches=PER_EXPLORER["max_searches"],
-                   max_reads=PER_EXPLORER["max_reads"])
+                   max_reads=PER_EXPLORER["max_reads"], as_of=settings.exploration_as_of)
     kept: list[dict] = []
     try:
         report = await run_tool_loop(

@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     # exploration findings no part of the plan mentions. Never changes the main
     # plan call: adding duties to it made generation fail (f02bd19, reverted).
     exploration_repair_enabled: bool = False
+    # ISO timestamp: read files outside the PRs as they were at this moment
+    # (each repo's last default-branch commit before it). Set per ticket by the
+    # replay eval so exploration cannot read a fix merged after the bounce.
+    exploration_as_of: str | None = None
 
     # On a single-ticket regeneration, show the generator the previous plan and
     # its recorded QA marks so it rewords cases in place instead of moving them
