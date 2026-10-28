@@ -62,6 +62,20 @@ interpreter can write anywhere and would undo the `Edit` scoping.
   <pid>`, which is not safe to allowlist; `sim-record.sh start|stop` owns the
   pid instead. Video normalizing, contact sheets and loudness checks go through
   `video-tools.sh` for the same reason (a bare `ffmpeg` can overwrite any file).
+* **Build check.** A runner cannot confirm the deployed build itself: the
+  source host and the deploy repo are off its allowlist, and should stay off.
+  The bot must hand it the answer (`deploy_state`, included / not included /
+  could not check) with the run. Until then every case gated on the build is
+  Not Run `permission_denied`. Measured: one refused build check blocked 43 of
+  49 cases on a backend ticket.
+* **Bot reads** (plan, video chapters) go through the bot's MCP tools, not
+  `curl` to the local API.
+* **Request-level cases** (backend, security negative tests) need an HTTP
+  wrapper with a host allowlist and named token profiles, writing the request
+  and response transcript into the evidence directory. A bare `curl` is not
+  allowlistable: a prefix rule cannot stop `-X DELETE` or a different host.
+* **Server-side observations** (headers a service sends upstream, traces) are
+  `not_automatable` for a runner; they stay with a person.
 * **Device and session preflight.** A booted simulator and a fresh web session
   are preconditions the dispatcher checks before claiming a run; the agent
   does not boot devices or log in.
