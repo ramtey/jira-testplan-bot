@@ -161,17 +161,22 @@ Not Run codes: `missing_fixture`, `blocked_environment`, `wrong_build`,
 `run_aborted`, `plan_changed`, `waiting_for_build`, `no_runner_profile`,
 `pr_not_merged`.
 
-Results are keyed by `plan_id + case_id`, not by progress key, which removes
-same-key regeneration misattachment for results. The browser still never
+Every result records both the progress key it is filed under and the
+`plan_id` it was read from. The checked set is still derived per progress key,
+so regeneration behaves as before; the review panel (P3) reads by `plan_id`,
+which is what ends same-key misattachment there. The browser still never
 computes a key.
 
-**Migration.** Browser toggles move to a per-case endpoint (one id, add or
-remove), fixing the lost update. `checked_ids` stays as a server-maintained
-projection — latest result is a human pass, an approved agent pass, or a
-legacy mark — so carry-over, revision and other-shapes keep working. A one-shot
-backfill records existing marks as `actor: legacy_unknown` (we cannot tell who
-made them). Carry-over learns to copy result records, preserving the actor.
-The human actor is the `users` row named by `QA_ACTOR_EMAIL` (there is no login).
+**Migration (shipped in P1).** Browser toggles go to a per-case endpoint
+(`POST /plans/{id}/results`, one id, passed or cleared), which ends the lost
+update. The checked set is derived on read: the old progress row is a frozen
+baseline and results are applied on top in order, so carry-over, revision and
+other-shapes read through the same call unchanged. There is no backfill job:
+a baseline mark with no newer result is reported as `legacy_unknown`, which is
+what a backfill would have written. The whole-set `PUT` remains for scripts and
+records its difference as `legacy_unknown` results. Carry-over records the
+tester's own passes. The human actor is the `users` row named by
+`QA_ACTOR_EMAIL` (there is no login).
 
 ## Decisions
 
