@@ -275,20 +275,25 @@ async def test_resuming_a_ticket_removes_the_hold(db):
 
 
 @pytest.mark.asyncio
-async def test_progress_is_replaced_wholesale_and_deduped(db):
-    await test_plan_progress_repository.upsert_progress(
-        db, progress_key="sk-1:abc", checked_ids=["b", "a", "a"]
+async def test_progress_is_recorded_as_results_and_deduped(db):
+    actor = {"kind": "human", "user_id": None, "email": None, "name": None}
+    await test_plan_progress_repository.record_marks(
+        db, progress_key="sk-1:abc", plan_id=None, add=["b", "a", "a"],
+        actor=actor, source="ui",
     )
     row = await test_plan_progress_repository.get_progress(db, progress_key="SK-1:ABC")
     assert row is not None
     assert row.checked_ids == '["a", "b"]'
 
-    await test_plan_progress_repository.upsert_progress(
-        db, progress_key="SK-1:ABC", checked_ids=["c"]
+    await test_plan_progress_repository.record_marks(
+        db, progress_key="SK-1:ABC", plan_id=None, add=["c"], remove=["a", "b"],
+        actor=actor, source="ui",
     )
     row = await test_plan_progress_repository.get_progress(db, progress_key="SK-1:ABC")
     assert row.checked_ids == '["c"]'
-    assert await db["test_plan_progress"].count_documents({}) == 1
+    # Results only: the legacy row is a frozen baseline nothing writes any more.
+    assert await db["test_plan_progress"].count_documents({}) == 0
+    assert await db["case_results"].count_documents({}) == 5
 
 
 @pytest.mark.asyncio

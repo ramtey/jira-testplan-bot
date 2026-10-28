@@ -287,6 +287,10 @@ class Settings(BaseSettings):
     # this window. Without it the first sweep would post onto every ticket
     # already sitting in the column, including ones a tester chose not to post.
     auto_post_lookback_hours: int = 24
+    # Who a tick in the browser is recorded as. The app has no login, so a
+    # person's results name whoever this email belongs to (a `users` row).
+    # Unset: results are still recorded as human, with no identity.
+    qa_actor_email: str = ""
 
     # Database (MongoDB)
     # Connection string for the QA bot's Mongo database. Point this at the NPE

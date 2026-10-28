@@ -7,6 +7,7 @@ This module contains all Pydantic and dataclass models used throughout the appli
 import functools
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -629,6 +630,14 @@ class TestPlanProgressUpdateRequest(BaseModel):
     sends the complete set each save, so the stored value is replaced wholesale."""
 
     checked_ids: list[str] = []
+
+
+class CaseResultRequest(BaseModel):
+    """One tick or untick from the checklist: the case id printed beside the
+    case, and whether it is now passed or cleared."""
+
+    case_id: str
+    status: Literal["passed", "cleared"]
 
 
 class MarkCarryOverRequest(BaseModel):

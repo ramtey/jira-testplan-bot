@@ -237,6 +237,10 @@ _INDEX_SPEC: dict[str, list[dict[str, Any]]] = {
     "test_plan_progress": [
         {"keys": [("progress_key", ASCENDING)], "unique": True, "name": "uq_test_plan_progress_key"},
     ],
+    "case_results": [
+        {"keys": [("progress_key", ASCENDING), ("_id", ASCENDING)], "name": "ix_case_results_key_order"},
+        {"keys": [("plan_id", ASCENDING)], "name": "ix_case_results_plan"},
+    ],
     "ticket_holds": [
         {"keys": [("ticket_key", ASCENDING)], "unique": True, "name": "uq_ticket_holds_key"},
     ],

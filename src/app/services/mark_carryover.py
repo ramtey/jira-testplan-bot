@@ -49,7 +49,11 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.app.db import crud
 from src.app.db.models.run import Run as RunModel
-from src.app.repositories import plan_repository, test_plan_progress_repository
+from src.app.repositories import (
+    case_result_repository,
+    plan_repository,
+    test_plan_progress_repository,
+)
 from src.app.services import progress_key as progress_key_service
 
 # Below this, two titles are different tests rather than one reworded test. Set
@@ -242,12 +246,14 @@ async def apply(
     if unknown:
         return {"error": "unknown_ids", "unknown": unknown}
 
-    existing_row = await test_plan_progress_repository.get_progress(db, progress_key=key)
-    existing = _checked_ids(existing_row) if existing_row is not None else []
-    merged = sorted(set(existing) | set(ids))
-    added = sorted(set(ids) - set(existing))
-    row = await test_plan_progress_repository.upsert_progress(
-        db, progress_key=key, checked_ids=merged
+    # A carry-over is the tester confirming each mark, so the passes are theirs.
+    row, added, _removed = await test_plan_progress_repository.record_marks(
+        db,
+        progress_key=key,
+        plan_id=plan_id,
+        add=ids,
+        actor=await case_result_repository.human_actor(db),
+        source="carryover",
     )
     return {
         "plan_id": plan_id,

@@ -1937,13 +1937,17 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
     let lastUpdatedAt = null
 
     const syncFromServer = () => {
-      // Skip while a local edit is still queued or mid-PUT — otherwise the poll
-      // could land with pre-save data and undo the checkbox the user just toggled.
-      if (progressSaveTimer.current) return
+      // Skip while a toggle is being saved — otherwise the poll could land with
+      // pre-save data and undo the checkbox the user just toggled.
+      if (pendingSaves.current > 0) return
+      const generation = saveGeneration.current
       fetch(`${API_BASE}/test-plan-progress/${encodeURIComponent(serverKey)}`)
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => {
           if (cancelled || !data || !Array.isArray(data.checked_ids)) return
+          // A toggle saved while this poll was in flight: its answer predates
+          // the tick, and applying it would flicker the box off until the next.
+          if (pendingSaves.current > 0 || generation !== saveGeneration.current) return
           if (data.updated_at && data.updated_at === lastUpdatedAt) return
           lastUpdatedAt = data.updated_at || lastUpdatedAt
           setCheckedTests(new Set(data.checked_ids))
@@ -2018,36 +2022,33 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
     }
   }, [storageKey, checkedTests])
 
-  // Debounced save of user edits to the shared server-side progress. Only fires
-  // on an actual toggle (not on hydration), so loading never echoes back a write.
-  const progressSaveTimer = useRef(null)
-  useEffect(
-    () => () => {
-      if (progressSaveTimer.current) clearTimeout(progressSaveTimer.current)
-    },
-    []
-  )
-  const scheduleProgressSave = (nextSet) => {
-    // No canonical key means no shared write. Deriving one here to have
-    // something to PUT is exactly how progress ends up under a key nothing
-    // reads; the checks stay in this browser and the notice says so.
-    if (!serverKey || typeof window === 'undefined') return
-    const payload = [...nextSet]
-    if (progressSaveTimer.current) clearTimeout(progressSaveTimer.current)
-    progressSaveTimer.current = setTimeout(() => {
-      fetch(`${API_BASE}/test-plan-progress/${encodeURIComponent(serverKey)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ checked_ids: payload }),
+  // One request per toggle, naming the case. The server appends it as a result
+  // and derives the checked set, so a tick here can no longer erase a mark
+  // someone else (the UAT runner) wrote since this tab last polled — which the
+  // old whole-set save did. A save that fails is not retried: the next poll
+  // shows what the server actually holds, so an unsaved tick visibly unticks
+  // rather than looking saved.
+  const pendingSaves = useRef(0)
+  const saveGeneration = useRef(0)
+  const saveCaseResult = (caseId, status) => {
+    // No canonical key means no shared write; the checks stay in this browser.
+    if (!serverKey || !planId || typeof window === 'undefined') return
+    pendingSaves.current += 1
+    saveGeneration.current += 1
+    fetch(`${API_BASE}/plans/${planId}/results`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ case_id: caseId, status }),
+    })
+      .then((r) => {
+        if (!r.ok) console.warn(`Test Plan Bot: ${caseId} was not saved (${r.status})`)
       })
-        .catch(() => {
-          /* offline — localStorage holds it; resyncs on the next successful save */
-        })
-        .finally(() => {
-          // Clear so the poll loop knows no local write is in flight anymore.
-          progressSaveTimer.current = null
-        })
-    }, 600)
+      .catch(() => {
+        console.warn(`Test Plan Bot: ${caseId} was not saved (server unreachable)`)
+      })
+      .finally(() => {
+        pendingSaves.current -= 1
+      })
   }
 
   const toggleTest = (section, index) => {
@@ -2056,8 +2057,9 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
     if (next.has(id)) next.delete(id)
     else next.add(id)
     setCheckedTests(next)
-    scheduleProgressSave(next)
+    saveCaseResult(id, next.has(id) ? 'passed' : 'cleared')
   }
+
 
   const countSectionChecks = (section, total) => {
     let n = 0

@@ -404,18 +404,26 @@ async def test_the_sibling_query_anchors_on_the_whole_ticket_prefix():
         captured["sort"] = kwargs.get("sort")
         return []
 
+    async def fake_keys_with_prefix(_db, *, prefix):
+        captured["result_prefix"] = prefix
+        return []
+
     original = repo.crud.find_many
+    original_keys = repo.case_result_repository.keys_with_prefix
     repo.crud.find_many = fake_find_many
+    repo.case_result_repository.keys_with_prefix = fake_keys_with_prefix
     try:
         await repo.find_for_same_tickets(object(), progress_key="SK-2327+SK-2328:4-5-0-6")
     finally:
         repo.crud.find_many = original
+        repo.case_result_repository.keys_with_prefix = original_keys
 
     pattern = captured["filter"]["progress_key"]["$regex"]
     assert re.match(pattern, "SK-2327+SK-2328:3-4-0-7")
     assert not re.match(pattern, "SK-2327:4-5-0-6")
     assert not re.match(pattern, "SK-2327+SK-2328-EXTRA:1-0-0-0")
-    assert captured["sort"] == [("updated_at", -1)]
+    # Keys that have only results are asked for with the same whole-ticket prefix.
+    assert captured["result_prefix"] == "SK-2327+SK-2328"
 
 
 # ── The security section's arrival must not move anyone's key ───────────────
@@ -607,12 +615,14 @@ def _put_client(monkeypatch, stored):
         k = progress_key.upper()
         return _Row(k, stored[k]) if k in stored else None
 
-    async def fake_upsert(_db, *, progress_key, checked_ids):
-        stored[progress_key.upper()] = sorted(set(checked_ids))
-        return _Row(progress_key.upper(), stored[progress_key.upper()])
+    async def fake_record_marks(_db, *, progress_key, add=(), remove=(), **_kw):
+        k = progress_key.upper()
+        current = set(stored.get(k, []))
+        stored[k] = sorted((current | set(add)) - set(remove))
+        return _Row(k, stored[k]), sorted(set(add)), sorted(set(remove))
 
     monkeypatch.setattr(main.test_plan_progress_repository, "get_progress", fake_get_progress)
-    monkeypatch.setattr(main.test_plan_progress_repository, "upsert_progress", fake_upsert)
+    monkeypatch.setattr(main.test_plan_progress_repository, "record_marks", fake_record_marks)
     monkeypatch.setattr(main, "get_db", lambda: object())
     return TestClient(main.app)
 

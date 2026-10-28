@@ -30,6 +30,7 @@ from .jira_client import (
 from .llm_client import LLMError, get_llm_client
 from .models import (
     AdoptPlanRequest,
+    CaseResultRequest,
     GenerateTestPlanRequest,
     MarkCarryOverRequest,
     MultiTicketGenerateRequest,
@@ -40,6 +41,7 @@ from .models import (
     WalkthroughUpdateRequest,
 )
 from .repositories import (
+    case_result_repository,
     plan_repository,
     test_plan_progress_repository,
     ticket_hold_repository,
@@ -1134,6 +1136,80 @@ async def post_mark_carryover(plan_id: int, request: MarkCarryOverRequest):
     return result
 
 
+async def _plan_key_and_cases(db, plan_id: int) -> tuple[str, dict]:
+    """The plan's progress key, from the one producer, and its case index."""
+    found = await plan_repository.get_plan_with_cases(db, plan_id=plan_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    plan, _cases = found
+    run = await crud.get_by_id(db, RunModel, plan.run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Plan has no run")
+    key = progress_key_service.build_progress_key(list(run.ticket_keys or []), plan.body)
+    return key, progress_key_service.case_index(plan.body)
+
+
+@app.post("/plans/{plan_id}/results")
+async def post_case_result(plan_id: int, request: CaseResultRequest):
+    """Record one tick or untick, by the person using the app.
+
+    One case per call, appended as a result: two writers (a tester here, a
+    runner marking as it goes) can no longer erase each other's marks, which
+    the whole-set PUT did whenever one wrote between the other's read and
+    write. The key comes from the plan, so the browser never names one.
+    """
+    db = get_db()
+    key, index = await _plan_key_and_cases(db, plan_id)
+    if request.case_id not in index:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "unknown_case_ids",
+                "message": "This id names no case in the plan. Use the id printed "
+                "beside the case, not a position in the plan body.",
+                "unknown_ids": [request.case_id],
+            },
+        )
+    actor = await case_result_repository.human_actor(db)
+    row, added, removed = await test_plan_progress_repository.record_marks(
+        db,
+        progress_key=key,
+        plan_id=plan_id,
+        add=[request.case_id] if request.status == "passed" else [],
+        remove=[request.case_id] if request.status == "cleared" else [],
+        actor=actor,
+        source="ui",
+    )
+    return {
+        **_serialize_progress(row),
+        "progress_key": key,
+        "changed": bool(added or removed),
+        # False when QA_ACTOR_EMAIL is unset: recorded as a person, unnamed.
+        "actor_named": actor.get("email") is not None,
+    }
+
+
+@app.get("/plans/{plan_id}/results")
+async def get_case_results(plan_id: int):
+    """Who last set each case on this plan's progress key, and how.
+
+    Marks recorded before results existed come back as ``legacy_unknown``:
+    nothing recorded who made them, and they are not guessed to be human.
+    ``counts`` is false for a result that does not tick the box yet (an agent's
+    pass awaiting review).
+    """
+    db = get_db()
+    key, index = await _plan_key_and_cases(db, plan_id)
+    latest = await test_plan_progress_repository.latest_by_case(db, progress_key=key)
+    return {
+        "plan_id": plan_id,
+        "progress_key": key,
+        "results": [latest[c] for c in index if c in latest],
+        # Results for ids this plan does not have (a stray from an old shape).
+        "unmatched": sorted(c for c in latest if c not in index),
+    }
+
+
 @app.post("/tickets/{ticket_key}/adopt-plan")
 async def adopt_plan_from_jira(ticket_key: str, request: AdoptPlanRequest):
     """Register a plan that exists only as a Jira comment as a run + plan.
@@ -1172,8 +1248,15 @@ async def adopt_plan_from_jira(ticket_key: str, request: AdoptPlanRequest):
 async def put_test_plan_progress(
     progress_key: str, request: TestPlanProgressUpdateRequest
 ):
-    """Create or replace the shared checked-case set for a plan. The client sends
-    the full set each save, so an empty list clears all checks.
+    """Set the shared checked-case set for a plan to exactly `checked_ids`.
+
+    Kept for callers that still send the whole set (the runner's
+    ``mark-passed.sh``; a browser tab loaded before the per-case endpoint). The
+    difference from the current set is recorded as results — a pass per added
+    id, a clear per removed one — under ``legacy_unknown``, since this route
+    cannot tell a person from a script. The browser now sends one case at a
+    time to ``POST /plans/{id}/results``: a whole-set save erased any mark
+    written between its last read and its write.
 
     An id outside the key's id space is refused with 422 and named, rather than
     stored where nothing renders it (SK-2630: raw body indices were written and
@@ -1207,10 +1290,19 @@ async def put_test_plan_progress(
                     "unknown_ids": sorted(unknown),
                 },
             )
-    row = await test_plan_progress_repository.upsert_progress(
+    wanted = {c for c in request.checked_ids if isinstance(c, str)}
+    current = await test_plan_progress_repository.get_progress(
+        db, progress_key=progress_key
+    )
+    have = set(json.loads(current.checked_ids)) if current else set()
+    row, _added, _removed = await test_plan_progress_repository.record_marks(
         db,
         progress_key=progress_key,
-        checked_ids=request.checked_ids,
+        plan_id=None,
+        add=wanted - have,
+        remove=have - wanted,
+        actor=dict(case_result_repository.LEGACY_ACTOR),
+        source="put",
     )
     return _serialize_progress(row)
 

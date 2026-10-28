@@ -29,7 +29,9 @@ import json
 import pytest
 from mongomock_motor import AsyncMongoMockClient
 
+from src.app.db import crud
 from src.app.db import mongo as db_mongo
+from src.app.db.models.test_plan_progress import TestPlanProgress as LegacyProgressRow
 from src.app.db.models.plan import PlanFormat
 from src.app.db.models.run import RunStatus, RunType
 from src.app.repositories import (
@@ -95,9 +97,17 @@ NEW = {
 }
 
 
+async def _seed_legacy(db, *, progress_key: str, checked_ids: list[str]):
+    """Marks as they were stored before case results: a frozen legacy row."""
+    await crud.insert(
+        db,
+        LegacyProgressRow(progress_key=progress_key.upper(), checked_ids=json.dumps(sorted(set(checked_ids)))),
+    )
+
+
 async def _seed(db, *, checked: list[str]):
     old_plan = await _save_plan(db, OLD)
-    await test_plan_progress_repository.upsert_progress(
+    await _seed_legacy(
         db,
         progress_key=build_progress_key(["SK-2325"], json.dumps(OLD)),
         checked_ids=checked,
@@ -182,7 +192,7 @@ async def test_applying_unions_rather_than_replaces(db):
     Replacing would silently undo their work."""
     _old, new = await _seed(db, checked=["happy_path:0"])
     key = build_progress_key(["SK-2325"], json.dumps(NEW))
-    await test_plan_progress_repository.upsert_progress(
+    await _seed_legacy(
         db, progress_key=key, checked_ids=["edge_cases:0"]
     )
     applied = await mark_carryover.apply(db, plan_id=new.id, ids=["happy_path:0"])
@@ -228,7 +238,7 @@ async def test_progress_under_the_plans_own_key_is_not_offered_for_carry_over(db
     """Otherwise every tested plan would offer to carry its own marks onto
     itself."""
     new = await _save_plan(db, NEW)
-    await test_plan_progress_repository.upsert_progress(
+    await _seed_legacy(
         db,
         progress_key=build_progress_key(["SK-2325"], json.dumps(NEW)),
         checked_ids=["happy_path:0"],
@@ -243,7 +253,7 @@ async def test_marks_from_a_plan_that_is_gone_are_reported_by_id_only(db):
     is no way to say which case an id named, and inventing one is worse than
     saying so."""
     new = await _save_plan(db, NEW)
-    await test_plan_progress_repository.upsert_progress(
+    await _seed_legacy(
         db, progress_key="SK-2325:9-9-9-9", checked_ids=["happy_path:0"]
     )
     result = await mark_carryover.build(db, plan_id=new.id)
@@ -255,7 +265,7 @@ async def test_marks_from_a_plan_that_is_gone_are_reported_by_id_only(db):
 @pytest.mark.asyncio
 async def test_another_tickets_marks_are_never_offered(db):
     _old_other = await _save_plan(db, OLD, ticket_key="SK-2327")
-    await test_plan_progress_repository.upsert_progress(
+    await _seed_legacy(
         db,
         progress_key=build_progress_key(["SK-2327"], json.dumps(OLD)),
         checked_ids=["happy_path:0"],
@@ -286,7 +296,7 @@ async def test_marks_under_a_plans_own_pre_change_key_are_carried_back(db):
     plan = await _save_plan(db, NEW)
     legacy = legacy_progress_keys(["SK-2325"], json.dumps(NEW))
     assert legacy == ["SK-2325:2-1-0-1"], "the pre-change key for this shape"
-    await test_plan_progress_repository.upsert_progress(
+    await _seed_legacy(
         db, progress_key=legacy[0], checked_ids=["happy_path:0", "edge_cases:0"]
     )
 

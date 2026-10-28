@@ -47,11 +47,11 @@ Without GitHub token, test plans use only Jira data (basic PR titles and commits
 
 ## Tell it about your team (optional)
 
-Four settings describe whoever is running the bot. They are config rather than
+These settings describe whoever is running the bot. They are config rather than
 code on purpose: a clone that inherited another team's Jira projects,
 coworkers and repos could only ever be wrong for everyone else, and none of it
-belongs in a public repo. All four are JSON, all four are optional, and
-`.env.example` carries a worked example of each.
+belongs in a public repo. All are optional, and `.env.example` carries a
+worked example of each.
 
 | Setting | What it does | Without it |
 |---|---|---|
@@ -59,6 +59,7 @@ belongs in a public repo. All four are JSON, all four are optional, and
 | `TEAM_GITHUB_LOGIN_TO_JIRA` | GitHub login → `[Jira accountId, display name]`, for choosing who a fail-back returns to | Falls back to searching Jira by commit email → profile name → login; misses anyone whose GitHub name differs from their Jira name, or who commits via a GitHub noreply address. Logged once at startup of the first lookup |
 | `BOT_DISPLAY_NAMES` | Jira display names of service accounts that must never be left holding a ticket | Only the accountId-based check guards the hand-off |
 | `BUG_LENS_REPO_HINTS` | Product keyword regex → repos to code-search when a bug ticket has no linked PR | Bug Lens searches only repos the ticket actually links |
+| `QA_ACTOR_EMAIL` | Who a tick in the browser is recorded as. Every case result names its actor, so a person's pass and a runner's pass stay distinct; the app has no login, so this is how it knows the person | Ticks are recorded as a person with no name — still never confused with a runner, but not attributable |
 | `RISK_PROFILES_DIR` | Directory of product risk profiles — QA-written user types, fragile features and environment limits, one markdown file per product. See [risk_profile.example.md](risk_profile.example.md) | Plans know only what the ticket, PRs and comments say |
 
 Finding a Jira accountId: it appears in any user object the Jira API returns,
