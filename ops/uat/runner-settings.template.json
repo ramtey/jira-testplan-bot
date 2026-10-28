@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(/__EVIDENCE_ROOT__/**)",
+      "Agent",
+      "mcp__ios-simulator",
+      "mcp__playwright",
+      "Bash(bash __RUNNER_SCRIPTS__/fetch-plan.sh:*)",
+      "Bash(bash __RUNNER_SCRIPTS__/verify-captures.sh:*)",
+      "Bash(bash __RUNNER_SCRIPTS__/sim-record.sh:*)",
+      "Bash(bash __RUNNER_SCRIPTS__/video-tools.sh:*)",
+      "Bash(python3 -I __RUNNER_SCRIPTS__/narrate_elevenlabs.py:*)",
+      "Bash(python3 -I __RUNNER_SCRIPTS__/narrate.py:*)"
+    ],
+    "deny": [
+      "mcp__ios-simulator__stop_recording",
+      "mcp__playwright__browser_run_code_unsafe",
+      "AskUserQuestion",
+      "WebFetch",
+      "WebSearch"
+    ]
+  }
+}
