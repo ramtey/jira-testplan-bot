@@ -9,8 +9,7 @@ claude -p "<run prompt>" \
   --agent "$UAT_RUNNER_AGENT" \
   --permission-mode dontAsk --permission-prompts none \
   --settings ~/.config/jira-testplan-bot/uat-runner-settings.json \
-  --max-budget-usd "$UAT_RUN_BUDGET_USD" \
-  --output-format json < /dev/null
+  --output-format stream-json --verbose < /dev/null
 ```
 
 started with `UAT_RUNNER_CWD` as the working directory: MCP servers configured
@@ -20,6 +19,11 @@ per project only load when the run starts inside that project.
 **denied, never prompted**, and listed in the JSON result's
 `permission_denials`. Nothing is bypassed. The runner has no tracker write
 access at all: results go to the bot, and the bot posts after a human approves.
+
+There is deliberately no `--max-budget-usd`: that flag stops the run, and dollar
+budgets here only alert. The dispatcher reads cost from the stream as it goes
+and alerts when a run or the day passes its budget; its wall-clock cap is the
+only thing that stops a run.
 
 ## Making the local settings file
 

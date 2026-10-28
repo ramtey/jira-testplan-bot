@@ -129,7 +129,7 @@ projection — latest result is a human pass, an approved agent pass, or a
 legacy mark — so carry-over, revision and other-shapes keep working. A one-shot
 backfill records existing marks as `actor: legacy_unknown` (we cannot tell who
 made them). Carry-over learns to copy result records, preserving the actor.
-The human actor's name comes from `QA_ACTOR_NAME` (there is no login).
+The human actor is the `users` row named by `QA_ACTOR_EMAIL` (there is no login).
 
 ## Decisions
 
@@ -144,9 +144,15 @@ The human actor's name comes from `QA_ACTOR_NAME` (there is no login).
    them every run is marked "build: UI gate only".
 7. The walkthrough is attached to the tracker on approval; external video
    hosts stay optional and manual.
-8. Budgets (per-run dollars, per-run wall clock, per-day dollars) are a ceiling
-   against runaway runs, set from P0 measurements.
-9. `QA_ACTOR_NAME` names the human actor.
+8. Dollar budgets (per run, per day) **alert and never stop a run**; values come
+   from P0 measurements. The per-run wall-clock cap is a real stop, because it is
+   what frees the device from a hung run: SIGINT first so the recording
+   finalizes, then unfinished cases become `dropped_time_cap` and the run is
+   reviewable as `partial`.
+9. The human actor is a `users` row (the table runs already link to), chosen by
+   `QA_ACTOR_EMAIL`. There is no login while the app runs locally for one
+   person; when it is hosted, a login becomes required and only changes where
+   the email comes from — no data migration.
 10. The repo ships the generic contract (MCP tools, allowlist template, a
     skeleton agent); the team's runner agent stays in local configuration.
 11. Pre-existing marks are recorded as `legacy_unknown`.
@@ -173,7 +179,7 @@ The human actor's name comes from `QA_ACTOR_NAME` (there is no login).
 | Bug vs story | Same flow; `issue_type` stored so later bug-filing can tell "fix failed" from "new regression" |
 | Oversized plan | Runner reads the store; an oversized results comment becomes summary + attachment |
 | Mobile vs web | Routed per case by `surface`; device locked per run; web cases may run in parallel |
-| Cost / runtime | `--max-budget-usd`, dispatcher wall-clock cap (SIGINT first so recordings finalize), daily cap; cost stored per run |
+| Cost / runtime | Dollar budgets alert (per run, per day) and never stop a run; dispatcher wall-clock cap stops it (SIGINT first so recordings finalize); cost stored per run |
 | Browser overwrites agent marks | Per-case endpoint |
 | Permission denied mid-run | `not_run: permission_denied <tool>`; run lists denials; no workaround |
 | Pass without evidence | 422 |
