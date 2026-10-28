@@ -57,16 +57,18 @@ reviewer approves.
 
 ## Flow
 
-1. **Trigger.** A run is queued when the ticket is in the testing status, its
-   own plan is live in the tracker, and the deploy check says the build
-   includes the change. The watcher sweep and the Pull-to-Testing route both
-   queue (a DB write only). Unposted plans never run.
+1. **Trigger.** A run is queued when the ticket is in the testing status and
+   its own plan is live in the tracker. The watcher sweep and the
+   Pull-to-Testing route both queue (a DB write only). Unposted plans never
+   run. Whether each case may run yet is decided per case (see "Runner profiles
+   and multi-repo tickets").
 2. **Dispatch.** `testplan uat-dispatch --once` (scheduled, same working-hours
-   window) claims one queued run atomically with a lease, preflights (backend
-   routes present, DB, source host, device, web session), and starts the
-   headless runner. Agent name, working directory, allowlist file and budgets
-   are local configuration (`UAT_RUNNER_*`); the repo ships a template only.
-   One run at a time: the simulator is a single shared device.
+   window) splits the run into legs, one per runner profile its cases need,
+   claims a leg atomically with a lease, preflights (backend routes present,
+   DB, source host, device, web session), and starts that leg's headless
+   runner. Profiles, allowlist files and budgets are local configuration; the
+   repo ships a template only. One leg per device at a time: the simulator is
+   a single shared device.
 3. **Plan.** The run is pinned to `plan_id`, `plan_version` and `progress_key`
    at claim. `get_uat_run` returns the pinned cases from the same producer as
    `/live-plan`; video chapters come from `/plans/{id}/video-walkthrough`.
@@ -89,15 +91,53 @@ reviewer approves.
    transition. The formatter has one producer, run under node like the plan
    formatter.
 
+## Runner profiles and multi-repo tickets
+
+A board is not an app. One project's tickets can change a mobile app, a web
+app, a backend, or several at once, and a runner only works from the directory
+where its app's tools are configured. So the runner is chosen per repo, not per
+project or per ticket.
+
+* **Runner profile** (local configuration, keyed by repo like
+  `DEPLOY_STATE_SOURCES`): agent, working directory, allowlist file, surfaces
+  it covers, app identity (bundle id or base URL). Repos with no profile are
+  named, never guessed.
+* **Per-case routing.** The plan already records one build target per repo
+  (own merge commit, platform, app version) and which repos each case exercises
+  (`build_targets.targets_for_case`). A case's `surface` decides **who runs
+  it**; its repos decide **when it can run**: only once every repo it
+  exercises is in the deployed build. A case that drives the mobile app against
+  a new backend endpoint runs on the mobile leg and waits for both builds.
+* **Legs.** One ticket is one run, one review and one tracker comment. Inside
+  it, each runner profile the cases need is a leg with its own process, working
+  directory, lease, cost and permission denials. All legs record results on the
+  same run.
+* **Partial deploys.** Cases whose builds are not in yet wait as
+  `waiting_for_build (<repo>)`; when the build lands, only those cases run, on
+  the same plan version, and results accumulate. The review opens when every
+  case has a result, or after one working day with the waiting cases listed by
+  repo.
+* **Named gaps.** A repo without a profile → its cases are
+  `no_runner_profile (<repo>)` and the rest of the ticket runs. A repo whose PR
+  is not merged → `pr_not_merged (<repo>#n)`.
+* **Tracker output** groups results by repo with each repo's build status, so
+  a developer sees which side failed.
+
+Grouping several tickets into one plan and run is separate work; legs carry
+over to it unchanged.
+
 ## Data model
 
 **`uat_runs`**: `ticket_key`, `plan_id`, `plan_version`, `progress_key`,
 `issue_type`, `trigger`, `status`, `status_reason`, `status_detail`,
 `claimed_at`, `lease_expires_at`, `heartbeat_at`,
-`runner{agent, host, model, pid, session_id}`,
-`build{source: deploy_state|ui_gate|unverified, entries}`,
+`legs[]{profile, repos, surfaces, status, claimed_at, lease_expires_at,
+heartbeat_at, runner{agent, host, model, pid, session_id}, cost_usd,
+permission_denials[]}`,
+`builds[]{repo, merge_commit, status: included|not_included|unverifiable,
+source: deploy_state|ui_gate|unverified, checked_at}`,
 `ticket_snapshot{updated, merged_pr_commits, description_hash}`,
-`budget_usd`, `cost_usd`, `permission_denials[]`, `counts`,
+`budget_usd`, `cost_usd` (sum of legs), `counts`,
 `review{actor, at, decision, next_step, notes}`,
 `tracker{comment_id, posted_at, attachments, transition, outcome}`.
 Partial unique index: one active run per ticket.
@@ -112,12 +152,14 @@ Statuses: `queued`, `waiting_for_plan_post`, `waiting_for_build`, `claimed`,
 `actor{kind: agent|human|legacy_unknown, name}`,
 `evidence[]{kind: assertion|screenshot|video_ts|unit_test|http, ref, at_s, text}`,
 `attempts[]`, `flaky`, `started_at`, `finished_at`, `recorded_at`,
+`leg`, `builds_checked[]{repo, merge_commit, status}`,
 `carried_from{plan_id, case_id}`.
 
 Not Run codes: `missing_fixture`, `blocked_environment`, `wrong_build`,
 `needs_client_token`, `deferred_to_ci`, `not_independently_verified`,
 `not_automatable`, `dropped_time_cap`, `permission_denied`, `run_cancelled`,
-`run_aborted`, `plan_changed`.
+`run_aborted`, `plan_changed`, `waiting_for_build`, `no_runner_profile`,
+`pr_not_merged`.
 
 Results are keyed by `plan_id + case_id`, not by progress key, which removes
 same-key regeneration misattachment for results. The browser still never
@@ -140,8 +182,9 @@ The human actor is the `users` row named by `QA_ACTOR_EMAIL` (there is no login)
 4. Runs trigger on entering the testing status, not on the ready queue.
 5. One whole-case retry, for infrastructure-class errors only; assertion
    failures are never retried. A detour inside a case's steps is a FAIL.
-6. Deploy-state sources should be configured before unattended runs; without
-   them every run is marked "build: UI gate only".
+6. Deploy-state sources must cover every repo a runner profile tests before
+   unattended runs; a repo without one is marked "build: UI gate only" on its
+   cases.
 7. The walkthrough is attached to the tracker on approval; external video
    hosts stay optional and manual.
 8. Dollar budgets (per run, per day) **alert and never stop a run**; values come
@@ -167,7 +210,10 @@ The human actor is the `users` row named by `QA_ACTOR_EMAIL` (there is no login)
 | Two runs for one ticket | Unique active index + atomic claim → `skipped: run N active` |
 | Machine sleeps / network drops | Spool + replay; expired lease → `interrupted`; a rerun skips cases already resulted for that plan version |
 | Device or browser crash | Agent records `run_aborted`; non-zero exit → `failed: runner exited <code>`; every case left without a result becomes `run_aborted` at finalize |
-| Build not deployed | "not included" → `waiting_for_build`, rechecked each dispatch, alert after 4 h; "could not check" → `blocked: build unverifiable`; no sources configured → `build: ui_gate only` |
+| Build not deployed (per repo, per case) | "not included" → `waiting_for_build`, rechecked each dispatch, alert after 4 h; "could not check" → `blocked: build unverifiable`; no sources configured → `build: ui_gate only` |
+| Ticket spans several repos | One run, one leg per runner profile; each case waits only for the repos it exercises; review opens when all cases have results or after one working day |
+| Repo with no runner profile | Its cases `no_runner_profile (<repo>)`; other legs run |
+| One repo's PR not merged | Its cases `pr_not_merged (<repo>#n)`; other repos' cases run |
 | Not automatable | `not_automatable` / `needs_client_token` with detail; listed as "still needs a person" |
 | Flaky | `passed`, `flaky: true`, review required |
 | Partial run | `partial`, reviewable, dropped cases in priority order |
