@@ -30,6 +30,7 @@ dependencies = [
 [project.scripts]
 testplan = "src.cli.main:app"
 testplan-mcp = "src.mcp_server.server:main"
+testplan-uat-mcp = "src.uat_mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]

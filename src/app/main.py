@@ -66,6 +66,7 @@ from .services.test_plan_generator import (
 from .token_service import token_health_service
 from . import uat_readiness
 from . import video_walkthrough
+from .uat_routes import router as uat_router
 from .workflow_routes import router as workflow_router
 
 # Backward-compat aliases — tests import these underscored names from
@@ -108,6 +109,7 @@ app = FastAPI(title="Jira Test Plan Bot", version="0.1.0", lifespan=lifespan)
 app.include_router(bug_lens_router)
 app.include_router(runs_router)
 app.include_router(workflow_router)
+app.include_router(uat_router)
 
 # Configure CORS for frontend communication
 # NOTE: For production, update allow_origins to include your production URLs

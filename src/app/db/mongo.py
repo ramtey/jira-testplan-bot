@@ -240,6 +240,15 @@ _INDEX_SPEC: dict[str, list[dict[str, Any]]] = {
     "case_results": [
         {"keys": [("progress_key", ASCENDING), ("_id", ASCENDING)], "name": "ix_case_results_key_order"},
         {"keys": [("plan_id", ASCENDING)], "name": "ix_case_results_plan"},
+        {"keys": [("run_id", ASCENDING), ("_id", ASCENDING)], "name": "ix_case_results_run"},
+        {"keys": [("client_id", ASCENDING)], "unique": True, "name": "uq_case_results_client_id",
+         "partialFilterExpression": {"client_id": {"$type": "string"}}},
+    ],
+    "uat_runs": [
+        # One active run per ticket: active_ticket is set only while running.
+        {"keys": [("active_ticket", ASCENDING)], "unique": True, "name": "uq_uat_runs_active_ticket",
+         "partialFilterExpression": {"active_ticket": {"$type": "string"}}},
+        {"keys": [("ticket_key", ASCENDING), ("_id", DESCENDING)], "name": "ix_uat_runs_ticket"},
     ],
     "ticket_holds": [
         {"keys": [("ticket_key", ASCENDING)], "unique": True, "name": "uq_ticket_holds_key"},

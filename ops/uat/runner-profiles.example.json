@@ -1,0 +1,24 @@
+{
+  "mobile": {
+    "repos": ["your-org/mobile-app"],
+    "surfaces": ["mobile"],
+    "agent": "uat-runner",
+    "cwd": "/abs/path/to/mobile-app",
+    "settings": "/abs/path/to/.config/jira-testplan-bot/uat-runner-settings.json",
+    "context": {
+      "simulator_udid": "<booted simulator UDID>",
+      "scripts_dir": "/abs/path/to/.claude/agents/uat-runner/scripts"
+    }
+  },
+  "web-and-api": {
+    "repos": ["your-org/web-app", "your-org/orders-api"],
+    "surfaces": ["web_ui", "backend_http"],
+    "agent": "uat-runner",
+    "cwd": "/abs/path/to/web-app",
+    "settings": "/abs/path/to/.config/jira-testplan-bot/uat-runner-settings.json",
+    "http_allowed_hosts": ["api.integ.example.com"],
+    "context": {
+      "scripts_dir": "/abs/path/to/.claude/agents/uat-runner/scripts"
+    }
+  }
+}

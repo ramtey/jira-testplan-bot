@@ -57,6 +57,7 @@ app.command(name="generate")(commands.generate)
 app.command(name="watch")(commands.watch)
 app.command(name="auto-post")(commands.auto_post_status)
 app.command(name="timings")(commands.timings)
+app.command(name="uat-run")(commands.uat_run)
 
 
 if __name__ == "__main__":

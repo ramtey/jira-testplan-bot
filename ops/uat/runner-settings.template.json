@@ -3,9 +3,9 @@
     "allow": [
       "Edit(/__EVIDENCE_ROOT__/**)",
       "Agent",
+      "mcp__testplan-uat",
       "mcp__ios-simulator",
       "mcp__playwright",
-      "Bash(bash __RUNNER_SCRIPTS__/fetch-plan.sh:*)",
       "Bash(bash __RUNNER_SCRIPTS__/verify-captures.sh:*)",
       "Bash(bash __RUNNER_SCRIPTS__/sim-record.sh:*)",
       "Bash(bash __RUNNER_SCRIPTS__/video-tools.sh:*)",

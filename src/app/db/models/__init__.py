@@ -8,6 +8,7 @@ from src.app.db.models.ticket_walkthrough import TicketWalkthrough
 from src.app.db.models.test_plan_progress import TestPlanProgress
 from src.app.db.models.case_result import CaseResult
 from src.app.db.models.ticket_hold import HOLD_REASONS, TicketHold
+from src.app.db.models.uat_run import UatRun
 
 __all__ = [
     "User",
@@ -27,4 +28,5 @@ __all__ = [
     "CaseResult",
     "TicketHold",
     "HOLD_REASONS",
+    "UatRun",
 ]

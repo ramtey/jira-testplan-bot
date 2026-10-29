@@ -2,28 +2,50 @@
 
 Design: [docs/design/uat-loop.md](../../docs/design/uat-loop.md).
 
-The runner agent runs headless with an explicit allowlist and nothing else:
+Start a run with:
 
 ```sh
-claude -p "<run prompt>" \
-  --agent "$UAT_RUNNER_AGENT" \
+testplan uat-run PROJ-123            # every leg
+testplan uat-run PROJ-123 --route-only   # pin the plan, check builds, route cases; launch nothing
+testplan uat-run PROJ-123 --run 42   # resume: replay spooled results, close or launch legs
+```
+
+The backend pins the run to the ticket's live plan, answers the build question
+for each repo the ticket changed, and routes every case to a **runner profile**
+(`UAT_RUNNER_PROFILES_FILE`, see `runner-profiles.example.json`) or records why
+none can run it. For each leg the command then starts that profile's agent
+headless with its allowlist and nothing else:
+
+```sh
+claude -p "<run prompt>" --agent <profile.agent> \
   --permission-mode dontAsk --permission-prompts none \
-  --settings ~/.config/jira-testplan-bot/uat-runner-settings.json \
+  --settings <profile.settings> \
+  --mcp-config <evidence>/mcp-<leg>.json --allowedTools mcp__testplan-uat \
   --output-format stream-json --verbose < /dev/null
 ```
 
-started with `UAT_RUNNER_CWD` as the working directory: MCP servers configured
-per project only load when the run starts inside that project.
+in the profile's `cwd`: MCP servers configured per project only load when the
+run starts inside that project.
 
-`dontAsk` + `--permission-prompts none` means any tool call not allowed below is
+`dontAsk` + `--permission-prompts none` means any tool call not allowed is
 **denied, never prompted**, and listed in the JSON result's
 `permission_denials`. Nothing is bypassed. The runner has no tracker write
-access at all: results go to the bot, and the bot posts after a human approves.
+access at all: results go to the bot through the `testplan-uat` MCP server
+(`testplan-uat-mcp`, bound by its environment to one run and leg), and the bot
+posts after a human approves.
+
+The `testplan-uat` tools: `get_uat_run` (the leg's cases, builds, results so
+far), `record_case_result`, `should_continue`, `finish_run` (lists cases still
+owed), and `http_request` (only to the profile's `http_allowed_hosts`; request
+and response saved under the evidence directory with secrets redacted).
+Every result is written to `<evidence>/results.jsonl` before it is sent; if the
+backend is down the tool answers `spooled`, and `finish_run` and the command
+replay it. The backend dedupes on the result's `client_id`.
 
 There is deliberately no `--max-budget-usd`: that flag stops the run, and dollar
-budgets here only alert. The dispatcher reads cost from the stream as it goes
-and alerts when a run or the day passes its budget; its wall-clock cap is the
-only thing that stops a run.
+budgets here only alert (`UAT_RUN_BUDGET_USD`). The wall-clock cap
+(`UAT_LEG_WALL_CLOCK_MIN`) is the only thing that stops a leg: SIGINT first so
+a recording can finalize, then unreached cases are `dropped_time_cap`.
 
 ## Making the local settings file
 
@@ -62,18 +84,15 @@ interpreter can write anywhere and would undo the `Edit` scoping.
   <pid>`, which is not safe to allowlist; `sim-record.sh start|stop` owns the
   pid instead. Video normalizing, contact sheets and loudness checks go through
   `video-tools.sh` for the same reason (a bare `ffmpeg` can overwrite any file).
-* **Build check.** A runner cannot confirm the deployed build itself: the
-  source host and the deploy repo are off its allowlist, and should stay off.
-  The bot must hand it the answer (`deploy_state`, included / not included /
-  could not check) with the run. Until then every case gated on the build is
-  Not Run `permission_denied`. Measured: one refused build check blocked 43 of
-  49 cases on a backend ticket.
-* **Bot reads** (plan, video chapters) go through the bot's MCP tools, not
-  `curl` to the local API.
-* **Request-level cases** (backend, security negative tests) need an HTTP
-  wrapper with a host allowlist and named token profiles, writing the request
-  and response transcript into the evidence directory. A bare `curl` is not
-  allowlistable: a prefix rule cannot stop `-X DELETE` or a different host.
+* ~~**Build check.**~~ Closed: the bot answers it per repo at run start
+  (`deploy_state` with `UAT_TEST_ENV`), and cases whose build is not in are
+  never handed to the runner. Repos with no deploy source are `unverified`:
+  the runner's UI gate is the only check.
+* ~~**Bot reads.**~~ Closed: `get_uat_run` carries the cases, builds and video
+  chapters.
+* **Request-level cases**: `http_request` closes the host allowlist and the
+  transcript. Named token profiles are still open: a case that needs a bearer
+  token the runner cannot obtain is `needs_client_token`.
 * **Server-side observations** (headers a service sends upstream, traces) are
   `not_automatable` for a runner; they stay with a person.
 * **Device and session preflight.** A booted simulator and a fresh web session

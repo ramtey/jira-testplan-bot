@@ -40,7 +40,7 @@ class CaseResult(DocumentBase):
     not_run: dict[str, Any] | None = None
     # {"kind": ActorKind, "user_id": int | None, "email": str | None, "name": str | None}
     actor: dict[str, Any]
-    # Where the write came from: "ui", "put", "carryover", "runner".
+    # Where the write came from: "ui", "put", "carryover", "runner", "finalize".
     source: str
     # [{"kind": "assertion" | "screenshot" | "video_ts" | "unit_test" | "http",
     #   "ref": ..., "at_s": ..., "text": ...}]
@@ -50,3 +50,15 @@ class CaseResult(DocumentBase):
     review_approved: bool = False
     # {"plan_id": ..., "case_id": ...} when carried over from a regenerated plan.
     carried_from: dict[str, Any] | None = None
+    # A runner's own id for this result, written to its spool before the DB.
+    # Replaying the spool after an outage sends the same id again; a second
+    # row with it is never written.
+    client_id: str | None = None
+    # The runner profile (leg) that produced it, and the case title as the
+    # runner saw it, so a review still reads right after the plan changes.
+    leg: str | None = None
+    case_title: str | None = None
+    flaky: bool = False
+    attempts: int = 1
+    started_at: str | None = None
+    finished_at: str | None = None

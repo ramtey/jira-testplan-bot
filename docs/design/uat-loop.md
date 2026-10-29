@@ -70,8 +70,11 @@ reviewer approves.
    repo ships a template only. One leg per device at a time: the simulator is
    a single shared device.
 3. **Plan.** The run is pinned to `plan_id`, `plan_version` and `progress_key`
-   at claim. `get_uat_run` returns the pinned cases from the same producer as
-   `/live-plan`; video chapters come from `/plans/{id}/video-walkthrough`.
+   at claim. `get_uat_run` returns an index of the leg's cases (id, title,
+   surface, each repo's build status, any result so far), the video chapters
+   and the hosts `http_request` may call; `get_case` returns one case in full.
+   Both come from the same producer as `/live-plan`. (The full view of a large
+   plan does not fit in one tool result, hence the index.)
 4. **Results.** `record_case_result` appends to `<evidence>/results.jsonl`
    first, then writes the DB; on a DB failure it answers `spooled` and the
    spool is replayed at finish. A pass with no evidence, or a Not Run without a
@@ -245,10 +248,35 @@ tester's own passes. The human actor is the `users` row named by
 |---|---|---|
 | P0 Spike | Allowlist template, headless-mode contract for the runner agent, measured cost and time on real tickets in dry mode | Denials limited to the expected ones; subagent permission inheritance and Write path scoping known |
 | P1 Results model | `case_results`, projection, per-case toggle, backfill, lost-update fix | A UI tick produces a human result; old marks unchanged |
-| P2 Runner writes | MCP tools (`get_uat_run`, `record_case_result`, `should_continue`, `finish_run`), spool/replay, `testplan uat-run KEY` | Two tickets run by command; a forced DB outage mid-run loses nothing |
+| P2 Runner writes | MCP tools (`get_uat_run`, `get_case`, `record_case_result`, `should_continue`, `finish_run`, `http_request`), spool/replay, `testplan uat-run KEY`, build answer per repo, runner profiles and legs | Two tickets run by command; a forced DB outage mid-run loses nothing |
 | P3 Checkpoint + tracker | Review panel, Approve & post, results formatter, mp4 attachment, transition, project key from config | Two tickets approved; comment, video, transition in the tracker |
 | P4 Unattended | Queue, scheduled dispatcher, lease, cancel on move, deploy gate, budgets, alerts, health pill | A board move ends in a run awaiting review with nothing typed |
 | P5 Edge matrix | A test per edge-case row; three forced failures on real runs | Each produces its named state |
+
+### P2 as shipped
+
+* `testplan uat-run KEY` asks the backend to start a run, then runs each leg's
+  agent headless with `--mcp-config` (the `testplan-uat` server, bound to one
+  run and leg by its environment) and `--allowedTools mcp__testplan-uat` on top
+  of the profile's allowlist. `--route-only` stops after routing; `--run ID`
+  resumes (replays the spool, closes legs whose runner already ran).
+* The build answer is read at run start for every repo the ticket changed,
+  against `UAT_TEST_ENV` (an ordered list, since repos name the same
+  environment differently). Deploy sources come from `DEPLOY_STATE_SOURCES`
+  or from the deployments repos (`DEPLOYMENTS_REPOS`); a repo found in
+  neither is `unverified`.
+* Cases that cannot run get their reason from the router at start
+  (`no_runner_profile`, `waiting_for_build`, `pr_not_merged`,
+  `blocked_environment` for an unreadable build, `not_automatable` for
+  manual-only), so the review shows them from the first minute.
+* Measured on a 49-case backend ticket: one leg, 2.7 min, $1.69, every case
+  accounted for, two permission denials (both read-only exploration). The
+  backend was stopped for 25 s mid-run: 9 results spooled and were replayed
+  once each, no duplicates. Most cases were Not Run because the build source
+  was not configured and the runner was not told which host it could call;
+  both are fixed (`DEPLOYMENTS_REPOS`, `http_allowed_hosts` in the index).
+* Still open for later phases: rerunning a leg whose runner died (P4),
+  named token profiles for request-level cases, the review panel (P3).
 
 ## Definition of done
 

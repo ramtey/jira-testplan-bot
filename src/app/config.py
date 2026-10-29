@@ -292,6 +292,26 @@ class Settings(BaseSettings):
     # Unset: results are still recorded as human, with no identity.
     qa_actor_email: str = ""
 
+    # UAT runs (docs/design/uat-loop.md). Runner profiles are local: a JSON
+    # file mapping a profile name to the repos and surfaces it tests and the
+    # agent, working directory and allowlist it runs with. See
+    # src/app/services/uat_runs.py for the shape. Missing file: no profiles,
+    # so every case is reported no_runner_profile.
+    uat_runner_profiles_file: str = "~/.config/jira-testplan-bot/uat-runner-profiles.json"
+    # The deploy-state environment runners test against, as the names repos
+    # use for it, in order: "integ,integ-west" means each repo's "integ" if it
+    # has one, else its "integ-west". Unset works only for repos that deploy to
+    # a single environment; others are reported unverifiable.
+    uat_test_env: str = ""
+    # Where each run's evidence (screenshots, video, results spool) is written:
+    # <root>/<TICKET>/run-<id>/.
+    uat_evidence_root: str = "~/uat-walkthroughs"
+    # Alert (never stop) when one run costs more than this, in dollars.
+    uat_run_budget_usd: float = 10.0
+    # Hard stop for one leg, in minutes: SIGINT so recordings finalize, then the
+    # cases it did not reach become dropped_time_cap.
+    uat_leg_wall_clock_min: int = 60
+
     # Database (MongoDB)
     # Connection string for the QA bot's Mongo database. Point this at the NPE
     # Atlas cluster — never the prod one; this app writes on every ticket fetch.
