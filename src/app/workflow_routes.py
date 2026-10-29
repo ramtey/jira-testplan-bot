@@ -2,8 +2,8 @@
 QA workflow routes — single-click status transitions plus reassignment.
 
 Mounted at /issue in main.py via APIRouter, mirroring the bug_lens_routes and
-runs_routes pattern. Hardcoded to the SK project for now; generalize via a
-per-project config once a second project needs it.
+runs_routes pattern. Enabled per project by WORKFLOW_PROJECT_PREFIXES; the
+status names below are the workflow those projects share.
 """
 
 import asyncio
@@ -44,12 +44,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/issue", tags=["workflow"])
 
 
-SK_WORKFLOW_ACTIONS: dict[str, str] = {
+WORKFLOW_ACTIONS: dict[str, str] = {
     "pull-to-testing": "In Testing",
     "pass-to-uat": "Ready for UAT",
     "fail-to-todo": "To Do",
     "fail-to-in-progress": "In Progress",
 }
+
+def workflow_enabled_for(issue_key: str) -> bool:
+    """Whether `issue_key`'s project is one WORKFLOW_PROJECT_PREFIXES enables."""
+    prefix = issue_key.split("-", 1)[0].upper()
+    return prefix in {p.upper() for p in settings.workflow_project_prefixes}
+
 
 def _auto_posts_on(target_status: str) -> bool:
     """Whether entering `target_status` posts the ticket's plan to Jira."""
@@ -580,7 +586,7 @@ async def _post_workflow_comment(
                 parsed_payload.loom_urls,
                 image_attachments or None,
                 parsed_payload.mention_account_ids,
-                target_status=SK_WORKFLOW_ACTIONS[action],
+                target_status=WORKFLOW_ACTIONS[action],
             )
             return result is not None
         except Exception as exc:
@@ -606,12 +612,13 @@ async def run_workflow_action(
     issue as Jira attachments *before* the workflow transition runs, so
     a failed upload aborts cleanly without moving the ticket.
     """
-    if not issue_key.upper().startswith("SK-"):
+    if not workflow_enabled_for(issue_key):
         raise HTTPException(
             status_code=400,
-            detail="Workflow actions are only enabled for the SK project right now.",
+            detail="Workflow actions are not enabled for this project "
+            "(WORKFLOW_PROJECT_PREFIXES).",
         )
-    if action not in SK_WORKFLOW_ACTIONS:
+    if action not in WORKFLOW_ACTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
     parsed_payload = _parse_workflow_payload(payload)
@@ -632,7 +639,7 @@ async def run_workflow_action(
         )
         image_files.extend(pr_image_files)
 
-    target_status = SK_WORKFLOW_ACTIONS[action]
+    target_status = WORKFLOW_ACTIONS[action]
     jira = JiraClient()
 
     # Timing: the endpoint fans out 8-12 Jira REST calls per request, and
@@ -796,6 +803,46 @@ async def run_workflow_action(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+async def transition_and_assign(jira: JiraClient, issue_key: str, action: str) -> dict:
+    """Move `issue_key` by `action` and hand it on, as the workflow buttons do.
+
+    For the UAT review's Approve & post, whose results comment stands in for
+    the pass or fail comment, so none is posted here. Raises the Jira errors
+    unchanged; the caller records them as the tracker outcome.
+    """
+    if not workflow_enabled_for(issue_key):
+        raise HTTPException(
+            status_code=400,
+            detail="Workflow actions are not enabled for this project "
+            "(WORKFLOW_PROJECT_PREFIXES).",
+        )
+    if action not in WORKFLOW_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+    target_status = WORKFLOW_ACTIONS[action]
+    my_account_id = await jira.get_my_account_id()
+    transition, (account_id, label, via) = await asyncio.gather(
+        _lookup_target_transition(jira, issue_key, target_status),
+        _resolve_assignee_for_workflow(jira, issue_key, action, None, my_account_id),
+    )
+    if action != "pull-to-testing":
+        account_id, label, via = _apply_bot_safety_net(account_id, label, via, my_account_id)
+    await asyncio.gather(
+        jira.transition_issue(issue_key, transition["id"]),
+        jira.assign_issue(issue_key, account_id),
+    )
+    parent_transitioned, parent_key = (False, None)
+    if action == "pass-to-uat":
+        parent_transitioned, parent_key = await _maybe_transition_parent_to_uat(
+            jira, issue_key, target_status
+        )
+    return {
+        "action": action,
+        "target_status": target_status,
+        "assigned_to": label,
+        "parent_key": parent_key if parent_transitioned else None,
+    }
+
+
 async def _maybe_transition_parent_to_uat(
     jira: JiraClient, subtask_key: str, target_status: str
 ) -> tuple[bool, str | None]:
@@ -946,11 +993,11 @@ async def get_pr_looms(issue_key: str) -> dict:
     that the browser can't authenticate to directly.
 
     Status values: see `_harvest_loom_urls_from_merged_prs`. The endpoint
-    adds `"skipped"` for tickets outside the SK-project gate so the modal
+    adds `"skipped"` for tickets outside WORKFLOW_PROJECT_PREFIXES so the modal
     can stay silent instead of showing a misleading "no media" line for
     a project the feature doesn't cover.
     """
-    if not issue_key.upper().startswith("SK-"):
+    if not workflow_enabled_for(issue_key):
         return {"loom_urls": [], "image_urls": [], "status": "skipped"}
     jira = JiraClient()
     loom_urls, image_urls, status = await _harvest_loom_urls_from_merged_prs(

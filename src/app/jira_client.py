@@ -763,12 +763,23 @@ def _comment_carries_test_plan_marker(comment: dict) -> bool:
     return _comment_marker_kind(comment) in _PLAN_BEARING_KINDS
 
 
+# The results of an approved UAT run. One comment per ticket, edited in place
+# by later runs. Not a plan marker and not a superstring of one.
+UAT_RESULTS_MARKER = "🤖 UAT run results"
+
+
+def _first_paragraph_text(comment: dict) -> str:
+    """The text of the first top-level node of a comment's ADF body."""
+    content = ((comment.get("body") or {}).get("content")) or []
+    return extract_text_from_adf({"type": "doc", "content": content[:1]}) if content else ""
+
+
 QA_PASS_MARKER = "✅ QA Passed — ready for UAT"
 # A summary that already states the verdict ("QA Passed", "qa-pass") gets
 # no marker line on top of it.
 _QA_PASS_VERDICT_RE = re.compile(r"(?i)\bQA[\s-]*pass(?:ed)?\b")
 # The fail-back action lets the tester return a ticket to either "To Do"
-# or "In Progress" (see SK_WORKFLOW_ACTIONS in workflow_routes.py), so the
+# or "In Progress" (see WORKFLOW_ACTIONS in workflow_routes.py), so the
 # marker text is built at post time from the actual target column. This
 # constant is preserved as the default so callers that don't specify a
 # target still get the historical wording.
@@ -2385,7 +2396,7 @@ class JiraClient:
             # Skip comments created by this tool (to avoid circular references).
             # Every kind, not just the single-ticket plan: a batch plan or a
             # batch pointer fed back in here is the same circular reference.
-            if carries_bot_plan_marker(body_text):
+            if carries_bot_plan_marker(body_text) or UAT_RESULTS_MARKER in body_text:
                 continue
 
             # Extract timestamps
@@ -4210,6 +4221,52 @@ class JiraClient:
             )
         r.raise_for_status()
         return r.json()
+
+    async def upsert_uat_results_comment(
+        self, issue_key: str, text: str, comment_id: str | None = None
+    ) -> dict:
+        """Write the ticket's UAT results comment, editing the existing one.
+
+        `text` starts with `UAT_RESULTS_MARKER`. The comment to edit is
+        `comment_id` when the run already recorded one, else the ticket's first
+        comment whose opening line carries the marker; otherwise a new comment
+        is created. Returns {"id", "updated"}.
+        """
+        if not comment_id:
+            for c in await self.get_comments(issue_key):
+                if UAT_RESULTS_MARKER in _first_paragraph_text(c):
+                    comment_id = str(c.get("id"))
+                    break
+        headers = {**self._headers(), "Content-Type": "application/json"}
+        payload = {"body": markdown_to_adf(text)}
+        base = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+        try:
+            async with retrying_client(timeout=20) as client:
+                r = None
+                if comment_id:
+                    r = await client.put(f"{base}/{comment_id}", headers=headers, json=payload)
+                    if r.status_code == 404:
+                        # Deleted by hand since the last run: write a new one.
+                        r = None
+                updated = r is not None
+                if r is None:
+                    r = await client.post(base, headers=headers, json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise JiraConnectionError(f"Failed to reach Jira: {exc}") from exc
+
+        if r.status_code == 404:
+            raise JiraNotFoundError(f"Issue not found: {issue_key}")
+        if r.status_code == 401:
+            error_message, error_type = self._parse_auth_error(r)
+            raise JiraAuthError(error_message, status_code=401, error_type=error_type)
+        if r.status_code == 403:
+            raise JiraAuthError(
+                "Jira access forbidden. Check permissions for this issue or verify your account has proper access.",
+                status_code=403,
+                error_type="insufficient_permissions",
+            )
+        r.raise_for_status()
+        return {"id": str(r.json().get("id")), "updated": updated}
 
     async def get_comments(self, issue_key: str) -> list[dict]:
         """

@@ -55,7 +55,7 @@ worked example of each.
 
 | Setting | What it does | Without it |
 |---|---|---|
-| `WORKFLOW_PROJECT_PREFIXES` | Which Jira projects get the QA workflow buttons (Pull to Testing, Pass to UAT, Fail back) | No workflow buttons anywhere — the hand-off UI stays hidden |
+| `WORKFLOW_PROJECT_PREFIXES` | Which Jira projects get the QA workflow actions (Pull to Testing, Pass to UAT, Fail back, and the UAT review's transition); the backend refuses the actions elsewhere | No workflow buttons anywhere — the hand-off UI stays hidden |
 | `TEAM_GITHUB_LOGIN_TO_JIRA` | GitHub login → `[Jira accountId, display name]`, for choosing who a fail-back returns to | Falls back to searching Jira by commit email → profile name → login; misses anyone whose GitHub name differs from their Jira name, or who commits via a GitHub noreply address. Logged once at startup of the first lookup |
 | `BOT_DISPLAY_NAMES` | Jira display names of service accounts that must never be left holding a ticket | Only the accountId-based check guards the hand-off |
 | `BUG_LENS_REPO_HINTS` | Product keyword regex → repos to code-search when a bug ticket has no linked PR | Bug Lens searches only repos the ticket actually links |

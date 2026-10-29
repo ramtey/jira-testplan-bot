@@ -741,3 +741,34 @@ textarea.inp { padding: var(--s-4); height: auto; min-height: 80px; resize: vert
 /* The source-path rows (Verified against / Grounded in). Long paths wrap — see
    the `code` rule in base.css — so these only need to be allowed to shrink. */
 .pathrow { min-width: 0; }
+
+/* UAT review panel */
+.uat-review .uat-head { display: flex; align-items: center; gap: var(--s-4); padding: 10px var(--s-5); flex-wrap: wrap; }
+.uat-review .uat-title { font-size: var(--t-sm); font-weight: 600; color: var(--fg-strong); }
+.uat-review .uat-body { border-top: 1px solid var(--line); padding: var(--s-4) var(--s-5); display: flex; flex-direction: column; gap: var(--s-4); }
+.uat-muted { color: var(--fg-muted); font-size: var(--t-xs); }
+.uat-mono { font-family: var(--font-mono); }
+.uat-builds { display: flex; flex-wrap: wrap; gap: var(--s-3); }
+.uat-build { font-family: var(--font-mono); font-size: var(--t-xs); padding: 2px 8px; border-radius: var(--r-sm); border: 1px solid var(--line); color: var(--fg-muted); }
+.uat-build[data-status="included"] { border-color: var(--success); color: var(--success); }
+.uat-build[data-status="not_included"], .uat-build[data-status="pr_not_merged"], .uat-build[data-status="unverifiable"] { border-color: var(--warning); color: var(--warning); }
+.uat-case { padding: var(--s-3) 0; border-bottom: 1px solid var(--divider); }
+.uat-case:last-child { border-bottom: none; }
+.uat-case-head { display: flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap; }
+.uat-case-title { font-size: var(--t-sm); color: var(--fg); }
+.uat-detail { font-size: var(--t-xs); color: var(--fg-muted); margin-top: 2px; }
+.uat-evidence { list-style: none; margin: 4px 0 0; padding: 0; font-size: var(--t-xs); color: var(--fg-muted); }
+.uat-evidence li { display: grid; grid-template-columns: 72px 1fr; gap: var(--s-3); align-items: baseline; margin: 2px 0; }
+.uat-evidence code { font-family: var(--font-mono); color: var(--fg-subtle); }
+.uat-ev-kind { font-family: var(--font-mono); color: var(--fg-subtle); }
+.uat-case-actions { display: flex; gap: var(--s-3); margin-top: var(--s-3); align-items: center; flex-wrap: wrap; }
+.uat-input { width: 100%; box-sizing: border-box; background: var(--bg-input); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 8px; font: inherit; font-size: var(--t-sm); }
+.uat-case-actions .uat-input { width: auto; flex: 1; min-width: 200px; }
+.uat-decision { display: flex; flex-direction: column; gap: var(--s-4); border-top: 1px solid var(--line); padding-top: var(--s-4); }
+.uat-steps { display: flex; gap: var(--s-3); flex-wrap: wrap; }
+.uat-step { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); font-size: var(--t-sm); cursor: pointer; color: var(--fg); }
+.uat-step[data-active="true"] { border-color: var(--accent); }
+.uat-step input { margin: 0; }
+.uat-preview { white-space: pre-wrap; font-family: var(--font-mono); font-size: var(--t-xs); color: var(--fg-muted); margin: 0; max-height: 360px; overflow: auto; }
+.uat-actions { display: flex; gap: var(--s-3); align-items: center; flex-wrap: wrap; }
+.uat-media { display: flex; align-items: center; gap: 4px; }

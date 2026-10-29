@@ -1,7 +1,7 @@
 """
 End-to-end integration tests for `POST /issue/{key}/workflow/{action}`.
 
-The endpoint orchestrates a lot: SK-project gate, walkthrough readiness gate,
+The endpoint orchestrates a lot: project gate (WORKFLOW_PROJECT_PREFIXES), walkthrough readiness gate,
 image validation, attachment upload, transition lookup, a 3-tier assignee
 resolution chain, the pass/fail comment posting, parent auto-transition, and
 subtask cascade. The existing suite covers the helpers in isolation — these
@@ -15,11 +15,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 
 from src.app import workflow_routes
+from src.app.config import settings
 from src.app.main import app
 
 from .conftest import noop_get_db
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def workflow_projects(monkeypatch):
+    monkeypatch.setattr(settings, "workflow_project_prefixes", ["SK"])
 
 
 @pytest.fixture(autouse=True)
@@ -74,9 +80,9 @@ def _jira_stub(**overrides):
     return jira
 
 
-def test_rejects_non_sk_project():
-    """Only the SK project is wired up right now — other keys must 400
-    before any Jira calls."""
+def test_rejects_project_not_configured():
+    """Only projects in WORKFLOW_PROJECT_PREFIXES get workflow actions; other
+    keys must 400 before any Jira calls. The key is configuration, not code."""
     with patch("src.app.workflow_routes.JiraClient") as jira_cls:
         jira_cls.return_value = _jira_stub()
         response = client.post(
@@ -84,11 +90,18 @@ def test_rejects_non_sk_project():
             files={},
         )
     assert response.status_code == 400
-    assert "SK project" in response.json()["detail"]
+    assert "WORKFLOW_PROJECT_PREFIXES" in response.json()["detail"]
+    jira_cls.return_value.transition_issue.assert_not_awaited()
+
+
+def test_project_gate_follows_configuration(monkeypatch):
+    monkeypatch.setattr(settings, "workflow_project_prefixes", ["ab"])
+    assert workflow_routes.workflow_enabled_for("AB-1")
+    assert not workflow_routes.workflow_enabled_for("SK-1")
 
 
 def test_rejects_unknown_action():
-    """An action outside SK_WORKFLOW_ACTIONS must 400 with the name echoed
+    """An action outside WORKFLOW_ACTIONS must 400 with the name echoed
     back so the tester can spot a typo."""
     with patch("src.app.workflow_routes.JiraClient") as jira_cls:
         jira_cls.return_value = _jira_stub()

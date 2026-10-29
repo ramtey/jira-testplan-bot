@@ -276,7 +276,35 @@ tester's own passes. The human actor is the `users` row named by
   was not configured and the runner was not told which host it could call;
   both are fixed (`DEPLOYMENTS_REPOS`, `http_allowed_hosts` in the index).
 * Still open for later phases: rerunning a leg whose runner died (P4),
-  named token profiles for request-level cases, the review panel (P3).
+  named token profiles for request-level cases.
+
+### P3 as shipped
+
+* The review panel sits above the plan on the ticket page and shows the
+  ticket's latest run: header (plan version, cost, duration, permission
+  denials), builds per repo, failures, runner passes pending review, passes by
+  a person, Not Run grouped by reason (split into "still needs a person" and
+  blocked), the video and `FAIL-` frames that will be attached, and a preview
+  of the comment. A stale pinned plan blocks posting with the live version
+  named.
+* Overrides (`POST /uat-runs/{id}/review/results`) are results with the
+  reviewer as actor and `source: review`; a failure needs a note. They close
+  when the run is approved, so the posted comment matches the results.
+* Next step is derived: any failure → fail back to In Progress; any Not Run →
+  stay in testing; all passed → Pass to UAT. The reviewer can change it.
+* Approve records the decision, marks the run's agent results
+  `review_approved`, then attachments → results comment → transition, saving
+  each step on `tracker`. A failed step is `attachments_failed`,
+  `comment_failed` or `transition_failed`; approving again resumes without
+  re-uploading or moving twice. The comment has its own marker
+  (`🤖 UAT run results`), one per ticket, edited in place, and is excluded
+  from plan-generation context. The transition reuses the workflow buttons'
+  transition and assignee logic without their pass/fail comment, and the
+  project gate is `WORKFLOW_PROJECT_PREFIXES` in the backend too.
+* The formatter is `frontend/src/utils/uatResults.js`, run under node for
+  posting, so the preview is the posted text.
+* The walkthrough gate of the Pass to UAT button is not applied to approval:
+  the results comment carries its own video line.
 
 ## Definition of done
 

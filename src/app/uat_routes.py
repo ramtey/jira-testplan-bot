@@ -1,7 +1,8 @@
 """UAT run routes: how a runner (through ``src/uat_mcp``) and the CLI reach runs.
 
-The runner never calls the tracker. Everything it writes lands here, and
-nothing here posts anywhere; posting happens after review (P3).
+The runner never calls the tracker. Everything it writes lands here. The only
+route that posts is ``approve``, which a person calls from the review panel;
+the runner's MCP server has no tool that reaches the review routes.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 
 from .db.mongo import get_db
 from .repositories import uat_run_repository
-from .services import uat_runs
+from .services import uat_review, uat_runs
 from .services.uat_runs import RunRefused
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,20 @@ class CancelRequest(BaseModel):
     reason: str = "cancelled by a person"
 
 
+class OverrideRequest(BaseModel):
+    case_id: str
+    status: str
+    note: str | None = None
+    not_run_code: str | None = None
+
+
+class ReviewDecision(BaseModel):
+    # A workflow action (pass-to-uat, fail-to-in-progress, fail-to-todo), or
+    # None to leave the ticket where it is.
+    next_step: str | None = None
+    notes: str | None = None
+
+
 def _refused(e: RunRefused) -> HTTPException:
     return HTTPException(status_code=e.status, detail={"error": e.code, "message": e.message, **e.extra})
 
@@ -102,8 +117,58 @@ async def runs_for_ticket(ticket_key: str):
          "plan_id": r.plan_id, "plan_version": r.plan_version, "counts": r.counts,
          "cost_usd": r.cost_usd, "dry_run": r.dry_run,
          "created_at": r.created_at.isoformat() if r.created_at else None,
-         "finished_at": r.finished_at.isoformat() if r.finished_at else None}
+         "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+         "tracker_outcome": (r.tracker or {}).get("outcome")}
         for r in runs]}
+
+
+@router.get("/uat-runs/{run_id}/review")
+async def get_review(run_id: int):
+    """The run as the review panel shows it; also the formatter's input."""
+    db = get_db()
+    return await uat_review.review_view(db, await _run(db, run_id))
+
+
+@router.post("/uat-runs/{run_id}/review/results")
+async def record_override(run_id: int, request: OverrideRequest):
+    """The reviewer's own result for one case, recorded with them as actor."""
+    db = get_db()
+    run = await _run(db, run_id)
+    try:
+        await uat_review.record_override(db, run, case_id=request.case_id, status=request.status,
+                                         note=request.note, not_run_code=request.not_run_code)
+    except RunRefused as e:
+        raise _refused(e)
+    return await uat_review.review_view(db, run)
+
+
+@router.post("/uat-runs/{run_id}/approve")
+async def approve(run_id: int, request: ReviewDecision):
+    """Approve & post. Calling it again resumes a post that stopped partway.
+
+    Returns 200 with ``tracker.outcome`` naming the step that failed, rather
+    than an error, once the approval itself is recorded: the decision stands
+    and the panel offers a retry.
+    """
+    db = get_db()
+    run = await _run(db, run_id)
+    try:
+        run = await uat_review.approve(db, run, next_step=request.next_step, notes=request.notes)
+    except RunRefused as e:
+        raise _refused(e)
+    return await uat_review.review_view(db, run)
+
+
+@router.post("/uat-runs/{run_id}/reject")
+async def reject(run_id: int, request: ReviewDecision):
+    """Close the run without posting; its agent results never count."""
+    db = get_db()
+    run = await _run(db, run_id)
+    try:
+        run = await uat_review.reject(db, run, notes=request.notes)
+    except RunRefused as e:
+        raise _refused(e)
+    return await uat_review.review_view(db, run)
 
 
 @router.post("/uat-runs/{run_id}/legs/{leg}/results")

@@ -20,6 +20,7 @@ import RunHistoryBanner from './components/RunHistoryBanner'
 import UntrackedPlanNotice from './components/UntrackedPlanNotice'
 import HistoricalPlanPreview from './components/HistoricalPlanPreview'
 import StalePlanNotice from './components/StalePlanNotice'
+import UatReviewPanel from './components/UatReviewPanel'
 import WatcherStatus from './components/WatcherStatus'
 import EpicChildrenList from './components/EpicChildrenList'
 import BatchSummary from './components/BatchSummary'
@@ -797,6 +798,10 @@ function App() {
                       onRegenerate={() => handleGenerateTestPlan()}
                       regenerating={testPlan.generating}
                     />
+                  )}
+
+                  {!isMultiTicket && ticketData?.key && (
+                    <UatReviewPanel key={ticketData.key} ticketKey={ticketData.key} />
                   )}
 
                   {testPlan.plan && (

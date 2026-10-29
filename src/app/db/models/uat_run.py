@@ -67,3 +67,11 @@ class UatRun(DocumentBase):
     cost_usd: float = 0.0
     counts: dict[str, int] = Field(default_factory=dict)
     finished_at: datetime | None = None
+    # The one human checkpoint: {decision: approved|rejected, actor, at,
+    # next_step, notes}. Nothing reaches the tracker before it is "approved".
+    review: dict[str, Any] | None = None
+    # What reached the tracker after approval, step by step, so a partial post
+    # is visible and a retry resumes it: {comment_id, comment_updated, posted_at,
+    # attachments: [{name, id}], transition: {action, status, assigned_to},
+    # outcome: posted|attachments_failed|comment_failed|transition_failed, error}.
+    tracker: dict[str, Any] = Field(default_factory=dict)
