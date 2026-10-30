@@ -957,7 +957,7 @@ def _serialize_progress(row) -> dict:
 
 
 @app.get("/test-plan-progress/{progress_key}")
-async def get_test_plan_progress(progress_key: str):
+async def get_test_plan_progress(progress_key: str, allow_missing: bool = False):
     """Return the shared, per-ticket set of checked test cases for a plan.
 
     ``progress_key`` is the composite the frontend builds from the ticket key(s)
@@ -971,17 +971,24 @@ async def get_test_plan_progress(progress_key: str):
     wrong", could never detect one and wrote QA results somewhere nothing reads.
     Callers that legitimately expect "no progress yet" treat 404 as empty; the
     frontend already falls back to its local state when the fetch fails.
+
+    ``allow_missing=true`` answers an unknown key with 200 and ``exists: false``
+    instead. Only the browser asks for it: it polls every few seconds, and each
+    404 is a red console line that buries real errors. The default stays 404 so
+    the script guard above still fires.
     """
     db = get_db()
     row = await test_plan_progress_repository.get_progress(
         db, progress_key=progress_key
     )
     if row is None:
+        if allow_missing:
+            return {**_serialize_progress(None), "exists": False}
         raise HTTPException(
             status_code=404,
             detail=f"No progress recorded for key {progress_key!r}",
         )
-    return _serialize_progress(row)
+    return {**_serialize_progress(row), "exists": True}
 
 
 @app.get("/test-plan-progress/{progress_key}/other-shapes")

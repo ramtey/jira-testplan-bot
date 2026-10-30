@@ -1941,10 +1941,12 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
       // pre-save data and undo the checkbox the user just toggled.
       if (pendingSaves.current > 0) return
       const generation = saveGeneration.current
-      fetch(`${API_BASE}/test-plan-progress/${encodeURIComponent(serverKey)}`)
+      fetch(`${API_BASE}/test-plan-progress/${encodeURIComponent(serverKey)}?allow_missing=true`)
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => {
-          if (cancelled || !data || !Array.isArray(data.checked_ids)) return
+          // Nothing recorded yet: keep the local optimistic state, as a 404 did.
+          if (cancelled || !data || data.exists === false) return
+          if (!Array.isArray(data.checked_ids)) return
           // A toggle saved while this poll was in flight: its answer predates
           // the tick, and applying it would flicker the box off until the next.
           if (pendingSaves.current > 0 || generation !== saveGeneration.current) return
@@ -1986,9 +1988,10 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
     if (!serverKey) return
     let cancelled = false
     const encoded = encodeURIComponent(serverKey)
-    fetch(`${API_BASE}/test-plan-progress/${encoded}`)
-      .then((r) =>
-        r.status === 404
+    fetch(`${API_BASE}/test-plan-progress/${encoded}?allow_missing=true`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((current) =>
+        current && current.exists === false
           ? fetch(`${API_BASE}/test-plan-progress/${encoded}/other-shapes`)
           : null
       )
@@ -2455,7 +2458,10 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
                   justifyContent: 'center',
                   padding: '2px 8px',
                   borderRadius: 'var(--r-pill)',
-                  border: '1px solid var(--line)',
+                  // Longhand colour so variants can override it without React
+                  // removing it from under the shorthand on a re-render.
+                  border: '1px solid',
+                  borderColor: 'var(--line)',
                   background: 'var(--bg-surface)',
                   color: 'var(--fg-muted)',
                   fontSize: 'var(--t-xs)',

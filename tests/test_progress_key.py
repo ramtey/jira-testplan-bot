@@ -279,6 +279,17 @@ def test_an_unknown_progress_key_is_404_not_an_empty_set(monkeypatch):
     )
 
 
+def test_allow_missing_answers_an_unknown_key_with_200_and_exists_false(monkeypatch):
+    # The browser's poll opts in so "nothing ticked yet" isn't a console error
+    # every 3s; it must still be told apart from a real empty set.
+    c = _client(monkeypatch, {"SK-2642:4-8-1-7": []})
+    missing = c.get("/test-plan-progress/SK-2642:9-9-9-9?allow_missing=true")
+    assert missing.status_code == 200
+    assert missing.json() == {"checked_ids": [], "updated_at": None, "exists": False}
+    known = c.get("/test-plan-progress/SK-2642:4-8-1-7?allow_missing=true")
+    assert known.json()["exists"] is True
+
+
 def test_a_known_progress_key_still_returns_its_checks(monkeypatch):
     c = _client(monkeypatch, {"SK-2642:4-8-1-7": ["tc-happy_path-0"]})
     r = c.get("/test-plan-progress/SK-2642:4-8-1-7")
