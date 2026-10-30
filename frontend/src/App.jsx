@@ -198,9 +198,12 @@ function App() {
     return () => clearTimeout(timer)
   }, [loading])
 
-  // Auto-scroll to results when they appear
+  // Auto-scroll to results only when a generation just produced them. A stored
+  // plan loading (opening a ticket, switching tabs) leaves the scroll alone.
+  const scrollToNextPlanRef = useRef(false)
   useEffect(() => {
-    if (testPlan.plan && testPlanRef.current) {
+    if (testPlan.plan && testPlanRef.current && scrollToNextPlanRef.current) {
+      scrollToNextPlanRef.current = false
       testPlanRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }, [testPlan.plan])
@@ -593,7 +596,9 @@ function App() {
     const tickets = overrideTickets || ticketsData
     if (tickets.length === 0) return null
     bugLens.reset()
+    scrollToNextPlanRef.current = true
     const plan = await testPlan.generate(tickets)
+    if (!plan) scrollToNextPlanRef.current = false
     if (plan && tickets.length === 1) {
       loadRunHistory(tickets[0].key)
       // Generated on a ticket already in testing: the server posts it after
