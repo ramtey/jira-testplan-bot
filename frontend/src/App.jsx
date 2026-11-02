@@ -22,6 +22,7 @@ import HistoricalPlanPreview from './components/HistoricalPlanPreview'
 import StalePlanNotice from './components/StalePlanNotice'
 import UatReviewPanel from './components/UatReviewPanel'
 import WatcherStatus from './components/WatcherStatus'
+import UatStatus from './components/UatStatus'
 import EpicChildrenList from './components/EpicChildrenList'
 import BatchSummary from './components/BatchSummary'
 import JiraBrowser from './components/JiraBrowser'
@@ -637,6 +638,7 @@ function App() {
         <div className="hdr-spacer" />
         <div className="hdr-actions">
           <WatcherStatus />
+          <UatStatus onOpenTicket={handleSelectFromBrowser} />
           <TokenStatus />
         </div>
       </header>

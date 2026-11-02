@@ -311,6 +311,18 @@ class Settings(BaseSettings):
     # Hard stop for one leg, in minutes: SIGINT so recordings finalize, then the
     # cases it did not reach become dropped_time_cap.
     uat_leg_wall_clock_min: int = 60
+    # Queue a run when the watcher sweep sees a ticket enter AUTO_POST_STATUS
+    # with its own plan live. Off by default: runs cost money, so a team turns
+    # them on after setting up runner profiles and the dispatcher.
+    uat_auto_queue: bool = False
+    # Alert (never stop) when runs started today cost more than this in total.
+    uat_daily_budget_usd: float = 30.0
+    # Cases waiting for a deploy are rechecked this often, alerted on after
+    # UAT_BUILD_ALERT_HOURS, and given up on (the review opens with them
+    # listed as waiting) after UAT_BUILD_WAIT_HOURS.
+    uat_build_recheck_min: int = 30
+    uat_build_alert_hours: int = 4
+    uat_build_wait_hours: int = 24
 
     # Database (MongoDB)
     # Connection string for the QA bot's Mongo database. Point this at the NPE

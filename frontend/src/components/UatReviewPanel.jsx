@@ -202,6 +202,8 @@ export default function UatReviewPanel({ ticketKey }) {
   else if (awaiting) statusChip = <Chip size="sm" dot dotColor="var(--warning)" pulse>Awaiting your review</Chip>
   else if (view.status === 'approved' && tracker.outcome === 'posted') statusChip = <Chip size="sm" dot dotColor="var(--success)">Approved · posted</Chip>
   else if (view.status === 'approved') statusChip = <Chip size="sm" dot dotColor="var(--danger)">Approved · post incomplete</Chip>
+  else if (view.status === 'queued') statusChip = <Chip size="sm" dot dotColor="var(--accent)">Queued</Chip>
+  else if (view.status === 'waiting_for_build') statusChip = <Chip size="sm" dot dotColor="var(--warning)">Waiting for a deploy</Chip>
   else statusChip = <Chip size="sm" dot dotColor="var(--fg-faint)">{view.status}</Chip>
 
   return (
@@ -231,6 +233,15 @@ export default function UatReviewPanel({ ticketKey }) {
         )}
         {view.status === 'running' && (
           <Alert tone="info" title="Still running">The review opens when every runner has finished. Reload to check.</Alert>
+        )}
+        {(view.status === 'queued' || view.status === 'waiting_for_build') && (
+          <Alert tone="info" title={view.status === 'queued' ? 'Queued for the dispatcher' : 'Waiting for a deploy'}>
+            {view.status_reason || 'The dispatcher picks it up on its next tick.'}
+            {' '}The review opens when nothing is left to run.
+          </Alert>
+        )}
+        {(view.status === 'superseded' || view.status === 'cancelled') && view.status_reason && (
+          <Alert tone="muted" title={view.status === 'superseded' ? 'Superseded' : 'Cancelled'}>{view.status_reason}</Alert>
         )}
 
         {(view.builds || []).length > 0 && (

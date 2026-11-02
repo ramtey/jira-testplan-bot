@@ -275,8 +275,7 @@ tester's own passes. The human actor is the `users` row named by
   once each, no duplicates. Most cases were Not Run because the build source
   was not configured and the runner was not told which host it could call;
   both are fixed (`DEPLOYMENTS_REPOS`, `http_allowed_hosts` in the index).
-* Still open for later phases: rerunning a leg whose runner died (P4),
-  named token profiles for request-level cases.
+* Still open for later phases: named token profiles for request-level cases.
 
 ### P3 as shipped
 
@@ -305,6 +304,39 @@ tester's own passes. The human actor is the `users` row named by
   posting, so the preview is the posted text.
 * The walkthrough gate of the Pass to UAT button is not applied to approval:
   the results comment carries its own video line.
+* Verified on a real ticket: approved from the panel, comment written once,
+  ticket left in testing.
+
+### P4 as shipped
+
+* Queue: with `UAT_AUTO_QUEUE` the watcher's auto-post sweep queues a run for
+  each ticket that entered the testing status with its own plan live. One run
+  per plan version (a cancelled run does not count), so a reviewed or rejected
+  run is not repeated. A new run supersedes the ticket's older runs still
+  awaiting review: one review per ticket.
+* Rounds instead of one pass. A run is routed in rounds (`route_round`): the
+  first routes every case; later rounds route only open cases, those waiting
+  for a deploy or (once) left unfinished by a runner that died. A leg owes the
+  cases routed to it whose result is missing or rerunnable from before the
+  round (`owed_cases`); the runner sees only those, with no earlier result.
+  When a round ends: unfinished cases → `queued` for the one retry; waiting
+  cases → `waiting_for_build`, rechecked every `UAT_BUILD_RECHECK_MIN`, given
+  up after `UAT_BUILD_WAIT_HOURS`; otherwise `awaiting_review`.
+* Dispatcher: `testplan uat-dispatch --once` under launchd every 5 min. A file
+  lock stops overlapping ticks; a lease on the run (one leg's wall-clock cap
+  per pending leg + 15 min) stops two runs sharing the device and lets a later
+  tick recover a run whose dispatcher died. Claiming reads the ticket's status
+  and the live plan first and cancels on either change. No run starts with
+  less than one leg's cap left in the working window.
+* Preflight per leg: the profile's directory and allowlist exist, and its
+  simulator is booted (`simctl boot` + `bootstatus`). A failure closes the
+  leg's cases as `blocked_environment` naming it.
+* Alerts (macOS notification, once each): run ready for review, waiting on a
+  deploy longer than `UAT_BUILD_ALERT_HOURS`, run interrupted, run blocked,
+  per-run and daily budget (`UAT_DAILY_BUDGET_USD`), dispatcher failing or
+  backend unreachable (at most hourly). Budgets never stop a run.
+* Health: `GET /health/uat` from the dispatcher heartbeat, and a header pill:
+  dispatcher stopped or failing, else "N UAT runs to review".
 
 ## Definition of done
 

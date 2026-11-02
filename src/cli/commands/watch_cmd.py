@@ -107,6 +107,12 @@ def _render_auto_post(result: queue_watcher.AutoPostSweepResult, *, quiet: bool)
     status = settings.auto_post_status
     if result.queue_error:
         console.print(f"[red]✗ Could not read \"{status}\":[/red] {result.queue_error}")
+    # Always printed, quiet or not: a queued run is what the dispatcher acts
+    # on, and a refusal is the only trace of why a ticket never ran.
+    for key in result.uat_queued:
+        print(f"uat run queued {key}")
+    for key, why in result.uat_errors.items():
+        print(f"uat run not queued {key}: {why}")
 
     if quiet:
         # Failures print even when quiet: a post that didn't land is the

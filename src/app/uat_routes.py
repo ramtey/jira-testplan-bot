@@ -15,7 +15,8 @@ from pydantic import BaseModel
 
 from .db.mongo import get_db
 from .repositories import uat_run_repository
-from .services import uat_review, uat_runs
+from .config import settings
+from .services import uat_dispatch, uat_review, uat_runs
 from .services.uat_runs import RunRefused
 
 logger = logging.getLogger(__name__)
@@ -219,3 +220,86 @@ async def finalize_leg(run_id: int, leg: str, request: LegInfo):
     except RunRefused as e:
         raise _refused(e)
     return await uat_runs.run_view(db, run)
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher (`testplan uat-dispatch`)
+# ---------------------------------------------------------------------------
+
+
+class QueueRequest(BaseModel):
+    ticket_key: str
+    trigger: str = "command"
+    ticket_status: str | None = None
+
+
+class ClaimRequest(BaseModel):
+    holder: str
+    host: str | None = None
+    pid: int | None = None
+
+
+class HeartbeatRequest(BaseModel):
+    outcome: str
+    run_id: int | None = None
+    error: str | None = None
+
+
+@router.post("/uat-runs/queue")
+async def queue_run(request: QueueRequest):
+    """Queue a run of the ticket's live plan for the dispatcher (a DB write).
+
+    ``queued: false`` when this plan already has a run.
+    """
+    db = get_db()
+    try:
+        run = await uat_runs.queue_run(db, ticket_key=request.ticket_key, trigger=request.trigger,
+                                       ticket_status=request.ticket_status,
+                                       budget_usd=settings.uat_run_budget_usd)
+    except RunRefused as e:
+        raise _refused(e)
+    return {"queued": run is not None, "run_id": run.id if run else None}
+
+
+@router.post("/uat-dispatch/claim")
+async def dispatch_claim(request: ClaimRequest):
+    """One due run, routed and leased to the caller, plus what this tick decided."""
+    db = get_db()
+    out = await uat_dispatch.claim(db, holder=request.model_dump())
+    if out["claimed"] is not None:
+        out["run"] = await uat_runs.run_view(db, await uat_run_repository.get(db, out["claimed"]))
+    return out
+
+
+@router.post("/uat-dispatch/release/{run_id}")
+async def dispatch_release(run_id: int):
+    db = get_db()
+    await uat_dispatch.release(db, await _run(db, run_id))
+    return {"released": True}
+
+
+@router.post("/uat-runs/{run_id}/alerts/{kind}")
+async def alert_once(run_id: int, kind: str):
+    """Whether `kind` is new for this run (the caller alerts only then)."""
+    db = get_db()
+    await _run(db, run_id)
+    return {"new": await uat_dispatch.alert_once(db, run_id, kind)}
+
+
+@router.post("/uat-dispatch/heartbeat")
+async def dispatch_heartbeat(request: HeartbeatRequest):
+    db = get_db()
+    await uat_dispatch.record_heartbeat(db, outcome=request.outcome, run_id=request.run_id,
+                                        error=request.error)
+    return {"cost_today_usd": await uat_dispatch.cost_today(db),
+            "daily_budget_usd": settings.uat_daily_budget_usd}
+
+
+@router.get("/health/uat")
+async def uat_health():
+    """Dispatcher liveness and the runs waiting on a person. 503 if unreadable."""
+    try:
+        return await uat_dispatch.health(get_db())
+    except Exception:
+        logger.exception("health: uat dispatcher status unreadable")
+        raise HTTPException(status_code=503, detail="UAT dispatcher status unavailable")

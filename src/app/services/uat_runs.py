@@ -34,7 +34,7 @@ from ..build_targets import build_targets, targets_for_case
 from ..config import settings
 from ..db.base import utcnow
 from ..db.models.case_result import CaseResult
-from ..db.models.uat_run import NOT_RUN_CODES, UatRun
+from ..db.models.uat_run import NOT_RUN_CODES, RERUNNABLE_CODES, UatRun
 from ..jira_client import JiraClient
 from ..repositories import case_result_repository, plan_repository, uat_run_repository
 from . import progress_key as progress_key_service
@@ -236,10 +236,58 @@ async def _live_own_plan(db, ticket_key: str):
     return next(((r, p) for r, p in live if len(r.ticket_keys or []) == 1), None)
 
 
+async def queue_run(db: AsyncIOMotorDatabase, *, ticket_key: str, trigger: str = "sweep",
+                    dry_run: bool = False, budget_usd: float | None = None,
+                    ticket_status: str | None = None) -> UatRun | None:
+    """Queue a run of the ticket's live plan for the dispatcher. A DB write only.
+
+    Returns None, writing nothing, when this plan already has a run that was
+    not cancelled: one run per plan version, so a reviewed or rejected run is
+    not repeated by the next sweep. Refuses like ``start_run`` when no own plan
+    is live or a run is already active. Older runs of the ticket still awaiting
+    review are superseded: the ticket has one review, the newest run's.
+    """
+    key = ticket_key.upper()
+    found = await _live_own_plan(db, key)
+    if found is None:
+        raise RunRefused("waiting_for_plan_post",
+                         f"{key} has no plan of its own live in the tracker; post one first")
+    run_row, plan = found
+    prior = await db[UatRun.__collection__].find_one(
+        {"ticket_key": key, "plan_id": plan.id, "status": {"$ne": "cancelled"}})
+    if prior is not None:
+        return None
+    run = await _create(db, key, run_row, plan, trigger=trigger, dry_run=dry_run,
+                        budget_usd=budget_usd, status="queued")
+    run.ticket_snapshot = {"status": ticket_status}
+    run.not_before = utcnow()
+    return await uat_run_repository.save(db, run)
+
+
+async def _create(db, key, run_row, plan, *, trigger, dry_run, budget_usd, status) -> UatRun:
+    run = UatRun(
+        ticket_key=key, plan_id=plan.id, plan_version=plan.version,
+        progress_key=progress_key_service.build_progress_key(list(run_row.ticket_keys or []), plan.body),
+        trigger=trigger, dry_run=dry_run, budget_usd=budget_usd, status=status,
+    )
+    try:
+        run = await uat_run_repository.create(db, run)
+    except uat_run_repository.ActiveRunExists as e:
+        raise RunRefused("run_active", f"run {e.run_id} is already active for {key}", run_id=e.run_id)
+    run.evidence_dir = str(Path(os.path.expanduser(settings.uat_evidence_root)) / key / f"run-{run.id}")
+    # A ticket has one review: the newest run's. Older runs nobody reviewed
+    # would otherwise sit in the review count forever.
+    await db[UatRun.__collection__].update_many(
+        {"ticket_key": key, "_id": {"$lt": run.id}, "status": "awaiting_review"},
+        {"$set": {"status": "superseded", "status_reason": f"run {run.id} on plan v{plan.version} replaced it",
+                  "updated_at": utcnow()}})
+    return await uat_run_repository.save(db, run)
+
+
 async def start_run(db: AsyncIOMotorDatabase, *, ticket_key: str, trigger: str = "command",
                     dry_run: bool = False, budget_usd: float | None = None,
                     jira: JiraClient | None = None, profiles: dict | None = None) -> UatRun:
-    """Pin a run to the ticket's live plan and route every case.
+    """Pin a run to the ticket's live plan and route every case, now.
 
     Refuses (never queues silently) when the plan is not posted, when another
     run is active, or when the ticket cannot be read.
@@ -252,9 +300,16 @@ async def start_run(db: AsyncIOMotorDatabase, *, ticket_key: str, trigger: str =
     run_row, plan = found
     existing = await uat_run_repository.active_for_ticket(db, ticket_key=key)
     if existing is not None:
-        raise RunRefused("run_active", f"run {existing.id} is already active for {key}",
+        raise RunRefused("run_active", f"run {existing.id} is already {existing.status} for {key}",
                          run_id=existing.id)
     profiles = load_profiles() if profiles is None else profiles
+    ticket = await _read_ticket(key, jira)
+    run = await _create(db, key, run_row, plan, trigger=trigger, dry_run=dry_run,
+                        budget_usd=budget_usd, status="running")
+    return await route_round(db, run, ticket=ticket, profiles=profiles)
+
+
+async def _read_ticket(key: str, jira: JiraClient | None) -> dict:
     try:
         ticket = await read_ticket_builds(key, jira=jira)
     except Exception as e:
@@ -265,40 +320,77 @@ async def start_run(db: AsyncIOMotorDatabase, *, ticket_key: str, trigger: str =
         raise RunRefused("ticket_unreadable",
                          f"the tracker did not return {key}'s pull requests; builds cannot be checked",
                          status=503)
+    return ticket
 
-    cases = progress_key_service.cases_by_id(plan.body)
+
+def _open(r: CaseResult | None, rounds: int) -> bool:
+    """Whether a case still needs running in the next round."""
+    if r is None:
+        return True
+    code = (r.not_run or {}).get("code") if r.status == "not_run" else None
+    if code == "waiting_for_build":
+        return True
+    # The one infrastructure retry: a case the runner never finished.
+    return code == "run_aborted" and rounds < 2
+
+
+async def route_round(db: AsyncIOMotorDatabase, run: UatRun, *, ticket: dict | None = None,
+                      jira: JiraClient | None = None, profiles: dict | None = None) -> UatRun:
+    """Read the builds and route every case still open into this round's legs.
+
+    Open: no result yet, waiting for a build, or (once) left unfinished by a
+    runner that died. Cases that cannot run get their reason recorded now, so
+    the review shows them from the start; a reason already recorded is not
+    written again. With nothing to run the run closes (awaiting review, or
+    waiting for a build).
+    """
+    profiles = load_profiles() if profiles is None else profiles
+    ticket = ticket or await _read_ticket(run.ticket_key, jira)
+    found = await plan_repository.get_plan_with_cases(db, plan_id=run.plan_id)
+    if found is None:
+        raise RunRefused("plan_missing", f"plan {run.plan_id} of run {run.id} is gone", status=500)
+    cases = progress_key_service.cases_by_id(found[0].body)
     routing = route_cases(cases, ticket["targets"], ticket["builds"], profiles)
-    legs = {}
-    for name in sorted({r["leg"] for r in routing.values() if r["leg"]}):
-        prof = profiles[name]
-        legs[name] = {"repos": prof.get("repos") or [], "surfaces": prof.get("surfaces") or [],
-                      "agent": prof.get("agent"), "cwd": prof.get("cwd"), "status": "pending",
-                      "case_ids": [c for c, r in routing.items() if r["leg"] == name],
-                      "cost_usd": 0.0, "permission_denials": []}
-    run = UatRun(
-        ticket_key=key, plan_id=plan.id, plan_version=plan.version,
-        progress_key=progress_key_service.build_progress_key(list(run_row.ticket_keys or []), plan.body),
-        issue_type=ticket["issue_type"], trigger=trigger, dry_run=dry_run,
-        budget_usd=budget_usd, legs=legs, builds=ticket["builds"], routing=routing,
-        ticket_snapshot={"status": ticket["status"], "pr_count": ticket["pr_count"]},
-    )
-    if not legs:
-        run.status = "awaiting_review"
-        run.status_reason = "no case can run now"
-    try:
-        run = await uat_run_repository.create(db, run)
-    except uat_run_repository.ActiveRunExists as e:
-        raise RunRefused("run_active", f"run {e.run_id} is already active for {key}", run_id=e.run_id)
-    run.evidence_dir = str(Path(os.path.expanduser(settings.uat_evidence_root)) / key / f"run-{run.id}")
+    results = await uat_run_repository.results_for_run(db, run.id)
+    latest = latest_by_case(results)
+    through = max((r.id for r in results), default=0)
+    open_ids = [cid for cid in routing if _open(latest.get(cid), run.rounds)]
+    run.rounds += 1
+    run.issue_type = run.issue_type or ticket["issue_type"]
+    run.builds = ticket["builds"]
+    run.ticket_snapshot = {**(run.ticket_snapshot or {}), "pr_count": ticket["pr_count"],
+                           "status": (run.ticket_snapshot or {}).get("status") or ticket["status"]}
+    for cid in routing:
+        run.routing.setdefault(cid, routing[cid])
+    pending: set[str] = set()
+    for cid in open_ids:
+        r = routing[cid]
+        run.routing[cid] = r
+        if r["leg"]:
+            name = r["leg"]
+            prof = profiles[name]
+            leg = run.legs.setdefault(name, {
+                "repos": prof.get("repos") or [], "surfaces": prof.get("surfaces") or [],
+                "agent": prof.get("agent"), "cwd": prof.get("cwd"), "case_ids": [],
+                "cost_usd": 0.0, "permission_denials": []})
+            if cid not in leg["case_ids"]:
+                leg["case_ids"].append(cid)
+            leg.update(status="pending", owed_through=through, round=run.rounds)
+            pending.add(name)
+    # Running until _close says otherwise, which it does at once with nothing
+    # pending this round.
+    run.status = "running"
+    run.not_before = None
     await uat_run_repository.save(db, run)
-    # Cases that will not run in this run get their reason now, so the review
-    # shows them from the start rather than as gaps.
-    for case_id, r in routing.items():
-        if r["not_run"]:
-            await _record(db, run, case_id=case_id, status="not_run", not_run=r["not_run"],
+    for cid in open_ids:
+        r = routing[cid]
+        prev = latest.get(cid)
+        if r["not_run"] and not (prev is not None and prev.not_run == r["not_run"]):
+            await _record(db, run, case_id=cid, status="not_run", not_run=r["not_run"],
                           actor={"kind": "agent", "name": "router"}, source="router")
-    if not legs:
+    if not pending:
         await _close(db, run)
+        run = await uat_run_repository.get(db, run.id)
     return run
 
 
@@ -388,6 +480,27 @@ def latest_by_case(results: list[CaseResult]) -> dict[str, CaseResult]:
     return out
 
 
+def owed_cases(run: UatRun, leg: str, latest: dict[str, CaseResult]) -> list[str]:
+    """The cases `leg` owes a result for in its current round.
+
+    A case with no result, or one still routed to this leg whose latest result
+    is rerunnable and predates the round (it waited for a build that has
+    landed, or its runner died). A rerunnable result written during the round
+    closes it like any other.
+    """
+    info = run.legs.get(leg) or {}
+    through = int(info.get("owed_through") or 0)
+    out = []
+    for cid in info.get("case_ids") or []:
+        r = latest.get(cid)
+        if r is None:
+            out.append(cid)
+        elif (r.status == "not_run" and (r.not_run or {}).get("code") in RERUNNABLE_CODES
+              and (r.id or 0) <= through and (run.routing.get(cid) or {}).get("leg") == leg):
+            out.append(cid)
+    return out
+
+
 def counts(results: list[CaseResult]) -> dict[str, int]:
     latest = latest_by_case(results)
     out = {"passed": 0, "failed": 0, "not_run": 0}
@@ -426,7 +539,10 @@ async def run_view(db: AsyncIOMotorDatabase, run: UatRun, *, leg: str | None = N
     cases = {c["id"]: c for c in progress_key_service.cases_by_id(body)}
     results = latest_by_case(await uat_run_repository.results_for_run(db, run.id))
     builds = {b["repo"]: b for b in run.builds}
-    ids = run.legs[leg]["case_ids"] if leg else list(run.routing)
+    # A runner sees only what its leg owes this round, with no earlier result:
+    # a case rerun after a build landed is not "already done".
+    owed = owed_cases(run, leg, results) if leg else []
+    ids = owed if leg else list(run.routing)
     view_cases = []
     for cid in ids:
         route = run.routing.get(cid) or {}
@@ -438,7 +554,7 @@ async def run_view(db: AsyncIOMotorDatabase, run: UatRun, *, leg: str | None = N
             "builds": [builds[r] for r in route.get("repos") or [] if r in builds],
             "case": c.get("case"),
             "routed_not_run": route.get("not_run"),
-            "result": _result_view(results[cid]) if cid in results else None,
+            "result": _result_view(results[cid]) if cid in results and cid not in owed else None,
         })
     out = {
         "run_id": run.id, "ticket_key": run.ticket_key, "plan_id": run.plan_id,
@@ -454,7 +570,7 @@ async def run_view(db: AsyncIOMotorDatabase, run: UatRun, *, leg: str | None = N
         out["video_walkthrough"] = video_walkthrough.walkthrough_from_plan_body(body)
         # Results this leg still owes. finish_run refuses to call it done while
         # any remain; finalize fills them as run_aborted.
-        out["missing"] = [cid for cid in ids if cid not in results]
+        out["missing"] = owed
     return out
 
 
@@ -500,12 +616,14 @@ async def should_continue(db: AsyncIOMotorDatabase, run: UatRun, *,
 
 async def cancel(db: AsyncIOMotorDatabase, run: UatRun, *, reason: str,
                  code: str = "run_cancelled") -> UatRun:
-    """Stop `run`. Cases without a result are filled when each leg finalizes."""
-    if run.status != "running":
+    """Stop `run`. Cases without a result are filled when each leg finalizes;
+    a queued or waiting run has no runner, so it just stops."""
+    if run.status not in ("queued", "running", "waiting_for_build"):
         return run
     run.status = "cancelled"
     run.status_reason = reason
     run.status_detail = code
+    run.lease = None
     await uat_run_repository.save(db, run)
     return run
 
@@ -540,17 +658,19 @@ async def finalize_leg(db: AsyncIOMotorDatabase, run: UatRun, leg: str, info: di
         code, why = "run_aborted", f"runner exited {exit_code}" + (f": {detail}" if detail else "")
     else:
         code, why = "run_aborted", detail or "runner finished without recording a result"
-    for cid in run.legs[leg]["case_ids"]:
-        if cid not in results:
-            await _record(db, run, case_id=cid, status="not_run",
-                          not_run={"code": code if code in NOT_RUN_CODES else "run_aborted", "detail": why},
-                          actor={"kind": "agent", "name": "finalize", "leg": leg}, source="finalize",
-                          leg=leg)
+    for cid in owed_cases(run, leg, results):
+        await _record(db, run, case_id=cid, status="not_run",
+                      not_run={"code": code if code in NOT_RUN_CODES else "run_aborted", "detail": why},
+                      actor={"kind": "agent", "name": "finalize", "leg": leg}, source="finalize",
+                      leg=leg)
     fields = {
         "status": "finished" if exit_code in (0, None) else "failed",
         "finished_at": utcnow().isoformat(), "exit_code": exit_code, "detail": detail,
-        "cost_usd": float(info.get("cost_usd") or 0.0),
-        "permission_denials": info.get("permission_denials") or [],
+        # Summed over rounds: a leg rerun after a build landed costs again.
+        "cost_usd": round(float(run.legs[leg].get("cost_usd") or 0.0)
+                          + float(info.get("cost_usd") or 0.0), 4),
+        "permission_denials": list(run.legs[leg].get("permission_denials") or [])
+        + list(info.get("permission_denials") or []),
         "session_id": info.get("session_id"), "duration_s": info.get("duration_s"),
         "budget_alert": info.get("budget_alert"),
     }
@@ -562,12 +682,52 @@ async def finalize_leg(db: AsyncIOMotorDatabase, run: UatRun, leg: str, info: di
 
 
 async def _close(db, run: UatRun) -> None:
+    """Every leg of this round is done: retry, wait for a build, or review.
+
+    One more round when the runner died before finishing cases (once, the
+    infrastructure retry). Waiting when cases wait for a deploy, rechecked by
+    the dispatcher, until UAT_BUILD_WAIT_HOURS have passed; then the review
+    opens with those cases listed as waiting.
+    """
+    from datetime import timedelta
+
     run.cost_usd = round(sum(float(l.get("cost_usd") or 0) for l in run.legs.values()), 4)
-    run.counts = counts(await uat_run_repository.results_for_run(db, run.id))
+    results = await uat_run_repository.results_for_run(db, run.id)
+    run.counts = counts(results)
+    latest = latest_by_case(results)
+    code_of = {cid: (r.not_run or {}).get("code") for cid, r in latest.items() if r.status == "not_run"}
+    waiting = sorted(c for c, code in code_of.items() if code == "waiting_for_build")
+    aborted = sorted(c for c, code in code_of.items() if code == "run_aborted")
     failed = [n for n, l in run.legs.items() if l.get("status") == "failed"]
+    now = utcnow()
     if run.status == "running":
-        run.status = "awaiting_review"
-        if failed:
-            run.status_reason = "runner failed on " + ", ".join(
-                f"{n} (exit {run.legs[n].get('exit_code')})" for n in failed)
+        run.lease = None
+        waited_out = run.waiting_since is not None and (
+            now - _aware(run.waiting_since) >= timedelta(hours=settings.uat_build_wait_hours))
+        if aborted and run.rounds < 2:
+            run.status = "queued"
+            run.not_before = now
+            run.status_reason = f"retrying {len(aborted)} case(s) the runner did not finish"
+        elif waiting and not waited_out:
+            run.waiting_since = run.waiting_since or now
+            run.status = "waiting_for_build"
+            run.not_before = now + timedelta(minutes=settings.uat_build_recheck_min)
+            repos = sorted({(latest[c].not_run or {}).get("detail", "").split(":")[0] for c in waiting} - {""})
+            run.status_reason = f"{len(waiting)} case(s) wait for a deploy" + (
+                f" of {', '.join(repos)}" if repos else "")
+        else:
+            run.status = "awaiting_review"
+            reasons = []
+            if failed:
+                reasons.append("runner failed on " + ", ".join(
+                    f"{n} (exit {run.legs[n].get('exit_code')})" for n in failed))
+            if waiting:
+                reasons.append(f"{len(waiting)} case(s) still waiting for a deploy after "
+                               f"{settings.uat_build_wait_hours}h")
+            run.status_reason = "; ".join(reasons) or None
     await uat_run_repository.save(db, run)
+
+
+def _aware(dt):
+    from datetime import timezone
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)

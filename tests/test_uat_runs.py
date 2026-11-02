@@ -402,12 +402,24 @@ async def test_every_case_ends_with_a_result_or_a_reason(db, monkeypatch, api):
     r = await api.post(f"/uat-runs/{run.id}/legs/api/finalize",
                        json={"exit_code": 1, "detail": "simulator crashed", "cost_usd": 0.5})
     view = r.json()
-    assert view["status"] == "awaiting_review"
+    # Cases the runners never finished get one more round (infrastructure).
+    assert view["status"] == "queued" and "retrying 3 case(s)" in view["status_reason"]
+
+    run = await uat_runs.route_round(db, await uat_run_repository.get(db, run.id), profiles=PROFILES)
+    assert run.status == "running" and run.rounds == 2
+    leg = (await api.get(f"/uat-runs/{run.id}?leg=mobile")).json()
+    assert "happy_path:0" not in leg["missing"], "the pass is not rerun"
+    assert "edge_cases:0" in leg["missing"], "the case the runner never finished is"
+    assert all(c["result"] is None for c in leg["cases"])
+    await api.post(f"/uat-runs/{run.id}/legs/mobile/finalize", json={"exit_code": 0, "cost_usd": 0.25})
+    view = (await api.post(f"/uat-runs/{run.id}/legs/api/finalize",
+                           json={"exit_code": 1, "detail": "simulator crashed", "cost_usd": 0.5})).json()
+    assert view["status"] == "awaiting_review", "the retry happens once"
     assert "api (exit 1)" in view["status_reason"]
     assert view["counts"] == {"passed": 1, "failed": 0, "not_run": 4}
     assert all(c["result"] for c in view["cases"])
     run = await uat_run_repository.get(db, run.id)
-    assert run.cost_usd == 1.75 and run.active_ticket is None and run.finished_at
+    assert run.cost_usd == 2.5 and run.active_ticket is None and run.finished_at
 
 
 @pytest.mark.asyncio

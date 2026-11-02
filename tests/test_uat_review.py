@@ -65,9 +65,20 @@ async def _finished_run(db, monkeypatch, *, agent_pass=True):
     run = await _start(db, monkeypatch)
     if agent_pass:
         await uat_runs.record_result(db, run, leg="mobile", payload=_pass("happy_path:0"))
-    for leg in run.legs:
-        run = await uat_runs.finalize_leg(db, await uat_run_repository.get(db, run.id), leg, {})
-    return await uat_run_repository.get(db, run.id)
+    return await _finish_rounds(db, run)
+
+
+async def _finish_rounds(db, run):
+    """Close every leg, through the one retry round, until the run is reviewable."""
+    from tests.test_uat_runs import PROFILES
+    for _ in range(3):
+        for leg in run.legs:
+            run = await uat_runs.finalize_leg(db, await uat_run_repository.get(db, run.id), leg, {})
+        run = await uat_run_repository.get(db, run.id)
+        if run.status != "queued":
+            return run
+        run = await uat_runs.route_round(db, run, profiles=PROFILES)
+    return run
 
 
 async def _checked(db, run):
@@ -184,10 +195,7 @@ async def test_no_next_step_posts_without_moving(db, monkeypatch):
 
 
 async def _finished_run_again(db, monkeypatch):
-    run = await _start(db, monkeypatch)
-    for leg in run.legs:
-        run = await uat_runs.finalize_leg(db, await uat_run_repository.get(db, run.id), leg, {})
-    return await uat_run_repository.get(db, run.id)
+    return await _finish_rounds(db, await _start(db, monkeypatch))
 
 
 def test_derived_next_step():

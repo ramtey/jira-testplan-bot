@@ -7,7 +7,8 @@ from .generate_cmd import generate
 from .health_cmd import health
 from .setup_cmd import setup
 from .timings_cmd import timings
+from .uat_dispatch_cmd import uat_dispatch
 from .uat_run_cmd import uat_run
 from .watch_cmd import watch
 
-__all__ = ["auto_post_status", "config_app", "health", "fetch", "generate", "setup", "timings", "uat_run", "watch"]
+__all__ = ["auto_post_status", "config_app", "health", "fetch", "generate", "setup", "timings", "uat_dispatch", "uat_run", "watch"]

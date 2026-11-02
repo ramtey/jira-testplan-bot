@@ -94,6 +94,20 @@ def is_active(now: datetime | None = None) -> bool:
     return now.weekday() in days and start <= now.time() < end
 
 
+def minutes_left(now: datetime | None = None) -> float | None:
+    """Minutes until the current window closes; None when there is no window
+    configured (always on), 0 outside one."""
+    cfg = _config()
+    if cfg is None:
+        return None
+    now = _now(now)
+    if not is_active(now):
+        return 0.0
+    _days, (_start, end) = cfg
+    closes = now.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
+    return max(0.0, (closes - now).total_seconds() / 60)
+
+
 def window_start(now: datetime | None = None) -> datetime | None:
     """When the window containing `now` opened, or None outside one."""
     cfg = _config()

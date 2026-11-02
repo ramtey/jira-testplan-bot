@@ -10,6 +10,24 @@ testplan uat-run PROJ-123 --route-only   # pin the plan, check builds, route cas
 testplan uat-run PROJ-123 --run 42   # resume: replay spooled results, close or launch legs
 ```
 
+Unattended (P4): with `UAT_AUTO_QUEUE=true` the watcher sweep queues a run for
+each ticket that enters `AUTO_POST_STATUS` with its own plan live (one run per
+plan version), and the dispatcher runs it:
+
+```sh
+testplan uat-dispatch --once            # one tick: claim a due run, run its legs, alert
+ops/launchd/install-uat-dispatch.sh     # a tick every 5 minutes inside WATCH_ACTIVE_DAYS/HOURS
+```
+
+A tick recovers runs whose dispatcher died (lease expired), cancels runs whose
+ticket moved or whose plan changed, starts nothing that cannot finish before
+the window closes, boots the profile's simulator, and runs one round. Cases
+waiting for a deploy are rechecked every `UAT_BUILD_RECHECK_MIN` and run when
+it lands; cases a dead runner left are retried once. Desktop alerts: run ready
+for review, waiting on a deploy longer than `UAT_BUILD_ALERT_HOURS`, run
+interrupted, budgets (per run and per day; alerts only). The header pill reads
+`/health/uat`.
+
 The backend pins the run to the ticket's live plan, answers the build question
 for each repo the ticket changed, and routes every case to a **runner profile**
 (`UAT_RUNNER_PROFILES_FILE`, see `runner-profiles.example.json`) or records why

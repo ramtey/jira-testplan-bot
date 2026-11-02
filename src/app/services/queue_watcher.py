@@ -414,6 +414,10 @@ class AutoPostSweepResult:
     outcomes: list[auto_post.AutoPostOutcome] = field(default_factory=list)
     scanned: int = 0
     queue_error: str | None = None
+    # UAT runs queued for tickets now in testing with their plan live
+    # (UAT_AUTO_QUEUE), and why any could not be.
+    uat_queued: list[str] = field(default_factory=list)
+    uat_errors: dict[str, str] = field(default_factory=dict)
 
 
 async def sweep_auto_post(
@@ -459,7 +463,33 @@ async def sweep_auto_post(
                 jira, key, dry_run=dry_run, trigger=auto_post.TRIGGER_SWEEP
             )
         )
+        if settings.uat_auto_queue and not dry_run:
+            await _queue_uat_run(key, status_name, result)
     return result
+
+
+async def _queue_uat_run(key: str, status_name: str, result: AutoPostSweepResult) -> None:
+    """Queue a UAT run for `key` if its own plan is live and has no run yet.
+
+    A DB write only; the dispatcher runs it. "No plan live yet" is not an
+    error (the post may land on a later sweep); anything else is recorded.
+    """
+    from . import uat_runs
+
+    try:
+        run = await uat_runs.queue_run(get_db(), ticket_key=key, trigger="sweep",
+                                       ticket_status=status_name,
+                                       budget_usd=settings.uat_run_budget_usd)
+    except uat_runs.RunRefused as e:
+        if e.code not in ("waiting_for_plan_post", "run_active"):
+            result.uat_errors[key] = f"{e.code}: {e.message}"
+        return
+    except Exception as e:
+        logger.exception("uat: could not queue a run for %s", key)
+        result.uat_errors[key] = f"{type(e).__name__}: {e}"
+        return
+    if run is not None:
+        result.uat_queued.append(key)
 
 
 async def record_heartbeat(

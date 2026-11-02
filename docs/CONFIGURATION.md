@@ -64,7 +64,10 @@ worked example of each.
 | `UAT_TEST_ENV` | The deploy-state environment runners test against, as repos name it, in order (`integ,integ-west`: each repo's first match) | Only repos with a single environment get a build answer; others are `unverifiable` |
 | `UAT_EVIDENCE_ROOT` | Where each run's evidence and results spool go (`<root>/<TICKET>/run-<id>/`). Default `~/uat-walkthroughs` | — |
 | `UAT_RUN_BUDGET_USD` | Alert (never stop) when one leg costs more than this. Default 10 | — |
-| `UAT_LEG_WALL_CLOCK_MIN` | Hard stop for one leg: SIGINT, then unreached cases are `dropped_time_cap`. Default 60 | — |
+| `UAT_LEG_WALL_CLOCK_MIN` | Hard stop for one leg: SIGINT, then unreached cases are `dropped_time_cap`. Default 60. The dispatcher starts no run with less than this left in the working window | — |
+| `UAT_AUTO_QUEUE` | Queue a UAT run when the watcher sees a ticket enter `AUTO_POST_STATUS` with its own plan live; the dispatcher (`ops/launchd/install-uat-dispatch.sh`) runs it | Off: runs start only by `testplan uat-run` |
+| `UAT_DAILY_BUDGET_USD` | Alert (never stop) when runs started today cost more than this in total. Default 30 | — |
+| `UAT_BUILD_RECHECK_MIN` / `UAT_BUILD_ALERT_HOURS` / `UAT_BUILD_WAIT_HOURS` | Cases waiting for a deploy: recheck interval (30), alert after (4), open the review with them still waiting after (24) | — |
 | `RISK_PROFILES_DIR` | Directory of product risk profiles — QA-written user types, fragile features and environment limits, one markdown file per product. See [risk_profile.example.md](risk_profile.example.md) | Plans know only what the ticket, PRs and comments say |
 
 Finding a Jira accountId: it appears in any user object the Jira API returns,

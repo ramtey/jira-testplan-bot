@@ -200,6 +200,72 @@ def run_leg(run: dict, leg: str, profile: dict, *, wall_clock_min: int, budget_u
     return info
 
 
+def _preflight_device(profile: dict) -> str | None:
+    """Boot the profile's simulator if it names one. A problem, or None."""
+    udid = (profile.get("context") or {}).get("simulator_udid")
+    if not udid:
+        return None
+    if not shutil.which("xcrun"):
+        return "xcrun is not on PATH, so the simulator cannot be booted"
+    try:
+        # Fails harmlessly when already booted; bootstatus is the real check.
+        subprocess.run(["xcrun", "simctl", "boot", udid], capture_output=True, timeout=120)
+        r = subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"],
+                           capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return f"simulator {udid} did not finish booting within 5 min"
+    if r.returncode != 0:
+        return f"simulator {udid} did not boot: {(r.stderr or r.stdout).strip()[-200:]}"
+    return None
+
+
+def run_pending_legs(run: dict, profiles: dict, legs: list[str] | None = None) -> dict:
+    """Run every pending leg of `run` (or just `legs`), close each, return the run.
+
+    A leg whose profile or device is not ready is closed with every case it
+    owes as blocked_environment, naming the problem. Exits (typer.Exit) only
+    when results are still spooled and the backend is not taking them.
+    """
+    view = run
+    for name in legs or list(run["legs"]):
+        state = run["legs"][name].get("status")
+        if state in ("finished", "failed"):
+            continue
+        if state == "running":
+            # A runner already ran (or died) on this leg: its spooled results
+            # go in and the leg closes. Its unfinished cases get the retry round.
+            console.print(f"\n[bold]Leg {name}[/bold] (runner already started: replaying and closing)")
+            rep = asyncio.run(uat_mcp.replay({"api": _api(), "run_id": str(run["run_id"]), "leg": name,
+                                              "evidence": run["evidence_dir"], "hosts": set()}))
+            if rep["still_spooled"]:
+                _fail(f"{rep['still_spooled']} result(s) still spooled; the backend is not taking them.")
+            view = _post(f"/uat-runs/{run['run_id']}/legs/{name}/finalize",
+                         {"exit_code": -1, "detail": "closed on resume after the runner exited"})
+            continue
+        profile = profiles.get(name) or {}
+        console.print(f"\n[bold]Leg {name}[/bold]")
+        problem = _check_profile(name, profile) or _preflight_device(profile)
+        if problem:
+            console.print(f"  [red]{problem}[/red]")
+            view = _post(f"/uat-runs/{run['run_id']}/legs/{name}/finalize",
+                         {"exit_code": -1, "missing_code": "blocked_environment",
+                          "detail": f"preflight: {problem}"})
+            continue
+        info = run_leg(run, name, profile, wall_clock_min=settings.uat_leg_wall_clock_min,
+                       budget_usd=run.get("budget_usd") or settings.uat_run_budget_usd)
+        rep = info.pop("replayed")
+        if rep["sent"] or rep["refused"] or rep["still_spooled"]:
+            console.print(f"  spool replay: {rep['sent']} sent, {len(rep['refused'])} refused, "
+                          f"{rep['still_spooled']} still spooled")
+        if rep["still_spooled"]:
+            _fail(f"{rep['still_spooled']} result(s) are still spooled in {run['evidence_dir']}/results.jsonl "
+                  f"and the backend is unreachable. The leg was not closed; once the backend is back run "
+                  f"`testplan uat-run {run['ticket_key']} --run {run['run_id']}` (spooled results are "
+                  "replayed, nothing reruns).")
+        view = _post(f"/uat-runs/{run['run_id']}/legs/{name}/finalize", info)
+    return view
+
+
 def _summary(view: dict) -> None:
     c = view.get("counts") or {}
     console.print(f"\n[bold]Run {view['run_id']}[/bold] {view['ticket_key']} plan {view['plan_id']} "
@@ -221,6 +287,9 @@ def _summary(view: dict) -> None:
         if leg.get("budget_alert"):
             console.print(f"  [bold yellow]budget alert:[/bold yellow] {leg['budget_alert']}")
     console.print(f"  evidence: {view.get('evidence_dir')}")
+    if view["status"] in ("queued", "waiting_for_build"):
+        console.print("  [dim]The dispatcher picks it up next (`testplan uat-dispatch --once`, or its "
+                      "launchd job).[/dim]")
 
 
 def uat_run(
@@ -272,40 +341,5 @@ def uat_run(
                           f"POST /uat-runs/{run['run_id']}/cancel[/dim]")
         _summary(run)
         return
-    view = run
-    for name in legs:
-        state = run["legs"][name].get("status")
-        if state in ("finished", "failed"):
-            continue
-        if state == "running":
-            # A runner already ran (or died) on this leg. Rerunning it is P4's
-            # job; here its spooled results go in and the leg closes.
-            console.print(f"\n[bold]Leg {name}[/bold] (runner already started: replaying and closing)")
-            rep = asyncio.run(uat_mcp.replay({"api": _api(), "run_id": str(run["run_id"]), "leg": name,
-                                              "evidence": run["evidence_dir"], "hosts": set()}))
-            if rep["still_spooled"]:
-                _fail(f"{rep['still_spooled']} result(s) still spooled; the backend is not taking them.")
-            view = _post(f"/uat-runs/{run['run_id']}/legs/{name}/finalize",
-                         {"detail": "closed on resume after the runner exited"})
-            continue
-        profile = profiles.get(name) or {}
-        problem = _check_profile(name, profile)
-        console.print(f"\n[bold]Leg {name}[/bold]")
-        if problem:
-            console.print(f"  [red]{problem}[/red]")
-            view = _post(f"/uat-runs/{run['run_id']}/legs/{name}/finalize",
-                         {"exit_code": -1, "detail": problem})
-            continue
-        info = run_leg(run, name, profile, wall_clock_min=settings.uat_leg_wall_clock_min,
-                       budget_usd=run.get("budget_usd") or settings.uat_run_budget_usd)
-        rep = info.pop("replayed")
-        if rep["sent"] or rep["refused"] or rep["still_spooled"]:
-            console.print(f"  spool replay: {rep['sent']} sent, {len(rep['refused'])} refused, "
-                          f"{rep['still_spooled']} still spooled")
-        if rep["still_spooled"]:
-            _fail(f"{rep['still_spooled']} result(s) are still spooled in {run['evidence_dir']}/results.jsonl "
-                  f"and the backend is unreachable. The leg was not closed; once the backend is back run "
-                  f"`testplan uat-run {run['ticket_key']} --run {run['run_id']}` (spooled results are "
-                  "replayed, nothing reruns).")
-        view = _post(f"/uat-runs/{run['run_id']}/legs/{name}/finalize", info)
-    _summary(view)
+    _summary(run_pending_legs(run, profiles, legs))
+

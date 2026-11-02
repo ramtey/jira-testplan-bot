@@ -9,15 +9,22 @@ from src.app.db.base import DocumentBase
 
 # Where a run is. None of these means "done" without saying how it ended.
 UatRunStatus = Literal[
+    "queued",           # waiting for the dispatcher (not_before says when)
     "running",          # at least one leg may still record results
+    "waiting_for_build",  # some cases wait for a deploy; rechecked at not_before
     "awaiting_review",  # every leg finished; a person decides next
     "cancelled",        # stopped on purpose (status_reason says by what)
     "failed",           # no leg could run at all (status_reason says why)
     "approved",
     "rejected",
+    "superseded",       # a newer run for the ticket replaced it before review
 ]
 
-ACTIVE_STATUSES = ("running",)
+ACTIVE_STATUSES = ("queued", "running", "waiting_for_build")
+
+# Not Run codes a later round of the same run may clear: the build landed, or
+# the runner died (infrastructure, retried once).
+RERUNNABLE_CODES = frozenset({"waiting_for_build", "run_aborted"})
 
 # Not Run reason codes. A Not Run without one of these is refused.
 NOT_RUN_CODES = frozenset({
@@ -75,3 +82,12 @@ class UatRun(DocumentBase):
     # attachments: [{name, id}], transition: {action, status, assigned_to},
     # outcome: posted|attachments_failed|comment_failed|transition_failed, error}.
     tracker: dict[str, Any] = Field(default_factory=dict)
+    # The dispatcher: when a queued or waiting run may next be picked up, who
+    # holds it ({holder, host, pid, expires_at}), and how many rounds ran. A
+    # lease past expires_at means the dispatcher died; the run is recovered.
+    not_before: datetime | None = None
+    lease: dict[str, Any] | None = None
+    rounds: int = 0
+    waiting_since: datetime | None = None
+    # {alert kind: iso time} so each alert fires once per run.
+    alerts: dict[str, str] = Field(default_factory=dict)
