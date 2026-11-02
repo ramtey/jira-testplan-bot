@@ -84,7 +84,8 @@ def auto_post_status(
     for action, label in ((auto_post.SKIPPED, "Skipped"), (auto_post.FAILED, "Failed")):
         reasons = Counter(
             e.get("reason") for e in auto
-            if e.get("action") == action and e.get("reason") != auto_post.SKIP_NO_OWN_PLAN
+            if e.get("action") == action
+            and e.get("reason") not in (auto_post.SKIP_NO_OWN_PLAN, auto_post.SKIP_NOT_IN_TESTING)
         )
         if reasons:
             colour = "red" if action == auto_post.FAILED else "yellow"
@@ -92,6 +93,9 @@ def auto_post_status(
                 f"  {label}: [{colour}]{sum(reasons.values())}[/{colour}] ("
                 + ", ".join(f"{r} {n}" for r, n in reasons.most_common()) + ")"
             )
+    waiting = [e for e in auto if e.get("reason") == auto_post.SKIP_NOT_IN_TESTING]
+    if waiting:
+        console.print(f"  Generated before testing (posts on {auto_post.settings.auto_post_status}): {len(waiting)}")
     regenerated = [e for e in manual if versions.get(e.get("plan_id"), 1) > 1]
     console.print(
         f"  Posted by hand: {len(manual)}"

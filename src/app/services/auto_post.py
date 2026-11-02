@@ -54,6 +54,9 @@ SKIP_EMPTY_PLAN = "empty_plan"
 SKIP_ALREADY_LIVE = "already_live"
 SKIP_COMMENT_EXISTS = "plan_comment_exists"
 SKIP_STALE_PLAN = "stale_plan"
+# Not an auto-post outcome: a plan generated before its ticket reached
+# testing. History only, so "nothing logged" never has to be explained.
+SKIP_NOT_IN_TESTING = "not_in_testing"
 FAIL_FRESHNESS_UNKNOWN = "freshness_unknown"
 
 _FORMATTER = (
@@ -135,9 +138,57 @@ async def queue_if_in_testing(background_tasks, ticket_key: str, plan: dict) -> 
         logger.warning("auto-post: could not read %s's status after generating", key, exc_info=True)
         return None
     if (current or "").strip().lower() != status.lower():
+        await log_not_in_testing(key, plan, current, trigger=TRIGGER_GENERATE)
         return None
     background_tasks.add_task(auto_post_own_plan, JiraClient(), key, trigger=TRIGGER_GENERATE)
     return {"action": "queued"}
+
+
+async def note_watcher_plan(ticket_key: str, plan: dict) -> None:
+    """Record why a plan the watcher just generated was not posted. Never raises.
+
+    The watcher generates for the QA queue, before anyone starts testing, so
+    its plans normally wait. Status is read again here, not taken from before
+    generating: a run takes minutes, and a ticket pulled meanwhile is the
+    sweep's to post, not something to log as waiting.
+    """
+    status = (settings.auto_post_status or "").strip()
+    if not status or plan.get("plan_id") is None or plan.get("no_source"):
+        return
+    key = ticket_key.upper()
+    try:
+        current = await JiraClient().get_issue_status(key)
+    except Exception:
+        logger.warning("auto-post: could not read %s's status after the watcher generated", key, exc_info=True)
+        return
+    if (current or "").strip().lower() != status.lower():
+        await log_not_in_testing(key, plan, current, trigger=TRIGGER_WATCHER)
+
+
+async def log_not_in_testing(
+    ticket_key: str, plan: dict, current: str | None, *, trigger: str
+) -> None:
+    """Add a history row for a plan left waiting for testing. Never raises.
+
+    History only, not the ticket's recorded outcome: that drives the Post
+    control and the sweep's change detection, and this is not a decision
+    either of them made.
+    """
+    status = settings.auto_post_status
+    try:
+        await auto_post_repository.add_event(
+            get_db(),
+            ticket_key=ticket_key,
+            event={
+                "action": SKIPPED,
+                "reason": SKIP_NOT_IN_TESTING,
+                "detail": f"ticket is in {current or 'an unknown status'}; posts when it moves to {status}",
+                "plan_id": plan.get("plan_id"),
+                "trigger": trigger,
+            },
+        )
+    except Exception:
+        logger.exception("auto-post: could not log the waiting plan on %s", ticket_key)
 
 
 def _parse_ts(value) -> datetime | None:
@@ -197,6 +248,7 @@ TRIGGER_PULL = "pull_to_testing"
 TRIGGER_GENERATE = "generate"
 TRIGGER_SWEEP = "sweep"
 TRIGGER_MANUAL = "manual"
+TRIGGER_WATCHER = "watcher"
 
 
 async def log_manual_post(ticket_key: str, result: dict) -> None:

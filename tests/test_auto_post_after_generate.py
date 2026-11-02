@@ -39,10 +39,47 @@ async def test_queues_the_post_on_a_ticket_in_testing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_ticket_not_in_testing_is_left_alone(monkeypatch):
+async def test_a_ticket_not_in_testing_is_left_alone_but_logged(monkeypatch):
     monkeypatch.setattr(settings, "auto_post_status", "In Testing")
-    out, tasks = await _queue(status="Ready to Test")
+    with patch.object(auto_post.auto_post_repository, "add_event", AsyncMock()) as add, \
+         patch.object(auto_post, "get_db"):
+        out, tasks = await _queue(status="Ready to Test")
     assert out is None and tasks == []
+    event = add.await_args.kwargs["event"]
+    assert add.await_args.kwargs["ticket_key"] == "SK-1"
+    assert event["reason"] == auto_post.SKIP_NOT_IN_TESTING
+    assert event["trigger"] == auto_post.TRIGGER_GENERATE
+    assert event["plan_id"] == 7
+    assert "Ready to Test" in event["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_history_write_still_returns(monkeypatch):
+    monkeypatch.setattr(settings, "auto_post_status", "In Testing")
+    with patch.object(auto_post.auto_post_repository, "add_event", AsyncMock(side_effect=RuntimeError("db down"))), \
+         patch.object(auto_post, "get_db"):
+        out, tasks = await _queue(status="Ready to Test")
+    assert out is None and tasks == []
+
+
+@pytest.mark.asyncio
+async def test_a_watcher_plan_waiting_for_testing_is_logged(monkeypatch):
+    monkeypatch.setattr(settings, "auto_post_status", "In Testing")
+    with patch.object(auto_post, "JiraClient", return_value=_jira(status="Ready To Test")), \
+         patch.object(auto_post.auto_post_repository, "add_event", AsyncMock()) as add, \
+         patch.object(auto_post, "get_db"):
+        await auto_post.note_watcher_plan("sk-1", PLAN)
+    assert add.await_args.kwargs["event"]["trigger"] == auto_post.TRIGGER_WATCHER
+
+
+@pytest.mark.asyncio
+async def test_a_watcher_plan_on_a_ticket_already_in_testing_is_left_to_the_sweep(monkeypatch):
+    monkeypatch.setattr(settings, "auto_post_status", "In Testing")
+    with patch.object(auto_post, "JiraClient", return_value=_jira()), \
+         patch.object(auto_post.auto_post_repository, "add_event", AsyncMock()) as add:
+        await auto_post.note_watcher_plan("sk-1", PLAN)
+        await auto_post.note_watcher_plan("sk-1", {"plan_id": 7, "no_source": True})
+    add.assert_not_awaited()
 
 
 @pytest.mark.asyncio

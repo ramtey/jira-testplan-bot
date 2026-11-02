@@ -232,6 +232,24 @@ def no_previous_plan(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def no_watcher_status_read(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Keep the watcher's after-generate status read off the real Jira.
+
+    ``note_watcher_plan`` builds its own ``JiraClient``, so a sweep test that
+    mocks only the client it passes in would still read a real ticket's
+    status. Its own tests live in test_auto_post_after_generate.
+    """
+    if request.module.__name__.endswith("test_auto_post_after_generate"):
+        return
+    from src.app.services import auto_post
+
+    async def _nothing(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(auto_post, "note_watcher_plan", _nothing)
+
+
+@pytest.fixture(autouse=True)
 def isolated_figma_probe_cache(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """Give every test its own Figma probe cache.
 

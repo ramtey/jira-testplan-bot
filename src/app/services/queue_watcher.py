@@ -392,6 +392,7 @@ async def sweep_once(
         )
         generated += 1
         logger.info("watcher: generated plan for %s (%d cases)", ticket_key, case_count)
+        await auto_post.note_watcher_plan(ticket_key, plan)
 
         # Bugs get their analysis queued up too, so the tester finds both
         # waiting rather than kicking off Bug Lens by hand after reading.
