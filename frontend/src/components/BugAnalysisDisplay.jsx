@@ -268,7 +268,9 @@ function BugAnalysisDisplay({ analysis }) {
                     {b.commit_sha ? (
                       <>
                         <div style={{ marginBottom: 4 }}>
-                          <span style={{ color: 'var(--fg-subtle)' }}>Introduced by </span>
+                          <span style={{ color: 'var(--fg-subtle)' }}>
+                            {b.blamed_own_fix ? 'Last changed by this ticket\'s own fix ' : 'Introduced by '}
+                          </span>
                           {commitUrl ? (
                             <a href={commitUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
                               {b.commit_short || (b.commit_sha ? b.commit_sha.slice(0, 8) : '')}
@@ -291,6 +293,9 @@ function BugAnalysisDisplay({ analysis }) {
                           {b.author_name && dateShort && <span> · </span>}
                           {dateShort && <span>{dateShort}</span>}
                         </div>
+                        {b.blamed_own_fix && b.notes && (
+                          <div style={{ marginTop: 4, color: 'var(--fg-subtle)', fontSize: 'var(--t-xs)' }}>{b.notes}</div>
+                        )}
                       </>
                     ) : (
                       <span style={{ color: 'var(--fg-subtle)' }}>{b.notes || 'Blame lookup returned no result.'}</span>

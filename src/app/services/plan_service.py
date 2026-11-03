@@ -45,6 +45,7 @@ from ..copy_only import audit_plan_shape
 from ..db.models.plan import PlanFormat
 from ..db.models.run import RunType
 from ..db.mongo import get_db
+from . import llm_usage
 from ..deploy_state import read_deploy_state
 from ..evidence_checks import (
     check_note_usage,
@@ -727,6 +728,9 @@ async def generate_single(
     """
     if request.issue_type in NON_TESTABLE_ISSUE_TYPES:
         raise NonTestableIssueError(request.issue_type)
+
+    # Count every Claude call from here on toward this run's tokens and cost.
+    llm_usage.begin()
 
     # Resolve what this run is allowed to ground cases in, BEFORE anything
     # reads development_info. Closed-unmerged PRs are dropped here and never
@@ -1415,6 +1419,7 @@ async def generate_multi(
       into the prompt so the model writes integration tests against the
       seams rather than per-side behaviour.
     """
+    llm_usage.begin()
     for ticket in tickets:
         if ticket.issue_type in NON_TESTABLE_ISSUE_TYPES:
             raise NonTestableIssueError(ticket.issue_type, ticket.ticket_key)

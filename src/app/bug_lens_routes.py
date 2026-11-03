@@ -247,14 +247,34 @@ def _build_path_repo_hint(
     return mapping
 
 
+_PR_REF_PATTERN = re.compile(r"github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)", re.IGNORECASE)
+
+
+def _pr_refs(development_info_list: list[dict | None]) -> set[tuple[str, int]]:
+    """(owner/repo lowercased, PR number) for every PR linked to the tickets."""
+    refs: set[tuple[str, int]] = set()
+    for dev_info in development_info_list:
+        for pr in ((dev_info or {}).get("pull_requests") or []):
+            m = _PR_REF_PATTERN.search((pr or {}).get("url") or "")
+            if m:
+                refs.add((f"{m.group(1)}/{m.group(2)}".lower(), int(m.group(3))))
+    return refs
+
+
 async def _compute_blame_evidence(
     suspect_locations: list[dict] | None,
     path_repo_hint: dict[str, str],
+    own_prs: set[tuple[str, int]] | None = None,
 ) -> list[dict]:
     """
     Blame each {path, line} anchor via GitHub GraphQL and return the introducing
     commit + PR for each. Silent no-op when GitHub is not configured or the
     LLM emitted no anchors.
+
+    Blame runs on the default branch, so once the ticket's fix has merged, a
+    line the fix touched blames to the fix itself. ``own_prs`` (the tickets'
+    linked PRs) marks those entries ``blamed_own_fix`` so the panel does not
+    present the fix as the change that introduced the bug.
     """
     if not suspect_locations or not settings.github_token:
         return []
@@ -284,6 +304,18 @@ async def _compute_blame_evidence(
             "repo": repo,
         }
         if blame:
+            pr_number = blame.get("pr_number")
+            if (
+                own_prs
+                and isinstance(pr_number, int)
+                and (repo.lower(), pr_number) in own_prs
+            ):
+                entry["blamed_own_fix"] = True
+                entry["notes"] = (
+                    "This line was last changed by this ticket's own PR, so blame "
+                    "shows the fix, not where the bug came from. Look at the line "
+                    "before this PR to find the original change."
+                )
             entry.update({
                 "commit_sha": blame.get("sha"),
                 "commit_short": blame.get("short"),
@@ -428,7 +460,11 @@ async def analyze_bug(request: BugAnalysisRequest):
         if evidence:
             analysis.code_evidence = evidence
         path_repo_hint = _build_path_repo_hint(request.development_info, github_context, repos)
-        blame = await _compute_blame_evidence(analysis.suspect_locations, path_repo_hint)
+        blame = await _compute_blame_evidence(
+            analysis.suspect_locations,
+            path_repo_hint,
+            _pr_refs([request.development_info]),
+        )
         if blame:
             analysis.blame_evidence = blame
         await run_tracker.complete_with_bug_analysis(run_ctx, analysis=analysis)
@@ -515,7 +551,11 @@ async def analyze_bugs_multi(request: MultiBugAnalysisRequest):
             per_hint = _build_path_repo_hint(t.development_info, td.get("github_context"), combined_repos)
             for path, repo in per_hint.items():
                 combined_hint.setdefault(path, repo)
-        blame = await _compute_blame_evidence(analysis.suspect_locations, combined_hint)
+        blame = await _compute_blame_evidence(
+            analysis.suspect_locations,
+            combined_hint,
+            _pr_refs([t.development_info for t in request.tickets]),
+        )
         if blame:
             analysis.blame_evidence = blame
         await run_tracker.complete_with_bug_analysis(run_ctx, analysis=analysis)

@@ -12,6 +12,7 @@ from src.app.db.models.run import RunStatus, RunType
 from src.app.db import crud
 from src.app.db.mongo import get_db
 from src.app.models import BugAnalysis
+from src.app.services import llm_usage
 from src.app.repositories import (
     bug_analysis_repository,
     jira_ticket_repository,
@@ -129,15 +130,26 @@ async def complete_with_plan(
     plan_body: str,
     plan_format: PlanFormat,
     cases: Iterable[tuple[str, str, str | None]],
-    prompt_tokens: int = 0,
-    output_tokens: int = 0,
-    cost_usd: Decimal | float = 0,
+    prompt_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cost_usd: Decimal | float | None = None,
 ) -> dict | None:
     """Persist the run + plan and return `{plan_id, version}` for the caller
     to echo back to the client. Returns None when persistence is unavailable
-    (no DB context, or an exception was swallowed)."""
+    (no DB context, or an exception was swallowed).
+
+    Tokens and cost not passed explicitly come from the generation's
+    ``llm_usage`` meter, so a run records what its Claude calls actually used
+    instead of defaulting to zero."""
     if ctx.run_id is None:
         return None
+    meter = llm_usage.current()
+    if prompt_tokens is None:
+        prompt_tokens = llm_usage.prompt_tokens(meter) if meter else 0
+    if output_tokens is None:
+        output_tokens = meter["output_tokens"] if meter else 0
+    if cost_usd is None:
+        cost_usd = meter["cost_usd"] if meter else 0
     try:
         db = get_db()
         run = await crud.get_by_id(db, _run_type(), ctx.run_id)

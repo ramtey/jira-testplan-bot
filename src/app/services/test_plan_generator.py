@@ -72,8 +72,12 @@ def derive_context_flags(request: GenerateTestPlanRequest | TicketInput) -> dict
     linked_count = sum(
         len(v or []) for v in linked.values() if isinstance(v, list)
     )
+    # Fetched Figma designs live under development_info.figma_context (see
+    # plan_service.development_info_to_dict); a Figma link a tester pasted
+    # into the testing context counts too. Checking only testing_context left
+    # had_figma at 0 on every run.
     testing_ctx_str = json.dumps(request.testing_context or {}).lower()
-    had_figma = "figma" in testing_ctx_str
+    had_figma = bool(dev_info.get("figma_context")) or "figma" in testing_ctx_str
     return {
         "had_pr_diff": had_pr_diff,
         "had_figma": had_figma,

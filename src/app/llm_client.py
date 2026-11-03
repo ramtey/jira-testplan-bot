@@ -5528,14 +5528,18 @@ class ClaudeClient(LLMClient):
                                 # The error body is needed for _status_error.
                                 await response.aread()
                             response.raise_for_status()
-                            return await self._read_message_stream(response)
+                            message = await self._read_message_stream(response)
+                            self._meter_usage(payload, message)
+                            return message
                     response = await client.post(
                         "https://api.anthropic.com/v1/messages",
                         headers=headers,
                         json=payload,
                     )
                     response.raise_for_status()
-                    return response.json()
+                    message = response.json()
+                    self._meter_usage(payload, message)
+                    return message
             except httpx.HTTPStatusError as e:
                 if fast and e.response.status_code == 429 and not is_last:
                     # Fast mode has its own rate limit. Slower beats failed:
@@ -5571,6 +5575,16 @@ class ClaudeClient(LLMClient):
             "Claude API request was never attempted.",
             error_type="service_unavailable",
         )
+
+    @staticmethod
+    def _meter_usage(payload: dict, message: dict) -> None:
+        """Add this response's usage to the generation's meter (llm_usage)."""
+        from .services import llm_usage
+
+        usage = dict(message.get("usage") or {})
+        if payload.get("speed") == "fast" and "speed" not in usage:
+            usage["speed"] = "fast"
+        llm_usage.record(message.get("model") or payload.get("model"), usage)
 
     @staticmethod
     async def _read_message_stream(response: "httpx.Response") -> dict:
