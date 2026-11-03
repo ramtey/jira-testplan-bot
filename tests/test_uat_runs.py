@@ -245,7 +245,8 @@ async def test_a_run_pins_the_live_plan_and_records_reasons_for_unrunnable_cases
         ("happy_path:1", "not_run", "no_runner_profile"),
         ("edge_cases:1", "not_run", "not_automatable"),
     ]
-    assert run.evidence_dir.endswith(f"SK-1/run-{run.id}")
+    # The uat-runner's folder convention, sk<number>, not the raw key.
+    assert run.evidence_dir.endswith(f"/sk1/run-{run.id}")
 
 
 @pytest.mark.asyncio

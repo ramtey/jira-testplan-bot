@@ -264,6 +264,18 @@ async def queue_run(db: AsyncIOMotorDatabase, *, ticket_key: str, trigger: str =
     return await uat_run_repository.save(db, run)
 
 
+def evidence_folder_name(ticket_key: str) -> str:
+    """The ticket's folder under the evidence root: ``SK-2867`` -> ``sk2867``.
+
+    The uat-runner agent has always written to ``~/uat-walkthroughs/sk<number>``,
+    and ~190 ticket folders use that form. Runs queued here used the raw key
+    until 2026-11-03, so seven tickets ended up with both ``SK-2867/`` and
+    ``sk2867/``. ``scripts/impact_metrics.py`` (``sk(\\d+)``) also never counted
+    the dashed folders as AI-tested.
+    """
+    return ticket_key.strip().lower().replace("-", "")
+
+
 async def _create(db, key, run_row, plan, *, trigger, dry_run, budget_usd, status) -> UatRun:
     run = UatRun(
         ticket_key=key, plan_id=plan.id, plan_version=plan.version,
@@ -274,7 +286,9 @@ async def _create(db, key, run_row, plan, *, trigger, dry_run, budget_usd, statu
         run = await uat_run_repository.create(db, run)
     except uat_run_repository.ActiveRunExists as e:
         raise RunRefused("run_active", f"run {e.run_id} is already active for {key}", run_id=e.run_id)
-    run.evidence_dir = str(Path(os.path.expanduser(settings.uat_evidence_root)) / key / f"run-{run.id}")
+    run.evidence_dir = str(
+        Path(os.path.expanduser(settings.uat_evidence_root)) / evidence_folder_name(key) / f"run-{run.id}"
+    )
     # A ticket has one review: the newest run's. Older runs nobody reviewed
     # would otherwise sit in the review count forever.
     await db[UatRun.__collection__].update_many(

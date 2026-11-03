@@ -48,9 +48,39 @@ So the walkthrough is chaptered, and a chapter starts wherever the precondition
 changes. The runner has to re-establish that state to run the case anyway; this
 just makes the seam visible to whoever is watching, and gives the sidecar ledger
 its timestamps.
+
+Why chapter ids come from ``progress_key``
+------------------------------------------
+A chapter's ``case_id`` is what the runner marks a result against, so it has to
+be the plan's canonical id — the one ``progress_key.case_index`` defines — and
+not a position in the raw ``happy_path`` list. Those two differ as soon as a
+happy-path case is flagged ``covered_by_unit_test``: the flag lifts it into the
+``covered_by_unit_test:<n>`` namespace and every later happy-path case moves up
+one. Until 2026-11-03 this module numbered by raw position, so every chapter
+after a covered case was off by one. Plan 655 (SK-2948) served ``happy_path:5``
+from a plan whose happy path ends at ``happy_path:4``, and its ``happy_path:4``
+chapter named a different case than ``happy_path:4`` does: one id that did not
+exist and one that pointed at the wrong case.
+
+Why the stored copy is never served as-is
+-----------------------------------------
+The plan body carries a ``video_walkthrough`` written at generation time. It
+is a snapshot of a function of the cases, and a snapshot goes stale the moment
+the cases or the id rule change. That is exactly how plan 655's bad ids
+outlived the numbering fix. ``walkthrough_from_plan_body`` therefore always
+rebuilds from the body's current cases, then checks every chapter against
+``case_index`` (id *and* title) and drops any that fails, rather than
+returning it. A stale chapter is worse than a missing one: the runner would
+file a result against a case it never filmed.
 """
 
 from __future__ import annotations
+
+import logging
+
+from .services import progress_key
+
+logger = logging.getLogger(__name__)
 
 # ~2.5 seconds of watchable video per step (slowMo plus a dwell long enough to
 # read the screen). 40 steps is therefore about 100 seconds. See the module
@@ -126,6 +156,19 @@ def build_walkthrough(
     cases = happy_path if isinstance(happy_path, list) else []
     budget = budget if isinstance(budget, int) and budget > 0 else DEFAULT_STEP_BUDGET
 
+    # Canonical ids, from the one place that defines them. `happy_path` comes
+    # first in both of progress_key's orderings (checklist sections and
+    # COVERABLE_KEYS), so its ids are the same whether the walk sees this
+    # section alone or the whole plan. That is what lets a caller holding only
+    # the section get ids that hold in the full plan.
+    # Keyed by object identity: the walk yields the very dicts in `cases`.
+    canonical = {
+        id(item): case_id
+        for case_id, _meta, item in progress_key.cases_with_items(
+            {"happy_path": cases}
+        )
+    }
+
     chapters: list[dict] = []
     omitted: list[dict] = []
     selected_steps = 0
@@ -140,7 +183,7 @@ def build_walkthrough(
     for index, case in enumerate(cases):
         if not isinstance(case, dict):
             continue
-        case_id = f"happy_path:{index}"
+        case_id = canonical.get(id(case), f"happy_path:{index}")
         title = _clean(case.get("title")) or f"(untitled case {index})"
 
         filmable, reason = _is_filmable(case)
@@ -189,16 +232,78 @@ def build_walkthrough(
     }
 
 
-def walkthrough_from_plan_body(body, *, budget: int = DEFAULT_STEP_BUDGET) -> dict:
-    """Build the walkthrough from a stored plan body (parsed JSON, or a dict).
+def validate_chapters(walkthrough: dict, body) -> dict:
+    """Drop every chapter whose case is not in ``body`` as that exact case.
 
-    Plans generated before this module existed carry no precomputed
-    walkthrough, so the endpoint recomputes from ``happy_path`` rather than
-    reporting nothing for the whole back catalogue.
+    A chapter passes when its ``case_id`` is in ``progress_key.case_index`` for
+    this body *and* names the case stored under that id. The title check is the
+    one that matters most. A shifted id usually still exists; it just addresses
+    a different case (plan 655's ``happy_path:4``). An id-only check passes it.
+
+    Dropped chapters move to ``omitted`` with reason ``stale_case_id``, so the
+    walkthrough says it lost something rather than looking shorter for no
+    reason. ``selected_steps`` and ``estimated_seconds`` are recounted from what
+    survives. Returns a new dict; the input is not modified.
+    """
+    if not isinstance(walkthrough, dict):
+        return build_walkthrough([])
+    index = progress_key.case_index(body)
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for chapter in walkthrough.get("chapters") or []:
+        if not isinstance(chapter, dict):
+            continue
+        case_id = chapter.get("case_id")
+        meta = index.get(case_id) if isinstance(case_id, str) else None
+        stored_title = _clean(meta.get("title")) if meta else ""
+        # An untitled case has nothing to compare; its id alone has to do.
+        title_ok = meta is not None and (
+            not stored_title or stored_title == _clean(chapter.get("title"))
+        )
+        if title_ok and meta.get("section") == "happy_path":
+            kept.append(chapter)
+        else:
+            dropped.append(
+                {
+                    "case_id": case_id,
+                    "title": _clean(chapter.get("title")),
+                    "reason": "stale_case_id",
+                }
+            )
+    if not dropped:
+        return walkthrough
+    logger.warning(
+        "video_walkthrough: dropped %d chapter(s) not matching the plan: %s",
+        len(dropped),
+        [d["case_id"] for d in dropped],
+    )
+    # A dropped chapter may have opened a chapter; the next survivor then has
+    # to open one, or the reset it films goes unexplained.
+    kept = [dict(c) for c in kept]
+    last: object = object()
+    for chapter in kept:
+        precondition = chapter.get("preconditions")
+        chapter["starts_chapter"] = precondition != last
+        last = precondition
+    selected = sum(c.get("steps") or 0 for c in kept)
+    return {
+        **walkthrough,
+        "selected_steps": selected,
+        "estimated_seconds": round(selected * 2.5),
+        "omitted": list(walkthrough.get("omitted") or []) + dropped,
+        "chapters": kept,
+    }
+
+
+def walkthrough_from_plan_body(body, *, budget: int = DEFAULT_STEP_BUDGET) -> dict:
+    """The walkthrough for a stored plan body (parsed JSON, or a dict).
+
+    Always rebuilt from the body's current ``happy_path`` and validated against
+    its case ids; the ``video_walkthrough`` stored in the body is ignored. See
+    "Why the stored copy is never served as-is" in the module docstring. Every
+    reader goes through here: the endpoint, the UAT run view, and plan
+    generation itself when it writes the field.
     """
     if not isinstance(body, dict):
         return build_walkthrough([], budget=budget)
-    existing = body.get("video_walkthrough")
-    if isinstance(existing, dict) and isinstance(existing.get("chapters"), list):
-        return existing
-    return build_walkthrough(body.get("happy_path"), budget=budget)
+    return validate_chapters(build_walkthrough(body.get("happy_path"), budget=budget), body)

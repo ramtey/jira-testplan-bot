@@ -106,7 +106,7 @@ from src.app.data_provisioning import flag_unactionable_data_asks
 from src.app.step_grounding import check_step_grounding, readable_code_paths
 from src.app.source_facts import build_source_facts, read_source_index
 from src.app.grounding_verification import run_grounding_verification, shown_lines
-from src.app.video_walkthrough import build_walkthrough
+from src.app.video_walkthrough import walkthrough_from_plan_body
 
 logger = logging.getLogger(__name__)
 
@@ -1285,13 +1285,13 @@ async def generate_single(
             "evidence_notes": evidence_notes,
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
-            # Which happy-path cases the UAT screen recording covers, and where
-            # its chapters fall. Computed here so the plan carries one answer:
-            # the Pass-to-UAT checklist used to derive its own in the browser,
-            # which the UAT runner (a separate agent on this API) could not see.
-            "video_walkthrough": build_walkthrough(test_plan.happy_path),
             "source_provenance": provenance,
         }
+        # Which happy-path cases the UAT screen recording covers, and where its
+        # chapters fall. Built from the finished body, not test_plan.happy_path,
+        # so its case ids are the body's own (validated against case_index). A
+        # snapshot: readers rebuild it through walkthrough_from_plan_body.
+        response["video_walkthrough"] = walkthrough_from_plan_body(response)
         if spec_only is not None:
             response["source_notice"] = provenance["spec_only"]
         # What this regeneration does to recorded QA progress, from the final
@@ -1814,17 +1814,17 @@ async def generate_multi(
             "evidence_notes": evidence_notes,
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
-            # Which happy-path cases the UAT screen recording covers, and where
-            # its chapters fall. Computed here so the plan carries one answer:
-            # the Pass-to-UAT checklist used to derive its own in the browser,
-            # which the UAT runner (a separate agent on this API) could not see.
-            "video_walkthrough": build_walkthrough(test_plan.happy_path),
             "source_provenance": provenance,
             # Which ticket will carry the plan comment. Sent so the browser can
             # say where it is going before anyone posts, rather than the tester
             # finding out from the result.
             "batch_host_key": batch_host_key,
         }
+        # Which happy-path cases the UAT screen recording covers, and where its
+        # chapters fall. Built from the finished body, not test_plan.happy_path,
+        # so its case ids are the body's own (validated against case_index). A
+        # snapshot: readers rebuild it through walkthrough_from_plan_body.
+        response["video_walkthrough"] = walkthrough_from_plan_body(response)
         if cross_project_payload is not None:
             response["cross_project_summary"] = (
                 test_plan.cross_project_summary or cross_project_payload
