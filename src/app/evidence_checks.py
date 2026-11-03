@@ -1203,7 +1203,7 @@ async def gather_repo_evidence(github, pull_requests: list[dict] | None, mention
     and nothing else is claimed about the repo, when its tree could not be
     listed.
     """
-    from .build_targets import detect_platform, parse_app_version, version_files
+    from .build_targets import detect_platform, gate_prs, parse_app_version, version_files
 
     deployments = deployments or {}
     skip = set(deployments.get("deployments_repos") or [])
@@ -1213,9 +1213,12 @@ async def gather_repo_evidence(github, pull_requests: list[dict] | None, mention
             by_repo.setdefault(pr["repository"], []).append(pr)
     out = []
     for repo, prs in by_repo.items():
-        ref = _ref_for(prs)
+        # The build gate's PRs (build_targets.gate_prs): files are read at the
+        # commit the plan checks, never at an unrelated PR's merge.
+        ref = _ref_for(gate_prs(prs)[0])
         entry = {"repo": repo, "ref": ref, "error": None, "test_sources": {},
-                 "truncated": [], "build": None, "platform": None, "app_version": None}
+                 "truncated": [], "build": None, "platform": None, "app_version": None,
+                 "capabilities": None}
         out.append(entry)
         tree = await github.list_tree(repo, ref) if (github and ref) else None
         if tree is None:
@@ -1237,6 +1240,20 @@ async def gather_repo_evidence(github, pull_requests: list[dict] | None, mention
             if versions else {}
         entry["app_version"] = parse_app_version(
             entry["platform"], {p: version_texts[p] for p in versions if p in version_texts})
+        if entry["platform"] == "ios":
+            # Rule N: device family, orientations and entitlements, so no case
+            # asks for a device or orientation the app does not ship for.
+            from .platform_capabilities import capability_files, parse_ios_capabilities
+
+            pbx = next((p for p in versions if p.endswith("project.pbxproj")), None)
+            wanted = capability_files(tree)
+            cap_texts = await github.fetch_files_at_ref(repo, ref, wanted) if wanted else {}
+            try:
+                entry["capabilities"] = parse_ios_capabilities(
+                    pbx, version_texts.get(pbx) if pbx else None, cap_texts)
+            except Exception as e:  # a parse failure is "unread", never "unsupported"
+                logger.warning("platform capabilities of %s unreadable: %s", repo, e)
+                entry["capabilities"] = None
         # Manifests the Dockerfiles copy, plus the root one.
         manifests = {"package.json"} if "package.json" in tree else set()
         for df in dockerfiles:
@@ -1288,6 +1305,11 @@ def render_repo_evidence(entries: list[dict]) -> str:
             lines.append(f"- BUILD/CI FACT: ships as a {e['platform']} "
                          f"{'app build' if e['platform'] in ('ios', 'android') else 'deployment'}; its merge "
                          f"commit is {(e['ref'] or '?')[:7]}{ver}.")
+        if e.get("capabilities"):
+            from .platform_capabilities import render_capabilities
+
+            for line in render_capabilities(e["capabilities"]):
+                lines.append(f"- PLATFORM FACT (rule N): {line}.")
         for f in (e["build"] or {}).get("findings") or []:
             lines.append(f"- BUILD/CI FACT: {f['finding']}")
         suites = (e["build"] or {}).get("suites") or {}

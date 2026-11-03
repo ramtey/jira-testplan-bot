@@ -213,6 +213,13 @@ def no_live_repo_evidence(monkeypatch: pytest.MonkeyPatch):
     # patch ``plan_service._read_sources`` themselves.
     monkeypatch.setattr(plan_service, "_read_sources", _not_read)
 
+    # The build gate reads a PR's commit messages when its branch and title do
+    # not name the ticket (build_targets.annotate_ticket_match). None is
+    # "could not read"; tests of that path pass their own client.
+    from src.app.github_client import GitHubClient
+
+    monkeypatch.setattr(GitHubClient, "fetch_pr_commit_messages", _not_read)
+
 
 @pytest.fixture(autouse=True)
 def no_previous_plan(monkeypatch: pytest.MonkeyPatch):

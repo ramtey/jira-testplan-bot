@@ -1130,6 +1130,20 @@ async def run_evidence_checks(
     targets = build_targets(prs, repo_evidence, deploy_state,
                             (deployments or {}).get("deployments_repos") or [])
     deploy_checks_added = enforce_deploy_precondition(test_plan, targets=targets, when=when)
+    # Rule N: steps that need an orientation, device or entitlement the app
+    # does not ship with are marked where they stand (platform_capabilities).
+    from ..build_targets import gate_sentence
+    from ..platform_capabilities import flag_unsupported_steps
+
+    platform_not_applicable = flag_unsupported_steps(test_plan, targets)
+    # The build gate, once per repo, at the top of the plan: which PR is this
+    # ticket's change and at which commit, or the open question when no PR
+    # names the ticket. Cases that need no running build carry no check step.
+    for t in targets:
+        gate = gate_sentence(t)
+        if gate:
+            findings.append({"kind": "build_gate", "finding": f"{t['repo']}: {gate}",
+                             "evidence": "", "repo": t["repo"]})
 
     repos = [t["repo"] for t in targets]
     deployment = build_deployment_status(deploy_state, claims.get("deployment_status"), repos, when,
@@ -1143,6 +1157,9 @@ async def run_evidence_checks(
         "coverage_reverted": demoted,
         "deploy_checks_added": deploy_checks_added,
         "build_targets": [{"repo": t["repo"], "commit": t["commit"], "platform": t["platform"],
-                           "app_version": (t.get("app") or {}).get("version")} for t in targets],
+                           "app_version": (t.get("app") or {}).get("version"),
+                           "gate": t.get("gate"), "capabilities": t.get("capabilities")}
+                          for t in targets],
+        "platform_not_applicable": platform_not_applicable,
         "critic_gap": critic_gap,
     }

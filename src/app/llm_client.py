@@ -1430,6 +1430,40 @@ not make it.
 ❌ BAD: "No CI job runs these tests, so run them locally" with no file named.
 ✅ GOOD: "CI runs this file: .github/workflows/ci.yml job `test` runs `pnpm exec turbo run test` for every package except the two it filters out."
 
+**PLATFORM AND BUILD-GATE RULES N–O — every step must be possible on the app
+and build the tester has.**
+
+**N. Never write a step the app's platform cannot run.** The PLATFORM FACTS
+give the devices the app targets, the orientations it supports on each, and
+its entitlements, each with the file it was read from (Info.plist
+UISupportedInterfaceOrientations[~iphone|~ipad], TARGETED_DEVICE_FAMILY,
+the .entitlements file). Check every step against them:
+  - an orientation the app does not support on that device (landscape on a
+    portrait-only iPhone build), a device it does not target (iPad for an
+    iPhone-only app), or a capability it has no entitlement for (push without
+    aps-environment) is NOT a step. If the ticket mentions it, write
+    "Not applicable: <what> — <reason, citing the fact's file>" in the case
+    (or as a regression line) instead of testing it;
+  - when the support differs by device (landscape on iPad only), say which
+    device the step runs on;
+  - when a PLATFORM FACT says it could not be read or is set in code, the
+    support is unknown: write the step as an open question ("Unverified —
+    check whether the app supports landscape on iPhone: …"), never as fact.
+❌ BAD: "Rotate the iPhone to landscape and confirm the signature pad resizes" — when the facts say iPhone is portrait-only.
+✅ GOOD: "Not applicable: landscape on iPhone — the app is portrait-only there (Info.plist UISupportedInterfaceOrientations~iphone). On iPad (all orientations): rotate to landscape and confirm the signature pad resizes."
+
+**O. The build gate is the PR that implements this ticket.** A PR implements
+the ticket when its branch name, title or a commit message names the ticket
+key. Cite that PR's number and its merge commit as this ticket's change. When
+the build must also include a later commit (a follow-up fix PR for the same
+ticket), label it "build must be at or after <hash>", never as the ticket's
+change. A PR that is linked but names no ticket key, or a PR a comment
+mentions, is not this ticket's change: do not present its commit as one, and
+if the build seems to need it, say so as an open question. Code writes the
+build check step itself; do not write your own commit or tag into a case.
+❌ BAD: "Confirm the build includes the fix from PR #4021 (a1b2c3d)" — when #4021 is a different ticket's PR a comment linked.
+✅ GOOD: "This ticket's change is PR #4107 (merge commit 9f8e7d6). Build must be at or after 5c4b3a2 (PR #4115, the follow-up fix for this ticket)."
+
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
 "X remains unaffected" / "no regressions in Y" / "existing behaviour is
@@ -2415,6 +2449,8 @@ Before generating each section, mentally sort your tests:
 ✅ Is there code evidence for the expected result, or is it labelled an assumption that says what to record? (K)
 ✅ Could a tester following these steps on integ/staging actually see the expected result? Does the case's `trigger` name a real user action or setup step, and does it reach the changed code? → if nothing reachable triggers it, make it unit coverage or a gap, never a UI case (L)
 ✅ Does any case or regression line claim something about CI, config, env vars, flags or deployment? → cite the file it was read from, or say "unverified" (M)
+✅ Does any step need an orientation, device or entitlement the PLATFORM FACTS do not list for the device it runs on? → "Not applicable: <reason>" instead of a step, or name the device that supports it (N)
+✅ Is every commit a case names either this ticket's implementing PR (by number) or labelled "build must be at or after <hash>"? → no other PR's commit is presented as this ticket's change; unverified ones are open questions (O)
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
 

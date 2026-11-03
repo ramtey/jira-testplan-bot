@@ -828,6 +828,37 @@ class GitHubClient:
                 return email
         return None
 
+    async def fetch_pr_commit_messages(self, pr_url: str) -> list[str] | None:
+        """Every commit message on a PR (first 300), or None when not read.
+
+        None is "could not tell", never "no commit names the ticket": the
+        build gate (build_targets.annotate_ticket_match) reports the two
+        differently.
+        """
+        if not self.token:
+            return None
+        parsed = self._parse_github_url(pr_url)
+        if not parsed:
+            return None
+        owner, repo, pr_number = parsed
+        url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/commits"
+        messages: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                for page in (1, 2, 3):
+                    response = await client.get(url, headers=self._headers(),
+                                                params={"per_page": 100, "page": page})
+                    if response.status_code != 200:
+                        return None
+                    batch = response.json() or []
+                    messages += [(c.get("commit") or {}).get("message") or "" for c in batch]
+                    if len(batch) < 100:
+                        break
+        except Exception as e:
+            logger.warning(f"Failed to fetch PR commits for {pr_url}: {e}")
+            return None
+        return messages
+
     async def _fetch_pr_comments(self, client: httpx.AsyncClient, owner: str, repo: str, pr_number: int) -> list[PRComment]:
         """
         Fetch all comments for a PR (conversation + review comments).

@@ -368,9 +368,15 @@ async def test_sk2889_regenerated_has_ios_build_checks_and_only_runnable_cases()
     for c in response["happy_path"] + response["edge_cases"] + response["integration_tests"]:
         if c.get("deploy_check_added") or c.get("deploy_check_replaced"):
             assert "CFBundleShortVersionString" in c["steps"][0] and "ArgoCD app's image" not in c["steps"][0]
-    assert response["source_provenance"]["build_targets"] == [
-        {"repo": IOS, "commit": "b485dad1be95a8662635e1a5a72dceb4d73f322d", "platform": "ios",
-         "app_version": "2.13.0"}]
+    [target] = response["source_provenance"]["build_targets"]
+    assert {k: target[k] for k in ("repo", "commit", "platform", "app_version")} == {
+        "repo": IOS, "commit": "b485dad1be95a8662635e1a5a72dceb4d73f322d", "platform": "ios",
+        "app_version": "2.13.0"}
+    # The sanitized fixture PR has no branch or title and its commits are not
+    # read here, so the gate is an open question, never stated as fact (rule O).
+    assert target["gate"]["pr"]["number"] == 72 and target["gate"]["verified"] is False
+    assert any(f.get("kind") == "build_gate" and "Open question: PR #72" in f["finding"]
+               for f in response["build_and_ci"])
 
 
 @pytest.mark.asyncio

@@ -533,15 +533,44 @@ async def _discover_deployments(development_info: dict | None) -> dict:
         return {**empty, "errors": [f"deployments repos could not be read ({type(e).__name__})"]}
 
 
-async def _read_build_evidence(development_info: dict | None, mentioned: str) -> tuple[dict, list[dict], list[dict]]:
+async def _read_build_evidence(development_info: dict | None, mentioned: str,
+                               ticket_keys: dict[int, list[str]] | list[str] | None = None,
+                               ) -> tuple[dict, list[dict], list[dict]]:
     """``(deployments, deploy_state, repo_evidence)``: discovery first, since
-    both reads use what it finds, then the two reads side by side."""
+    both reads use what it finds, then the two reads side by side.
+
+    ``ticket_keys`` first marks which PRs name the ticket (the build gate,
+    ``build_targets.annotate_ticket_match``), so files are read and checks
+    written at the implementing PR's commit, not at an unrelated one's.
+    """
+    await _annotate_ticket_match(development_info, ticket_keys)
     deployments = await _discover_deployments(development_info)
     deploy_state, repo_evidence = await asyncio.gather(
         _read_deploy_state(development_info, deployments),
         _read_repo_evidence(development_info, mentioned, deployments),
     )
     return deployments, deploy_state, repo_evidence
+
+
+async def _annotate_ticket_match(development_info: dict | None, ticket_keys) -> None:
+    """Set ``ticket_match`` on each PR. ``ticket_keys`` is the key list for every
+    PR, or ``{id(pr): [key]}`` when a batch's PRs belong to different tickets.
+    Never raises: an unannotated PR gates the build as before."""
+    prs = [p for p in ((development_info or {}).get("pull_requests") or []) if isinstance(p, dict)]
+    if not prs or not ticket_keys:
+        return
+    from ..build_targets import annotate_ticket_match
+    from ..github_client import GitHubClient
+
+    try:
+        github = GitHubClient()
+        if isinstance(ticket_keys, dict):
+            for pr in prs:
+                await annotate_ticket_match(github, [pr], ticket_keys.get(id(pr)) or [])
+        else:
+            await annotate_ticket_match(github, prs, ticket_keys)
+    except Exception as e:
+        logger.warning("ticket-key match for the build gate failed: %s", e)
 
 
 async def _read_deploy_state(development_info: dict | None, deployments: dict | None = None) -> list[dict]:
@@ -834,7 +863,7 @@ async def generate_single(
                 issue_type=request.issue_type,
                 development_info=request.development_info,
             ),
-            _read_build_evidence(request.development_info, mentioned),
+            _read_build_evidence(request.development_info, mentioned, [request.ticket_key]),
             _read_flag_state(request),
             _explore_code(request, llm),
             _read_sources(request.development_info),
@@ -1102,6 +1131,8 @@ async def generate_single(
             provenance["deploy_checks_added"] = len(evidence["deploy_checks_added"])
         if evidence.get("build_targets"):
             provenance["build_targets"] = evidence["build_targets"]
+        if evidence.get("platform_not_applicable"):
+            provenance["platform_not_applicable"] = evidence["platform_not_applicable"]
         # A client's error handling is tested against empty and non-JSON
         # bodies too (src/app/error_variants.py). Adds a step, never a case.
         variants = require_error_body_variants(test_plan)
@@ -1526,7 +1557,11 @@ async def generate_multi(
                if isinstance(f, dict)]
         )
         (batch_deployments, batch_deploy_state, batch_repo_evidence), batch_index = await asyncio.gather(
-            _read_build_evidence(batch_dev_info, batch_mentioned), _read_sources(batch_dev_info))
+            _read_build_evidence(batch_dev_info, batch_mentioned,
+                                 {id(pr): [t["ticket_key"]] for t in tickets_data
+                                  for pr in ((t.get("development_info") or {}).get("pull_requests") or [])
+                                  if isinstance(pr, dict)}),
+            _read_sources(batch_dev_info))
         _record_deployments(provenance, batch_deployments)
         batch_gaps: list[str] = []
         batch_facts = _attach_source_facts({}, batch_index, provenance, batch_gaps)
@@ -1659,6 +1694,8 @@ async def generate_multi(
             provenance["deploy_checks_added"] = len(evidence["deploy_checks_added"])
         if evidence.get("build_targets"):
             provenance["build_targets"] = evidence["build_targets"]
+        if evidence.get("platform_not_applicable"):
+            provenance["platform_not_applicable"] = evidence["platform_not_applicable"]
         # A client's error handling is tested against empty and non-JSON
         # bodies too (src/app/error_variants.py). Adds a step, never a case.
         variants = require_error_body_variants(test_plan)

@@ -294,6 +294,93 @@ async def discover_deployments(github, pull_requests: list[dict] | None, *,
 # Targets — one per code repo
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Build gate — which PR is this ticket's change
+# ---------------------------------------------------------------------------
+#
+# A PR reaches a ticket from Jira's dev-status panel or from a URL pasted in
+# the description or a comment ("this regressed in #4021"). Neither proves the
+# PR implements the ticket. Before this, the newest merged PR in a repo was
+# the build gate whatever it was, so an unrelated PR's commit could be
+# presented as the ticket's change. A PR implements the ticket when its
+# branch, title or one of its commit messages names the ticket key.
+
+#: Values of ``pr["ticket_match"]`` (set by ``annotate_ticket_match``).
+#: ``unread``: the branch and title did not name the key and the PR's commits
+#: could not be read, which is not the same as "it does not".
+IMPLEMENTS = ("branch", "title", "commit")
+
+
+def names_key(text: str | None, key: str) -> bool:
+    """``SK-12`` in text, not ``SK-123``; branches often write ``sk-12``."""
+    if not text or not key:
+        return False
+    return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(key)}(?!\d)", text, re.I))
+
+
+def match_ticket(pr: dict, keys: Iterable[str], commit_messages: list[str] | None = None) -> str:
+    """``branch``, ``title``, ``commit``, ``none`` or ``unread`` for one PR."""
+    keys = [k for k in keys if k]
+    if any(names_key(pr.get("source_branch"), k) for k in keys):
+        return "branch"
+    if any(names_key(pr.get("title"), k) for k in keys):
+        return "title"
+    if commit_messages is None:
+        return "unread"
+    if any(names_key(m, k) for m in commit_messages for k in keys):
+        return "commit"
+    return "none"
+
+
+async def annotate_ticket_match(github, prs: list[dict] | None, keys: Iterable[str]) -> None:
+    """Set ``ticket_match`` on each PR dict in place.
+
+    A PR borrowed from a sibling (``borrowed_from``) is matched against the
+    sibling's key, since that is the ticket it was written for. Commits are
+    read only for a PR whose branch and title do not name the key.
+    """
+    keys = [k for k in keys if k]
+    for pr in prs or []:
+        if not isinstance(pr, dict):
+            continue
+        mine = [pr["borrowed_from"]] if pr.get("borrowed_from") else keys
+        if not mine:
+            continue
+        pr["ticket_keys"] = mine
+        found = match_ticket(pr, mine, [])
+        if found in ("branch", "title"):
+            pr["ticket_match"] = found
+            continue
+        messages = None
+        if github is not None and pr.get("url"):
+            try:
+                messages = await github.fetch_pr_commit_messages(pr["url"])
+            except Exception as e:  # never block a plan on this read
+                logger.warning("could not read commits of %s: %s", pr.get("url"), e)
+        pr["ticket_match"] = match_ticket(pr, mine, messages)
+
+
+def gate_prs(prs: list[dict]) -> tuple[list[dict], list[dict], bool]:
+    """``(gate, set_aside, verified)`` for one repo's PRs.
+
+    PRs never annotated (older callers, stored plans) all count, as before.
+    When some PR names the ticket, only those gate the build; the rest are
+    set aside and reported. When none does, they still gate it, because
+    the repo is on the ticket, but the plan asks whether they are the
+    change instead of stating it.
+    """
+    if not any("ticket_match" in p for p in prs):
+        return list(prs), [], True
+    named = [p for p in prs if p.get("ticket_match") in IMPLEMENTS]
+    if named:
+        return named, [p for p in prs if p not in named], True
+    return list(prs), [], False
+
+
+def _pr_ref(pr: dict) -> str:
+    return f"PR #{pr['number']}" if pr.get("number") else (pr.get("url") or "a linked PR")
+
+
 def merge_commit_for(prs: list[dict]) -> str | None:
     """The repo's own merge commit: its newest merged PR's, else an open head."""
     merged = [p for p in prs if (p.get("status") or "").upper() == "MERGED" and p.get("merge_commit_sha")]
@@ -325,7 +412,11 @@ def build_targets(pull_requests: list[dict] | None, repo_evidence: list[dict] | 
         if repo in deployments_repos or is_deployments_repo(repo, changed):
             continue
         e = evidence.get(repo) or {}
-        commit = merge_commit_for(prs) or e.get("ref")
+        gate, set_aside, verified = gate_prs(prs)
+        commit = merge_commit_for(gate) or e.get("ref")
+        merged = sorted((p for p in gate if (p.get("status") or "").upper() == "MERGED"
+                         and p.get("merge_commit_sha")), key=lambda p: p.get("merged_at") or "")
+        first = merged[0] if merged else next((p for p in gate if p.get("head_sha")), None)
         platform = e.get("platform") or detect_platform((), changed)
         deploy = []
         for d in deploy_state or []:
@@ -336,8 +427,61 @@ def build_targets(pull_requests: list[dict] | None, repo_evidence: list[dict] | 
                            "deployed_commit": d.get("deployed_commit"), "error": d.get("error"),
                            "included": (None if not inc or None in inc else all(inc))})
         targets.append({"repo": repo, "commit": commit, "platform": platform, "changed": changed,
-                        "app": e.get("app_version"), "deploy": deploy})
+                        "app": e.get("app_version"), "deploy": deploy,
+                        "capabilities": e.get("capabilities"),
+                        "gate": {
+                            "pr": _gate_entry(first),
+                            "later": [_gate_entry(p) for p in merged[1:]],
+                            "set_aside": [_gate_entry(p) for p in set_aside],
+                            "verified": verified,
+                            "keys": sorted({k for p in prs for k in (p.get("ticket_keys") or [])}),
+                        }})
     return targets
+
+
+def _gate_entry(pr: dict | None) -> dict | None:
+    if not pr:
+        return None
+    return {"number": pr.get("number"), "url": pr.get("url"), "title": pr.get("title"),
+            "sha": pr.get("merge_commit_sha") or pr.get("head_sha"),
+            "merged": (pr.get("status") or "").upper() == "MERGED",
+            "match": pr.get("ticket_match")}
+
+
+def gate_sentence(t: dict) -> str:
+    """Which PR this repo's check is for, cited by number and commit.
+
+    The commit a case checks containment of is the newest one the ticket
+    needs; when that is not the implementing PR's own merge, it is labelled
+    "build must be at or after", never presented as the change itself.
+    """
+    g = t.get("gate") or {}
+    pr = g.get("pr")
+    if not pr:
+        return ""
+    keys = "/".join(g.get("keys") or []) or "the ticket key"
+    what = "merge commit" if pr["merged"] else "head commit (not merged yet)"
+    if g.get("verified", True):
+        out = f"This ticket's change is {_pr_ref(pr)} ({what} {_sha(pr['sha'])})."
+    else:
+        why = ("its commits could not be read" if pr.get("match") == "unread"
+               else "its commits do not name it either")
+        out = (f"Open question: {_pr_ref(pr)} ({what} {_sha(pr['sha'])}) is linked to this ticket, "
+               f"but its branch and title do not name {keys} and {why}; confirm it is this "
+               f"ticket's change before trusting this check.")
+    later = [p for p in g.get("later") or [] if p and p.get("sha")]
+    if later:
+        last = later[-1]
+        out += (f" Build must be at or after {_sha(last['sha'])} ({_pr_ref(last)}, a later PR "
+                f"for this ticket), which is the commit checked here.")
+    for p in g.get("set_aside") or []:
+        if not p:
+            continue
+        why = ("its branch and title do not name it and its commits could not be read"
+               if p.get("match") == "unread" else "neither its branch, title nor commits name it")
+        out += (f" {_pr_ref(p)} is also linked to {keys}, but {why}, so its commit is not "
+                f"this ticket's build gate; if this build needs it too, that is an open question.")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -505,12 +649,15 @@ def _web_check(t: dict, when: str | None) -> str:
 def check_clause(t: dict, when: str | None = None) -> str:
     """How a tester confirms the build they use contains this repo's merge."""
     if t["platform"] == "ios":
-        return _ios_check(t)
-    if t["platform"] == "android":
-        return _android_check(t)
-    if t["platform"] == "web":
-        return _web_check(t, when)
-    return _container_check(t, when)
+        body = _ios_check(t)
+    elif t["platform"] == "android":
+        body = _android_check(t)
+    elif t["platform"] == "web":
+        body = _web_check(t, when)
+    else:
+        body = _container_check(t, when)
+    gate = gate_sentence(t)
+    return f"{body} {gate}" if gate else body
 
 
 def build_check_step(targets: list[dict], when: str | None = None) -> str:
