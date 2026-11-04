@@ -1464,6 +1464,34 @@ build check step itself; do not write your own commit or tag into a case.
 ❌ BAD: "Confirm the build includes the fix from PR #4021 (a1b2c3d)" — when #4021 is a different ticket's PR a comment linked.
 ✅ GOOD: "This ticket's change is PR #4107 (merge commit 9f8e7d6). Build must be at or after 5c4b3a2 (PR #4115, the follow-up fix for this ticket)."
 
+**SURFACE INPUT RULE P — every action step names an input the case's surface
+really has.** A server branch runs for a request shape ("no city sent",
+"county only"). A client app sends only what its own screens let a user
+enter. Before you give a case a surface:
+  - **Ground the surface in its real inputs.** Find the screens and inputs
+    that surface's client exposes (form fields, pickers, autocomplete limits)
+    and its fallbacks (what it sends when an input is left empty, e.g. "no
+    address means use the profile county"). Every action step (enter, pick,
+    tap, leave something empty) names an input that exists on that surface.
+    Declare each one in `surface_inputs` with the file it is in. If you did
+    not read the client's code, say the step is unverified. Never write the
+    input the server needs as if the app had it.
+  - **Work back from the code path.** When a case targets a server branch,
+    list every client that can send that shape and how (in `trigger`), and
+    pick a surface that can. If none can do it directly, use the real route
+    on a surface that can reach it ("set the service area, then leave the
+    address empty"), or write the case as `backend_http` (a direct request
+    with that shape) or as unit coverage.
+  - **Several surfaces.** If only some surfaces can perform a case, write one
+    case per surface with steps that surface can do, or list only the
+    surfaces that work. Never copy one surface's steps onto another.
+Code checks every web_ui and mobile case against the client's code before
+the plan is saved. A step the surface cannot perform is rewritten onto a
+surface that can, or split per surface, and the reason is recorded. A case
+no surface can perform leaves the checklist.
+❌ BAD: surface "mobile", step "Create a seller calculation supplying only state and county (leave the city blank)" — when the mobile app only takes a full street address picked from autocomplete, so no tester can omit the city there.
+✅ GOOD: surface "web_ui", step "In the web app's property form, choose the state and county and leave City empty", `surface_inputs` citing the form file's City and County fields. Plus a mobile case only if the mobile app has a real route to that request shape, naming that route.
+
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
 "X remains unaffected" / "no regressions in Y" / "existing behaviour is
@@ -2451,6 +2479,7 @@ Before generating each section, mentally sort your tests:
 ✅ Does any case or regression line claim something about CI, config, env vars, flags or deployment? → cite the file it was read from, or say "unverified" (M)
 ✅ Does any step need an orientation, device or entitlement the PLATFORM FACTS do not list for the device it runs on? → "Not applicable: <reason>" instead of a step, or name the device that supports it (N)
 ✅ Is every commit a case names either this ticket's implementing PR (by number) or labelled "build must be at or after <hash>"? → no other PR's commit is presented as this ticket's change; unverified ones are open questions (O)
+✅ Does every action step name an input the case's surface really has (a field, picker or fallback in that client's code, declared in `surface_inputs`)? → if the server needs a shape this surface cannot send, move the case to a surface that can, use the real route, write it as backend_http, or split it per surface (P)
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
 
@@ -4838,6 +4867,19 @@ TEST_CASE_SCHEMA = {
         "expected_source": {
             "type": "string",
             "description": "Required when `expected_verified` is true. The single primary `<file>:<line>` the expected result rests on, e.g. 'src/middleware/auth.ts:64', or `<file>:<start>-<end>` covering the whole function when the expected result restates a rule. It is re-read before the plan is saved; a line that does not say what `expected` says downgrades the case to unverified. Omit entirely when `expected_verified` is false.",
+        },
+        "surface_inputs": {
+            "type": "array",
+            "description": "Rule P. Required when `surface` is web_ui or mobile: one entry per action step (enter, pick, tap, leave empty), naming the input on THIS surface's client that the step uses and the client file it is in. Checked against the client's code before the plan is saved; a step whose input the surface does not have is rewritten onto a surface that has it.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "step": {"type": "integer", "description": "1-based step number."},
+                    "input": {"type": "string", "description": "The field, picker, control or fallback the step uses, as the client names it."},
+                    "source": {"type": "string", "description": "`<repo>:<path>:<line>` of the client file it is in, or 'unverified' when you did not read the client's code."},
+                },
+                "required": ["step", "input", "source"],
+            },
         },
         "trigger": {
             "type": "string",

@@ -73,6 +73,7 @@ from ..scope_checks import run_platform_critic, run_scope_checks
 from ..case_disposition import OUT_OF_UAT_KEYS, PLAN_SHAPE, route_out_of_uat
 from ..error_variants import require_error_body_variants
 from ..reachability_checks import flag_ci_claims, run_reachability_critic, summarize as summarize_reachability
+from ..surface_inputs import run_surface_input_critic, summarize as summarize_surface_inputs
 from ..seam_extractor import build_seam_catalog, classify_multi_ticket_mode
 from ..security_surfaces import audit_persona_split
 from ..slack_client import resolve_slack_messages_in_text
@@ -1104,6 +1105,15 @@ async def generate_single(
             repo_evidence=repo_evidence, exploration=exploration,
             protected_titles=passed_titles, label=request.ticket_key,
         )
+        # Rule P, after L (a case L converted to unit coverage is not a UI
+        # case any more) and before route_out_of_uat, which moves a case no
+        # surface can perform. A step the surface has no input for is
+        # rewritten onto a surface that has one, or the case is split per
+        # surface (src/app/surface_inputs.py).
+        await _check_surface_inputs(
+            llm, test_plan, [request.development_info], provenance,
+            exploration=exploration, protected_titles=passed_titles, label=request.ticket_key,
+        )
         # What the plan itself says a tester cannot grade — unreachable cases
         # (rule L), pre-existing behaviour (rule H), regression lines that cite
         # no changed code — leaves the numbered sections before the evidence
@@ -1353,6 +1363,26 @@ async def _check_reachability(llm, test_plan, dev_infos: list, provenance: dict,
         provenance["reachability"]["ids_are"] = "raw body positions before quarantine"
     if changes.get("usage"):
         logger.info("reachability critic for %s: %s", label, summarize_reachability(changes))
+
+
+async def _check_surface_inputs(llm, test_plan, dev_infos: list, provenance: dict, *,
+                                exploration, label: str,
+                                protected_titles: frozenset[str] = frozenset()) -> None:
+    from ..github_client import GitHubClient
+    changes, gap = await run_surface_input_critic(
+        llm, GitHubClient(), test_plan, dev_infos, exploration=exploration,
+        protected_titles=protected_titles,
+    )
+    if gap:
+        provenance.setdefault("critics_unavailable", []).append(gap)
+    keys = ("performable", "rewritten", "split", "routed_out", "marked", "unchecked", "reasons")
+    if any(changes.get(k) for k in keys):
+        # Every verdict, including "performable": the trail when a step later
+        # turns out not to be possible in UAT.
+        provenance["surface_inputs"] = {k: changes[k] for k in keys if changes.get(k)}
+        provenance["surface_inputs"]["ids_are"] = "raw body positions before quarantine and before splits"
+    if changes.get("usage"):
+        logger.info("surface input critic for %s: %s", label, summarize_surface_inputs(changes))
 
 
 def _record_out_of_uat(provenance: dict, out_of_uat: dict) -> None:
@@ -1674,6 +1704,11 @@ async def generate_multi(
         await _check_reachability(
             llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
             repo_evidence=batch_repo_evidence, exploration=None, label="batch",
+        )
+        # Rule P; see generate_single.
+        await _check_surface_inputs(
+            llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
+            exploration=None, label="batch",
         )
         # See generate_single.
         out_of_uat = route_out_of_uat(
