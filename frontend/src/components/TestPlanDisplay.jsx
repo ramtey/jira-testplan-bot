@@ -3,7 +3,7 @@
  * Supports both single-ticket and multi-ticket posting.
  */
 
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { Fragment, useState, useRef, useEffect, useMemo } from 'react'
 import {
   formatTestPlanAsMarkdown, formatTestPlanAsJira, CODE_REVIEW_BLURB, PRE_EXISTING_BLURB, LOW_CONFIDENCE_BLURB,
   clientTokenParts, logicClaims,
@@ -409,7 +409,97 @@ function TestCardCopyButton({ test }) {
   )
 }
 
-function TestCard({ test, section, index, checked, onToggle, showCategory, planHasAcs, ticketKeys }) {
+// The first step of every case that needs a running build is the same
+// deterministic deploy check (src/app/build_targets.py build_check_step) —
+// several lines of SHA and compare-URL detail repeated on every case, and
+// already summarised once in the "Not deployed" card. Folded to one line so the
+// steps that differ between cases are what the eye lands on.
+const BUILD_CHECK_PREFIX = 'Build check:'
+
+function isBuildCheckStep(step) {
+  return typeof step === 'string' && step.startsWith(BUILD_CHECK_PREFIX)
+}
+
+function BuildCheckStep({ step }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <li>
+      <span
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen((v) => !v) } }}
+        title={open ? 'Hide the build check details' : 'Show the full build check'}
+        style={{
+          cursor: 'pointer',
+          display: open ? 'inline' : 'block',
+          overflow: open ? 'visible' : 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: open ? 'normal' : 'nowrap',
+          color: open ? 'var(--fg)' : 'var(--fg-muted)',
+        }}
+      >
+        <Icon
+          name="chevron-right"
+          size={11}
+          style={{ marginRight: 4, verticalAlign: '-1px', transition: 'transform 120ms', transform: open ? 'rotate(90deg)' : 'none' }}
+        />
+        {open ? renderInline(step) : step}
+      </span>
+    </li>
+  )
+}
+
+// Shared fold toggle for advisory panels and their items: a chevron row that
+// reads as clickable without the weight of a bordered control. A div, not a
+// <button>: the legacy global button rules in App.css/index.css paint a
+// background, padding and a hover lift onto every bare button.
+function FoldButton({ open, onClick, children, style }) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }}
+      aria-expanded={open}
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 'var(--s-2)',
+        cursor: 'pointer',
+        minWidth: 0,
+        ...style,
+      }}
+    >
+      <Icon
+        name="chevron-right"
+        size={12}
+        style={{ flexShrink: 0, marginTop: 4, transition: 'transform 120ms', transform: open ? 'rotate(90deg)' : 'none' }}
+      />
+      <span style={{ flex: 1, minWidth: 0 }}>{children}</span>
+    </div>
+  )
+}
+
+// One advisory item whose headline stays visible and whose supporting lines
+// (evidence, owner, code refs) open on click.
+function FoldItem({ headline, children }) {
+  const [open, setOpen] = useState(false)
+  const hasDetail = !!children && (!Array.isArray(children) || children.some(Boolean))
+  return (
+    <li style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)', listStyle: 'none', marginLeft: -18 }}>
+      {hasDetail ? (
+        <FoldButton open={open} onClick={() => setOpen((v) => !v)}>{headline}</FoldButton>
+      ) : (
+        <div style={{ paddingLeft: 20 }}>{headline}</div>
+      )}
+      {open && <div style={{ paddingLeft: 20 }}>{children}</div>}
+    </li>
+  )
+}
+
+function TestCard({ test, section, index, checked, onToggle, expanded, onToggleExpanded, showCategory, planHasAcs, ticketKeys }) {
   const acIds = Array.isArray(test.covers_acs)
     ? test.covers_acs.filter((id) => typeof id === 'string' && id.trim())
     : []
@@ -435,8 +525,19 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
       }}
     >
       <TestCardCopyButton test={test} />
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-5)', padding: checked ? 'var(--s-5) var(--s-6)' : 'var(--s-6) var(--s-6) var(--s-5)' }}>
-        <span onClick={() => onToggle && onToggle()} style={{ flexShrink: 0, marginTop: 1 }}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        title={expanded ? 'Collapse case' : 'Show steps and expected result'}
+        onClick={() => onToggleExpanded && onToggleExpanded()}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleExpanded && onToggleExpanded() }
+        }}
+        style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-5)', padding: expanded ? 'var(--s-6) var(--s-6) var(--s-5)' : 'var(--s-5) var(--s-6)', cursor: 'pointer' }}
+      >
+        <span onClick={(e) => { e.stopPropagation(); onToggle && onToggle() }} style={{ flexShrink: 0, marginTop: 1 }}>
           <span className="cbx" data-checked={checked ? 'true' : 'false'} role="checkbox" aria-checked={checked} />
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -596,24 +697,27 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
               )}
             </div>
           )}
-          <label
-            htmlFor={checkboxId}
+          <span
             style={{
               fontSize: 'var(--t-md)',
               fontWeight: 600,
               color: checked ? 'var(--fg-muted)' : 'var(--fg-strong)',
               textDecoration: checked ? 'line-through' : 'none',
               textDecorationColor: 'var(--fg-faint)',
-              cursor: 'pointer',
               display: 'block',
             }}
           >
             {typeof test.title === 'string' ? test.title : JSON.stringify(test.title)}
-          </label>
+          </span>
         </div>
+        <Icon
+          name="chevron-right"
+          size={14}
+          style={{ flexShrink: 0, alignSelf: 'flex-end', marginBottom: 3, color: 'var(--fg-subtle)', transition: 'transform 120ms', transform: expanded ? 'rotate(90deg)' : 'none' }}
+        />
       </div>
 
-      {!checked && (
+      {expanded && (
       <div style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr)', gap: '6px var(--s-6)', padding: '0 var(--s-6) var(--s-6)', alignItems: 'start', overflowWrap: 'anywhere' }}>
         {requestParts(test) && (
           <>
@@ -641,7 +745,9 @@ function TestCard({ test, section, index, checked, onToggle, showCategory, planH
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Steps</span>
             <ol style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--t-sm)', lineHeight: '20px', color: 'var(--fg)' }}>
-              {test.steps.map((s, i) => <li key={i}>{renderInline(s)}</li>)}
+              {test.steps.map((s, i) => (isBuildCheckStep(s)
+                ? <BuildCheckStep key={i} step={s} />
+                : <li key={i}>{renderInline(s)}</li>))}
             </ol>
           </>
         )}
@@ -838,8 +944,24 @@ function SectionIdHint({ prefix }) {
   )
 }
 
+/**
+ * Cases render as their header (badges + title) until opened. Every case open
+ * at once made a 30-case plan ~10,000px tall, and a tester works one case at a
+ * time. The open set lives here, not in TestCard, so "Expand all" can drive
+ * it; the parent keys this component by plan, so a regenerated or different
+ * ticket's plan never inherits which indices were open.
+ */
 function CardSection({ section, items, checkedTests, onToggle, planHasAcs, ticketKeys }) {
   const c = items.reduce((acc, _, i) => acc + (checkedTests.has(`${section.key}:${i}`) ? 1 : 0), 0)
+  const [expanded, setExpanded] = useState(() => new Set())
+  const allOpen = items.length > 0 && expanded.size === items.length
+  const toggleOne = (i) => setExpanded((prev) => {
+    const next = new Set(prev)
+    if (next.has(i)) next.delete(i)
+    else next.add(i)
+    return next
+  })
+  const toggleAll = () => setExpanded(allOpen ? new Set() : new Set(items.map((_, i) => i)))
   return (
     <section id={`sect-${section.key}`} style={{ marginTop: 'var(--s-8)' }}>
       <header style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: 'var(--s-4)' }}>
@@ -847,6 +969,9 @@ function CardSection({ section, items, checkedTests, onToggle, planHasAcs, ticke
         <h2 style={{ margin: 0, fontSize: 'var(--t-lg)', fontWeight: 600, letterSpacing: '-.005em', color: 'var(--fg-strong)' }}>{section.label}</h2>
         <SectionChip checked={c} total={items.length} />
         <span style={{ flex: 1 }} />
+        <Btn variant="secondary" size="sm" icon={allOpen ? 'chevron-up' : 'chevron-down'} onClick={toggleAll}>
+          {allOpen ? 'Collapse all' : 'Expand all'}
+        </Btn>
         <SectionIdHint prefix={section.key} />
       </header>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
@@ -858,6 +983,8 @@ function CardSection({ section, items, checkedTests, onToggle, planHasAcs, ticke
             index={i}
             checked={checkedTests.has(`${section.key}:${i}`)}
             onToggle={() => onToggle(section.key, i)}
+            expanded={expanded.has(i)}
+            onToggleExpanded={() => toggleOne(i)}
             showCategory={section.showCategory}
             planHasAcs={planHasAcs}
             ticketKeys={ticketKeys}
@@ -1038,30 +1165,62 @@ const GAP_STATUS = {
   not_assessed: 'Not assessed',
 }
 
-function EvidenceBlock({ tone, icon, title, note, children }) {
+/**
+ * An advisory card above the cases. The title (with its count) always shows,
+ * so nothing is hidden silently; `collapsible` blocks fold their body and show
+ * `summary` in its place. Advisory text used to fill ~2,800px before the first
+ * case on a typical plan, pushing the checklist off the first three screens.
+ */
+function EvidenceBlock({ tone, icon, title, note, summary, collapsible = false, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(!collapsible || defaultOpen)
   const color = tone === 'danger' ? 'var(--danger)' : '#fcd34d'
+  const heading = (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', minWidth: 0 }}>
+      <Icon name={icon} size={12} style={{ color, flexShrink: 0 }} />
+      <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color, flexShrink: 0 }}>{title}</span>
+      {!open && summary && (
+        <span style={{ fontSize: 'var(--t-xs)', color: 'var(--fg-muted)', fontWeight: 400, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          — {summary}
+        </span>
+      )}
+    </span>
+  )
   return (
     <div
       className="card"
       style={{
         marginBottom: 'var(--s-5)',
-        padding: 'var(--s-5) var(--s-6)',
+        padding: open ? 'var(--s-5) var(--s-6)' : 'var(--s-4) var(--s-6)',
         borderColor: tone === 'danger' ? 'rgba(239,68,68,.4)' : 'rgba(245,158,11,.35)',
         background: tone === 'danger' ? 'var(--danger-soft)' : 'rgba(245,158,11,.05)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', marginBottom: 'var(--s-3)' }}>
-        <Icon name={icon} size={12} />
-        <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color }}>{title}</span>
-      </div>
-      {note && (
+      {collapsible ? (
+        <FoldButton open={open} onClick={() => setOpen((v) => !v)} style={{ marginBottom: open ? 'var(--s-3)' : 0 }}>
+          {heading}
+        </FoldButton>
+      ) : (
+        <div style={{ marginBottom: 'var(--s-3)' }}>{heading}</div>
+      )}
+      {open && note && (
         <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', marginBottom: 'var(--s-4)' }}>{note}</div>
       )}
-      <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
-        {children}
-      </ul>
+      {open && (
+        <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+          {children}
+        </ul>
+      )}
     </div>
   )
+}
+
+function countBy(items, keyOf) {
+  const counts = new Map()
+  for (const item of items) {
+    const k = keyOf(item)
+    counts.set(k, (counts.get(k) || 0) + 1)
+  }
+  return counts
 }
 
 function EvidencePanel({ plan }) {
@@ -1085,23 +1244,37 @@ function EvidencePanel({ plan }) {
         </EvidenceBlock>
       )}
       {gaps.length > 0 && (
+        // Stays open — these block sign-off — but each gap is one line; what is
+        // missing and the code reference open per gap.
         <EvidenceBlock
           tone="danger"
           icon="alert-circle"
           title={`${gaps.length} acceptance gap${gaps.length === 1 ? '' : 's'}`}
-          note="What the ticket asks for that the merged work does not (fully) do. Not test cases — these block sign-off until resolved or accepted."
+          note="What the ticket asks for that the merged work does not (fully) do. Not test cases — these block sign-off until resolved or accepted. Click a gap for what is missing."
+          summary={[...countBy(gaps, (g) => GAP_STATUS[g.status] || g.status)]
+            .map(([status, n]) => `${n} ${String(status).toLowerCase()}`).join(' · ')}
+          collapsible
         >
           {gaps.map((g, i) => (
-            <li key={i} style={li}>
-              <div><strong>{GAP_STATUS[g.status] || g.status}</strong> — {g.source}: “{g.requirement}”</div>
+            <FoldItem
+              key={i}
+              headline={<><strong>{GAP_STATUS[g.status] || g.status}</strong> — {g.source}: “{g.requirement}”</>}
+            >
               {g.missing && <div style={sub}>Missing: {g.missing}</div>}
               {g.evidence && <div style={sub}>Code: <code style={{ fontSize: 11 }}>{g.evidence}</code></div>}
-            </li>
+            </FoldItem>
           ))}
         </EvidenceBlock>
       )}
       {facts.length > 0 && (
-        <EvidenceBlock tone="warning" icon="scan" title="Build & CI">
+        <EvidenceBlock
+          tone="warning"
+          icon="scan"
+          title={`Build & CI · ${facts.length} finding${facts.length === 1 ? '' : 's'}`}
+          summary={facts[0]?.finding}
+          collapsible
+          defaultOpen={false}
+        >
           {facts.map((f, i) => (
             <li key={i} style={li}>
               <div>{f.finding}</div>
@@ -1132,92 +1305,48 @@ function EvidencePanel({ plan }) {
 // break the ticket's stated goal, but that no test case covers. Rendered apart
 // from the case lists on purpose — a gap is not something QA can mark pass or
 // fail, and putting it in the checklist means it gets ticked and forgotten.
+//
+// Collapsed by default: nothing here is gradeable, and fully expanded it was
+// the tallest block on the page (~1,200px on SK-2948). The title keeps the
+// count visible; each item opens to its impact, evidence and owner.
 function RisksAndGapsPanel({ gaps }) {
   const items = Array.isArray(gaps) ? gaps.filter(Boolean) : []
   if (items.length === 0) return null
+  const followUps = items.filter((g) => typeof g === 'object' && g.follow_up).length
+  const sub = { color: 'var(--fg-muted)', marginTop: 2 }
   return (
-    <div
-      className="card"
-      style={{
-        marginBottom: 'var(--s-5)',
-        padding: 'var(--s-5) var(--s-6)',
-        borderColor: 'rgba(245,158,11,.35)',
-        background: 'rgba(245,158,11,.05)',
-      }}
+    <EvidenceBlock
+      tone="warning"
+      icon="scan"
+      title={`${items.length} risk${items.length === 1 ? '' : 's'} / gap${items.length === 1 ? '' : 's'} observed`}
+      note="Not test cases and not counted toward pass/fail — gaps in the ticket itself, and follow-ups this change cannot fix."
+      summary={`not counted toward pass/fail${followUps ? ` · ${followUps} follow-up${followUps === 1 ? '' : 's'}` : ''}`}
+      collapsible
+      defaultOpen={false}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', marginBottom: 'var(--s-3)' }}>
-        <Icon name="scan" size={12} />
-        <span style={{ fontSize: 'var(--t-sm)', fontWeight: 600, color: '#fcd34d' }}>
-          {items.length} risk{items.length === 1 ? '' : 's'} / gap{items.length === 1 ? '' : 's'} observed
-        </span>
-      </div>
-      <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', marginBottom: 'var(--s-4)' }}>
-        Not test cases and not counted toward pass/fail — gaps in the ticket itself, and follow-ups this change cannot fix.
-      </div>
-      <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
-        {items.map((g, i) => (
-          <li key={i} style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>
-            {typeof g === 'string' ? g : (
-              <>
-                <div>{g.follow_up && <strong>Follow-up, not counted: </strong>}{g.gap}</div>
-                {g.impact && (
-                  <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>Impact: {g.impact}</div>
-                )}
-                {g.evidence && (
-                  <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>
-                    Evidence: <code style={{ fontSize: 11 }}>{g.evidence}</code>
-                  </div>
-                )}
-                {g.owner && (
-                  <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>Owner: {g.owner}</div>
-                )}
-                {g.suggested_ticket && (
-                  <div style={{ color: 'var(--fg-muted)', marginTop: 2 }}>Suggested ticket: {g.suggested_ticket}</div>
-                )}
-              </>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
+      {items.map((g, i) => (typeof g === 'string' ? (
+        <FoldItem key={i} headline={g} />
+      ) : (
+        <FoldItem
+          key={i}
+          headline={<>{g.follow_up && <strong>Follow-up, not counted: </strong>}{g.gap}</>}
+        >
+          {g.impact && <div style={sub}>Impact: {g.impact}</div>}
+          {g.evidence && <div style={sub}>Evidence: <code style={{ fontSize: 11 }}>{g.evidence}</code></div>}
+          {g.owner && <div style={sub}>Owner: {g.owner}</div>}
+          {g.suggested_ticket && <div style={sub}>Suggested ticket: {g.suggested_ticket}</div>}
+        </FoldItem>
+      )))}
+    </EvidenceBlock>
   )
 }
 
 function CollapsibleWarningAlert({ tone, title, items, rowPrefix, ticketKeys }) {
   const [open, setOpen] = useState(false)
   const header = (
-    <button
-      type="button"
-      onClick={() => setOpen((v) => !v)}
-      aria-expanded={open}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 'var(--s-2)',
-        background: 'none',
-        border: 'none',
-        padding: 0,
-        margin: 0,
-        color: 'inherit',
-        font: 'inherit',
-        fontWeight: 'var(--w-semi)',
-        cursor: 'pointer',
-        textAlign: 'left',
-        width: '100%',
-      }}
-    >
-      <Icon
-        name="chevron-right"
-        style={{
-          width: 14,
-          height: 14,
-          transition: 'transform 120ms',
-          transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
-          flexShrink: 0,
-        }}
-      />
-      <span>{title}</span>
-    </button>
+    <FoldButton open={open} onClick={() => setOpen((v) => !v)} style={{ fontWeight: 'var(--w-semi)' }}>
+      {title}
+    </FoldButton>
   )
   return (
     <Alert tone={tone} title={header}>
@@ -2753,6 +2882,9 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
         />
       )}
 
+      {/* Keyed by plan so fold state (open cases, open advisory panels) never
+          carries over to another ticket's or a regenerated plan. */}
+      <Fragment key={`${ticketKeysJoined}:${planId ?? 'unsaved'}`}>
       <EvidencePanel plan={testPlan} />
 
       <SourceProvenancePanel provenance={testPlan.source_provenance} />
@@ -2805,6 +2937,7 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
         checkedTests={checkedTests}
         onToggle={toggleTest}
       />
+      </Fragment>
 
       {/* Export & post bar.
 
