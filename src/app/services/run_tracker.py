@@ -150,6 +150,13 @@ async def complete_with_plan(
         output_tokens = meter["output_tokens"] if meter else 0
     if cost_usd is None:
         cost_usd = meter["cost_usd"] if meter else 0
+    stages = llm_usage.stage_summary(meter) if meter else None
+    if stages:
+        slow = sorted(stages.items(), key=lambda kv: kv[1]["ms"], reverse=True)[:6]
+        logger.info(
+            "run %s took %.1f min; slowest steps: %s", ctx.run_id, ctx.elapsed_ms() / 60000,
+            ", ".join(f"{n} {s['ms'] / 1000:.0f}s ({s['calls']} calls)" for n, s in slow),
+        )
     try:
         db = get_db()
         run = await crud.get_by_id(db, _run_type(), ctx.run_id)
@@ -164,6 +171,7 @@ async def complete_with_plan(
             prompt_tokens=prompt_tokens,
             output_tokens=output_tokens,
             cost_usd=cost_usd,
+            stages=stages,
         )
 
         # Chain regenerations on single-ticket runs: link to the prior plan
@@ -303,7 +311,10 @@ async def skip(ctx: RunContext, *, reason: str) -> None:
         ctx.failure = f"{type(exc).__name__}: {exc}"
 
 
-async def fail(ctx: RunContext, *, error_code: str) -> None:
+async def fail(ctx: RunContext, *, error_code: str, stages: dict | None = None) -> None:
+    """Mark a run failed. ``stages`` is passed explicitly, not read from the
+    active meter, because Bug Lens runs share this call and the watcher's task
+    can still hold the previous plan generation's meter."""
     if ctx.run_id is None:
         return
     try:
@@ -317,6 +328,7 @@ async def fail(ctx: RunContext, *, error_code: str) -> None:
             run=run,
             error_code=error_code,
             latency_ms=ctx.elapsed_ms(),
+            stages=stages,
         )
     except Exception as exc:
         logger.exception("run_tracker.fail failed")

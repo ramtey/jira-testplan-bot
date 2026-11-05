@@ -55,12 +55,15 @@ async def mark_completed(
     prompt_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: Decimal | float = Decimal("0"),
+    stages: dict | None = None,
 ) -> Run:
     run.status = RunStatus.ok
     run.latency_ms = latency_ms
     run.prompt_tokens = prompt_tokens
     run.output_tokens = output_tokens
     run.cost_usd = Decimal(str(cost_usd))
+    if stages is not None:
+        run.stages = stages
     return await crud.save(db, run)
 
 
@@ -83,8 +86,13 @@ async def mark_failed(
     run: Run,
     error_code: str,
     latency_ms: int,
+    stages: dict | None = None,
 ) -> Run:
     run.status = RunStatus.error
     run.error_code = error_code[:128]
     run.latency_ms = latency_ms
+    if stages is not None:
+        # A failed run's steps say where it was when it died: SK-2736 timed
+        # out at 14:53 and nothing recorded which call it was waiting on.
+        run.stages = stages
     return await crud.save(db, run)

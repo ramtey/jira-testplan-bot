@@ -16,13 +16,28 @@ Prices are USD per million tokens, Anthropic first-party rates (checked
 fast mode at 2x both. A model missing from the table still has its tokens
 counted; its cost is left out and the meter says so (``unpriced_models``)
 rather than reporting a cost that looks complete.
+
+Per-step attribution: ``stage(name)`` (or ``timed(name, coro)`` inside an
+``asyncio.gather``) marks a step of the pipeline. The step's wall-clock time is
+recorded, and every Claude call made inside it adds its calls, tokens and cost
+to that step as well as to the totals. Calls made outside any step land under
+``UNATTRIBUTED`` so a step nobody wrapped shows up instead of vanishing. Steps
+that run concurrently each keep their own wall-clock time, so the times can add
+up to more than the run's latency. Before this, a run recorded one total and
+the 1→8 minute slowdown (Kyle's review, 2026-11) could only be guessed at.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from decimal import Decimal
+from time import perf_counter
+from typing import TypeVar
+
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +62,9 @@ FAST_MODE_MULTIPLIER = Decimal("2")
 _MTOK = Decimal(1_000_000)
 
 _meter: ContextVar[dict | None] = ContextVar("llm_usage_meter", default=None)
+_stage: ContextVar[str | None] = ContextVar("llm_usage_stage", default=None)
+
+UNATTRIBUTED = "unattributed"
 
 
 def _new_meter() -> dict:
@@ -58,7 +76,47 @@ def _new_meter() -> dict:
         "calls": 0,
         "cost_usd": Decimal("0"),
         "unpriced_models": [],
+        "stages": {},
     }
+
+
+def _new_stage() -> dict:
+    return {
+        "ms": 0,
+        "calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cost_usd": Decimal("0"),
+    }
+
+
+def _stage_entry(meter: dict, name: str) -> dict:
+    return meter.setdefault("stages", {}).setdefault(name, _new_stage())
+
+
+@contextmanager
+def stage(name: str) -> Iterator[None]:
+    """Attribute the time and Claude calls inside this block to step ``name``.
+
+    A no-op when no meter is active. A step entered twice (a retry, or the
+    same critic in a loop) accumulates."""
+    meter = _meter.get()
+    token = _stage.set(name)
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        _stage.reset(token)
+        if meter is not None:
+            _stage_entry(meter, name)["ms"] += int((perf_counter() - started) * 1000)
+
+
+async def timed(name: str, awaitable: Awaitable[T]) -> T:
+    """``await awaitable`` as step ``name``; for legs of an ``asyncio.gather``."""
+    with stage(name):
+        return await awaitable
 
 
 def begin() -> dict:
@@ -109,7 +167,9 @@ def record(model: str | None, usage: dict | None) -> None:
     meter = _meter.get()
     if meter is None or not usage:
         return
+    step = _stage_entry(meter, _stage.get() or UNATTRIBUTED)
     meter["calls"] += 1
+    step["calls"] += 1
     for key in (
         "input_tokens",
         "output_tokens",
@@ -119,6 +179,7 @@ def record(model: str | None, usage: dict | None) -> None:
         value = usage.get(key)
         if isinstance(value, int):
             meter[key] += value
+            step[key] += value
     cost = cost_of(model, usage, fast=usage.get("speed") == "fast")
     if cost is None:
         if model not in meter["unpriced_models"]:
@@ -130,6 +191,7 @@ def record(model: str | None, usage: dict | None) -> None:
             )
         return
     meter["cost_usd"] += cost
+    step["cost_usd"] += cost
 
 
 def prompt_tokens(meter: dict) -> int:
@@ -139,3 +201,22 @@ def prompt_tokens(meter: dict) -> int:
         + meter["cache_creation_input_tokens"]
         + meter["cache_read_input_tokens"]
     )
+
+
+def stage_summary(meter: dict | None = None) -> dict | None:
+    """The meter's steps as stored on a run: ``{name: {ms, calls, prompt_tokens,
+    output_tokens, cost_usd}}``, cost as a float rounded to 0.0001 USD. None
+    when no meter is active or nothing was attributed."""
+    meter = meter if meter is not None else _meter.get()
+    if not meter or not meter.get("stages"):
+        return None
+    return {
+        name: {
+            "ms": s["ms"],
+            "calls": s["calls"],
+            "prompt_tokens": prompt_tokens(s),
+            "output_tokens": s["output_tokens"],
+            "cost_usd": round(float(s["cost_usd"]), 4),
+        }
+        for name, s in meter["stages"].items()
+    }

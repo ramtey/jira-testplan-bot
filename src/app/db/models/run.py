@@ -61,6 +61,11 @@ class Run(DocumentBase):
     # NUMERIC(10, 6); Decimal128 is the equivalent that BSON understands, and a
     # plain float would quietly lose precision at this many decimal places.
     cost_usd: Decimal = Decimal("0")
+    # Where the time and tokens went, per pipeline step:
+    # {step: {ms, calls, prompt_tokens, output_tokens, cost_usd}}. Steps that
+    # ran concurrently overlap, so their ms can sum past latency_ms. None on
+    # runs recorded before 2026-11-05 and on runs with no metered steps.
+    stages: dict | None = None
 
     error_code: str | None = None
 

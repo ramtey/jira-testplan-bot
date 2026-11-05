@@ -23,7 +23,8 @@ console = Console()
 
 _FIELDS = {
     "created_at": 1, "ticket_keys": 1, "status": 1, "latency_ms": 1,
-    "trigger": 1, "error_code": 1, "pr_count": 1, "had_figma": 1,
+    "trigger": 1, "error_code": 1, "pr_count": 1, "had_figma": 1, "stages": 1,
+    "prompt_tokens": 1, "cost_usd": 1,
 }
 
 
@@ -114,6 +115,8 @@ def timings(
             "[dim](still running, or stopped before saving an outcome)[/dim]"
         )
 
+    _print_steps(timed)
+
     slowest = sorted(timed, key=lambda r: r["latency_ms"], reverse=True)[:top]
     if not slowest:
         return
@@ -142,5 +145,51 @@ def timings(
             outcome,
             str(r.get("pr_count", 0)),
             "yes" if r.get("had_figma") else "",
+        )
+    console.print(table)
+    stepped = [r for r in slowest if r.get("stages")]
+    if stepped:
+        console.print("[bold]Where the slowest runs spent it[/bold]")
+        for r in stepped:
+            console.print(f"  {', '.join(r.get('ticket_keys') or []) or '?'} {_fmt(r['latency_ms'])}: "
+                          f"{_top_steps(r['stages'])}")
+
+
+def _top_steps(stages: dict | None, n: int = 3) -> str:
+    if not stages:
+        return ""
+    ordered = sorted(stages.items(), key=lambda kv: kv[1].get("ms") or 0, reverse=True)[:n]
+    return " · ".join(f"{name} {_fmt(s.get('ms') or 0)}" for name, s in ordered)
+
+
+def _print_steps(runs: list[dict]) -> None:
+    """Median time, tokens and cost per pipeline step, over runs that recorded
+    steps (from 2026-11-05). Concurrent steps overlap, so the column does not
+    sum to the run's time."""
+    with_steps = [r for r in runs if r.get("stages")]
+    if not with_steps:
+        console.print("  [dim]No per-step times recorded in this window (recorded from 2026-11-05).[/dim]")
+        return
+    per: dict[str, dict[str, list]] = {}
+    for r in with_steps:
+        for name, s in r["stages"].items():
+            row = per.setdefault(name, {"ms": [], "tokens": [], "cost": [], "calls": []})
+            row["ms"].append(s.get("ms") or 0)
+            row["tokens"].append(s.get("prompt_tokens") or 0)
+            row["cost"].append(float(s.get("cost_usd") or 0))
+            row["calls"].append(s.get("calls") or 0)
+    table = Table(show_header=True, header_style="bold",
+                  title=f"Per step · {len(with_steps)} run{'s' if len(with_steps) != 1 else ''} with step times")
+    table.add_column("Step")
+    table.add_column("Runs", justify="right")
+    table.add_column("Median", justify="right")
+    table.add_column("Max", justify="right")
+    table.add_column("Calls", justify="right")
+    table.add_column("Input tok (median)", justify="right")
+    table.add_column("Cost (median)", justify="right")
+    for name, row in sorted(per.items(), key=lambda kv: median(kv[1]["ms"]), reverse=True):
+        table.add_row(
+            name, str(len(row["ms"])), _fmt(median(row["ms"])), _fmt(max(row["ms"])),
+            f"{median(row['calls']):g}", f"{int(median(row['tokens'])):,}", f"${median(row['cost']):.2f}",
         )
     console.print(table)

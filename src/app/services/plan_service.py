@@ -860,20 +860,20 @@ async def generate_single(
                if isinstance(pr, dict) for f in (pr.get("files_changed") or []) if isinstance(f, dict)]
         )
         images, (resolved_slack, slack_gaps), deliverable, (deployments, deploy_state, repo_evidence), flag_state, exploration, source_index = await asyncio.gather(
-            _download_images(request.image_urls),
-            resolve_slack_messages_in_text(request.description, request.comments),
-            classify_deliverable(
+            llm_usage.timed("images", _download_images(request.image_urls)),
+            llm_usage.timed("slack", resolve_slack_messages_in_text(request.description, request.comments)),
+            llm_usage.timed("classify_deliverable", classify_deliverable(
                 llm,
                 ticket_key=request.ticket_key,
                 summary=request.summary,
                 description=request.description,
                 issue_type=request.issue_type,
                 development_info=request.development_info,
-            ),
-            _read_build_evidence(request.development_info, mentioned, [request.ticket_key]),
-            _read_flag_state(request),
-            _explore_code(request, llm),
-            _read_sources(request.development_info),
+            )),
+            llm_usage.timed("build_evidence", _read_build_evidence(request.development_info, mentioned, [request.ticket_key])),
+            llm_usage.timed("flag_state", _read_flag_state(request)),
+            llm_usage.timed("exploration", _explore_code(request, llm)),
+            llm_usage.timed("read_sources", _read_sources(request.development_info)),
         )
         # Sources the ticket points at that we could not read. Recorded on the
         # plan and handed to the generator so it writes around nothing in
@@ -982,7 +982,7 @@ async def generate_single(
                 checked_ids=previous["checked_ids"],
             )
 
-        test_plan = await llm.generate_test_plan(
+        test_plan = await llm_usage.timed("generate", llm.generate_test_plan(
             ticket_key=request.ticket_key,
             summary=request.summary,
             description=request.description,
@@ -997,14 +997,14 @@ async def generate_single(
             seed_regressions=seed_regressions or None,
             bounce_history=request.bounce_history,
             context_gaps=context_gaps or None,
-        )
+        ))
 
         # Explorer findings the plan never mentions get cases from one separate
         # call, before the critics, so they are checked like any other case.
         exploration_data = (request.development_info or {}).get("code_exploration")
         if settings.exploration_repair_enabled and exploration_data and exploration_data.get("findings"):
-            repair = await repair_dropped_findings(
-                llm, test_plan, exploration_data, summary=request.summary)
+            repair = await llm_usage.timed("exploration_repair", repair_dropped_findings(
+                llm, test_plan, exploration_data, summary=request.summary))
             provenance.setdefault("code_exploration", {}).update(repair)
             if repair.get("repair_error"):
                 context_gaps.append(
@@ -1051,7 +1051,7 @@ async def generate_single(
         # than reporting a clean check, which is the property that makes the
         # interleaving safe to accept.
         regression_critic = asyncio.create_task(
-            run_regression_grounding_critic(llm, test_plan, single_ticket_dev_info)
+            llm_usage.timed("critic_regression", run_regression_grounding_critic(llm, test_plan, single_ticket_dev_info))
         )
         critic_gaps: list[str] = []
         try:
@@ -1061,27 +1061,27 @@ async def generate_single(
             # "viewable"). Runs before compute_ac_coverage so any badges added
             # here survive the covers_acs cleanup pass.
             critic_gaps += [g for g in [
-                await run_grounding_critic(llm, test_plan, single_ticket_data)
+                await llm_usage.timed("critic_ac_grounding", run_grounding_critic(llm, test_plan, single_ticket_data))
             ] if g]
             # Code-grounding recheck — for each just-added AC-critic warning,
             # look at the linked repo's source and downgrade the warning to
             # INFO when the behaviour under test is demonstrably implemented.
             # Runs immediately after the AC critic so fresh warnings can be
             # softened before the fix-scope critic keys off them.
-            await run_code_grounding_critic(llm, test_plan, single_ticket_dev_info)
+            await llm_usage.timed("critic_code_grounding", run_code_grounding_critic(llm, test_plan, single_ticket_dev_info))
             # Fix-scope critic — catch reporter-drift cases that cite a real AC
             # but test behaviour the merged PR explicitly did NOT change.
             # Ordered after the grounding critic so already-badged cases skip
             # the second LLM call.
             critic_gaps += [g for g in [
-                await run_fix_scope_critic(llm, test_plan, single_ticket_dev_info)
+                await llm_usage.timed("critic_fix_scope", run_fix_scope_critic(llm, test_plan, single_ticket_dev_info))
             ] if g]
             # Surface-mismatch critic — for tickets whose deliverable lives
             # OUTSIDE the running app (asset upload, config flip, doc edit),
             # badge cases whose steps target the app anyway. Skipped for
             # code_behavior / unknown / classifier-off (see should_run).
             critic_gaps += [g for g in [
-                await run_surface_mismatch_critic(llm, test_plan, deliverable)
+                await llm_usage.timed("critic_surface_mismatch", run_surface_mismatch_critic(llm, test_plan, deliverable))
             ] if g]
         finally:
             # Awaited in a finally so a failure in the chain cannot leave the
@@ -1102,20 +1102,20 @@ async def generate_single(
             plan_revision.passed_titles(previous["body"], previous["checked_ids"])
             if previous is not None else frozenset()
         )
-        await _check_reachability(
+        await llm_usage.timed("reachability", _check_reachability(
             llm, test_plan, [request.development_info], provenance,
             repo_evidence=repo_evidence, exploration=exploration,
             protected_titles=passed_titles, label=request.ticket_key,
-        )
+        ))
         # Rule P, after L (a case L converted to unit coverage is not a UI
         # case any more) and before route_out_of_uat, which moves a case no
         # surface can perform. A step the surface has no input for is
         # rewritten onto a surface that has one, or the case is split per
         # surface (src/app/surface_inputs.py).
-        await _check_surface_inputs(
+        await llm_usage.timed("surface_inputs", _check_surface_inputs(
             llm, test_plan, [request.development_info], provenance,
             exploration=exploration, protected_titles=passed_titles, label=request.ticket_key,
-        )
+        ))
         # What the plan itself says a tester cannot grade — unreachable cases
         # (rule L), pre-existing behaviour (rule H), regression lines that cite
         # no changed code — leaves the numbered sections before the evidence
@@ -1123,11 +1123,11 @@ async def generate_single(
         # Rules U, Q, T, before route_out_of_uat: a graded case on untouched
         # code becomes a pre-existing note, and failure-path and "before this
         # change" claims are re-traced against the code (src/app/plan_recheck.py).
-        await _recheck_before_routing(
+        await llm_usage.timed("recheck_before_routing", _recheck_before_routing(
             llm, test_plan, [request.development_info], provenance, index=source_index,
             repo_evidence=repo_evidence, exploration=exploration, label=request.ticket_key,
             protected_titles=passed_titles,
-        )
+        ))
         out_of_uat = route_out_of_uat(
             test_plan, dev_infos=[request.development_info], exploration=exploration,
             protected_titles=passed_titles,
@@ -1137,7 +1137,7 @@ async def generate_single(
         # covered_by_unit_test claims are proven from the test code and CI or
         # reverted, and every case that needs a deployed environment gets a
         # deploy check first — before the step check counts steps.
-        evidence = await run_evidence_checks(
+        evidence = await llm_usage.timed("evidence_checks", run_evidence_checks(
             llm,
             test_plan,
             repo_evidence=repo_evidence,
@@ -1146,7 +1146,7 @@ async def generate_single(
             dev_info=request.development_info,
             when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             deployments=deployments,
-        )
+        ))
         if evidence["critic_gap"]:
             provenance.setdefault("critics_unavailable", []).append(evidence["critic_gap"])
         if evidence["coverage_reverted"]:
@@ -1182,9 +1182,9 @@ async def generate_single(
         # Scope rules G, H, J (src/app/scope_checks.py): marks, never moves,
         # so the section counts — the progress key — are untouched. Before
         # quarantine, so a case it moves to needs-spec keeps its marker.
-        rewritten, platform_gap = await run_platform_critic(
+        rewritten, platform_gap = await llm_usage.timed("critic_platform", run_platform_critic(
             llm, test_plan, [request.development_info]
-        )
+        ))
         if rewritten:
             provenance["platform_rewritten"] = rewritten
         if platform_gap:
@@ -1199,11 +1199,11 @@ async def generate_single(
         # Re-read every label, element, expected result and client token the
         # plan cites, after every pass that rewrites step text and before
         # quarantine, so a downgraded expected result counts there.
-        await _verify_grounding(
+        await llm_usage.timed("grounding_reread", _verify_grounding(
             test_plan, source_index, [request.development_info], provenance, multi=False,
             facts=source_facts, repo_evidence=repo_evidence, exploration=exploration,
             label=request.ticket_key,
-        )
+        ))
         # Quarantine last: the code-grounding critic un-badges cases whose
         # behaviour it found in the repo, and those rescues have to land
         # before we decide what is ungrounded.
@@ -1356,7 +1356,7 @@ async def generate_single(
         return response
 
     except Exception as e:
-        await run_tracker.fail(run_ctx, error_code=_error_code(e))
+        await run_tracker.fail(run_ctx, error_code=_error_code(e), stages=llm_usage.stage_summary())
         raise
 
 
@@ -1640,11 +1640,11 @@ async def generate_multi(
                if isinstance(f, dict)]
         )
         (batch_deployments, batch_deploy_state, batch_repo_evidence), batch_index = await asyncio.gather(
-            _read_build_evidence(batch_dev_info, batch_mentioned,
+            llm_usage.timed("build_evidence", _read_build_evidence(batch_dev_info, batch_mentioned,
                                  {id(pr): [t["ticket_key"]] for t in tickets_data
                                   for pr in ((t.get("development_info") or {}).get("pull_requests") or [])
-                                  if isinstance(pr, dict)}),
-            _read_sources(batch_dev_info))
+                                  if isinstance(pr, dict)})),
+            llm_usage.timed("read_sources", _read_sources(batch_dev_info)))
         _record_deployments(provenance, batch_deployments)
         batch_gaps: list[str] = []
         batch_facts = _attach_source_facts({}, batch_index, provenance, batch_gaps)
@@ -1680,7 +1680,7 @@ async def generate_multi(
         # then handed to the surface critic after generation (skipped when the
         # batch contains any code_behavior ticket — see
         # aggregate_deliverables_for_critique for why).
-        classifier_results = await asyncio.gather(
+        classifier_results = await llm_usage.timed("classify_deliverable", asyncio.gather(
             *[
                 classify_deliverable(
                     llm,
@@ -1693,7 +1693,7 @@ async def generate_multi(
                 for t in tickets_data
             ],
             return_exceptions=False,
-        )
+        ))
         per_ticket_deliverables: list[tuple[str, object]] = []
         for t, d in zip(tickets_data, classifier_results):
             per_ticket_deliverables.append((t["ticket_key"], d))
@@ -1705,11 +1705,11 @@ async def generate_multi(
             per_ticket_deliverables
         )
 
-        test_plan = await llm.generate_multi_ticket_test_plan(
+        test_plan = await llm_usage.timed("generate", llm.generate_multi_ticket_test_plan(
             tickets=tickets_data,
             images=all_images,
             cross_project=cross_project_payload,
-        )
+        ))
 
         multi_ticket_dev_info = [
             {
@@ -1722,16 +1722,16 @@ async def generate_multi(
         # generate_single for what each one catches, and for why the
         # regression pass overlaps the chain instead of following it.
         regression_critic = asyncio.create_task(
-            run_regression_grounding_critic(llm, test_plan, multi_ticket_dev_info)
+            llm_usage.timed("critic_regression", run_regression_grounding_critic(llm, test_plan, multi_ticket_dev_info))
         )
         multi_critic_gaps: list[str] = []
         try:
             multi_critic_gaps += [g for g in [
-                await run_grounding_critic(llm, test_plan, tickets_data)
+                await llm_usage.timed("critic_ac_grounding", run_grounding_critic(llm, test_plan, tickets_data))
             ] if g]
-            await run_code_grounding_critic(llm, test_plan, multi_ticket_dev_info)
+            await llm_usage.timed("critic_code_grounding", run_code_grounding_critic(llm, test_plan, multi_ticket_dev_info))
             multi_critic_gaps += [g for g in [
-                await run_fix_scope_critic(llm, test_plan, multi_ticket_dev_info)
+                await llm_usage.timed("critic_fix_scope", run_fix_scope_critic(llm, test_plan, multi_ticket_dev_info))
             ] if g]
             # Surface-mismatch critic — runs against the aggregated
             # deliverable. Skipped for pure-code batches or when the batch
@@ -1739,9 +1739,9 @@ async def generate_multi(
             # aggregate_deliverables_for_critique). This matches the
             # single-ticket path so the two behave symmetrically.
             multi_critic_gaps += [g for g in [
-                await run_surface_mismatch_critic(
+                await llm_usage.timed("critic_surface_mismatch", run_surface_mismatch_critic(
                     llm, test_plan, aggregated_deliverable
-                )
+                ))
             ] if g]
         finally:
             multi_critic_gaps += [g for g in [await regression_critic] if g]
@@ -1749,27 +1749,27 @@ async def generate_multi(
             provenance["critics_unavailable"] = multi_critic_gaps
             logger.warning("critics unavailable: %s", "; ".join(multi_critic_gaps))
         # Rule L; see generate_single.
-        await _check_reachability(
+        await llm_usage.timed("reachability", _check_reachability(
             llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
             repo_evidence=batch_repo_evidence, exploration=None, label="batch",
-        )
+        ))
         # Rule P; see generate_single.
-        await _check_surface_inputs(
+        await llm_usage.timed("surface_inputs", _check_surface_inputs(
             llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
             exploration=None, label="batch",
-        )
+        ))
         # Rules U, Q, T; see generate_single.
-        await _recheck_before_routing(
+        await llm_usage.timed("recheck_before_routing", _recheck_before_routing(
             llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
             index=batch_index, repo_evidence=batch_repo_evidence, exploration=None, label="batch",
-        )
+        ))
         # See generate_single.
         out_of_uat = route_out_of_uat(
             test_plan, dev_infos=[d.get("development_info") for d in multi_ticket_dev_info],
         )
         _record_out_of_uat(provenance, out_of_uat)
         # Evidence rules B–F; see generate_single.
-        evidence = await run_evidence_checks(
+        evidence = await llm_usage.timed("evidence_checks", run_evidence_checks(
             llm,
             test_plan,
             repo_evidence=batch_repo_evidence,
@@ -1778,7 +1778,7 @@ async def generate_multi(
             dev_info=batch_dev_info,
             when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             deployments=batch_deployments,
-        )
+        ))
         if evidence["critic_gap"]:
             provenance.setdefault("critics_unavailable", []).append(evidence["critic_gap"])
         if evidence["coverage_reverted"]:
@@ -1807,7 +1807,7 @@ async def generate_multi(
                 [w["missing_element"] for w in unbacked_steps],
             )
         batch_dev_infos = [d.get("development_info") for d in multi_ticket_dev_info]
-        rewritten, platform_gap = await run_platform_critic(llm, test_plan, batch_dev_infos)
+        rewritten, platform_gap = await llm_usage.timed("critic_platform", run_platform_critic(llm, test_plan, batch_dev_infos))
         if rewritten:
             provenance["platform_rewritten"] = rewritten
         if platform_gap:
@@ -1817,10 +1817,10 @@ async def generate_multi(
         _record_ci_claims(provenance, flag_ci_claims(test_plan, batch_repo_evidence))
         _recheck_before_save(test_plan, provenance, repo_evidence=batch_repo_evidence, index=batch_index,
                              label="batch")
-        await _verify_grounding(
+        await llm_usage.timed("grounding_reread", _verify_grounding(
             test_plan, batch_index, [batch_dev_info], provenance, multi=True,
             facts=batch_facts, repo_evidence=batch_repo_evidence, exploration=None, label="batch",
-        )
+        ))
         # See generate_single: quarantining runs after every critic so the
         # code-grounding recheck's rescues are respected.
         needs_spec_cases = quarantine_ungrounded_cases(test_plan)
@@ -1943,7 +1943,7 @@ async def generate_multi(
         return response
 
     except Exception as e:
-        await run_tracker.fail(run_ctx, error_code=_error_code(e))
+        await run_tracker.fail(run_ctx, error_code=_error_code(e), stages=llm_usage.stage_summary())
         raise
 
 
