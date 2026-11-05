@@ -429,6 +429,7 @@ def build_targets(pull_requests: list[dict] | None, repo_evidence: list[dict] | 
         targets.append({"repo": repo, "commit": commit, "platform": platform, "changed": changed,
                         "app": e.get("app_version"), "deploy": deploy,
                         "capabilities": e.get("capabilities"),
+                        "commands": e.get("commands"),
                         "gate": {
                             "pr": _gate_entry(first),
                             "later": [_gate_entry(p) for p in merged[1:]],
@@ -620,10 +621,28 @@ def _ios_check(t: dict) -> str:
             f"the checkout it was built from (exit 0 means it contains the merge).")
 
 
+def _android_ids(t: dict) -> str:
+    """The id to pass to adb: each variant's own (rule Y), else the base id.
+
+    A debug build usually carries an ``applicationIdSuffix``; asking adb for
+    the bare ``applicationId`` then finds nothing installed, or the release
+    app, and reads as "the build is missing".
+    """
+    apps = ((t.get("commands") or {}).get("android_apps")) or []
+    variants = [v for a in apps for v in a.get("variants") or []]
+    if variants and len({v["application_id"] for v in variants}) > 1:
+        ids = " / ".join(f"{v['application_id']} ({v['name']})" for v in variants[:6])
+        return f"<application id of the installed variant: {ids}>"
+    if variants:
+        return variants[0]["application_id"]
+    app = t.get("app") or {}
+    return (app.get("bundle_ids") or ["<application id>"])[0]
+
+
 def _android_check(t: dict) -> str:
     sha = _sha(t["commit"])
     app = t.get("app") or {}
-    pkg = (app.get("bundle_ids") or ["<application id>"])[0]
+    pkg = _android_ids(t)
     floor = (f"versionName must be at least {app['version']}"
              + (f" and versionCode at least {app['build']}" if app.get("build") else "")
              + f" ({app['file']} at {sha})") if app.get("version") else (

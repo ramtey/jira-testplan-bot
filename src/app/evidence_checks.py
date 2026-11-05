@@ -981,33 +981,51 @@ def deploy_check_step(commit: str | None, how: str | None) -> str:
             f"contains it) — {how}. If it does not, stop: the case is blocked on deployment.")
 
 
+#: What a case says instead of repeating the build check (rule Z): the check is
+#: written once, at the top of the plan, and every case that needs a running
+#: build points at it.
+BUILD_CHECK_PRECONDITION = "Precondition: Build check passed"
+_REGRESSION_PREFIX = "Precondition: Build check passed (top of plan). "
+
+
+def _precondition_ref(mine: list[dict] | None) -> str:
+    from .build_targets import short_name
+
+    names = sorted({short_name(t["repo"]) for t in mine or []})
+    scope = f" for {', '.join(names)}" if names else ""
+    return f"{BUILD_CHECK_PRECONDITION}{scope} (see Build check at the top of the plan)."
+
+
 def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str | None = None,
                                 extra_cases: list[dict] | None = None, *,
                                 targets: list[dict] | None = None,
-                                when: str | None = None) -> list[str]:
-    """Put a build check first in every case that needs a running build.
+                                when: str | None = None,
+                                top: dict | None = None) -> list[str]:
+    """Write the build check once, at the top, and point every case that needs it there.
 
-    With ``targets`` (``build_targets.build_targets``) the check is chosen per
-    case: the repos the case exercises, each with its OWN merge commit, each
-    checked the way its platform ships — a deployed image that contains the
-    merge (an ancestor check, not an exact tag) for a service, the installed
-    app's version and source commit for an iOS or Android build. Without
-    targets it is the single-commit check older callers relied on.
+    With ``targets`` (``build_targets.build_targets``) the check names the repos
+    the cases exercise, each with its OWN merge commit, each checked the way its
+    platform ships — a deployed image that contains the merge (an ancestor
+    check, not an exact tag) for a service, the installed app's version and
+    source commit for an iOS or Android build. Without targets it is the
+    single-commit check older callers relied on.
 
-    The check is the code's, not the model's. A first step the model wrote as
-    its own deploy check is replaced rather than kept: on SK-2719 that step
-    demanded one exact image tag, and on SK-2889 an iOS case's precondition
-    checked a build number while the step code added asked for an ArgoCD app.
-    Replacing in place keeps the step count, so nothing is renumbered. An
-    exact image tag a case pins in its preconditions, environment or steps is
-    rewritten to "a build that contains <merge commit>".
-
-    Runs before step grounding, so the warnings that pass writes ("step 3
-    names …") count the added step.
+    Rule Z: the check used to be pasted as step 1 of every case, several lines
+    of SHAs per case. It is now built once into ``top["build_check"]`` (rendered
+    at the top of the plan) and each case gets "Precondition: Build check
+    passed for <repos>" in its preconditions. A first step the model wrote as
+    its own deploy check is removed (step references after it move up): the
+    plan's check replaces it. On SK-2719 that step demanded one exact image
+    tag, and on SK-2889 an iOS case's precondition checked a build number while
+    the step code added asked for an ArgoCD app. An exact image tag a case pins
+    in its preconditions, environment or steps is rewritten to "a build that
+    contains <merge commit>".
     """
     from .build_targets import build_check_step, short_requirement, targets_for_case, unpin_tags
 
     fixed = []
+    used: dict[str, dict] = {}
+    any_case = False
     cases = list(iter_cases(test_plan)) + [("needs_spec_cases", i, c)
                                             for i, c in enumerate(extra_cases or [])]
     for section, i, case in cases:
@@ -1022,25 +1040,31 @@ def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str |
                         case["pinned_tag_replaced"] = True
         if not needs_deployed_env(case):
             continue
-        step = build_check_step(mine, when) if mine else deploy_check_step(commit, how)
-        steps = list(case.get("steps") or [])
-        if has_deploy_check_first(case):
-            if not targets or steps[0] == step or not is_model_deploy_step(steps[0]):
-                continue
-            # The model's own check: replaced in place, so step numbers hold.
-            case["steps"] = [step] + [unpin_tags(s, mine)[0] if isinstance(s, str) else s
-                                      for s in steps[1:]]
-            case["deploy_check_replaced"] = True
-            fixed.append(f"{section}:{i}")
+        any_case = True
+        for t in mine:
+            used[t["repo"]] = t
+        pre = case.get("preconditions") if isinstance(case.get("preconditions"), str) else ""
+        if BUILD_CHECK_PRECONDITION in pre:
             continue
-        case["steps"] = [step] + [unpin_tags(s, mine)[0] if (mine and isinstance(s, str)) else s
-                                  for s in steps]
+        steps = list(case.get("steps") or [])
+        if steps and isinstance(steps[0], str) and (
+                is_model_deploy_step(steps[0]) or steps[0].startswith(("Build check:", "Deploy check:"))):
+            # The model's own check (or one an earlier pass pasted): the plan's
+            # check replaces it, so the step goes and later references move up.
+            steps = steps[1:]
+            case["deploy_check_replaced"] = True
+            if isinstance(case.get("step_grounding"), list):
+                refs = []
+                for ref in case["step_grounding"]:
+                    if isinstance(ref, dict) and isinstance(ref.get("step"), int) and ref["step"] > 0:
+                        if ref["step"] == 1:
+                            continue
+                        ref["step"] -= 1
+                    refs.append(ref)
+                case["step_grounding"] = refs
+        case["steps"] = [unpin_tags(s, mine)[0] if (mine and isinstance(s, str)) else s for s in steps]
+        case["preconditions"] = f"{_precondition_ref(mine)} {pre}".strip()
         case["deploy_check_added"] = True
-        # step_grounding numbers steps from 1 (0 is the preconditions); the
-        # new first step moves every numbered one down by one.
-        for ref in case.get("step_grounding") or []:
-            if isinstance(ref, dict) and isinstance(ref.get("step"), int) and ref["step"] > 0:
-                ref["step"] += 1
         fixed.append(f"{section}:{i}")
     # Checklist lines are bare strings and have skipped every case guard
     # before (SK-2342). One that sends the tester to a deployed environment
@@ -1051,22 +1075,32 @@ def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str |
     for i, line in enumerate(lines):
         if not isinstance(line, str) or not _ENV_NAME_RE.search(line):
             continue
-        if "Deploy check first" in line or "Build check first" in line:
+        if BUILD_CHECK_PRECONDITION in line or "Deploy check first" in line or "Build check first" in line:
             continue
         if targets:
             mine = targets_for_case({"expected": line}, targets)
             if not mine or all(t["commit"] and t["commit"][:7] in line for t in mine):
                 continue
-            prefix = f"Build check first: confirm {short_requirement(mine)}. "
-        else:
-            if sha and sha in line:
-                continue
-            what = f"merged commit {sha}" if sha else "the merged change"
-            prefix = f"Deploy check first: confirm the environment runs {what} or later. "
+            for t in mine:
+                used[t["repo"]] = t
+        elif sha and sha in line:
+            continue
+        any_case = True
         m = re.match(r"^(\s*(?:🔴|🟡|🟢)\s*)", line)
         head = m.group(1) if m else ""
-        lines[i] = head + prefix + line[len(head):]
+        lines[i] = head + _REGRESSION_PREFIX + line[len(head):]
         fixed.append(f"regression_checklist:{i}")
+    if top is not None and any_case:
+        chosen = [t for t in (targets or []) if t["repo"] in used] or list(targets or [])
+        step = build_check_step(chosen, when) if chosen else deploy_check_step(commit, how)
+        top["build_check"] = {
+            "step": step,
+            "repos": [t["repo"] for t in chosen],
+            "summary": short_requirement(chosen) if chosen else (
+                f"the environment runs merged commit {sha} or later" if sha
+                else "the environment runs the merged change"),
+            "cases": len(fixed),
+        }
     return fixed
 
 
@@ -1218,7 +1252,7 @@ async def gather_repo_evidence(github, pull_requests: list[dict] | None, mention
         ref = _ref_for(gate_prs(prs)[0])
         entry = {"repo": repo, "ref": ref, "error": None, "test_sources": {},
                  "truncated": [], "build": None, "platform": None, "app_version": None,
-                 "capabilities": None}
+                 "capabilities": None, "commands": None, "ticket_base": None}
         out.append(entry)
         tree = await github.list_tree(repo, ref) if (github and ref) else None
         if tree is None:
@@ -1262,8 +1296,23 @@ async def gather_repo_evidence(github, pull_requests: list[dict] | None, mention
             for s in parsed["copies"]:
                 if s.endswith("package.json"):
                     manifests.add(posixpath.normpath(posixpath.join(ctx, _rel(s))))
-        second = await github.fetch_files_at_ref(repo, ref, sorted(m for m in manifests if m in tree))
+        # Rule Y: the build config that names commands and identifiers (Gradle
+        # variants and their application ids, package.json scripts), read at
+        # the same commit. Rule T: the merge base of the ticket's first PR.
+        from .build_commands import command_files, read_command_facts, ticket_base
+
+        cmd_paths = [p for p in command_files(tree) if p not in manifests]
+        wanted = sorted({m for m in manifests if m in tree} | set(cmd_paths))
+        second = await github.fetch_files_at_ref(repo, ref, wanted)
         files = {**first, **second}
+        try:
+            entry["commands"] = read_command_facts(
+                tree, {**version_texts, **files}, entry["platform"],
+                (entry["app_version"] or {}).get("bundle_ids") if entry["platform"] == "ios" else None)
+        except Exception as e:  # unread is never "no commands"
+            logger.warning("build commands of %s unreadable: %s", repo, e)
+            entry["commands"] = None
+        entry["ticket_base"] = await ticket_base(github, repo, prs)
         for t in tests:
             if t in files:
                 text = files[t]
@@ -1312,6 +1361,19 @@ def render_repo_evidence(entries: list[dict]) -> str:
                 lines.append(f"- PLATFORM FACT (rule N): {line}.")
         for f in (e["build"] or {}).get("findings") or []:
             lines.append(f"- BUILD/CI FACT: {f['finding']}")
+        from .build_commands import render_command_facts
+
+        for line in render_command_facts(e.get("commands")):
+            lines.append(f"- COMMAND FACT (rule Y): {line}.")
+        base = e.get("ticket_base")
+        if base:
+            lines.append(f"- TICKET BASE (rule T): {base['sha'][:7]} — the merge base of PR #{base['pr']}, this "
+                         f"ticket's first PR in {e['repo']}. \"Before this change\" means the code at this commit; "
+                         f"the '-' lines of that PR's diff are what it held. Never describe the old behaviour "
+                         f"from a later commit of the same PRs.")
+        else:
+            lines.append(f"- TICKET BASE (rule T): unknown for {e['repo']} — any \"before this change\" claim "
+                         f"must quote a '-' line from the first PR's diff, or be labelled unverified.")
         suites = (e["build"] or {}).get("suites") or {}
         for path, text in e["test_sources"].items():
             st = suites.get(path, {"status": "unknown", "why": "not checked"})
@@ -1339,6 +1401,15 @@ def render_evidence_lines(plan: dict, markdown: bool = True) -> list[str]:
     def head(md: str, text: str):
         out.extend([md if markdown else text, ""] if markdown else ["", text, "-" * 60, ""])
 
+    # Rule Z: the build check and setup several cases share, written once.
+    check = plan.get("build_check") or {}
+    shared = [p for p in plan.get("shared_preconditions") or [] if isinstance(p, dict) and p.get("text")]
+    if check.get("step") or shared:
+        head("## ✅ Before Any Case (do these once)", "BEFORE ANY CASE (DO THESE ONCE)")
+        if check.get("step"):
+            out.append(f"- Build check — {check['step']}")
+        out += [f"- {p.get('id')} — {p['text']}" for p in shared]
+        out += ["", 'Cases refer to these as "Precondition: Build check passed" or "Precondition: <id> passed".', ""]
     ds = plan.get("deployment_status") or {}
     if ds.get("warnings"):
         head("## 🚫 Not Deployed" if ds.get("status") == "not_deployed" else "## 🚢 Deployment",

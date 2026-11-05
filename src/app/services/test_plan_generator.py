@@ -1133,7 +1133,10 @@ async def run_evidence_checks(
     # check, and every check asked for an image whether or not one existed.
     targets = build_targets(prs, repo_evidence, deploy_state,
                             (deployments or {}).get("deployments_repos") or [])
-    deploy_checks_added = enforce_deploy_precondition(test_plan, targets=targets, when=when)
+    # Rule Z: the build check is written once, at the top of the plan; each
+    # case that needs a running build says "Precondition: Build check passed".
+    top: dict = {}
+    deploy_checks_added = enforce_deploy_precondition(test_plan, targets=targets, when=when, top=top)
     # Rule N: steps that need an orientation, device or entitlement the app
     # does not ship with are marked where they stand (platform_capabilities).
     from ..build_targets import gate_sentence
@@ -1160,6 +1163,7 @@ async def run_evidence_checks(
         "build_and_ci": findings,
         "coverage_reverted": demoted,
         "deploy_checks_added": deploy_checks_added,
+        "build_check": top.get("build_check"),
         "build_targets": [{"repo": t["repo"], "commit": t["commit"], "platform": t["platform"],
                            "app_version": (t.get("app") or {}).get("version"),
                            "gate": t.get("gate"), "capabilities": t.get("capabilities")}

@@ -73,6 +73,9 @@ TOOLS = [
                 "repo": {"type": "string", "description": "owner/repo"},
                 "path": {"type": "string"},
                 "start_line": {"type": "integer", "minimum": 1},
+                "at": {"type": "string", "enum": ["head", "base"],
+                       "description": "Optional. \"base\" reads the file as it was before the ticket's first "
+                                      "PR (the ticket base), when one is known. Default: head."},
             },
             "required": ["repo", "path"],
             "additionalProperties": False,
@@ -224,8 +227,10 @@ class Workspace:
 
     def __init__(self, github, pull_requests: list[dict], *,
                  max_searches: int = MAX_SEARCHES, max_reads: int = MAX_READS,
-                 as_of: str | None = None):
+                 as_of: str | None = None, base_refs: dict[str, str] | None = None):
         self.github = github
+        # Rule T: repo -> the merge base of the ticket's first PR ("before").
+        self.base_refs = dict(base_refs or {})
         # Replay: files outside the PRs are read as of this moment, never today's.
         self.as_of = as_of
         self._pinned: dict[str, str | None] = {}
@@ -263,11 +268,27 @@ class Workspace:
             for h in hits
         )
 
-    async def read_file(self, repo: str, path: str, start_line: int = 1) -> str:
+    async def read_file(self, repo: str, path: str, start_line: int = 1, at: str | None = None) -> str:
         if self.reads >= self.max_reads:
             return "Read budget spent. Report what you have."
         if not self._in_scope(repo):
             return f"{repo} is outside the organizations this ticket belongs to."
+        if at == "base":
+            base = self.base_refs.get(repo)
+            if not base:
+                return (f"No ticket base is known for {repo}, so {path} cannot be read as it was before "
+                        "the change. Use the '-' lines of the first PR's diff instead.")
+            self.reads += 1
+            files = await self.github.fetch_files_at_ref(repo, base, [path])
+            if path not in files:
+                return f"Could not read {repo}:{path} at the ticket base {base[:7]} (it may not have existed)."
+            self.read_files.add((repo, path))
+            all_lines = files[path].splitlines()
+            start = max(1, start_line)
+            end = min(len(all_lines), start + READ_MAX_LINES - 1)
+            body = "\n".join(f"{n:5d}| {all_lines[n - 1]}" for n in range(start, end + 1))
+            tail = f"\n… lines {end + 1}-{len(all_lines)} not shown" if end < len(all_lines) else ""
+            return f"{repo}:{path} (ticket base {base[:7]}, lines {start}-{end} of {len(all_lines)})\n{body}{tail}"
         self.reads += 1
         ref = self.pr_refs.get((repo, path))
         if ref is None and self.as_of:
@@ -354,7 +375,8 @@ async def run_tool_loop(llm, ws: "Workspace", *, system: str, first_message: str
                     out = await ws.search_code(args.get("query", ""), args.get("repo"))
                 elif block.get("name") == "read_file":
                     out = await ws.read_file(args.get("repo", ""), args.get("path", ""),
-                                             int(args.get("start_line") or 1))
+                                             int(args.get("start_line") or 1),
+                                             **({"at": args["at"]} if args.get("at") else {}))
                 else:
                     out = f"Unknown tool {block.get('name')}."
                 return {"type": "tool_result", "tool_use_id": block["id"], "content": out}

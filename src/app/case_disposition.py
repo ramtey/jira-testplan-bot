@@ -139,7 +139,8 @@ def suggested_test(case: dict) -> str:
 
 def _code_review_entry(case: dict, section: str) -> dict:
     r = case.get("reachability") if isinstance(case.get("reachability"), dict) else {}
-    why = (r.get("reason") or case.get("unreachable_reason") or "").strip()
+    ng = case.get("not_gradeable") if isinstance(case.get("not_gradeable"), dict) else {}
+    why = (r.get("reason") or case.get("unreachable_reason") or ng.get("reason") or "").strip()
     if not why:
         m = _UNREACHABLE_RE.search(case.get("expected") or "")
         why = _strip_marker((case.get("expected") or "")[m.start():] if m else "").split(" — ", 1)[0]
@@ -245,7 +246,7 @@ def route_out_of_uat(test_plan: Any, *, dev_infos: Iterable[dict | None] = (),
         for i, case in enumerate(items):
             if not isinstance(case, dict) or _protected(case, protected_titles):
                 keep.append(case)
-            elif is_unreachable(case):
+            elif is_unreachable(case) or isinstance(case.get("not_gradeable"), dict):
                 out[CODE_REVIEW_KEY].append(_code_review_entry(case, section))
                 out["moved"].append(f"{section}:{i}")
             elif is_pre_existing(case):
@@ -290,8 +291,9 @@ def route_out_of_uat(test_plan: Any, *, dev_infos: Iterable[dict | None] = (),
 # frontend/src/utils/markdown.js, with the same wording)
 # ---------------------------------------------------------------------------
 
-CODE_REVIEW_BLURB = ("Not UAT cases. The plan found that nothing a tester does in the product produces these "
-                     "conditions, so they cannot pass or fail in UAT. Verify each in code review or with the "
+CODE_REVIEW_BLURB = ("Not UAT cases. The plan found that a tester cannot grade these in the product (nothing a "
+                     "tester does produces the condition, or the result cannot be checked against the shipped "
+                     "code), so they cannot pass or fail in UAT. Verify each in code review or with the "
                      "suggested unit test.")
 PRE_EXISTING_BLURB = ("Behaviour that existed before this change and that it did not touch. Shown for context; "
                       "a result here is not a pass or fail for this ticket.")

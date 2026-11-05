@@ -44,6 +44,7 @@ _ADDED_BY_CODE = re.compile(
     r"Deploy check first: confirm the environment runs merged commit \S+ or later\.\s*"
     # build_targets.short_requirement; a dot before a digit is a version's.
     r"|Build check first: confirm (?:[^.]|\.(?=\d))*\.\s*"
+    r"|Precondition: Build check passed(?: \(top of plan\))?\.\s*"
     r"|Unverified — assumption(?: \([^)]*\))?:\s*"
     r"|Pre-existing behaviour, not changed by this ticket:\s*"
     r"|Platform-dependent — [^:]*:\s*"

@@ -291,7 +291,12 @@ const formatLogicClaims = (test, jira = false) => logicClaims(test)
   })
   .join('')
 
-const formatExpectedVerification = (test) => formatLogicClaims(test) + formatExpectedVerificationOnly(test)
+// Rule X: where the tester looks to tell pass from fail.
+const howToVerify = (test) => (typeof test?.how_to_verify === 'string' ? test.how_to_verify.trim() : '')
+
+const formatExpectedVerification = (test) =>
+  (howToVerify(test) ? `**How to verify:** ${howToVerify(test)}\n\n` : '') +
+  formatLogicClaims(test) + formatExpectedVerificationOnly(test)
 
 const formatExpectedVerificationOnly = (test) => {
   if (test.expected_verified === true) {
@@ -327,8 +332,34 @@ const GAP_STATUS = {
 const deploymentWarnings = (plan) =>
   (plan?.deployment_status?.warnings || []).filter(Boolean)
 
+// Rule Z: the build check and the setup several cases share, written once.
+// Cases say "Precondition: Build check passed" / "Precondition: S1 passed".
+const sharedPreconditions = (plan) =>
+  (Array.isArray(plan?.shared_preconditions) ? plan.shared_preconditions : [])
+    .filter((p) => p && typeof p.text === 'string' && p.text.trim())
+
+const formatSharedStepsMarkdown = (plan) => {
+  const check = plan?.build_check
+  const shared = sharedPreconditions(plan)
+  if (!check?.step && shared.length === 0) return ''
+  let md = '## ✅ Before Any Case (do these once)\n\n'
+  if (check?.step) md += `- **Build check** — ${check.step}\n`
+  shared.forEach((p) => { md += `- **${p.id}** — ${p.text}\n` })
+  return `${md}\n_Cases refer to these as "Precondition: Build check passed" or "Precondition: <id> passed" instead of repeating them._\n\n`
+}
+
+const formatSharedStepsJira = (plan) => {
+  const check = plan?.build_check
+  const shared = sharedPreconditions(plan)
+  if (!check?.step && shared.length === 0) return ''
+  let jira = '✅ BEFORE ANY CASE (DO THESE ONCE)\n\n'
+  if (check?.step) jira += `  • Build check — ${check.step}\n`
+  shared.forEach((p) => { jira += `  • ${p.id} — ${p.text}\n` })
+  return `${jira}\nCases refer to these as "Precondition: Build check passed" or "Precondition: <id> passed" instead of repeating them.\n\n`
+}
+
 const formatEvidenceMarkdown = (plan) => {
-  let md = ''
+  let md = formatSharedStepsMarkdown(plan)
   const warnings = deploymentWarnings(plan)
   if (warnings.length > 0) {
     const notDeployed = plan.deployment_status.status === 'not_deployed'
@@ -371,7 +402,7 @@ const formatEvidenceMarkdown = (plan) => {
 }
 
 const formatEvidenceJira = (plan) => {
-  let jira = ''
+  let jira = formatSharedStepsJira(plan)
   const warnings = deploymentWarnings(plan)
   if (warnings.length > 0) {
     jira += plan.deployment_status.status === 'not_deployed' ? '🚫 NOT DEPLOYED\n\n' : '🚢 DEPLOYMENT\n\n'
@@ -430,6 +461,12 @@ const formatCaseEvidenceJira = (test) => {
 
 // Rule-8 output: gaps that would break the ticket's goal but that no case
 // covers. Deliberately not a checklist — these are not pass/fail items.
+// Rules R and V: a result nothing consumes, and what a narrowing leaves behind.
+export const RISK_KIND = {
+  unconsumed_result: 'Result returned but never consumed',
+  left_out: 'Left out by the change',
+}
+
 const formatRisksAndGaps = (plan) => {
   const gaps = Array.isArray(plan?.risks_and_gaps) ? plan.risks_and_gaps.filter(Boolean) : []
   if (gaps.length === 0) return ''
@@ -440,11 +477,14 @@ const formatRisksAndGaps = (plan) => {
       md += `- ${g}\n`
       return
     }
-    md += `- ${g.follow_up ? '**Follow-up, not counted:** ' : ''}**${g.gap || 'Unnamed gap'}**\n`
+    md += `- ${g.follow_up ? '**Follow-up, not counted:** ' : ''}${RISK_KIND[g.kind] ? `**${RISK_KIND[g.kind]}:** ` : ''}**${g.gap || 'Unnamed gap'}**\n`
     if (g.impact) md += `  - Impact: ${g.impact}\n`
     if (g.evidence) md += `  - Evidence: \`${g.evidence}\`\n`
     if (g.owner) md += `  - Owner: ${g.owner}\n`
     if (g.suggested_ticket) md += `  - Suggested ticket: ${g.suggested_ticket}\n`
+    if (g.left_behind) md += `  - Left behind: ${g.left_behind}\n`
+    if (g.matters_for_goal) md += `  - Matters for the goal: ${g.matters_for_goal}\n`
+    if (g.how_to_see) md += `  - How to see it: ${g.how_to_see}\n`
   })
   return md + '\n'
 }
@@ -705,15 +745,60 @@ const formatProvenanceMarkdown = (plan) => {
 
 // How many code claims the re-read before save checked and downgraded
 // (source_provenance.grounding_verification, src/app/grounding_verification.py).
+// Plus the re-check against rules Q–Z (source_provenance.plan_recheck,
+// src/app/plan_recheck.py), and every downgrade one by one: a count alone
+// told nobody which expected results not to trust.
+const MAX_LISTED_DOWNGRADES = 40
+
+export const rereadDowngrades = (plan) => {
+  const out = []
+  const v = plan?.source_provenance?.grounding_verification
+  ;(Array.isArray(v?.downgraded_claims) ? v.downgraded_claims : []).forEach((d) => {
+    const who = d.title ? `“${d.title}”` : (d.case_id || 'a case')
+    out.push(`${who} — ${d.kind || 'claim'}: ${d.reason || 'did not match the cited code'}`)
+  })
+  const r = plan?.source_provenance?.plan_recheck
+  ;(Array.isArray(r?.findings) ? r.findings : []).forEach((f) => {
+    if (f.action === 'fixed') return
+    const who = f.title ? `“${f.title}”` : (f.section || 'the plan')
+    const verb = f.action === 'moved' ? 'moved out of the graded cases' : 'downgraded'
+    out.push(`${who} — ${verb}: ${f.reason} (rule ${f.rule})`)
+  })
+  return out
+}
+
 export const groundingRereadLine = (plan) => {
   const v = plan?.source_provenance?.grounding_verification
-  if (!v || typeof v !== 'object') return ''
-  if (v.error) return `⚠️ Grounding re-read did not run: ${v.error}. Labels, rules and citations below were not re-checked.`
-  const parts = [`${v.checked || 0} code claim(s) re-read against the cited files`, `${v.downgraded || 0} downgraded to unverified`]
-  if (v.unchecked) parts.push(`${v.unchecked} could not be re-read`)
-  const blocked = Array.isArray(v.needs_client_equivalent_token) ? v.needs_client_equivalent_token.length : 0
-  if (blocked) parts.push(`${blocked} case(s) need a client-equivalent token`)
-  return `Grounding re-read: ${parts.join(', ')}.`
+  const r = plan?.source_provenance?.plan_recheck
+  const hasV = v && typeof v === 'object'
+  const hasR = r && typeof r === 'object' && (Array.isArray(r.findings) || Array.isArray(r.not_run))
+  if (!hasV && !hasR) return ''
+  const sentences = []
+  if (hasV && v.error) {
+    sentences.push(`⚠️ Grounding re-read did not run: ${v.error}. Labels, rules and citations below were not re-checked.`)
+  } else if (hasV) {
+    const parts = [`${v.checked || 0} code claim(s) re-read against the cited files`, `${v.downgraded || 0} downgraded to unverified`]
+    if (v.unchecked) parts.push(`${v.unchecked} could not be re-read`)
+    const blocked = Array.isArray(v.needs_client_equivalent_token) ? v.needs_client_equivalent_token.length : 0
+    if (blocked) parts.push(`${blocked} case(s) need a client-equivalent token`)
+    sentences.push(`Grounding re-read: ${parts.join(', ')}.`)
+  }
+  if (hasR) {
+    const findings = Array.isArray(r.findings) ? r.findings : []
+    const down = findings.filter((f) => f.action === 'downgraded' || f.action === 'marked').length
+    const moved = findings.filter((f) => f.action === 'moved').length
+    const fixed = findings.filter((f) => f.action === 'fixed').length
+    let s = `${hasV ? 'Re-check' : 'Grounding re-read'} against the code (rules Q–Z): ${down} downgraded or marked, ${moved} moved out of the graded cases, ${fixed} fixed in place.`
+    if (Array.isArray(r.not_run) && r.not_run.length > 0) s += ` ⚠️ Not checked: ${r.not_run.join('; ')}.`
+    sentences.push(s)
+  }
+  const list = rereadDowngrades(plan)
+  if (list.length > 0) {
+    const shown = list.slice(0, MAX_LISTED_DOWNGRADES).map((d, i) => `(${i + 1}) ${d}`).join('; ')
+    const more = list.length > MAX_LISTED_DOWNGRADES ? `; and ${list.length - MAX_LISTED_DOWNGRADES} more` : ''
+    sentences.push(`Downgrades: ${shown}${more}.`)
+  }
+  return sentences.join(' ')
 }
 
 const formatProvenanceJira = (plan) => {
@@ -832,7 +917,7 @@ export const outOfUatSections = (plan) => ({
 })
 
 export const CODE_REVIEW_BLURB =
-  'Not UAT cases. The plan found that nothing a tester does in the product produces these conditions, so they cannot pass or fail in UAT. Verify each in code review or with the suggested unit test.'
+  'Not UAT cases. The plan found that a tester cannot grade these in the product (nothing a tester does produces the condition, or the result cannot be checked against the shipped code), so they cannot pass or fail in UAT. Verify each in code review or with the suggested unit test.'
 export const PRE_EXISTING_BLURB =
   'Behaviour that existed before this change and that it did not touch. Shown for context; a result here is not a pass or fail for this ticket.'
 export const LOW_CONFIDENCE_BLURB =
@@ -1288,7 +1373,9 @@ const formatSurfaceJira = (test) => {
   return (bits.length > 0 ? `Runs on: ${bits.join(' · ')}\n\n` : '') + formatClientTokenJira(test)
 }
 
-const formatExpectedVerificationJira = (test) => formatLogicClaims(test, true) + formatExpectedVerificationJiraOnly(test)
+const formatExpectedVerificationJira = (test) =>
+  (howToVerify(test) ? `How to verify: ${howToVerify(test)}\n\n` : '') +
+  formatLogicClaims(test, true) + formatExpectedVerificationJiraOnly(test)
 
 const formatExpectedVerificationJiraOnly = (test) => {
   if (test.expected_verified === true) {
@@ -1527,11 +1614,14 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
         jira += `  • ${g}\n`
         return
       }
-      jira += `  • ${g.follow_up ? 'Follow-up, not counted: ' : ''}${g.gap || 'Unnamed gap'}\n`
+      jira += `  • ${g.follow_up ? 'Follow-up, not counted: ' : ''}${RISK_KIND[g.kind] ? `${RISK_KIND[g.kind]}: ` : ''}${g.gap || 'Unnamed gap'}\n`
       if (g.impact) jira += `    Impact: ${g.impact}\n`
       if (g.evidence) jira += `    Evidence: ${g.evidence}\n`
       if (g.owner) jira += `    Owner: ${g.owner}\n`
       if (g.suggested_ticket) jira += `    Suggested ticket: ${g.suggested_ticket}\n`
+      if (g.left_behind) jira += `    Left behind: ${g.left_behind}\n`
+      if (g.matters_for_goal) jira += `    Matters for the goal: ${g.matters_for_goal}\n`
+      if (g.how_to_see) jira += `    How to see it: ${g.how_to_see}\n`
     })
     jira += '\n'
   }

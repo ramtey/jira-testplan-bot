@@ -107,6 +107,8 @@ from src.app.data_provisioning import flag_unactionable_data_asks
 from src.app.step_grounding import check_step_grounding, readable_code_paths
 from src.app.source_facts import build_source_facts, read_source_index
 from src.app.grounding_verification import run_grounding_verification, shown_lines
+from src.app.plan_recheck import recheck_before_routing, recheck_before_save
+from src.app.plan_recheck import summarize as summarize_recheck
 from src.app.video_walkthrough import walkthrough_from_plan_body
 
 logger = logging.getLogger(__name__)
@@ -1118,6 +1120,14 @@ async def generate_single(
         # (rule L), pre-existing behaviour (rule H), regression lines that cite
         # no changed code — leaves the numbered sections before the evidence
         # checks add build checks to it (src/app/case_disposition.py).
+        # Rules U, Q, T, before route_out_of_uat: a graded case on untouched
+        # code becomes a pre-existing note, and failure-path and "before this
+        # change" claims are re-traced against the code (src/app/plan_recheck.py).
+        await _recheck_before_routing(
+            llm, test_plan, [request.development_info], provenance, index=source_index,
+            repo_evidence=repo_evidence, exploration=exploration, label=request.ticket_key,
+            protected_titles=passed_titles,
+        )
         out_of_uat = route_out_of_uat(
             test_plan, dev_infos=[request.development_info], exploration=exploration,
             protected_titles=passed_titles,
@@ -1182,6 +1192,10 @@ async def generate_single(
         scope = run_scope_checks(test_plan, [request.development_info])
         _record_scope(provenance, scope, request.ticket_key)
         _record_ci_claims(provenance, flag_ci_claims(test_plan, repo_evidence))
+        # Rules S, R, X, Y, Z: marks in place, before the grounding re-read so
+        # a downgraded expected result counts in quarantine.
+        _recheck_before_save(test_plan, provenance, repo_evidence=repo_evidence, index=source_index,
+                             label=request.ticket_key)
         # Re-read every label, element, expected result and client token the
         # plan cites, after every pass that rewrites step text and before
         # quarantine, so a downgraded expected result counts there.
@@ -1292,6 +1306,9 @@ async def generate_single(
             "deployment_status": evidence["deployment_status"],
             "acceptance_gaps": evidence["acceptance_gaps"],
             "build_and_ci": evidence["build_and_ci"],
+            # Rule Z: the build check once, and setup several cases share.
+            "build_check": evidence.get("build_check"),
+            "shared_preconditions": getattr(test_plan, "shared_preconditions", None) or [],
             "evidence_notes": evidence_notes,
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
@@ -1341,6 +1358,37 @@ async def generate_single(
     except Exception as e:
         await run_tracker.fail(run_ctx, error_code=_error_code(e))
         raise
+
+
+def _ticket_bases(repo_evidence) -> dict[str, dict]:
+    """Rule T: repo -> {"sha", "pr"}, the merge base of the ticket's first PR."""
+    return {e["repo"]: e["ticket_base"] for e in repo_evidence or []
+            if isinstance(e, dict) and e.get("repo") and e.get("ticket_base")}
+
+
+async def _recheck_before_routing(llm, test_plan, dev_infos: list, provenance: dict, *, index,
+                                  repo_evidence, exploration, label: str,
+                                  protected_titles: frozenset[str] = frozenset()) -> None:
+    """Rules U, Q, T (src/app/plan_recheck.py), before route_out_of_uat moves cases."""
+    from ..github_client import GitHubClient
+    report = provenance.setdefault("plan_recheck", {})
+    gaps = await recheck_before_routing(
+        llm, GitHubClient(), test_plan, dev_infos, report, index=index, exploration=exploration,
+        bases=_ticket_bases(repo_evidence), protected_titles=protected_titles,
+    )
+    for g in gaps:
+        provenance.setdefault("critics_unavailable", []).append(g)
+
+
+def _recheck_before_save(test_plan, provenance: dict, *, repo_evidence, index, label: str) -> None:
+    """Rules S, R, X, Y, Z (src/app/plan_recheck.py), before the grounding re-read."""
+    report = provenance.setdefault("plan_recheck", {})
+    recheck_before_save(test_plan, report, repo_evidence=repo_evidence,
+                        index=None if isinstance(index, str) else index)
+    counts = summarize_recheck(report)
+    report.update(counts)
+    logger.info("plan re-check for %s: %d downgraded/marked, %d moved, %d fixed",
+                label, counts["downgraded"], counts["moved"], counts["fixed"])
 
 
 async def _check_reachability(llm, test_plan, dev_infos: list, provenance: dict, *,
@@ -1710,6 +1758,11 @@ async def generate_multi(
             llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
             exploration=None, label="batch",
         )
+        # Rules U, Q, T; see generate_single.
+        await _recheck_before_routing(
+            llm, test_plan, [d.get("development_info") for d in multi_ticket_dev_info], provenance,
+            index=batch_index, repo_evidence=batch_repo_evidence, exploration=None, label="batch",
+        )
         # See generate_single.
         out_of_uat = route_out_of_uat(
             test_plan, dev_infos=[d.get("development_info") for d in multi_ticket_dev_info],
@@ -1762,6 +1815,8 @@ async def generate_multi(
         scope = run_scope_checks(test_plan, batch_dev_infos)
         _record_scope(provenance, scope, "batch")
         _record_ci_claims(provenance, flag_ci_claims(test_plan, batch_repo_evidence))
+        _recheck_before_save(test_plan, provenance, repo_evidence=batch_repo_evidence, index=batch_index,
+                             label="batch")
         await _verify_grounding(
             test_plan, batch_index, [batch_dev_info], provenance, multi=True,
             facts=batch_facts, repo_evidence=batch_repo_evidence, exploration=None, label="batch",
@@ -1846,6 +1901,9 @@ async def generate_multi(
             "deployment_status": evidence["deployment_status"],
             "acceptance_gaps": evidence["acceptance_gaps"],
             "build_and_ci": evidence["build_and_ci"],
+            # Rule Z: the build check once, and setup several cases share.
+            "build_check": evidence.get("build_check"),
+            "shared_preconditions": getattr(test_plan, "shared_preconditions", None) or [],
             "evidence_notes": evidence_notes,
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,

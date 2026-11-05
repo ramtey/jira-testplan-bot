@@ -119,6 +119,8 @@ class PullRequest:
     # The commit a merged PR landed as. A squash merge's branch commits are
     # never ancestors of a release build; this one is (see deploy_state.py).
     merge_commit_sha: str | None = None
+    # The base-branch commit the PR was opened against (rule T: "before" code).
+    base_sha: str | None = None
     number: int | None = None  # GitHub PR number
     # GitHub was asked for this PR's diff and could not answer. Without it the
     # PR arrives with no files_changed, which downstream reads as "the diff is
@@ -436,6 +438,10 @@ class TestPlan:
     # them into the plan's "verify by code review / unit test" list. Each:
     # {"title", "why_not_uat", "what_to_verify", "suggested_test", "code_refs"}
     code_review_checks: list[dict] | None = None
+    # Rule Z: setup several cases share, written once ({"id": "S1", "text"}).
+    # The generator writes some; plan_recheck.hoist_shared_preconditions moves
+    # identical precondition sentences repeated across cases here too.
+    shared_preconditions: list[dict] | None = None
     # The model's answers to evidence rules A, B and E — ``requirement_check``,
     # ``deployment_status`` and ``note_disagreements`` — kept as it returned
     # them. Never shown as is: evidence_checks turns them into the plan's

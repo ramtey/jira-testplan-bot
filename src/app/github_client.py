@@ -271,6 +271,9 @@ class PRDetails:
     head_sha: str | None = None
     # Commit the merge produced on the base branch; None for unmerged PRs.
     merge_commit_sha: str | None = None
+    # The base branch commit the PR was opened against. The ticket's "before"
+    # code is the merge base of its first PR (rule T), found from this.
+    base_sha: str | None = None
 
 
 @dataclass
@@ -1000,6 +1003,7 @@ class GitHubClient:
                     merged_at=pr_data.get("merged_at"),
                     head_sha=(pr_data.get("head") or {}).get("sha"),
                     merge_commit_sha=pr_data.get("merge_commit_sha"),
+                    base_sha=(pr_data.get("base") or {}).get("sha"),
                 )
 
         except httpx.HTTPStatusError as e:
@@ -1309,7 +1313,8 @@ class GitHubClient:
             return None
         data = r.json()
         return {"status": data.get("status"), "ahead_by": data.get("ahead_by", 0),
-                "behind_by": data.get("behind_by", 0)}
+                "behind_by": data.get("behind_by", 0),
+                "merge_base": (data.get("merge_base_commit") or {}).get("sha")}
 
     async def _find_test_files(self, client: httpx.AsyncClient, owner: str, repo: str) -> list[str]:
         """

@@ -325,14 +325,19 @@ def test_deployed_cases_get_a_deploy_check_and_local_ones_do_not():
     needs_spec = copy.deepcopy(V1["needs_spec_cases"])
     plan.integration_tests.append(needs_spec[1])  # the "non-production deployment" case
     plan.integration_tests[-1]["step_grounding"] = [{"step": 2, "element": "x", "kind": "control", "source": "pr:a"}]
-    fixed = ev.enforce_deploy_precondition(plan, INPUTS["merge_commit"], None)
+    steps_before = list(plan.integration_tests[-1]["steps"])
+    top: dict = {}
+    fixed = ev.enforce_deploy_precondition(plan, INPUTS["merge_commit"], None, top=top)
 
+    # Rule Z: the check is written once, at the top; the case points at it.
+    assert top["build_check"]["step"].startswith("Deploy check: confirm this environment runs merged commit 2824789")
     deployed = plan.integration_tests[-1]
-    assert deployed["steps"][0].startswith("Deploy check: confirm this environment runs merged commit 2824789")
-    assert deployed["step_grounding"][0]["step"] == 3, "step numbers follow the inserted step"
+    assert deployed["preconditions"].startswith("Precondition: Build check passed")
+    assert deployed["steps"] == steps_before, "no step is pasted into the case"
+    assert deployed["step_grounding"][0]["step"] == 2, "step numbers hold"
     assert not plan.happy_path[0].get("deploy_check_added"), "the offline harness needs no deployment"
     line = plan.regression_checklist[9]
-    assert "Deploy check first: confirm the environment runs merged commit 2824789" in line
+    assert "Precondition: Build check passed (top of plan)." in line
     assert line.startswith("🟡"), "the priority marker stays first"
     assert "regression_checklist:9" in fixed
     assert len(plan.regression_checklist) == len(V1["regression_checklist"])

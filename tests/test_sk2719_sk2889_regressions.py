@@ -164,17 +164,23 @@ async def test_each_case_checks_the_merge_commit_of_the_repo_it_exercises():
     assert {(t["repo"], t["commit"][:7], t["platform"]) for t in targets} == {
         (MOBILE_API, API_MERGE, "backend"), (IOS, IOS_MERGE_2719, "ios")}
     plan = _plan(PLAN1)
-    ev.enforce_deploy_precondition(plan, targets=targets, when="2026-10-23 18:27 UTC")
+    top: dict = {}
+    ev.enforce_deploy_precondition(plan, targets=targets, when="2026-10-23 18:27 UTC", top=top)
 
-    backend = plan.integration_tests[0]["steps"][0]          # backend_http, mobile-api files only
-    assert API_MERGE in backend and IOS_MERGE_2719 not in backend
+    # Rule Z: one check at the top names each repo's own merge commit; each
+    # case says which repos' builds it needs.
+    check = top["build_check"]["step"]
+    assert check.startswith("Build check: (1) ")
+    assert f"acme/mobile-api — confirm the deployed image contains merge commit {API_MERGE}" in check
+    assert "acme/ios-client (iOS app" in check and IOS_MERGE_2719 in check
+    backend = plan.integration_tests[0]["preconditions"]      # backend_http, mobile-api files only
+    assert backend.startswith("Precondition: Build check passed for mobile-api (")
     # mobile: cites only iOS files, but its own deploy step named the
-    # mobile-api deployment, so both builds are checked, the app's first.
-    app = plan.happy_path[0]["steps"][0]
-    assert app.startswith("Build check: (1) acme/ios-client (iOS app") and IOS_MERGE_2719 in app
-    assert f"(2) acme/mobile-api — confirm the deployed image contains merge commit {API_MERGE}" in app
-    both = plan.integration_tests[1]["steps"][0]              # API call + compare in the app
-    assert API_MERGE in both and IOS_MERGE_2719 in both
+    # mobile-api deployment, so both builds are checked.
+    app = plan.happy_path[0]["preconditions"]
+    assert app.startswith("Precondition: Build check passed for ios-client, mobile-api (")
+    both = plan.integration_tests[1]["preconditions"]         # API call + compare in the app
+    assert "ios-client" in both and "mobile-api" in both
 
 
 @pytest.mark.asyncio
@@ -186,14 +192,16 @@ async def test_the_deploy_check_accepts_any_build_that_contains_the_merge():
     plan = _plan(PLAN1)
     case = plan.integration_tests[0]
     assert "SK-2719-in-person-session-4a6351a" in _text(case), "the fixture carries the pinned tag"
-    ev.enforce_deploy_precondition(plan, targets=targets, when="2026-10-23 18:27 UTC")
-    step = case["steps"][0]
+    top: dict = {}
+    ev.enforce_deploy_precondition(plan, targets=targets, when="2026-10-23 18:27 UTC", top=top)
+    step = top["build_check"]["step"]
     assert f"compare/{API_MERGE}...<deployed commit>" in step
     assert "Any later build that contains it passes" in step
     assert "integ-west runs master-6447b19, which contains it" in step
     assert "acme/acme-deployments/mobile/mobile-api/integ-west/values.yaml" in step
     assert "SK-2719-in-person-session-4a6351a" not in _text(case)
-    assert case["deploy_check_replaced"] is True, "the model's own exact-tag step is replaced in place"
+    assert case["deploy_check_replaced"] is True, "the model's own exact-tag step is replaced by the plan's check"
+    assert not any("Deploy check" in st or "Build check:" in st for st in case["steps"])
 
     banner = ev.build_deployment_status(deploy_state, None, [t["repo"] for t in targets], "now", targets=targets)
     assert "integ-west" in banner["deployed_envs"]
@@ -209,17 +217,20 @@ async def test_ios_cases_check_the_installed_build_never_an_image():
     assert ios["app_version"] == {"version": "2.13.0", "build": "1", "bundle_ids": ["com.acme.mobile.integ"],
                                   "file": "Acme.xcodeproj/project.pbxproj"}
     plan = _plan(PLAN2)
-    ev.enforce_deploy_precondition(plan, targets=targets, when="now")
+    top: dict = {}
+    ev.enforce_deploy_precondition(plan, targets=targets, when="now", top=top)
     checked = [c for s in ("happy_path", "edge_cases", "integration_tests") for c in getattr(plan, s)
                if c.get("deploy_check_added") or c.get("deploy_check_replaced")]
     assert len(checked) >= 10
+    step = top["build_check"]["step"]
+    for needed in ("CFBundleShortVersionString must be at least 2.13.0", "CFBundleVersion",
+                   "plutil -p", "xcrun simctl listapps booted", "com.acme.mobile.integ",
+                   f"git merge-base --is-ancestor {IOS_MERGE_2889} HEAD"):
+        assert needed in step, needed
+    assert "ArgoCD app's image" not in step and "running pod" not in step
     for case in checked:
-        step = case["steps"][0]
-        for needed in ("CFBundleShortVersionString must be at least 2.13.0", "CFBundleVersion",
-                       "plutil -p", "xcrun simctl listapps booted", "com.acme.mobile.integ",
-                       f"git merge-base --is-ancestor {IOS_MERGE_2889} HEAD"):
-            assert needed in step, needed
-        assert "ArgoCD app's image" not in step and "running pod" not in step
+        assert case["preconditions"].startswith("Precondition: Build check passed for ios-client")
+        assert not any(isinstance(st, str) and "ArgoCD" in st for st in case["steps"])
 
     banner = ev.build_deployment_status(deploy_state, None, [IOS], "now", targets=targets)
     assert banner["warnings"] == [
@@ -365,9 +376,12 @@ async def test_sk2889_regenerated_has_ios_build_checks_and_only_runnable_cases()
     assert len(response["code_review_checks"]) == 2 and len(response["pre_existing_behaviour"]) == 1
     assert len(response["regression_low_confidence"]) == 1
     assert pk.fingerprint(response) == "6-3-5-13"
+    assert "CFBundleShortVersionString" in response["build_check"]["step"]
+    assert "ArgoCD app's image" not in response["build_check"]["step"]
     for c in response["happy_path"] + response["edge_cases"] + response["integration_tests"]:
         if c.get("deploy_check_added") or c.get("deploy_check_replaced"):
-            assert "CFBundleShortVersionString" in c["steps"][0] and "ArgoCD app's image" not in c["steps"][0]
+            assert c["preconditions"].startswith("Precondition: Build check passed")
+            assert not any(isinstance(st, str) and "ArgoCD app's image" in st for st in c["steps"])
     [target] = response["source_provenance"]["build_targets"]
     assert {k: target[k] for k in ("repo", "commit", "platform", "app_version")} == {
         "repo": IOS, "commit": "b485dad1be95a8662635e1a5a72dceb4d73f322d", "platform": "ios",
@@ -387,7 +401,8 @@ async def test_sk2719_regenerated_has_ci_per_repo_checks_and_error_variants():
     assert response["source_provenance"]["deployments_discovered"]["pipelines"] == {
         MOBILE_API: [f"{DEPLOYMENTS}/mobile/pipelines/mobile-api/values.yaml"]}
     integ = next(c for c in response["integration_tests"] if c["title"].startswith("In-person session endpoint"))
-    assert API_MERGE in integ["steps"][0] and IOS_MERGE_2719 not in integ["steps"][0]
+    assert integ["preconditions"].startswith("Precondition: Build check passed for mobile-api (")
+    assert API_MERGE in response["build_check"]["step"]
     assert "SK-2719-in-person-session-4a6351a" not in _text(integ)
     errors = next(c for c in response["integration_tests"] if c["title"].startswith("Documented downstream"))
     assert errors["steps"][-1].startswith("Error-body variants")

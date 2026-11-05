@@ -669,11 +669,13 @@ def verify_plan(test_plan, index: SourceIndex, *, shown: dict[str, set[int]] | N
     """
     outcomes: list[Outcome] = []
     blocked: list[str] = []
+    titles: dict[str, str] = {}
     for section in CHECKED_SECTIONS:
         for i, case in enumerate(getattr(test_plan, section, None) or []):
             if not isinstance(case, dict):
                 continue
             cid = f"{section}:{i}"
+            titles[cid] = (case.get("title") or "")[:140]
             outcomes += _verify_labels(cid, case, index)
             outcomes += _verify_elements(cid, case, index)
             outcomes += _verify_expected(cid, case, index, shown)
@@ -688,7 +690,10 @@ def verify_plan(test_plan, index: SourceIndex, *, shown: dict[str, set[int]] | N
         "downgraded": sum(1 for o in outcomes if o.status == "downgraded"),
         "unchecked": sum(1 for o in outcomes if o.status == "unchecked"),
         "by_kind": by_kind,
-        "downgraded_claims": [o.as_dict() for o in outcomes if o.status == "downgraded"][:60],
+        # With the case title: the plan's "Grounding re-read" line lists each
+        # downgrade, and raw body positions shift when cases move afterwards.
+        "downgraded_claims": [{**o.as_dict(), "title": titles.get(o.case_id, "")}
+                              for o in outcomes if o.status == "downgraded"][:60],
         "unchecked_claims": [o.as_dict() for o in outcomes if o.status == "unchecked"][:30],
         "needs_client_equivalent_token": blocked,
         "ids_are": "raw body positions before quarantine",

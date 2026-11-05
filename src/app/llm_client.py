@@ -1256,8 +1256,9 @@ not what runs now. Choose the check from the platform the case runs on:
 - Android app: versionName / versionCode (`adb shell dumpsys package <id>`),
   the same way; web app: the served bundle's commit or version.
 An app build has no image, ArgoCD app or pod: never send a tester to one.
-Downstream code writes this first step for every such case (and replaces one
-you wrote), so write the rest of the case as if it is there. If the sources
+Downstream code writes this check ONCE, at the top of the plan, and adds
+"Precondition: Build check passed" to every such case (rule Z); it removes a
+check step you wrote. Write the rest of the case as if the check passed. If the sources
 say it is not deployed — the deployment state shows NOT INCLUDED, or a note
 says "not deployed" — set `deployment_status` to deployed "no" with the
 statement and its source, and do not write cases that assume the deployment.
@@ -1491,6 +1492,119 @@ surface that can, or split per surface, and the reason is recorded. A case
 no surface can perform leaves the checklist.
 ❌ BAD: surface "mobile", step "Create a seller calculation supplying only state and county (leave the city blank)" — when the mobile app only takes a full street address picked from autocomplete, so no tester can omit the city there.
 ✅ GOOD: surface "web_ui", step "In the web app's property form, choose the state and county and leave City empty", `surface_inputs` citing the form file's City and County fields. Plus a mobile case only if the mobile app has a real route to that request shape, naming that route.
+
+**TRACING AND RESULT RULES Q–Z — every expected result comes from the path the
+code really takes, every case is something a tester can run and check, and
+every command is one the repo really has.** Downstream code re-reads the plan
+against the code before it is saved and marks or moves what breaks these
+rules; each downgrade is listed in the plan's "Grounding re-read" line.
+
+**Q. Trace the path, including the error path, before writing an Expected
+result.** Follow the execution from the trigger to what the user sees, hop by
+hop, and record it in `traced_path` (`<file>:<line>` per hop). For a failure
+case, trace the failure: which call throws or returns the failure, which
+try/catch, `runCatching`, `.catch`, `rescue` or error boundary handles it, and
+what that handler shows. Note any call that sits OUTSIDE the try/catch or
+`runCatching` that seems to protect it: an exception thrown there takes a
+different route (an error alert, a crash, a generic error screen instead of
+the blank or fallback state the guarded code produces). Never infer "returns
+null on failure" from a nullable return type: find the line that turns each
+failure into null, or note that nothing does and say what happens instead.
+When the code catches a failure on purpose (a missing database row caught and
+turned into null), do not expect a crash; name the code that produces the
+visible result.
+❌ BAD: expected "a blank screen, because loadDocument() returns null on failure" — when `val file = storage.open(id)` runs before the `runCatching { }` that wraps the parse, so a missing file throws and the screen's error handler shows the error alert.
+✅ GOOD: traced_path "DocumentViewModel.kt:41 storage.open(id) — outside the runCatching at :44 → throws FileNotFoundException → caught by the collector's catch at DocumentScreen.kt:88 → showErrorAlert()"; expected "The 'Something went wrong' alert appears (DocumentScreen.kt:90)".
+
+**R. A result only counts if something uses it.** When the change adds or
+changes a return value, status or error signal (Boolean, Result, error code,
+event, callback), find every caller and check each one uses it. If a caller
+ignores it, or the callers' error handling only catches exceptions while the
+function reports failure some other way (returns false, a Result.failure, an
+error code), that is not working behaviour: put it in `risks_and_gaps` with
+`kind: "unconsumed_result"` ("result returned but never consumed", naming the
+function and each caller that drops it), or under Acceptance gaps when the
+ticket asked for the failure to be handled. Before you write "X is reported",
+"X is surfaced", "X is logged", "X is shown" or "X is sent to <tool>", name the
+line that actually reports it in `signal_sources` (`{"claim", "line":
+"<file>:<line>"}`). No line, no claim.
+❌ BAD: "Upload failures are reported to Sentry" — when `upload()` now returns `false` on failure and its only caller (`SyncWorker.kt:52`) discards the return value; nothing calls `Sentry.capture*`.
+✅ GOOD: risks_and_gaps {"kind": "unconsumed_result", "gap": "upload() returns false on failure but SyncWorker.kt:52 ignores it", "impact": "a failed upload is silent", "evidence": "SyncWorker.kt:52"}.
+
+**S. Tests prove only what they assert.** Write "tests confirm Y" (or "covered
+by tests", "the unit tests verify") only when you can point to an assertion
+that checks Y, with its file and test name. A test that calls two functions
+does not confirm their order unless it verifies the order; a test that runs
+the error branch does not confirm the message unless it asserts it. Everything
+else is written as "from reading the code (`<file>:<line>`); no test asserts
+this".
+
+**T. "Before this change" comes from the old code.** Every "previously",
+"before this change", "used to" or "old behaviour" statement is read from the
+code at the TICKET BASE (the merge base of the ticket's first PR, given per
+repo in the BUILD/CI facts), or from the '-' lines of that first PR's diff.
+Quote the old line in `before_change` (`{"claim", "old_code", "source":
+"<file>:<line> at <base sha>"}`), for example the exact old file-naming code.
+Compare against the ticket's base, never against an intermediate commit of the
+same PRs. If you cannot see the old code, label the claim "Unverified —
+before-behaviour not read from the old code".
+
+**U. Graded cases test code the change touched.** A case in happy_path,
+edge_cases or integration_tests must exercise code changed in the ticket's
+diff, or code that directly calls it. Behaviour in untouched code goes in the
+"Pre-existing behaviour" notes (`pre_existing: true`, rule H) or in
+`risks_and_gaps`, never in a graded case. Never grade a case you yourself mark
+"unverified against shipped code" or "not verified against the shipped code":
+make it a `code_review_checks` entry instead. If the ticket's goal is only
+partly met because of code the change did not touch, that is an Acceptance gap
+(`requirement_check` partial or unmet), not a test case.
+
+**V. Cover what the change deliberately leaves out.** When the change narrows
+something — a filter, a skip, an exclusion, an allow-list, "only top-level",
+"only on success", "only for new records" — add a case or a `risks_and_gaps`
+entry with `kind: "left_out"` for what is left out: what stays behind (in
+`left_behind`), whether it matters for the ticket's goal (`matters_for_goal`,
+e.g. files left on the device across accounts when the goal is clearing user
+data), and how a tester can see it (`how_to_see`, e.g. the directory to list
+after sign-out). Cite the narrowing line in `evidence`.
+
+**W. The test data must be able to exist.** For every case, check that the
+data it needs can happen in the real product. Look at real formats in the
+code: URL shapes, ID formats, naming rules. If production URLs end in a GUID,
+two documents cannot naturally share a file name; if IDs are server-assigned,
+a tester cannot pick one. If the data cannot be produced through the product,
+the case is not UAT: set `reachable: false` with `suggested_test`, or write a
+`code_review_checks` entry naming the unit test that covers it (or should).
+Never leave a UAT case a tester cannot set up.
+
+**X. Every case is runnable and checkable.** Each case, and every
+regression-checklist line, has numbered steps, ONE observable Expected result,
+and `how_to_verify`: exactly where to look — the on-screen text, the file path,
+the log line, the dashboard or query. For things the UI does not show (crash
+reporting, analytics, background jobs, caches) say what evidence counts: "a new
+session file under cache/sentry/ after relaunch", "event `doc_opened` in
+Amplitude within 5 minutes", "no row in `uploads` for this id". When the
+expected UI is brief (a toast, snackbar or alert that disappears after a few
+seconds), say so in `expected` and tell the tester to record the screen.
+Regression lines use the form "<area> — at risk via <file>. Steps: 1. … 2. …
+Expected: <one observable result>. Check: <where to look>."
+
+**Y. Use the repo's real commands and identifiers.** Read the COMMAND FACTS
+(build config per repo, at the commit under test) before writing any command.
+Use the real package/app id of the variant the tester installs, including any
+per-variant suffix (`applicationIdSuffix`), the real build and test wrapper
+commands (`./gradlew :app:test<Variant>UnitTest`, never `gradle test`; `pnpm
+run <script>` only for scripts package.json defines), and real screen and menu
+names from the code. A command or identifier the COMMAND FACTS contradict is
+marked by code before save; one they do not cover is labelled unverified.
+
+**Z. Write shared steps once.** The build/version check is written once, by
+code, at the top of the plan; do not write it into any case. Other setup that
+several cases share (an account, a seeded record, a feature flag) is written
+once in `shared_preconditions` and each case says "Precondition: <id> passed"
+(for example "Precondition: S1 (signed in as the test agent) passed") instead
+of repeating it. A case's own `preconditions` hold only what is particular to
+that case.
 
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
@@ -2317,6 +2431,11 @@ reuses (rule A).
 **REGRESSION CHECKLIST RULES:**
 The regression checklist must contain ONLY runtime behaviors that can be manually tested.
 
+**Every line is a runnable mini-case (rule X):** "<area> — at risk via
+<file>[:<line>]. Steps: 1. … 2. … Expected: <one observable result>. Check:
+<where to look: on-screen text, file path, log line, dashboard>." A line with no
+steps, no expected result or no place to check is marked by code before save.
+
 **Every line cites what puts that area at risk.** Name the changed file, or the
 call site of changed code, that the area depends on, as `<path>[:<line>]` — a
 file in the PR diff, or code the change calls or that calls it ("— at risk via
@@ -2480,6 +2599,18 @@ Before generating each section, mentally sort your tests:
 ✅ Does any step need an orientation, device or entitlement the PLATFORM FACTS do not list for the device it runs on? → "Not applicable: <reason>" instead of a step, or name the device that supports it (N)
 ✅ Is every commit a case names either this ticket's implementing PR (by number) or labelled "build must be at or after <hash>"? → no other PR's commit is presented as this ticket's change; unverified ones are open questions (O)
 ✅ Does every action step name an input the case's surface really has (a field, picker or fallback in that client's code, declared in `surface_inputs`)? → if the server needs a shape this surface cannot send, move the case to a surface that can, use the real route, write it as backend_http, or split it per surface (P)
+
+**TRACING SELF-CHECK (rules Q–Z) — re-read each case against the code before submitting:**
+✅ Did you trace the path to what the user sees, including the error path, in `traced_path`? Is any call outside the try/catch or runCatching that seems to protect it? Does a "returns null" claim rest on the line that makes it null, not on a nullable type? (Q)
+✅ Does every "reported / surfaced / logged / shown / sent" claim name the reporting line in `signal_sources`? Does every caller of a changed return value or status use it? → if not, a `kind: "unconsumed_result"` risk, not a working case (R)
+✅ Does every "tests confirm" claim point at an assertion that checks exactly that? → otherwise "from reading the code (<file>:<line>); no test asserts this" (S)
+✅ Does every "before this change" claim quote the old line from the TICKET BASE in `before_change`? (T)
+✅ Does every graded case exercise code the diff changed or a direct caller of it? Is any graded case one you call "unverified against shipped code"? → pre-existing note, risk, code-review entry or Acceptance gap instead (U)
+✅ Does the change narrow anything (filter, skip, exclusion, only-X)? → a case or a `kind: "left_out"` risk says what is left behind, whether it matters for the goal, and how to see it (V)
+✅ Can the data each case needs really exist in the product (real URL/ID/name formats)? → if not, code review / unit test, not UAT (W)
+✅ Does every case and regression line have numbered steps, one observable expected result, and `how_to_verify`? Brief UI (toast, alert) → say so and ask for a screen recording (X)
+✅ Does every command, task, package/app id and script match the COMMAND FACTS, including the variant suffix? (Y)
+✅ Is shared setup written once (build check by code; the rest in `shared_preconditions`), and do cases refer to it instead of repeating it? (Z)
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
 
@@ -4417,6 +4548,7 @@ class OllamaClient(LLMClient):
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                     code_review_checks=test_plan_data.get("code_review_checks") or None,
+                    shared_preconditions=test_plan_data.get("shared_preconditions") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -4489,6 +4621,7 @@ class OllamaClient(LLMClient):
                     grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                     risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                     code_review_checks=test_plan_data.get("code_review_checks") or None,
+                    shared_preconditions=test_plan_data.get("shared_preconditions") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -4893,6 +5026,39 @@ TEST_CASE_SCHEMA = {
             "type": "string",
             "description": "With `reachable: false`: the unit test that would prove this branch — the file it belongs in, the input it builds by hand, and the assertion.",
         },
+        "how_to_verify": {
+            "type": "string",
+            "description": "Rule X. Exactly where the tester looks to tell pass from fail: the on-screen text, the file path, the log line, the dashboard or query. For what the UI does not show (crash reporting, analytics, background jobs) the evidence that counts, e.g. 'a new session file under cache/sentry/ after relaunch'. For brief UI (toast, alert), say to record the screen.",
+        },
+        "traced_path": {
+            "type": "string",
+            "description": "Rule Q. The path from the trigger to what the user sees, `<file>:<line>` per hop, including the error path: which call fails, which try/catch / runCatching / error handler catches it (or that the call sits outside it), and what that handler shows.",
+        },
+        "signal_sources": {
+            "type": "array",
+            "description": "Rule R. One entry per 'X is reported / surfaced / logged / shown / sent to <tool>' claim in this case: the line that does the reporting. A claim with no such line must not be made.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "line": {"type": "string", "description": "`<file>:<line>` of the call that reports it."},
+                },
+                "required": ["claim", "line"],
+            },
+        },
+        "before_change": {
+            "type": "array",
+            "description": "Rule T. One entry per 'previously / before this change / used to' statement: the old code quoted from the TICKET BASE (or the '-' lines of the ticket's first PR).",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "old_code": {"type": "string", "description": "The old line(s), verbatim."},
+                    "source": {"type": "string", "description": "`<file>:<line> at <base sha>`."},
+                },
+                "required": ["claim", "old_code", "source"],
+            },
+        },
         "pre_existing": {
             "type": "boolean",
             "description": "Rule H. True when the behaviour this case checks lives in code the diff did NOT touch. `expected` must then start with 'Pre-existing behaviour, not changed by this ticket:' and be derived from the current code on the platform operators use, so a failure is never read as a regression this ticket caused. Omit (or false) when the change touched the responsible code.",
@@ -4988,7 +5154,7 @@ TEST_CASE_SCHEMA = {
             "required": ["kind", "identifier", "verified"],
         },
     },
-    "required": ["title", "priority", "steps", "expected", "surface", "credentials", "expected_verified"],
+    "required": ["title", "priority", "steps", "expected", "surface", "credentials", "expected_verified", "how_to_verify"],
 }
 
 SUBMIT_TEST_PLAN_TOOL = {
@@ -5252,6 +5418,18 @@ SUBMIT_TEST_PLAN_TOOL = {
                     "required": ["title", "why_not_uat", "suggested_test"],
                 },
             },
+            "shared_preconditions": {
+                "type": "array",
+                "description": "Rule Z. Setup several cases share (an account, a seeded record, a flag), written once. Cases then say 'Precondition: <id> passed' instead of repeating it. Never the build check: code writes that once at the top.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "S1, S2, …"},
+                        "text": {"type": "string", "description": "The setup, with how to confirm it is in place."},
+                    },
+                    "required": ["id", "text"],
+                },
+            },
             "risks_and_gaps": {
                 "type": "array",
                 "description": "Gaps you noticed while reading the code that would break the ticket's STATED GOAL even though no test case covers them (see 'FLAG WHAT THE TICKET APPEARS TO HAVE MISSED'). Examples: config a consumer needs but nobody added, docs publishing the wrong endpoint, an env var added in one repo but not its mirror, a route registered but never exported. These are NOT test cases — a gap is not something QA can mark pass or fail — so never disguise one as a case or bury it in the regression checklist. Leave empty when you found none.",
@@ -5282,6 +5460,14 @@ SUBMIT_TEST_PLAN_TOOL = {
                             "type": "string",
                             "description": "Required when follow_up is true: a one-line title for the ticket to file.",
                         },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["unconsumed_result", "left_out", "other"],
+                            "description": "Rule R: `unconsumed_result` — a return value, status or error signal the change adds that a caller ignores (result returned but never consumed). Rule V: `left_out` — what a narrowing in the change (filter, skip, exclusion, only-X) leaves behind. Otherwise omit or `other`.",
+                        },
+                        "left_behind": {"type": "string", "description": "Rule V, with kind left_out: what stays behind (data, files, records, accounts)."},
+                        "matters_for_goal": {"type": "string", "description": "Rule V, with kind left_out: whether it matters for the ticket's goal, and why."},
+                        "how_to_see": {"type": "string", "description": "Rule V, with kind left_out: how a tester can see it (the directory to list, the screen, the query)."},
                     },
                     "required": ["gap", "impact", "evidence"],
                 },
@@ -5817,6 +6003,7 @@ class ClaudeClient(LLMClient):
                 grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                 code_review_checks=test_plan_data.get("code_review_checks") or None,
+                shared_preconditions=test_plan_data.get("shared_preconditions") or None,
                 cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -5919,6 +6106,7 @@ class ClaudeClient(LLMClient):
                 grounding_warnings=test_plan_data.get("grounding_warnings") or None,
                 risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                 code_review_checks=test_plan_data.get("code_review_checks") or None,
+                shared_preconditions=test_plan_data.get("shared_preconditions") or None,
                 cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,

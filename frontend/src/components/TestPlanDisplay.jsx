@@ -6,7 +6,7 @@
 import { Fragment, useState, useRef, useEffect, useMemo } from 'react'
 import {
   formatTestPlanAsMarkdown, formatTestPlanAsJira, CODE_REVIEW_BLURB, PRE_EXISTING_BLURB, LOW_CONFIDENCE_BLURB,
-  clientTokenParts, logicClaims,
+  clientTokenParts, logicClaims, groundingRereadLine, rereadDowngrades, RISK_KIND,
 } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 import { useTicketWalkthrough } from '../hooks/useTicketWalkthrough'
@@ -337,6 +337,7 @@ function formatSingleTestForClipboard(test) {
     test.steps.forEach((s, i) => lines.push(`${i + 1}. ${s}`))
   }
   if (test.expected) lines.push('', 'Expected:', String(test.expected))
+  if (test.how_to_verify) lines.push('', 'How to verify:', String(test.how_to_verify))
   logicClaims(test).forEach((c) => lines.push('', `Rule, from the code${c.source ? ` (${c.source})` : ''}: ${c.rule}`))
   if (test.expected_verified === true) {
     lines.push('', `Expected verified against: ${test.expected_source || 'source not cited'}`)
@@ -755,6 +756,12 @@ function TestCard({ test, section, index, checked, onToggle, expanded, onToggleE
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Expected</span>
             <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg)' }}>{renderInline(test.expected)}</div>
+          </>
+        )}
+        {typeof test.how_to_verify === 'string' && test.how_to_verify.trim() && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }}>Verify</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{renderInline(test.how_to_verify)}</div>
           </>
         )}
         {test.test_data && (
@@ -1231,14 +1238,49 @@ function EvidencePanel({ plan }) {
   const disagreements = plan?.evidence_notes?.disagreements || []
   const li = { fontSize: 'var(--t-sm)', color: 'var(--fg)' }
   const sub = { color: 'var(--fg-muted)', marginTop: 2 }
+  // Rule Z: the build check and shared setup, written once (src/app/evidence_checks.py,
+  // src/app/plan_recheck.py). Cases say "Precondition: … passed".
+  const buildCheck = plan?.build_check?.step ? plan.build_check : null
+  const shared = (Array.isArray(plan?.shared_preconditions) ? plan.shared_preconditions : [])
+    .filter((p) => p && typeof p.text === 'string' && p.text.trim())
+  // Rule 11: every downgrade the re-read and the rules Q–Z re-check made.
+  const rereadLine = groundingRereadLine(plan)
+  const downgrades = rereadDowngrades(plan)
   return (
     <>
+      {(buildCheck || shared.length > 0) && (
+        <EvidenceBlock
+          tone="warning"
+          icon="check"
+          title="Before any case (do these once)"
+          note={'Cases refer to these as "Precondition: Build check passed" or "Precondition: <id> passed" instead of repeating them.'}
+          summary={buildCheck ? buildCheck.summary : shared[0]?.text}
+          collapsible
+          defaultOpen={false}
+        >
+          {buildCheck && <li style={li}><strong>Build check</strong> — {renderInline(buildCheck.step)}</li>}
+          {shared.map((p) => <li key={p.id} style={li}><strong>{p.id}</strong> — {renderInline(p.text)}</li>)}
+        </EvidenceBlock>
+      )}
+      {downgrades.length > 0 && (
+        <EvidenceBlock
+          tone="warning"
+          icon="alert"
+          title={`Grounding re-read · ${downgrades.length} downgrade${downgrades.length === 1 ? '' : 's'}`}
+          note={rereadLine.split(' Downgrades: ')[0]}
+          summary={downgrades[0]}
+          collapsible
+          defaultOpen={false}
+        >
+          {downgrades.map((d, i) => <li key={i} style={li}>{d}</li>)}
+        </EvidenceBlock>
+      )}
       {warnings.length > 0 && (
         <EvidenceBlock
           tone={plan.deployment_status.status === 'not_deployed' ? 'danger' : 'warning'}
           icon="alert"
           title={plan.deployment_status.status === 'not_deployed' ? 'Not deployed' : 'Deployment'}
-          note="Every case that needs a deployed environment starts with a deploy check."
+          note="Every case that needs a deployed environment has the build check as a precondition (top of the plan)."
         >
           {warnings.map((w, i) => <li key={i} style={li}>{w}</li>)}
         </EvidenceBlock>
@@ -1329,12 +1371,15 @@ function RisksAndGapsPanel({ gaps }) {
       ) : (
         <FoldItem
           key={i}
-          headline={<>{g.follow_up && <strong>Follow-up, not counted: </strong>}{g.gap}</>}
+          headline={<>{g.follow_up && <strong>Follow-up, not counted: </strong>}{RISK_KIND[g.kind] && <strong>{RISK_KIND[g.kind]}: </strong>}{g.gap}</>}
         >
           {g.impact && <div style={sub}>Impact: {g.impact}</div>}
           {g.evidence && <div style={sub}>Evidence: <code style={{ fontSize: 11 }}>{g.evidence}</code></div>}
           {g.owner && <div style={sub}>Owner: {g.owner}</div>}
           {g.suggested_ticket && <div style={sub}>Suggested ticket: {g.suggested_ticket}</div>}
+          {g.left_behind && <div style={sub}>Left behind: {g.left_behind}</div>}
+          {g.matters_for_goal && <div style={sub}>Matters for the goal: {g.matters_for_goal}</div>}
+          {g.how_to_see && <div style={sub}>How to see it: {g.how_to_see}</div>}
         </FoldItem>
       )))}
     </EvidenceBlock>
