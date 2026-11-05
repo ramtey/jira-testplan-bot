@@ -10,7 +10,7 @@ Runner profiles are local configuration (``UAT_RUNNER_PROFILES_FILE``), keyed
 by profile name::
 
     {"mobile": {"repos": ["acme/mobile-app"], "surfaces": ["mobile"],
-                "agent": "uat-runner", "cwd": "/abs/path/to/mobile-app",
+                "agent": "qa-runner", "cwd": "/abs/path/to/mobile-app",
                 "settings": "/abs/path/to/allowlist.json",
                 "context": {"simulator_udid": "..."},
                 "http_allowed_hosts": ["api.integ.example.com"]}}
@@ -267,7 +267,7 @@ async def queue_run(db: AsyncIOMotorDatabase, *, ticket_key: str, trigger: str =
 def evidence_folder_name(ticket_key: str) -> str:
     """The ticket's folder under the evidence root: ``SK-2867`` -> ``sk2867``.
 
-    The uat-runner agent has always written to ``~/uat-walkthroughs/sk<number>``,
+    The qa-runner agent (formerly uat-runner) has always written to ``~/uat-walkthroughs/sk<number>``,
     and ~190 ticket folders use that form. Runs queued here used the raw key
     until 2026-11-03, so seven tickets ended up with both ``SK-2867/`` and
     ``sk2867/``. ``scripts/impact_metrics.py`` (``sk(\\d+)``) also never counted

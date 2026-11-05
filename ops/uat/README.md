@@ -73,7 +73,7 @@ Copy `runner-settings.template.json` to
 | Placeholder | Value |
 |---|---|
 | `__EVIDENCE_ROOT__` | Absolute path of the evidence directory, e.g. `/Users/you/uat-walkthroughs`. The rule becomes `Edit(//Users/you/uat-walkthroughs/**)`; the double slash is what makes it absolute. |
-| `__RUNNER_SCRIPTS__` | Absolute path of the runner agent's `scripts/` directory. |
+| `__RUNNER_SCRIPTS__` | Absolute path of the runner agent's `scripts/` directory, e.g. `~/.claude/agents/qa-runner/scripts`. |
 
 Add the MCP server names your team uses if they differ from `ios-simulator`
 and `playwright`, and any app-specific commands you are willing to run

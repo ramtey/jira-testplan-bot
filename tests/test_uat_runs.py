@@ -68,9 +68,9 @@ TARGETS = [
 ]
 
 PROFILES = {
-    "mobile": {"repos": [MOBILE], "surfaces": ["mobile"], "agent": "uat-runner",
+    "mobile": {"repos": [MOBILE], "surfaces": ["mobile"], "agent": "qa-runner",
                "cwd": "/tmp", "settings": "/tmp/s.json"},
-    "api": {"repos": [API], "surfaces": ["backend_http"], "agent": "uat-runner",
+    "api": {"repos": [API], "surfaces": ["backend_http"], "agent": "qa-runner",
             "cwd": "/tmp", "settings": "/tmp/s.json"},
 }
 
@@ -245,7 +245,7 @@ async def test_a_run_pins_the_live_plan_and_records_reasons_for_unrunnable_cases
         ("happy_path:1", "not_run", "no_runner_profile"),
         ("edge_cases:1", "not_run", "not_automatable"),
     ]
-    # The uat-runner's folder convention, sk<number>, not the raw key.
+    # The qa-runner's folder convention, sk<number>, not the raw key.
     assert run.evidence_dir.endswith(f"/sk1/run-{run.id}")
 
 
@@ -333,7 +333,7 @@ async def test_an_agent_pass_is_named_and_does_not_tick_the_checklist(db, monkey
     r = await api.post(f"/uat-runs/{run.id}/legs/mobile/results", json=_pass("happy_path:0"))
     assert r.json()["recorded"] is True
     row = await db["case_results"].find_one({"source": "runner"})
-    assert row["actor"] == {"kind": "agent", "name": "uat-runner", "leg": "mobile", "run_id": run.id}
+    assert row["actor"] == {"kind": "agent", "name": "qa-runner", "leg": "mobile", "run_id": run.id}
     assert row["review_approved"] is False and row["progress_key"] == run.progress_key
     view = await test_plan_progress_repository.get_progress(db, progress_key=run.progress_key)
     assert json.loads(view.checked_ids) == []

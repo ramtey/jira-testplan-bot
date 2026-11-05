@@ -6,7 +6,7 @@ reads live):
     jira_weekly.json       tickets entering testing, QA bounces, bugs filed — per week
     jira_monthly.json      the same per calendar month (the before-the-bot baseline)
     plan_wait_tickets.csv  Ready-to-Test -> first bot plan, per ticket (plan_wait_metrics.py)
-    ai_tested_weekly.csv   distinct tickets with a uat-runner run folder started per week
+    ai_tested_weekly.csv   distinct tickets with a qa-runner run folder started per week
     notes_weekly.csv       hand-written notes kept as they are; a week with none gets a
                            drafted line from that week's commits and watcher errors
     refresh_status.json    when this ran and whether every file refreshed
@@ -197,7 +197,7 @@ def main() -> int:
     p.add_argument("--monthly-since", required=True, help="YYYY-MM the monthly series starts")
     p.add_argument("--wait-since", required=True, help="YYYY-MM-DD for plan wait times")
     p.add_argument("--split", help="YYYY-MM-DD splitting plan waits into before/after")
-    p.add_argument("--runs-dir", help="folder of uat-runner run folders (skip AI-tested counts if unset)")
+    p.add_argument("--runs-dir", help="folder of qa-runner run folders (skip AI-tested counts if unset)")
     p.add_argument("--ready-status", default="Ready To Test")
     p.add_argument("--testing-status", default="In Testing")
     p.add_argument("--bounce-from", default="In Testing,Ready for UAT", type=lambda s: s.split(","))
