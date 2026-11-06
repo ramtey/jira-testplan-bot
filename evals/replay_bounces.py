@@ -557,8 +557,13 @@ async def phase_replay(rows, limit):
         except Exception as e:
             # Record the failure. A ticket we could not generate for is not a
             # ticket the plan missed — scoring must be able to tell them apart.
+            import traceback
             plan_path(key).write_text(json.dumps(
-                {"error": f"{type(e).__name__}: {e}"}, indent=2))
+                {"error": f"{type(e).__name__}: {e}",
+                 # Where it broke: a failure that only some runs hit (SK-2097,
+                 # 'str' object has no attribute 'get') is unfindable from the
+                 # message alone.
+                 "traceback": traceback.format_exc()}, indent=2))
             print(f"FAILED {type(e).__name__}: {str(e)[:90]}")
 
 
