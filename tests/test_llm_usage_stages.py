@@ -150,3 +150,42 @@ def test_timings_says_when_no_run_has_steps():
     with patch.object(timings_cmd, "_load", AsyncMock(return_value=runs)):
         result = CliRunner().invoke(app, ["timings"])
     assert "No per-step times recorded" in result.output
+
+
+def test_thinking_tokens_are_recorded_per_step_as_part_of_output():
+    async def run():
+        meter = llm_usage.begin()
+        with llm_usage.stage("generate"):
+            llm_usage.record("claude-opus-5", {**CALL, "output_tokens": 1000,
+                                               "output_tokens_details": {"thinking_tokens": 700}})
+        return meter
+
+    meter = asyncio.run(run())
+    step = llm_usage.stage_summary(meter)["generate"]
+    assert step["output_tokens"] == 1000 and step["thinking_tokens"] == 700
+    assert meter["thinking_tokens"] == 700
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize("effort, expected", [(None, None), ("medium", {"effort": "medium"})])
+@pytest.mark.asyncio
+async def test_generate_effort_reaches_the_plan_call_only_when_set(monkeypatch, effort, expected):
+    from src.app import llm_client as mod
+    monkeypatch.setattr(mod.settings, "anthropic_api_key", "sk-test", raising=False)
+    monkeypatch.setattr(mod.settings, "generate_effort", effort)
+    client = mod.ClaudeClient()
+    client.model = "claude-opus-5"
+    sent = []
+
+    async def capture(payload, **kw):
+        sent.append(payload)
+        raise _Stop
+
+    monkeypatch.setattr(client, "_post_messages", capture)
+    with pytest.raises(Exception):
+        await client.generate_test_plan(ticket_key="SK-1", summary="s", description="d", testing_context={})
+    assert sent, "the plan call was never made"
+    assert sent[0].get("output_config") == expected

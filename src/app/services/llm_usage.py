@@ -73,6 +73,7 @@ def _new_meter() -> dict:
         "output_tokens": 0,
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
+        "thinking_tokens": 0,
         "calls": 0,
         "cost_usd": Decimal("0"),
         "unpriced_models": [],
@@ -88,6 +89,7 @@ def _new_stage() -> dict:
         "output_tokens": 0,
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
+        "thinking_tokens": 0,
         "cost_usd": Decimal("0"),
     }
 
@@ -180,6 +182,12 @@ def record(model: str | None, usage: dict | None) -> None:
         if isinstance(value, int):
             meter[key] += value
             step[key] += value
+    # Part of output_tokens, not on top of it: how much of a step's output was
+    # thinking rather than the answer.
+    thinking = (usage.get("output_tokens_details") or {}).get("thinking_tokens")
+    if isinstance(thinking, int):
+        meter["thinking_tokens"] = meter.get("thinking_tokens", 0) + thinking
+        step["thinking_tokens"] += thinking
     cost = cost_of(model, usage, fast=usage.get("speed") == "fast")
     if cost is None:
         if model not in meter["unpriced_models"]:
@@ -216,6 +224,7 @@ def stage_summary(meter: dict | None = None) -> dict | None:
             "calls": s["calls"],
             "prompt_tokens": prompt_tokens(s),
             "output_tokens": s["output_tokens"],
+            "thinking_tokens": s["thinking_tokens"],
             "cost_usd": round(float(s["cost_usd"]), 4),
         }
         for name, s in meter["stages"].items()

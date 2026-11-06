@@ -172,6 +172,13 @@ class Settings(BaseSettings):
     # off, or the plan under test would be shown the answer it is scored on.
     regenerate_in_place: bool = True
 
+    # `output_config.effort` for the plan-writing call ("low", "medium",
+    # "high"), or unset for the model's default. The generate call is about
+    # half of every run and its time tracks its output tokens, thinking
+    # included (per-step timing, 2026-11-05: 2:28 at 13k, 6:53 at 36k).
+    # Unset until the replay eval shows a lower level keeps plan quality.
+    generate_effort: str | None = None
+
     # Figma (for design context - Phase 5)
     figma_token: str | None = None  # Figma personal access token (optional - enables design context)
     # A real file key the health check reads, to prove design context actually

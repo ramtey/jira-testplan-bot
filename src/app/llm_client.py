@@ -5959,6 +5959,8 @@ class ClaudeClient(LLMClient):
                     ],
                     "messages": [{"role": "user", "content": content}],
                     **self._temperature_kwargs(0.1),
+                    **(self._effort_kwargs(settings.generate_effort)
+                       if settings.generate_effort else {}),
                     "tools": [SUBMIT_TEST_PLAN_TOOL],
                     "tool_choice": {"type": "tool", "name": "submit_test_plan"},
                 },
@@ -6063,6 +6065,8 @@ class ClaudeClient(LLMClient):
                     ],
                     "messages": [{"role": "user", "content": content}],
                     **self._temperature_kwargs(0.1),
+                    **(self._effort_kwargs(settings.generate_effort)
+                       if settings.generate_effort else {}),
                     "tools": [SUBMIT_TEST_PLAN_TOOL],
                     "tool_choice": {"type": "tool", "name": "submit_test_plan"},
                 },
