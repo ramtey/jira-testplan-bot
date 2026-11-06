@@ -415,6 +415,7 @@ def context_of(plan):
 async def phase_replay(rows, limit):
     from src.app.jira_client import JiraClient
     from src.app.models import GenerateTestPlanRequest
+    from src.app.services import llm_usage
     from src.app.services.plan_service import (
         generate_single, prompt_payload, serialize_issue,
     )
@@ -543,6 +544,10 @@ async def phase_replay(rows, limit):
                 # `risk_profiles_configured` tells those apart.
                 "risk_profiles": matched,
                 "risk_profiles_configured": bool(held),
+                # Speed and cost of this generation, per step, so an arm that
+                # changes a setting (GENERATE_EFFORT) is compared on time too.
+                "generate_effort": settings.generate_effort,
+                "stages": llm_usage.stage_summary(),
             }
             plan_path(key).write_text(json.dumps(plan, indent=2, default=str))
             n = len(plan.get("happy_path") or []) + len(plan.get("edge_cases") or [])
