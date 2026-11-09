@@ -1516,6 +1516,34 @@ visible result.
 ❌ BAD: expected "a blank screen, because loadDocument() returns null on failure" — when `val file = storage.open(id)` runs before the `runCatching { }` that wraps the parse, so a missing file throws and the screen's error handler shows the error alert.
 ✅ GOOD: traced_path "DocumentViewModel.kt:41 storage.open(id) — outside the runCatching at :44 → throws FileNotFoundException → caught by the collector's catch at DocumentScreen.kt:88 → showErrorAlert()"; expected "The 'Something went wrong' alert appears (DocumentScreen.kt:90)".
 
+**Q, first rejecting check — exact error text comes from the whole request
+path, never from one function.** Before an Expected quotes an exact error
+message, HTTP status or error class, trace THAT input from the real entry
+point (the route handler, the exported function the harness calls, the
+screen's submit action) in execution order: input validation, parsing and
+encoding (URL parsing, JSON decode, normalisation), auth, allow-lists and
+policy checks, decryption or comparison, then the function the ticket
+changed. Quote the message of the FIRST check that rejects that input; a
+later check never runs, however relevant it looks. Record each trace in
+`rejection_traces` (`{"input", "traced_path": "<entry file:line> → <check
+passed file:line> → … → <rejecting check file:line>", "first_rejecting_check":
+"<file>:<line>", "message"}`).
+- Table-driven or repeated inputs: trace EVERY ROW separately and write one
+  `rejection_traces` entry per row. Rows of one table are often rejected by
+  different checks; never apply one message to the whole table — say in
+  Expected which rows get which message.
+- What must happen comes from the spec/AC (rejected, nothing sent, nothing
+  stored, no side effect), not from one implementation's wording. Always write
+  that outcome in `expected_outcome`; the exact text is a detail on top of it.
+- If you cannot trace the full path from the code you have, do not quote exact
+  text: assert the outcome in Expected, and add "exact message unverified —
+  record what is shown".
+Code re-checks every quoted message, status and error class before save: one
+with no per-input trace to the first rejecting check is downgraded to
+`expected_outcome` and listed in the re-read line.
+❌ BAD: a table of outer-field mutations, all expected to fail with the field-comparison message ("Outer field 'method' does not match…") — when the delivery entry point checks the HTTP-method allow-list before decrypting, so the method=PUT row is rejected with "HTTP method 'PUT' is not allowed" and the comparison never runs. Same for address rows like `[::1]` expected as "not a public address" when URL parsing rejects them first as "not a valid absolute URL".
+✅ GOOD: expected_outcome "Every row is rejected and no outbound request is sent"; Expected "Rows 1, 3: '<field> does not match…' (compare.js:144); row 2 (PUT): 'HTTP method 'PUT' is not allowed…' (method-policy.js:12, checked first at handler.js:30)"; one rejection_traces entry per row.
+
 **R. A result only counts if something uses it.** When the change adds or
 changes a return value, status or error signal (Boolean, Result, error code,
 event, callback), find every caller and check each one uses it. If a caller
@@ -2602,6 +2630,7 @@ Before generating each section, mentally sort your tests:
 
 **TRACING SELF-CHECK (rules Q–Z) — re-read each case against the code before submitting:**
 ✅ Did you trace the path to what the user sees, including the error path, in `traced_path`? Is any call outside the try/catch or runCatching that seems to protect it? Does a "returns null" claim rest on the line that makes it null, not on a nullable type? (Q)
+✅ Does any Expected quote an exact error message, status or error class? → traced from the real entry point in execution order to the FIRST check that rejects that input, one `rejection_traces` entry per input/table row, and `expected_outcome` says what the spec requires; if you cannot trace it, assert the outcome and mark the exact text unverified (Q, first rejecting check)
 ✅ Does every "reported / surfaced / logged / shown / sent" claim name the reporting line in `signal_sources`? Does every caller of a changed return value or status use it? → if not, a `kind: "unconsumed_result"` risk, not a working case (R)
 ✅ Does every "tests confirm" claim point at an assertion that checks exactly that? → otherwise "from reading the code (<file>:<line>); no test asserts this" (S)
 ✅ Does every "before this change" claim quote the old line from the TICKET BASE in `before_change`? (T)
@@ -5033,6 +5062,24 @@ TEST_CASE_SCHEMA = {
         "traced_path": {
             "type": "string",
             "description": "Rule Q. The path from the trigger to what the user sees, `<file>:<line>` per hop, including the error path: which call fails, which try/catch / runCatching / error handler catches it (or that the call sits outside it), and what that handler shows.",
+        },
+        "rejection_traces": {
+            "type": "array",
+            "description": "Rule Q, first rejecting check. Required when Expected quotes an exact error message, HTTP status or error class: one entry per input (per table row), traced from the real entry point in execution order to the first check that rejects it.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "The row or input this trace is for."},
+                    "traced_path": {"type": "string", "description": "Entry point → each check the input passes → the check that rejects it, `<file>:<line>` per hop."},
+                    "first_rejecting_check": {"type": "string", "description": "`<file>:<line>` of the check that rejects this input first."},
+                    "message": {"type": "string", "description": "The exact message, status or error class that check produces for this input."},
+                },
+                "required": ["input", "traced_path", "first_rejecting_check", "message"],
+            },
+        },
+        "expected_outcome": {
+            "type": "string",
+            "description": "Rule Q. What must happen per the spec/AC, without exact error wording (e.g. 'rejected, no outbound request sent, nothing delivered'). Used as the Expected when an exact message cannot be traced.",
         },
         "signal_sources": {
             "type": "array",

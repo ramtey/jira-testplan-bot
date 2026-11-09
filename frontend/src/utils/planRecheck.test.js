@@ -67,3 +67,20 @@ test('a re-check that could not run says so', () => {
   const line = groundingRereadLine({ source_provenance: { plan_recheck: { findings: [], not_run: ['the error-path re-check could not run (RuntimeError)'] } } })
   assert.match(line, /⚠️ Not checked: the error-path re-check could not run/)
 })
+
+test('rule Q first rejecting check: the per-row trace is shown, and its downgrade is listed', () => {
+  const traced = {
+    happy_path: [],
+    edge_cases: [{
+      title: 'Outer copies are rejected', priority: 'high', steps: ['Repeat with method PUT'],
+      expected: "Row 2 (PUT): \"HTTP method 'PUT' is not allowed\".", how_to_verify: 'Jest output',
+      rejection_traces: [{ input: 'outer method PUT', traced_path: 'handler.js:2 → method-policy.js:3', first_rejecting_check: 'method-policy.js:3', message: "HTTP method 'PUT' is not allowed" }],
+    }],
+    regression_checklist: [],
+    source_provenance: { plan_recheck: { findings: [{ section: 'edge_cases', title: 'IP literals', rule: 'Q', action: 'downgraded', reason: 'exact error text without a traced first rejecting check: [::1] is rejected first by url-encoding.js:3' }] } },
+  }
+  const md = formatTestPlanAsMarkdown(traced, TICKET)
+  assert.match(md, /\*\*First rejecting check, traced from the entry point:\*\*\n- outer method PUT: "HTTP method 'PUT' is not allowed" at `method-policy\.js:3` \(handler\.js:2 → method-policy\.js:3\)/)
+  assert.match(formatTestPlanAsJira(traced, TICKET), /First rejecting check, traced from the entry point:\n- outer method PUT/)
+  assert.match(groundingRereadLine(traced), /“IP literals” — downgraded: exact error text without a traced first rejecting check: \[::1\] is rejected first by url-encoding\.js:3 \(rule Q\)/)
+})

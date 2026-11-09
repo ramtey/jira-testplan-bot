@@ -32,7 +32,9 @@ not trust that the generator followed them. Two passes:
 
 ``recheck_before_save`` (sync; after the scope checks, before the grounding
 re-read and quarantine)
-    **S** "tests confirm" without an assertion, **R** "reported / logged /
+    **Q** an exact error message, status or error class with no traced path to
+    the first check that rejects that input — per table row
+    (``first_rejection.check_pinned_messages``), **S** "tests confirm" without an assertion, **R** "reported / logged /
     surfaced" without the reporting line, **X** a case or regression line a
     tester cannot run or check (and brief UI with no "record the screen"),
     **Y** commands and identifiers against the build config
@@ -456,6 +458,9 @@ TRACE_SYSTEM_PROMPT = """You re-check manual QA test cases against the code befo
 
 2. BEFORE-BEHAVIOUR (kind "before"). For a claim about how the code behaved before this change, read the file at the ticket base (read_file with at="base") or the '-' lines of the first PR's diff, and compare. Verdicts: "consistent" (quote the old line), "contradicted" (quote the old line that says otherwise), "unverifiable".
 
+3. FIRST REJECTING CHECK (items that list "Pinned error text"). The case quotes an exact error message, HTTP status or error class. Do not check it against the one function the case cites. Start at the real entry point a tester's input reaches (the handler, the exported function the harness or route calls) and walk it IN EXECUTION ORDER: input validation, parsing and encoding (URL parsing, JSON decode), auth, allow-lists and policy checks, decryption or comparison, then the target function. The first check that rejects this specific input decides the message; a later check never runs. For a table or repeated inputs, trace EACH ROW separately — different rows are often rejected by different checks — and return one entry per row in `rows`.
+   Verdicts: "consistent" only when every row's first rejection produces the quoted text (give `rows`); "contradicted" when an earlier check rejects some row first (say which row, which check, file:line, and the message it produces in `actual`); "unverifiable" when you could not read the entry point or a check on the way.
+
 Never judge whether the change is correct, only whether the case's claim matches the code. Every file:line you give must be one you read in this run. Call report_recheck exactly once, with one verdict per item id."""
 
 REPORT_RECHECK_TOOL = {
@@ -474,6 +479,20 @@ REPORT_RECHECK_TOOL = {
                         "traced_path": {"type": "string", "description": "The hops you read, file:line each."},
                         "actual": {"type": "string", "description": "For contradicted: what the user really sees (or what the old code really did), with the file:line that produces it."},
                         "reason": {"type": "string"},
+                        "rows": {
+                            "type": "array",
+                            "description": "Kind 3 only: one entry per input/row, traced from the entry point in execution order.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "input": {"type": "string"},
+                                    "traced_path": {"type": "string", "description": "Entry point → each check passed → the check that rejects, file:line per hop."},
+                                    "first_rejecting_check": {"type": "string", "description": "<file>:<line> of the check that rejects this input first."},
+                                    "message": {"type": "string", "description": "The exact message (or status / error class) that check produces for this input."},
+                                },
+                                "required": ["input", "traced_path", "first_rejecting_check", "message"],
+                            },
+                        },
                     },
                     "required": ["id", "verdict", "reason"],
                 },
@@ -485,15 +504,23 @@ REPORT_RECHECK_TOOL = {
 
 
 def collect_trace_items(test_plan: Any, protected_titles: frozenset[str] = frozenset()) -> list[dict]:
+    from .first_rejection import pinned, table_rows
+
     items: list[dict] = []
-    for section, i, case in _cases(test_plan):
-        if case.get("covered_by_unit_test"):
+    cases = list(_cases(test_plan, GRADED_SECTIONS + ("security_negative_tests",)))
+    pins = {id(c): pinned(c.get("expected") or "") for _, _, c in cases}
+    # A case that pins exact error text is traced first: a wrong message fails a correct product.
+    order = sorted(range(len(cases)), key=lambda k: (not pins[id(cases[k][2])], k))
+    for section, i, case in (cases[k] for k in order):
+        if case.get("covered_by_unit_test") or (section == "security_negative_tests" and not pins[id(case)]):
             continue
         text = " ".join([case.get("title") or "", case.get("expected") or "", " ".join(
             s for s in case.get("steps") or [] if isinstance(s, str))])
-        if _FAILURE_RE.search(text) and len([x for x in items if x["kind"] == "error_path"]) < MAX_ITEMS:
+        if (pins[id(case)] or _FAILURE_RE.search(text)) and \
+                len([x for x in items if x["kind"] == "error_path"]) < MAX_ITEMS:
             items.append({"id": f"{section}:{i}:q", "kind": "error_path", "section": section, "_case": case,
-                          "protected": _protected(case, protected_titles)})
+                          "protected": _protected(case, protected_titles),
+                          "pins": [p["text"] for p in pins[id(case)]], "rows": table_rows(case)})
         before = [b for b in case.get("before_change") or [] if isinstance(b, dict)]
         claims = [b.get("claim") or "" for b in before] or [
             s for s in _sentences(case.get("expected") or "") if _BEFORE_RE.search(s)]
@@ -515,6 +542,11 @@ def build_trace_message(items: list[dict], prs: list[dict], bases: dict[str, dic
                 f"{c.get('preconditions') or '-'}\nSteps:\n{steps}\nExpected: {c.get('expected')}\n"
                 f"Expected source (as the plan cites it): {c.get('expected_source') or '-'}\n"
                 f"Traced path (as the plan states it): {c.get('traced_path') or '(none given)'}")
+        if it.get("pins"):
+            head += "\nPinned error text (check kind 3): " + "; ".join(repr(p) for p in it["pins"])
+            head += f"\nTest data: {c.get('test_data') or '-'}"
+            if it.get("rows"):
+                head += f"\nTrace each of these {len(it['rows'])} rows separately."
         if it["kind"] == "before":
             head += "\nBefore-claims to check:\n" + "\n".join(f"  - {cl}" for cl in it["claims"])
             for b in it.get("before_change") or []:
@@ -547,11 +579,25 @@ def apply_trace_verdicts(items: list[dict], verdicts: dict[str, dict], report: d
             if v["verdict"] == "consistent" and it["kind"] == "error_path" and not (case.get("traced_path") or "").strip() \
                     and (v.get("traced_path") or "").strip():
                 case["traced_path"] = v["traced_path"].strip()
+            rows = [r for r in v.get("rows") or [] if isinstance(r, dict)]
+            if v["verdict"] == "consistent" and it.get("pins") and rows and not case.get("rejection_traces"):
+                # Per-row traces the critic read stand in for the ones the generator omitted;
+                # the save-time check still re-reads each against the code.
+                case["rejection_traces"] = [{k: r.get(k) for k in ("input", "traced_path",
+                                                                    "first_rejecting_check", "message")}
+                                            for r in rows]
             continue
         why = ((v.get("actual") or v.get("reason") or "").strip() or "the traced path shows a different result")[:300]
         exp = case.get("expected") or ""
         if it["kind"] == "error_path":
-            if "(rule Q)" not in exp:
+            outcome = (case.get("expected_outcome") or "").strip()
+            if it.get("pins") and outcome and "(rule Q)" not in exp:
+                # Pinned text the trace contradicts: keep the outcome the spec requires, not the wording.
+                from .first_rejection import OUTCOME_ONLY
+
+                case["expected"] = (f"{CONTRADICTED_MARKER.format(why=why)} {outcome} {OUTCOME_ONLY} "
+                                    f"(Original expected: {exp})")
+            elif "(rule Q)" not in exp:
                 case["expected"] = f"{CONTRADICTED_MARKER.format(why=why)} {exp}".strip()
             case["expected_verified"] = False
             case["trace_check"] = {"verdict": "contradicted", "actual": why,
@@ -639,11 +685,13 @@ async def recheck_before_routing(llm: Any, github: Any, test_plan: Any, dev_info
 
 def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dict] | None = None,
                         index=None) -> None:
-    """Rules S, R, X, Y, Z — code only, marks in place."""
+    """Rules S, R, Q (first rejecting check), X, Y, Z — code only, marks in place."""
     from .build_commands import check_commands
+    from .first_rejection import check_pinned_messages
 
     check_test_claims(test_plan, report)
     check_signal_claims(test_plan, report, index)
+    check_pinned_messages(test_plan, report, index)
     check_runnable(test_plan, report)
     for f in check_commands(test_plan, repo_evidence):
         report.setdefault("findings", []).append({

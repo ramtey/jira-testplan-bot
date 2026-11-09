@@ -294,9 +294,32 @@ const formatLogicClaims = (test, jira = false) => logicClaims(test)
 // Rule X: where the tester looks to tell pass from fail.
 const howToVerify = (test) => (typeof test?.how_to_verify === 'string' ? test.how_to_verify.trim() : '')
 
+// Rule Q, first rejecting check (src/app/first_rejection.py): the path each
+// input takes from the entry point to the check that rejects it first. It is
+// the citation for any exact error text in Expected.
+export const rejectionTraces = (test) =>
+  (Array.isArray(test?.rejection_traces) ? test.rejection_traces : [])
+    .filter((t) => t && typeof t === 'object' && (t.first_rejecting_check || t.traced_path))
+    .map((t) => ({
+      input: String(t.input || 'input'),
+      path: String(t.traced_path || ''),
+      check: String(t.first_rejecting_check || ''),
+      message: String(t.message || ''),
+    }))
+
+export const formatRejectionTraces = (test, jira = false) => {
+  const traces = rejectionTraces(test)
+  if (traces.length === 0) return ''
+  const code = (x) => (jira ? x : `\`${x}\``)
+  const head = jira ? 'First rejecting check, traced from the entry point:' : '**First rejecting check, traced from the entry point:**'
+  return `${head}\n` + traces.map((t) =>
+    `- ${t.input}: ${t.message ? `"${t.message}"` : 'rejected'}${t.check ? ` at ${code(t.check)}` : ''}${t.path ? ` (${t.path})` : ''}`,
+  ).join('\n') + '\n\n'
+}
+
 const formatExpectedVerification = (test) =>
   (howToVerify(test) ? `**How to verify:** ${howToVerify(test)}\n\n` : '') +
-  formatLogicClaims(test) + formatExpectedVerificationOnly(test)
+  formatLogicClaims(test) + formatRejectionTraces(test) + formatExpectedVerificationOnly(test)
 
 const formatExpectedVerificationOnly = (test) => {
   if (test.expected_verified === true) {
@@ -1375,7 +1398,7 @@ const formatSurfaceJira = (test) => {
 
 const formatExpectedVerificationJira = (test) =>
   (howToVerify(test) ? `How to verify: ${howToVerify(test)}\n\n` : '') +
-  formatLogicClaims(test, true) + formatExpectedVerificationJiraOnly(test)
+  formatLogicClaims(test, true) + formatRejectionTraces(test, true) + formatExpectedVerificationJiraOnly(test)
 
 const formatExpectedVerificationJiraOnly = (test) => {
   if (test.expected_verified === true) {
