@@ -48,7 +48,7 @@ TOOLS = [
             "Search code across the organization (or one repo) with GitHub code search. "
             "Returns matching files with short snippets. Use specific identifiers, route "
             "fragments or phrases (e.g. `signerToken`, `SigningMethod InPerson`), not prose. "
-            f"At most {MAX_SEARCHES} searches per run."
+            "Searches count against the budget in your instructions."
         ),
         "input_schema": {
             "type": "object",
@@ -65,7 +65,7 @@ TOOLS = [
         "description": (
             "Read a file, line-numbered. Files the ticket's PRs changed are read at the PR's "
             f"commit; others at the default branch. Up to {READ_MAX_LINES} lines per call; "
-            f"at most {MAX_READS} reads per run."
+            "reads count against the budget in your instructions."
         ),
         "input_schema": {
             "type": "object",
@@ -133,13 +133,30 @@ _SYSTEM_TAIL = """
 
 Work like an engineer: search for specific identifiers, read the files that matter, follow one hop further when it pays. Prefer reading over guessing. Skip anything the diffs already show.
 
+Your budget is {max_searches} searches and {max_reads} reads. Batch them: every turn, make ALL the searches and reads you already know you need, 3 to 5 calls at once, rather than one or two at a time. Calls in one turn run in parallel; each extra turn costs time. Only wait for a result when the next call depends on it.
+
 Finish by calling report_findings once. Cite only files you read, with real line numbers. Report nothing rather than something you did not verify; an empty list is a valid answer. Every finding must say what a tester should check."""
 
-SYSTEMS = {name: _SYSTEM_HEAD + jobs + _SYSTEM_TAIL for name, jobs in _JOBS.items()}
-SYSTEM = SYSTEMS["siblings"]  # the single-explorer brief, kept for callers that use it
+#: Per explorer; two run in parallel. Searches are 5 each so both explorers
+#: together fit GitHub's ~10 code searches a minute (process-wide limiter in
+#: github_client.py): at 7 each, batched searches queued for the next window
+#: and added a minute or more. Reads use the contents API, which has no such
+#: limit, so they took the difference.
+PER_EXPLORER = {"max_turns": 10, "max_searches": 5, "max_reads": 12}
 
-#: Per explorer; two run in parallel.
-PER_EXPLORER = {"max_turns": 10, "max_searches": 7, "max_reads": 10}
+
+def _tail(max_searches: int, max_reads: int) -> str:
+    return (_SYSTEM_TAIL.replace("{max_searches}", str(max_searches))
+            .replace("{max_reads}", str(max_reads)))
+
+
+# The budget is stated in the prompt so the explorer can plan its batches. It
+# made 1-2 calls a turn before (2026-11-09: 17-22 turns, ~2:10, on four
+# tickets), running both explorers into the turn cap one search at a time.
+SYSTEMS = {name: _SYSTEM_HEAD + jobs + _tail(PER_EXPLORER["max_searches"], PER_EXPLORER["max_reads"])
+           for name, jobs in _JOBS.items()}
+# The single-explorer brief, kept for callers that use it, with its own budget.
+SYSTEM = _SYSTEM_HEAD + _JOBS["siblings"] + _tail(MAX_SEARCHES, MAX_READS)
 
 
 def _orgs(pull_requests: list[dict]) -> list[str]:
