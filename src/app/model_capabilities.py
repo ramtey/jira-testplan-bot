@@ -44,6 +44,17 @@ _FIRST_THINKING_BY_DEFAULT = {"opus": (5, 0), "sonnet": (5, 0), "fable": (5, 0),
 _FAST_MODE_VERSIONS = {("opus", (4, 8)), ("opus", (5, 0)), ("opus", (5, 5))}
 FAST_MODE_BETA = "fast-mode-2026-02-01"
 
+# Last version in each family that accepts a forced `tool_choice` ("tool" or
+# "any"). Opus 5.5, Sonnet 5.5 and Fable 5.1 return a 400 on it; the request
+# then has to ask for the tool in words (llm_client._unforce_tool_choice).
+_LAST_FORCED_TOOL_VERSION = {"opus": (5, 0), "sonnet": (5, 0), "haiku": (4, 5),
+                             "fable": (5, 0), "mythos": (5, 0)}
+
+# Where a safety-classifier refusal (stop_reason "refusal") is retried. Opus
+# 5.5 added a biology classifier to the cyber one, and the plan's security
+# negative tests read like attack steps; a false positive must not fail a plan.
+REFUSAL_FALLBACK_MODEL = "claude-opus-5"
+
 
 def parse_model(model: str | None) -> tuple[str, tuple[int, int]] | None:
     """('opus', (4, 5)) for 'claude-opus-4-5-20251101'. None if unrecognised.
@@ -81,6 +92,20 @@ def supports_effort(model: str | None) -> bool:
 def supports_fast_mode(model: str | None) -> bool:
     """True where `speed: "fast"` is accepted. Same model, faster output."""
     return parse_model(model) in _FAST_MODE_VERSIONS
+
+
+def supports_forced_tool_choice(model: str | None) -> bool:
+    """True where `tool_choice` {"type": "tool"|"any"} is accepted.
+
+    Unrecognised ids answer False: asking for the tool in words works on every
+    model, while a forced choice is a 400 on the newer ones.
+    """
+    parsed = parse_model(model)
+    if parsed is None:
+        return False
+    family, version = parsed
+    ceiling = _LAST_FORCED_TOOL_VERSION.get(family)
+    return ceiling is not None and version <= ceiling
 
 
 def thinks_by_default(model: str | None) -> bool:

@@ -41,9 +41,11 @@ from .diff_budget import (
 from .model_capabilities import (
     DEFAULT_CLAUDE_MODEL,
     FAST_MODE_BETA,
+    REFUSAL_FALLBACK_MODEL,
     output_budget,
     supports_effort,
     supports_fast_mode,
+    supports_forced_tool_choice,
     supports_temperature,
 )
 from .models import BugAnalysis, TestPlan
@@ -2761,6 +2763,57 @@ class LLMError(Exception):
         """
         super().__init__(message)
         self.error_type = error_type
+
+
+def _forced_tool_name(payload: dict) -> str | None:
+    """The tool a request forces, or None. ``any`` forces the first tool."""
+    choice = payload.get("tool_choice") or {}
+    if choice.get("type") == "tool":
+        return choice.get("name")
+    if choice.get("type") == "any":
+        tools = payload.get("tools") or []
+        return tools[0].get("name") if tools else None
+    return None
+
+
+def _unforce_tool_choice(payload: dict, name: str) -> dict:
+    """The same request with ``auto`` and the tool asked for in words.
+
+    The instruction goes at the END of the last user message, after any cache
+    breakpoint, so the cached prefix is the same with or without it.
+    """
+    ask = {"type": "text", "text": f"Give your answer by calling the `{name}` tool. "
+                                   "Do not answer in text."}
+    messages = [dict(m) for m in payload.get("messages") or []]
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            content = m.get("content")
+            blocks = ([{"type": "text", "text": content}] if isinstance(content, str)
+                      else list(content or []))
+            m["content"] = blocks + [ask]
+            break
+    else:
+        messages.append({"role": "user", "content": [ask]})
+    return {**payload, "messages": messages, "tool_choice": {"type": "auto"}}
+
+
+def _needs_tool_nudge(message: dict, name: str) -> bool:
+    """True when a response ended normally without calling ``name``."""
+    if message.get("stop_reason") in ("max_tokens", "refusal"):
+        return False
+    return not any(b.get("type") == "tool_use" and b.get("name") == name
+                   for b in message.get("content") or [])
+
+
+def _for_model(payload: dict, model: str) -> dict:
+    """The original request, re-targeted. Speed and effort are re-decided by
+    the transport and the model's own defaults; thinking blocks from another
+    model in a tool loop's history are dropped by the API, unbilled."""
+    out = {k: v for k, v in payload.items() if k != "speed"}
+    out["model"] = model
+    if not supports_effort(model):
+        out.pop("output_config", None)
+    return out
 
 
 class LLMClient(ABC):
@@ -5867,8 +5920,10 @@ class ClaudeClient(LLMClient):
     # a failed "Generate test plan". 502/503/504 are upstream-gateway hiccups
     # that behave the same way.
     _RETRYABLE_STATUSES = frozenset({502, 503, 504, 529})
-    # Set once a 429 shows the org has no fast-mode quota (see _post_messages).
-    _fast_mode_unavailable = False
+    # Models whose fast-mode quota a 429 showed to be 0 (see _post_messages).
+    # Per model: the quota is per model, and Opus 5's is 0 while Opus 5.5's is
+    # not, so one refusal fallback to Opus 5 must not slow every 5.5 call.
+    _fast_mode_unavailable: frozenset = frozenset()
     _MAX_ATTEMPTS = 4
     _BACKOFF_SECONDS = 1.0
 
@@ -5941,6 +5996,52 @@ class ClaudeClient(LLMClient):
         retry_timeouts: bool = False,
         stream: bool = False,
     ) -> dict:
+        """POST /v1/messages, with the model differences every caller shares.
+
+        Two things the newer models need that no caller should have to know:
+
+        * **Forced tool use.** Every structured call here forces its report
+          tool. Opus 5.5 rejects a forced ``tool_choice`` with a 400, so on
+          such a model the call asks for the tool in words, with ``auto``, and
+          is nudged once if it answers in prose instead. A response that still
+          has no call goes back to the caller unchanged, which already treats a
+          missing tool call as a failure — never as an empty answer.
+        * **Safety-classifier refusals.** ``stop_reason: "refusal"`` comes back
+          as a 200. It is retried once, whole, on REFUSAL_FALLBACK_MODEL with
+          the original request shape, rather than surfacing as a failed plan.
+        """
+        kw = {"timeout": timeout, "retry_timeouts": retry_timeouts, "stream": stream}
+        forced = _forced_tool_name(payload)
+        sent = payload
+        if forced and not supports_forced_tool_choice(payload.get("model")):
+            sent = _unforce_tool_choice(payload, forced)
+        message = await self._post_messages_once(sent, **kw)
+        if forced and sent is not payload and _needs_tool_nudge(message, forced):
+            import logging
+            logging.getLogger(__name__).warning(
+                "%s answered without calling %s; asking once more", payload.get("model"), forced)
+            sent = {**sent, "messages": list(sent["messages"]) + [
+                {"role": "assistant", "content": message.get("content") or []},
+                {"role": "user", "content": f"Call the `{forced}` tool now with your answer. "
+                                            "Do not answer in text."}]}
+            message = await self._post_messages_once(sent, **kw)
+        if message.get("stop_reason") == "refusal" and payload.get("model") != REFUSAL_FALLBACK_MODEL:
+            import logging
+            logging.getLogger(__name__).warning(
+                "%s declined the request (%s); retrying on %s", payload.get("model"),
+                (message.get("stop_details") or {}).get("category"), REFUSAL_FALLBACK_MODEL)
+            message = await self._post_messages(
+                _for_model(payload, REFUSAL_FALLBACK_MODEL), **kw)
+        return message
+
+    async def _post_messages_once(
+        self,
+        payload: dict,
+        *,
+        timeout: float,
+        retry_timeouts: bool = False,
+        stream: bool = False,
+    ) -> dict:
         """POST /v1/messages, retrying transient failures, and return the JSON.
 
         Every Claude call in this class goes through here so an overloaded API
@@ -5963,7 +6064,7 @@ class ClaudeClient(LLMClient):
         """
         fast = (
             settings.claude_fast_mode
-            and not ClaudeClient._fast_mode_unavailable
+            and payload.get("model") not in ClaudeClient._fast_mode_unavailable
             and supports_fast_mode(payload.get("model"))
         )
         for attempt in range(self._MAX_ATTEMPTS):
@@ -6011,10 +6112,11 @@ class ClaudeClient(LLMClient):
                     # asking for it until the process restarts.
                     import logging
                     if e.response.headers.get("anthropic-fast-input-tokens-limit") == "0":
-                        ClaudeClient._fast_mode_unavailable = True
+                        ClaudeClient._fast_mode_unavailable = (
+                            ClaudeClient._fast_mode_unavailable | {payload.get("model")})
                         logging.getLogger(__name__).warning(
-                            "fast mode: this org's quota is 0; using standard speed "
-                            "until restart. Ask an Anthropic org admin to enable it."
+                            "fast mode: this org's quota for %s is 0; using standard speed "
+                            "until restart.", payload.get("model")
                         )
                     else:
                         logging.getLogger(__name__).warning(

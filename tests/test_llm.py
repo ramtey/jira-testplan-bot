@@ -529,7 +529,7 @@ class TestFastMode:
 
         monkeypatch.setattr(mod.settings, "anthropic_api_key", "sk-test", raising=False)
         monkeypatch.setattr(mod.settings, "claude_fast_mode", True, raising=False)
-        monkeypatch.setattr(mod.ClaudeClient, "_fast_mode_unavailable", False)
+        monkeypatch.setattr(mod.ClaudeClient, "_fast_mode_unavailable", frozenset())
         monkeypatch.setattr(mod.asyncio, "sleep", AsyncMock())
         sent = []
 
@@ -614,3 +614,90 @@ def test_a_plan_split_over_several_tool_calls_is_merged():
     assert merged["happy_path"] == [{"title": "a"}]
     assert merged["how_to_see_it"] == {"summary": "x"}  # first non-empty wins
     assert _plan_tool_input([{"type": "text", "text": "hi"}]) is None
+
+
+class TestNewerModelRequestShape:
+    """Opus 5.5 rejects forced tool use and can decline on a safety classifier;
+    _post_messages absorbs both so no caller has to know."""
+
+    @staticmethod
+    def _client(monkeypatch, replies):
+        from src.app import llm_client as mod
+        monkeypatch.setattr(mod.settings, "anthropic_api_key", "sk-test", raising=False)
+        client = ClaudeClient()
+        sent = []
+
+        async def once(payload, **kw):
+            sent.append(payload)
+            return replies[len(sent) - 1]
+
+        monkeypatch.setattr(client, "_post_messages_once", once)
+        return client, sent
+
+    FORCED = {"model": "claude-opus-5-5", "tools": [{"name": "report"}],
+              "tool_choice": {"type": "tool", "name": "report"},
+              "messages": [{"role": "user", "content": [
+                  {"type": "text", "text": "ctx", "cache_control": {"type": "ephemeral"}}]}]}
+    CALLED = {"stop_reason": "tool_use", "content": [{"type": "tool_use", "name": "report", "input": {}}]}
+    PROSE = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "here you go"}]}
+
+    @pytest.mark.asyncio
+    async def test_forced_choice_becomes_auto_with_the_tool_asked_for_after_the_cached_prefix(self, monkeypatch):
+        client, sent = self._client(monkeypatch, [self.CALLED])
+        out = await client._post_messages(dict(self.FORCED), timeout=10)
+        assert out is self.CALLED and len(sent) == 1
+        assert sent[0]["tool_choice"] == {"type": "auto"}
+        blocks = sent[0]["messages"][0]["content"]
+        assert blocks[0] == self.FORCED["messages"][0]["content"][0], "the cached block is untouched"
+        assert "`report`" in blocks[-1]["text"]
+        assert self.FORCED["tool_choice"]["type"] == "tool", "the caller's payload is not mutated"
+
+    @pytest.mark.asyncio
+    async def test_a_prose_answer_is_nudged_once_append_only(self, monkeypatch):
+        client, sent = self._client(monkeypatch, [self.PROSE, self.CALLED])
+        out = await client._post_messages(dict(self.FORCED), timeout=10)
+        assert out is self.CALLED and len(sent) == 2
+        first, second = sent[0]["messages"], sent[1]["messages"]
+        assert second[:len(first)] == first, "the retry only appends"
+        assert second[-2] == {"role": "assistant", "content": self.PROSE["content"]}
+
+    @pytest.mark.asyncio
+    async def test_a_second_prose_answer_goes_back_to_the_caller(self, monkeypatch):
+        client, sent = self._client(monkeypatch, [self.PROSE, self.PROSE])
+        out = await client._post_messages(dict(self.FORCED), timeout=10)
+        assert len(sent) == 2 and out is self.PROSE
+
+    @pytest.mark.asyncio
+    async def test_a_model_that_accepts_forced_choice_keeps_it(self, monkeypatch):
+        client, sent = self._client(monkeypatch, [self.CALLED])
+        await client._post_messages({**self.FORCED, "model": "claude-opus-5"}, timeout=10)
+        assert sent[0]["tool_choice"] == {"type": "tool", "name": "report"}
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_is_retried_once_on_the_fallback_model_with_the_original_shape(self, monkeypatch):
+        refusal = {"stop_reason": "refusal", "stop_details": {"category": "cyber"}, "content": []}
+        client, sent = self._client(monkeypatch, [refusal, self.CALLED])
+        out = await client._post_messages(dict(self.FORCED), timeout=10)
+        assert out is self.CALLED
+        assert sent[1]["model"] == "claude-opus-5"
+        assert sent[1]["tool_choice"] == {"type": "tool", "name": "report"}
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_on_the_fallback_model_is_returned_not_looped(self, monkeypatch):
+        refusal = {"stop_reason": "refusal", "content": []}
+        client, sent = self._client(monkeypatch, [refusal, refusal])
+        out = await client._post_messages(dict(self.FORCED), timeout=10)
+        assert len(sent) == 2 and out["stop_reason"] == "refusal"
+
+
+def test_zero_fast_quota_on_one_model_leaves_the_others_fast(monkeypatch):
+    from src.app import llm_client as mod
+    monkeypatch.setattr(mod.ClaudeClient, "_fast_mode_unavailable", frozenset({"claude-opus-5"}))
+    assert "claude-opus-5-5" not in mod.ClaudeClient._fast_mode_unavailable
+
+
+def test_forced_tool_support_by_model():
+    from src.app.model_capabilities import supports_forced_tool_choice as f
+    assert f("claude-opus-5") and f("claude-opus-4-8")
+    assert not f("claude-opus-5-5") and not f("claude-sonnet-5-5") and not f("claude-fable-5-1")
+    assert not f("something-unknown")
