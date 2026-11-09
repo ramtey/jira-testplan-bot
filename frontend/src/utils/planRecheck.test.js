@@ -56,7 +56,7 @@ test('each case says how to verify it', () => {
 test('the grounding re-read line lists every downgrade, not only a count', () => {
   const line = groundingRereadLine(plan)
   assert.match(line, /^Grounding re-read: 5 code claim\(s\) re-read against the cited files, 1 downgraded to unverified\./)
-  assert.match(line, /Re-check against the code \(rules Q–Z\): 1 downgraded or marked, 1 moved out of the graded cases, 1 fixed in place\./)
+  assert.match(line, /Re-check against the code \(rules Q–AG\): 1 downgraded or marked, 1 moved out of the graded cases, 1 fixed in place\./)
   assert.match(line, /\(1\) “Sign-out clears the document cache” — expected: the cited line does not say it/)
   assert.match(line, /\(2\) “Missing file shows a blank screen” — downgraded: expected result contradicts the traced error path: an error alert shows \(rule Q\)/)
   assert.match(line, /\(3\) “Theme toggles” — moved out of the graded cases: graded case on untouched code \(rule U\)/)

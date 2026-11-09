@@ -361,6 +361,36 @@ const sharedPreconditions = (plan) =>
   (Array.isArray(plan?.shared_preconditions) ? plan.shared_preconditions : [])
     .filter((p) => p && typeof p.text === 'string' && p.text.trim())
 
+// Rule AD (src/app/deployed_env_checks.py): what sits in front of the service
+// and how it runs per environment. Counts and limits in cases rest on it.
+const str = (v) => (typeof v === 'string' ? v.trim() : (v == null ? '' : String(v).trim()))
+export const environmentTopologyLines = (plan) =>
+  (Array.isArray(plan?.environment_topology) ? plan.environment_topology : [])
+    .filter((t) => t && str(t.environment))
+    .map((t) => {
+      const parts = []
+      if (str(t.in_front)) parts.push(`${str(t.in_front)} (${str(t.in_front_source) || 'unverified'})`)
+      parts.push(`${str(t.replicas) || 'unknown'} pod(s) (${str(t.replicas_source) || 'unverified'})`)
+      const states = (Array.isArray(t.state) ? t.state : []).filter((x) => x && str(x.what))
+        .map((x) => `${str(x.what)}: ${(str(x.scope) || 'unknown').replace('_', ' ')}${str(x.source) ? ` (${str(x.source)})` : ''}`)
+      if (states.length > 0) parts.push(states.join(', '))
+      return `${str(t.environment)} — ${parts.join('; ')}`
+    })
+
+const TOPOLOGY_NOTE = 'Requests pass through these layers before the service; counts and limits in the cases are per this layout.'
+
+const formatTopologyMarkdown = (plan) => {
+  const lines = environmentTopologyLines(plan)
+  if (lines.length === 0) return ''
+  return `## 🌐 In Front of the Service\n\n${lines.map((l) => `- ${l}`).join('\n')}\n\n_${TOPOLOGY_NOTE}_\n\n`
+}
+
+const formatTopologyJira = (plan) => {
+  const lines = environmentTopologyLines(plan)
+  if (lines.length === 0) return ''
+  return `🌐 IN FRONT OF THE SERVICE\n\n${lines.map((l) => `  • ${l}`).join('\n')}\n\n${TOPOLOGY_NOTE}\n\n`
+}
+
 const formatSharedStepsMarkdown = (plan) => {
   const check = plan?.build_check
   const shared = sharedPreconditions(plan)
@@ -382,7 +412,7 @@ const formatSharedStepsJira = (plan) => {
 }
 
 const formatEvidenceMarkdown = (plan) => {
-  let md = formatSharedStepsMarkdown(plan)
+  let md = formatSharedStepsMarkdown(plan) + formatTopologyMarkdown(plan)
   const warnings = deploymentWarnings(plan)
   if (warnings.length > 0) {
     const notDeployed = plan.deployment_status.status === 'not_deployed'
@@ -425,7 +455,7 @@ const formatEvidenceMarkdown = (plan) => {
 }
 
 const formatEvidenceJira = (plan) => {
-  let jira = formatSharedStepsJira(plan)
+  let jira = formatSharedStepsJira(plan) + formatTopologyJira(plan)
   const warnings = deploymentWarnings(plan)
   if (warnings.length > 0) {
     jira += plan.deployment_status.status === 'not_deployed' ? '🚫 NOT DEPLOYED\n\n' : '🚢 DEPLOYMENT\n\n'
@@ -768,7 +798,7 @@ const formatProvenanceMarkdown = (plan) => {
 
 // How many code claims the re-read before save checked and downgraded
 // (source_provenance.grounding_verification, src/app/grounding_verification.py).
-// Plus the re-check against rules Q–Z (source_provenance.plan_recheck,
+// Plus the re-check against rules Q–AG (source_provenance.plan_recheck,
 // src/app/plan_recheck.py), and every downgrade one by one: a count alone
 // told nobody which expected results not to trust.
 const MAX_LISTED_DOWNGRADES = 40
@@ -811,7 +841,7 @@ export const groundingRereadLine = (plan) => {
     const down = findings.filter((f) => f.action === 'downgraded' || f.action === 'marked').length
     const moved = findings.filter((f) => f.action === 'moved').length
     const fixed = findings.filter((f) => f.action === 'fixed').length
-    let s = `${hasV ? 'Re-check' : 'Grounding re-read'} against the code (rules Q–Z): ${down} downgraded or marked, ${moved} moved out of the graded cases, ${fixed} fixed in place.`
+    let s = `${hasV ? 'Re-check' : 'Grounding re-read'} against the code (rules Q–AG): ${down} downgraded or marked, ${moved} moved out of the graded cases, ${fixed} fixed in place.`
     if (Array.isArray(r.not_run) && r.not_run.length > 0) s += ` ⚠️ Not checked: ${r.not_run.join('; ')}.`
     sentences.push(s)
   }

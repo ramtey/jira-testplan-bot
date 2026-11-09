@@ -39,7 +39,8 @@ MAX_READS = 18
 READ_MAX_LINES = 300
 MAX_FINDINGS = 14
 
-FINDING_KINDS = ["sibling_entry_point", "caller", "guard", "config", "reachability", "other"]
+FINDING_KINDS = ["sibling_entry_point", "caller", "guard", "config", "reachability", "route",
+                 "response_shape", "deployment_layout", "other"]
 
 TOOLS = [
     {
@@ -119,10 +120,12 @@ _JOBS = {
     "siblings": """1. Sibling entry points: other routes, handlers, UI actions or services that perform the SAME capability the ticket changes (another endpoint that mints the same token, another screen that offers the same action). Check whether each enforces the ticket's new rule. A sibling that does not is the most important thing you can find.
 2. Guards and preconditions on the changed path that live in unchanged code: status checks, permission checks, feature flags, ordering rules. Note their exact responses (status codes, messages).
 3. Callers and consumers of what the PRs changed, where behaviour visible to a user depends on them.
-4. Reachability: for each condition a changed branch handles (an error type or message, a regex alternative, a defensive guard, an input format), check whether anything in the repo, or the framework as this repo uses it, actually produces it. Search for the producer: the code that raises that error, sends that input, or loads things the way the branch assumes. Report a branch nothing reaches today as kind "reachability" with what you searched, so the plan covers it with a unit test instead of a UI case.""",
+4. Reachability: for each condition a changed branch handles (an error type or message, a regex alternative, a defensive guard, an input format), check whether anything in the repo, or the framework as this repo uses it, actually produces it. Search for the producer: the code that raises that error, sends that input, or loads things the way the branch assumes. Report a branch nothing reaches today as kind "reachability" with what you searched, so the plan covers it with a unit test instead of a UI case.
+5. Routes and responses: for each endpoint a tester would call, the line that registers its method and path in the router (and the mount prefix, if the router is mounted under one) as kind "route", and the controller, serializer or schema that builds its response, with the fields it returns, as kind "response_shape". Plans have used paths named after the feature instead of the registered one, and read fields the response never contains.""",
     "downstream": """1. Downstream flows in the packages the PRs did NOT change: what happens after the changed action hands off (for example the signer app after a hand-off, a worker after an enqueue). Visit every package listed in the brief at least once: the unchanged ones, and the changed ones (marked *) for their files the PRs did NOT touch, since a flow usually continues through untouched files of a package the PR edited elsewhere (signer-sdk's signature dialog after a change to its redirect helper). Search each for the feature's key terms and read what you find. Report steps a user meets there (consent or identity checks, confirmations, redirects).
 2. The authentication setup the changed routes rely on (auth middleware, token validation, startup or policy config): what a caller with no token, a malformed token or a token for another account actually gets back, with the status code and the line that decides it.
-3. Preconditions in UNCHANGED code that decide whether the changed control appears or works at all: ordering or grouping rules, states in which the control is hidden on purpose, and pre-existing behaviour a tester could misread as a regression. Find where the state that decides whether the control is shown is computed (stores, reducers, selectors, view models), not only the component that renders it.""",
+3. Preconditions in UNCHANGED code that decide whether the changed control appears or works at all: ordering or grouping rules, states in which the control is hidden on purpose, and pre-existing behaviour a tester could misread as a regression. Find where the state that decides whether the control is shown is computed (stores, reducers, selectors, view models), not only the component that renders it.
+4. Deployment layout of the changed service, when the ticket touches an HTTP service: what sits in front of it (CDN, load balancer, ingress, proxy config), how many pods or instances run per environment (helm values, k8s manifests, terraform, autoscaling), and whether state behind any limit or count (rate limiter, cache, session) is in memory per pod or shared (Redis, a database). Report as kind "deployment_layout" with the file and line.""",
 }
 
 _SYSTEM_HEAD = """You explore a codebase before a QA test plan is written, to find what the pull requests' diffs do not show. Another explorer covers other ground in parallel; stay on yours.

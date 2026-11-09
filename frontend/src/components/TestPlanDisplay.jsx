@@ -6,7 +6,7 @@
 import { Fragment, useState, useRef, useEffect, useMemo } from 'react'
 import {
   formatTestPlanAsMarkdown, formatTestPlanAsJira, CODE_REVIEW_BLURB, PRE_EXISTING_BLURB, LOW_CONFIDENCE_BLURB,
-  clientTokenParts, logicClaims, groundingRereadLine, rereadDowngrades, RISK_KIND, rejectionTraces,
+  clientTokenParts, logicClaims, groundingRereadLine, rereadDowngrades, RISK_KIND, rejectionTraces, environmentTopologyLines,
 } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 import { useTicketWalkthrough } from '../hooks/useTicketWalkthrough'
@@ -1245,7 +1245,9 @@ function EvidencePanel({ plan }) {
   const buildCheck = plan?.build_check?.step ? plan.build_check : null
   const shared = (Array.isArray(plan?.shared_preconditions) ? plan.shared_preconditions : [])
     .filter((p) => p && typeof p.text === 'string' && p.text.trim())
-  // Rule 11: every downgrade the re-read and the rules Q–Z re-check made.
+  // Rule AD: what sits in front of the service, per environment.
+  const topology = environmentTopologyLines(plan)
+  // Rule 11: every downgrade the re-read and the rules Q–AG re-check made.
   const rereadLine = groundingRereadLine(plan)
   const downgrades = rereadDowngrades(plan)
   return (
@@ -1262,6 +1264,19 @@ function EvidencePanel({ plan }) {
         >
           {buildCheck && <li style={li}><strong>Build check</strong> — {renderInline(buildCheck.step)}</li>}
           {shared.map((p) => <li key={p.id} style={li}><strong>{p.id}</strong> — {renderInline(p.text)}</li>)}
+        </EvidenceBlock>
+      )}
+      {topology.length > 0 && (
+        <EvidenceBlock
+          tone="info"
+          icon="layers"
+          title="In front of the service"
+          note="Requests pass through these layers before the service; counts and limits in the cases are per this layout."
+          summary={topology[0]}
+          collapsible
+          defaultOpen={false}
+        >
+          {topology.map((t, i) => <li key={i} style={li}>{renderInline(t)}</li>)}
         </EvidenceBlock>
       )}
       {downgrades.length > 0 && (

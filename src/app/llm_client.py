@@ -1634,6 +1634,101 @@ once in `shared_preconditions` and each case says "Precondition: <id> passed"
 of repeating it. A case's own `preconditions` hold only what is particular to
 that case.
 
+**DEPLOYED-ENVIRONMENT RULES AA–AH — every expected result is something a
+tester can see when running against the deployed environment.** A request a
+tester sends passes through a CDN, a load balancer, an ingress and the
+framework's router before the handler runs, and lands on one of several pods.
+A plan that reasons only from the handler predicts results the tester never
+sees. Downstream code re-checks AA–AG before the plan is saved and marks or
+moves what breaks them; each downgrade is listed in the plan's "Grounding
+re-read" line.
+
+**AA. Every route comes from the router at the commit under test.** Every
+method and path a step calls is read from the code that registers it (the
+router file, the controller's route attribute, the mount prefix the app adds),
+at the commit under test. Record each in `route_sources` (`{"method", "path",
+"source": "<file>:<line>", "mount_source": "<file>:<line> of the prefix, if
+any"}`). Never guess a path, never build one from the feature's name, never
+reuse one from an older plan, a ticket or a doc without finding it in the
+router. If you cannot find the registration, the step is unverified: say
+"route not found in the router — confirm the path before running".
+❌ BAD: "POST /split-and-assign/process" because the feature is called split-and-assign — when the router registers `router.post('/split/process', …)` (routes/split.ts:14).
+✅ GOOD: step "POST /split/process", route_sources [{"method": "POST", "path": "/split/process", "source": "src/routes/split.ts:14", "mount_source": "src/app.ts:42"}].
+
+**AB. Every response value a step reads comes from the code that builds the
+response.** Before a step reads a field from a response ("the response
+contains the token", "body.status is active"), find the controller,
+serializer, DTO or schema that builds that response and check the field is in
+it. Record each in `response_fields` (`{"field", "source": "<file>:<line>",
+"returned": true}`). If the API does not return it, set `returned: false` and
+say in `alternate_check` how to check it some other way (the write call's
+response, a database query, a log line, a unit test), or say in the step that
+it is "not visible from outside".
+❌ BAD: "GET /user/:id/firebase returns the stored token" — when the controller returns only `{ registered: true }` (controllers/user.ts:88).
+✅ GOOD: response_fields [{"field": "token", "source": "controllers/user.ts:88", "returned": false, "alternate_check": "check the PUT response at controllers/user.ts:61, or the users.firebase_token column"}].
+
+**AC. Malformed URLs are rejected at the edge, so never pin their status.**
+For an input that is a malformed URL — `.`/`..` segments (plain or encoded,
+`%2e%2e`), encoded slashes or backslashes (`%2F`, `%5C`), double encoding
+(`%252F`), other encoded or unicode characters in the path, double slashes, or
+a very long path — the CDN, load balancer, ingress or the framework's router
+may normalise, redirect or reject the request before the handler sees it. The
+expected result is: "Rejected before reaching downstream services, with no
+downstream call; any 4xx status from the CDN, router or handler passes —
+record the status and which layer answered." Do NOT name one status code
+unless code you read proves the request reaches the handler unchanged in that
+environment; then cite it in `reaches_handler_source`. The handler's exact
+status for that input belongs in a unit or integration test that calls the
+handler directly: name it (`unit_test_ref`) or add a `code_review_checks`
+entry with the `suggested_test`.
+❌ BAD: "GET /user/%2e%2e returns 400 'invalid id' from the new validation" — on integ, Cloudflare and the router resolve the dot segment and the request gets 404 before the handler runs.
+✅ GOOD: expected "Rejected before reaching downstream services, with no call to the user service; any 4xx passes (record which)"; plus code_review_checks {"title": "validateUserId rejects '..' with 400", "suggested_test": "user.controller.test.ts: call the handler with id '..', expect 400"}.
+
+**AD. Counts and limits follow how each environment is deployed.** Before a
+case states a count, limit or threshold (a rate limit, a quota, a retry
+count, a cache lifetime), find what sits in front of the service and how it
+runs in each target environment: CDN, load balancer, ingress, how many pods
+or instances serve it (helm values, k8s manifests, terraform, autoscaling
+min/max), and whether the state behind the limit is in memory per pod or
+shared (Redis, a database). Record it once in the top-level
+`environment_topology`, each item citing the file it came from. If the state
+is per pod, the limit is per pod: give the range a tester will actually see
+(one pod's limit up to that limit times the number of pods) and say why. If
+you cannot read the layout, say the count is unverified and ask the tester to
+record the number that passes before the first rejection.
+❌ BAD: "the 301st request in a minute gets 429" — when integ runs 3 pods, each with its own in-memory limiter, so about 900 get through.
+✅ GOOD: expected "Requests are limited per pod: integ runs 3 replicas (deploy/values-integ.yaml:12) and the limiter is in memory (src/middleware/rateLimit.ts:8), so the first 429 comes after 300–900 requests in a minute; record the count."
+
+**AE. Say how each case can be checked.** Set `verification_channel` on every
+case: `outside_http` (an HTTP response), `outside_ui` (what the app shows),
+`outside_cli` (a command's output),
+`logs_or_traces` (a log line, trace or metric — name the query in
+`how_to_verify`), or `unit_test_only` (no tester can see it; name the test file
+and test name in `unit_test_ref`). A case only a unit test can check is not a
+UAT case: cover it with that test, or put it in `code_review_checks`.
+
+**AF. List the accounts and data each case needs.** In `required_setup`, list
+every account and record the case needs that a default test login does not
+give (a second tenant, a deactivated user, an account with no subscriber, a
+record in a given state), each with `status` (`exists` when you confirmed it,
+`unconfirmed`, `missing`) and `how_to_get`. If any is not confirmed, set
+`blocked_by_setup` to what is missing and who can provide it, and still write
+the steps as they will run once it exists. Never write steps that presuppose
+data nobody has confirmed.
+
+**AG. Every case is complete, and claims about the repo come from its files.**
+Never output a case with an empty title or no steps; if you cannot write steps
+for it, it is not a case (make it a `code_review_checks` entry or a risk).
+Never write that a repo has, or lacks, scripts, tests or a build step without
+reading its package.json or build files (the COMMAND FACTS list them); cite
+the file.
+
+**AH. Check the plan against AA–AG before you submit.** Re-read every case:
+route cited, response fields cited, malformed URLs not pinned to one status,
+counts matched to the environment layout, a verification channel set, setup
+listed, title and steps present. Fix the case, or flag it in the case itself
+("Unverified — …"), before submitting.
+
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
 "X remains unaffected" / "no regressions in Y" / "existing behaviour is
@@ -2640,6 +2735,15 @@ Before generating each section, mentally sort your tests:
 ✅ Does every case and regression line have numbered steps, one observable expected result, and `how_to_verify`? Brief UI (toast, alert) → say so and ask for a screen recording (X)
 ✅ Does every command, task, package/app id and script match the COMMAND FACTS, including the variant suffix? (Y)
 ✅ Is shared setup written once (build check by code; the rest in `shared_preconditions`), and do cases refer to it instead of repeating it? (Z)
+
+**DEPLOYED-ENVIRONMENT SELF-CHECK (rules AA–AH) — would a tester on the deployed environment see this?**
+✅ Is every method and path read from the router at the commit under test and cited in `route_sources`? (AA)
+✅ Is every response field a step reads cited in `response_fields` from the code that builds the response — and if the API does not return it, is there an `alternate_check` or "not visible from outside"? (AB)
+✅ Does any case send a malformed URL (dot segments, encoded slashes, encoded/unicode characters, double slashes, very long paths)? → expected is "rejected before downstream, no downstream call, any 4xx passes"; the handler's exact status goes to a unit test or `code_review_checks` (AC)
+✅ Does any case state a count or limit? → `environment_topology` says the pods and whether the state is per pod or shared, and a per-pod limit is given as the range a tester sees (AD)
+✅ Does every case have a `verification_channel`, and does every `unit_test_only` case name its test? (AE)
+✅ Does every case list the accounts and data it needs in `required_setup`, and is a case whose setup is not confirmed marked `blocked_by_setup`? (AF)
+✅ Does every case have a title and steps? Is every claim about a repo's scripts or tests read from its package.json or build files? (AG)
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
 
@@ -4578,6 +4682,7 @@ class OllamaClient(LLMClient):
                     risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                     code_review_checks=test_plan_data.get("code_review_checks") or None,
                     shared_preconditions=test_plan_data.get("shared_preconditions") or None,
+                    environment_topology=test_plan_data.get("environment_topology") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -4651,6 +4756,7 @@ class OllamaClient(LLMClient):
                     risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                     code_review_checks=test_plan_data.get("code_review_checks") or None,
                     shared_preconditions=test_plan_data.get("shared_preconditions") or None,
+                    environment_topology=test_plan_data.get("environment_topology") or None,
                     cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                     uat_complexity=test_plan_data.get("uat_complexity") or None,
                     how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -5093,6 +5199,60 @@ TEST_CASE_SCHEMA = {
                 "required": ["claim", "line"],
             },
         },
+        "route_sources": {
+            "type": "array",
+            "description": "Rule AA. One entry per method + path a step calls on the service under test, read from the code that registers the route at the commit under test. A step calling a path with no entry here is marked unverified before save.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string", "description": "GET, POST, …"},
+                    "path": {"type": "string", "description": "The registered path pattern, with the mount prefix, e.g. '/user/:id/firebase'."},
+                    "source": {"type": "string", "description": "`<file>:<line>` of the route registration."},
+                    "mount_source": {"type": "string", "description": "`<file>:<line>` where the router is mounted under a prefix, when it is."},
+                },
+                "required": ["method", "path", "source"],
+            },
+        },
+        "response_fields": {
+            "type": "array",
+            "description": "Rule AB. One entry per response value a step or the expected result reads, checked against the controller / serializer / schema that builds the response.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string", "description": "The field as the response names it."},
+                    "source": {"type": "string", "description": "`<file>:<line>` of the code that builds the response."},
+                    "returned": {"type": "boolean", "description": "False when the API does not return this value."},
+                    "alternate_check": {"type": "string", "description": "With returned false: how else to check it (the write response, a query, a log, a unit test)."},
+                },
+                "required": ["field", "source", "returned"],
+            },
+        },
+        "reaches_handler_source": {
+            "type": "string",
+            "description": "Rule AC. Only for a malformed-URL case that pins one status code: the `<file>:<line>` (edge, ingress or router config) proving the request reaches the handler unchanged in this environment. Without it, the status is not pinned.",
+        },
+        "verification_channel": {
+            "type": "string",
+            "enum": ["outside_http", "outside_ui", "outside_cli", "logs_or_traces", "unit_test_only"],
+            "description": "Rule AE. How the result can be checked: from an HTTP response, from what the app shows, from a command's output, from logs/traces/metrics (name the query in how_to_verify), or only by a unit test (name it in unit_test_ref).",
+        },
+        "required_setup": {
+            "type": "array",
+            "description": "Rule AF. Accounts and data this case needs beyond a default test login (a second tenant, a deactivated user, an account with no subscriber, a record in a given state).",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "need": {"type": "string"},
+                    "status": {"type": "string", "enum": ["exists", "unconfirmed", "missing"]},
+                    "how_to_get": {"type": "string", "description": "Who provides it, or how to create it."},
+                },
+                "required": ["need", "status"],
+            },
+        },
+        "blocked_by_setup": {
+            "type": "string",
+            "description": "Rule AF. Set when a `required_setup` item is not confirmed to exist: what is missing and who can provide it. The case stays in the plan, marked blocked.",
+        },
         "before_change": {
             "type": "array",
             "description": "Rule T. One entry per 'previously / before this change / used to' statement: the old code quoted from the TICKET BASE (or the '-' lines of the ticket's first PR).",
@@ -5463,6 +5623,34 @@ SUBMIT_TEST_PLAN_TOOL = {
                         "code_refs": {"type": "array", "items": {"type": "string"}, "description": "`<file>:<line>` for the branch."},
                     },
                     "required": ["title", "why_not_uat", "suggested_test"],
+                },
+            },
+            "environment_topology": {
+                "type": "array",
+                "description": "Rule AD. What sits in front of the service and how it runs, per target environment, each fact citing the file it came from. Counts and limits in cases are based on this.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "environment": {"type": "string", "description": "e.g. 'integ'"},
+                        "in_front": {"type": "string", "description": "The request path before the service, e.g. 'Cloudflare → ALB → nginx ingress → express router'."},
+                        "in_front_source": {"type": "string", "description": "`<file>:<line>` or 'unverified'."},
+                        "replicas": {"type": "string", "description": "Pods/instances serving it, e.g. '3' or '2-6 (HPA)'; 'unknown' when not read."},
+                        "replicas_source": {"type": "string", "description": "`<file>:<line>` or 'unverified'."},
+                        "state": {
+                            "type": "array",
+                            "description": "State behind counts and limits (rate limiter, cache, session, queue).",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "what": {"type": "string", "description": "e.g. 'rate limiter'"},
+                                    "scope": {"type": "string", "enum": ["per_pod", "shared", "unknown"]},
+                                    "source": {"type": "string", "description": "`<file>:<line>`"},
+                                },
+                                "required": ["what", "scope"],
+                            },
+                        },
+                    },
+                    "required": ["environment", "replicas"],
                 },
             },
             "shared_preconditions": {
@@ -6053,6 +6241,7 @@ class ClaudeClient(LLMClient):
                 risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                 code_review_checks=test_plan_data.get("code_review_checks") or None,
                 shared_preconditions=test_plan_data.get("shared_preconditions") or None,
+                environment_topology=test_plan_data.get("environment_topology") or None,
                 cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,
@@ -6158,6 +6347,7 @@ class ClaudeClient(LLMClient):
                 risks_and_gaps=test_plan_data.get("risks_and_gaps") or None,
                 code_review_checks=test_plan_data.get("code_review_checks") or None,
                 shared_preconditions=test_plan_data.get("shared_preconditions") or None,
+                environment_topology=test_plan_data.get("environment_topology") or None,
                 cross_project_summary=test_plan_data.get("cross_project_summary") or None,
                 uat_complexity=test_plan_data.get("uat_complexity") or None,
                 how_to_see_it=test_plan_data.get("how_to_see_it") or None,

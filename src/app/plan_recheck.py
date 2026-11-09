@@ -297,7 +297,8 @@ def hoist_shared_preconditions(test_plan: Any, report: dict, min_cases: int = 2)
         if not isinstance(pre, str):
             continue
         for s in _sentences(pre):
-            if s.startswith("Precondition:") or BUILD_CHECK_PRECONDITION in s or len(s) < 25:
+            if (s.startswith("Precondition:") or BUILD_CHECK_PRECONDITION in s or len(s) < 25
+                    or "(rule AF)" in s):
                 continue
             seen.setdefault(_norm(s), []).append((case, s))
     hoisted = 0
@@ -666,7 +667,7 @@ async def recheck_before_routing(llm: Any, github: Any, test_plan: Any, dev_info
                                  index=None, exploration: dict | None = None,
                                  bases: dict[str, dict] | None = None,
                                  protected_titles: frozenset[str] = frozenset()) -> list[str]:
-    """Rules U, Q, T. Returns gap sentences for checks that could not run."""
+    """Rules U, Q, T, then AG, AE, AC, AA, AB. Returns gap sentences for checks that could not run."""
     gaps = []
     try:
         report["scope"] = await check_graded_scope(test_plan, dev_infos, report, index=index, github=github,
@@ -678,6 +679,16 @@ async def recheck_before_routing(llm: Any, github: Any, test_plan: Any, dev_info
                                  protected_titles=protected_titles)
     if gap:
         gaps.append(gap)
+    # Rules AA–AG that move or rewrite cases (src/app/deployed_env_checks.py):
+    # after the trace critic, so its marks land on the generator's text.
+    from . import deployed_env_checks
+
+    try:
+        await deployed_env_checks.recheck_before_routing(test_plan, report, index=index, github=github,
+                                                         protected_titles=protected_titles)
+    except Exception as e:
+        logger.warning("rules AA-AG check failed: %s", e, exc_info=True)
+        gaps.append(f"the deployed-environment re-check (rules AA–AG) could not run ({type(e).__name__})")
     if gaps:
         report.setdefault("not_run", []).extend(gaps)
     return gaps
@@ -685,7 +696,7 @@ async def recheck_before_routing(llm: Any, github: Any, test_plan: Any, dev_info
 
 def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dict] | None = None,
                         index=None) -> None:
-    """Rules S, R, Q (first rejecting check), X, Y, Z — code only, marks in place."""
+    """Rules S, R, Q (first rejecting check), X, Y, AD–AG, Z — code only, marks in place."""
     from .build_commands import check_commands
     from .first_rejection import check_pinned_messages
 
@@ -700,6 +711,11 @@ def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dic
     if not any(isinstance(e, dict) and e.get("commands") for e in repo_evidence or []):
         report.setdefault("not_run", []).append(
             "commands and identifiers were not checked against the build config (it was not read)")
+    # Rules AD, AE, AF, AG (src/app/deployed_env_checks.py). Before the hoist,
+    # so a "blocked by setup" mark is never folded into a shared precondition.
+    from . import deployed_env_checks
+
+    deployed_env_checks.recheck_before_save(test_plan, report, repo_evidence=repo_evidence)
     hoist_shared_preconditions(test_plan, report)
 
 

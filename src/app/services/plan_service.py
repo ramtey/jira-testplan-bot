@@ -1309,6 +1309,8 @@ async def generate_single(
             # Rule Z: the build check once, and setup several cases share.
             "build_check": evidence.get("build_check"),
             "shared_preconditions": getattr(test_plan, "shared_preconditions", None) or [],
+            # Rule AD: what sits in front of the service, per environment.
+            "environment_topology": getattr(test_plan, "environment_topology", None) or [],
             "evidence_notes": evidence_notes,
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,
@@ -1904,6 +1906,8 @@ async def generate_multi(
             # Rule Z: the build check once, and setup several cases share.
             "build_check": evidence.get("build_check"),
             "shared_preconditions": getattr(test_plan, "shared_preconditions", None) or [],
+            # Rule AD: what sits in front of the service, per environment.
+            "environment_topology": getattr(test_plan, "environment_topology", None) or [],
             "evidence_notes": evidence_notes,
             "uat_complexity": test_plan.uat_complexity,
             "how_to_see_it": test_plan.how_to_see_it,

@@ -442,6 +442,11 @@ class TestPlan:
     # The generator writes some; plan_recheck.hoist_shared_preconditions moves
     # identical precondition sentences repeated across cases here too.
     shared_preconditions: list[dict] | None = None
+    # Rule AD: what sits in front of the service and how it runs, per target
+    # environment ({"environment", "in_front", "replicas", "state": [{"what",
+    # "scope": "per_pod"|"shared"|"unknown", "source"}], …}). Counts and limits
+    # in cases are checked against it (src/app/deployed_env_checks.py).
+    environment_topology: list[dict] | None = None
     # The model's answers to evidence rules A, B and E — ``requirement_check``,
     # ``deployment_status`` and ``note_disagreements`` — kept as it returned
     # them. Never shown as is: evidence_checks turns them into the plan's
