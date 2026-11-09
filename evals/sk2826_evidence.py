@@ -92,7 +92,7 @@ def _stub_persistence():
     async def _deploy(*_a, **_k):
         return copy.deepcopy(INPUTS["deploy_state"])
 
-    async def _repo(dev_info, mentioned):
+    async def _repo(dev_info, mentioned, _deployments=None):
         return await ev.gather_repo_evidence(FixtureGitHub(), dev_info["pull_requests"], mentioned)
 
     async def _no_seeds(*_a, **_k):
