@@ -267,9 +267,15 @@ export default function UatReviewPanel({ ticketKey }) {
 
         <div className="uat-media uat-muted">
           <Icon name="paperclip" size={12} />{' '}
-          {view.media?.video
-            ? `${view.media.video.name}${view.media.video.too_large ? ' (too large to attach)' : ' will be attached'}`
-            : 'No walkthrough video in this run'}
+          {view.media?.published?.link
+            ? <a href={view.media.published.link} target="_blank" rel="noreferrer">Walkthrough video</a>
+            : view.media?.published?.attachment_id
+              ? `${view.media.published.name} attached to the ticket`
+              : view.media?.published?.error || view.media?.published?.too_large
+                ? `Video not posted: ${view.media.published.error || 'too large after shrinking'}`
+                : view.media?.video
+                  ? `${view.media.video.parts.length} recording(s) will be shrunk and ${view.media.video.host === 'drive_folder' ? 'linked from Google Drive' : 'attached'} on approval`
+                  : 'No walkthrough video in this run'}
           {(view.media?.fail_frames || []).length > 0 && ` · ${view.media.fail_frames.length} failure frame(s)`}
         </div>
 

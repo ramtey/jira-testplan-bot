@@ -8,6 +8,7 @@ Start a run with:
 testplan uat-run PROJ-123            # every leg
 testplan uat-run PROJ-123 --route-only   # pin the plan, check builds, route cases; launch nothing
 testplan uat-run PROJ-123 --run 42   # resume: replay spooled results, close or launch legs
+testplan uat-run PROJ-123 --repost 42   # approved run: re-make the video, edit its comment in place
 ```
 
 Unattended (P4): with `UAT_AUTO_QUEUE=true` the watcher sweep queues a run for
@@ -64,6 +65,25 @@ There is deliberately no `--max-budget-usd`: that flag stops the run, and dollar
 budgets here only alert (`UAT_RUN_BUDGET_USD`). The wall-clock cap
 (`UAT_LEG_WALL_CLOCK_MIN`) is the only thing that stops a leg: SIGINT first so
 a recording can finalize, then unreached cases are `dropped_time_cap`.
+
+## Moving the runner to another machine (Mac mini, server)
+
+Everything machine-specific is local configuration. On the new machine:
+
+1. **Runner profiles and allowlist**: copy `~/.config/jira-testplan-bot/` and
+   fix the absolute paths inside (cwd, scripts dir, simulator UDIDs).
+2. **Simulators / browsers**: boot the devices the profiles name; re-save the
+   web Okta session (it expires in about 8 hours).
+3. **Walkthrough video**: `brew install ffmpeg`. Then either sign Google Drive
+   for desktop in (ideally a bot account) and set `UAT_VIDEO_HOST=drive_folder`
+   and `UAT_VIDEO_DRIVE_DIR` to a folder shared with the team, or set
+   `UAT_VIDEO_HOST=jira`. A server with no desktop needs a new host (Drive API
+   with a service account, or the hosted hub); see "Walkthrough video hosting"
+   in the design doc.
+4. **Launchd jobs**: re-run `ops/launchd/install-*.sh`; the dispatcher needs
+   the backend on port 8000.
+5. **Identity**: `QA_ACTOR_EMAIL` and the Jira/GitHub tokens in `.env` are a
+   person's; a shared machine should use the bot's own.
 
 ## Making the local settings file
 

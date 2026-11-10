@@ -30,6 +30,7 @@ from ..db.models.case_result import CaseResult
 from ..db.models.uat_run import UatRun
 from ..jira_client import JiraClient
 from ..repositories import case_result_repository, plan_repository, uat_run_repository
+from . import uat_video
 from .uat_runs import RunRefused, _live_own_plan, _record, latest_by_case, run_view
 
 logger = logging.getLogger(__name__)
@@ -66,12 +67,15 @@ def derive_next_step(counts: dict[str, int]) -> str | None:
 
 
 def _media(run: UatRun) -> dict:
-    """The walkthrough video and failure frames in the run's evidence directory.
+    """The walkthrough video and failure frames, as planned and as posted.
 
-    The narrated cut is preferred. Files over the attachment cap are listed
-    with ``too_large`` rather than dropped, so the review says why.
+    ``video`` is the plan (the recordings it is made from and where it will
+    go); ``published`` is what the post did with it (uat_video.publish).
+    Failure frames over the attachment cap are listed with ``too_large``
+    rather than dropped, so the review says why.
     """
-    out: dict[str, Any] = {"video": None, "fail_frames": []}
+    out: dict[str, Any] = {"video": uat_video.plan(run.evidence_dir),
+                           "published": (run.tracker or {}).get("video"), "fail_frames": []}
     if not run.evidence_dir:
         return out
     root = Path(run.evidence_dir)
@@ -82,11 +86,6 @@ def _media(run: UatRun) -> dict:
         size = p.stat().st_size
         return {"name": p.name, "bytes": size, "too_large": size > MAX_ATTACHMENT_BYTES}
 
-    videos = sorted(p for p in root.glob("*.mp4") if "walkthrough" in p.name)
-    narrated = [p for p in videos if "narrated" in p.name]
-    pick = (narrated or videos or [None])[-1]
-    if pick is not None:
-        out["video"] = entry(pick)
     out["fail_frames"] = [entry(p) for p in sorted(root.glob("*FAIL-*.png"))]
     return out
 
@@ -252,6 +251,25 @@ async def approve(db: AsyncIOMotorDatabase, run: UatRun, *, next_step: str | Non
     return await _post(db, run, jira=jira or JiraClient(), transition=transition)
 
 
+async def repost(db: AsyncIOMotorDatabase, run: UatRun, *, jira: JiraClient | None = None,
+                 transition=None) -> UatRun:
+    """Post an approved run again: re-make and re-publish its video, rewrite its comment.
+
+    For a run posted before its video could be published (e.g. too large for
+    Jira, or a new video host since). The comment is edited in place, failure
+    frames already uploaded are skipped, and a transition that already ran is
+    not repeated. Only an approved run: the decision stays the reviewer's.
+    """
+    if run.status != "approved":
+        raise RunRefused("not_approved", f"run {run.id} is {run.status}; only an approved run can be re-posted")
+    tracker = dict(run.tracker or {})
+    tracker.pop("video", None)
+    tracker["outcome"] = "pending"
+    run.tracker = tracker
+    await uat_run_repository.save(db, run)
+    return await _post(db, run, jira=jira or JiraClient(), transition=transition)
+
+
 async def _post(db, run: UatRun, *, jira: JiraClient, transition) -> UatRun:
     tracker = dict(run.tracker or {})
     key = run.ticket_key
@@ -262,16 +280,24 @@ async def _post(db, run: UatRun, *, jira: JiraClient, transition) -> UatRun:
         run.tracker = tracker
         return await uat_run_repository.save(db, run)
 
-    # 1. Attachments. Names already uploaded by an earlier attempt are skipped.
+    # 1. The walkthrough video, made once: a retry reuses what was published.
+    if "video" not in tracker:
+        try:
+            tracker["video"] = await uat_video.publish(
+                run.evidence_dir, jira=jira, ticket_key=key, run_id=run.id)
+        except Exception as exc:
+            return await fail("attachments_failed", exc)
+        run.tracker = tracker
+        await uat_run_repository.save(db, run)
+
+    # 2. Failure frames. Names already uploaded by an earlier attempt are skipped.
     media = _media(run)
     done = {a["name"] for a in tracker.get("attachments") or []}
-    files = [m for m in ([media["video"]] if media["video"] else []) + media["fail_frames"]
-             if not m["too_large"] and m["name"] not in done]
+    files = [m for m in media["fail_frames"] if not m["too_large"] and m["name"] not in done]
     if files:
         try:
             root = Path(run.evidence_dir)
-            payload = [(m["name"], (root / m["name"]).read_bytes(),
-                        "video/mp4" if m["name"].endswith(".mp4") else "image/png") for m in files]
+            payload = [(m["name"], (root / m["name"]).read_bytes(), "image/png") for m in files]
             uploaded = await jira.upload_attachments(key, payload)
         except Exception as exc:
             return await fail("attachments_failed", exc)
@@ -280,7 +306,7 @@ async def _post(db, run: UatRun, *, jira: JiraClient, transition) -> UatRun:
         run.tracker = tracker
         await uat_run_repository.save(db, run)
 
-    # 2. The results comment.
+    # 3. The results comment.
     try:
         view = await review_view(db, run)
         text = await render_results_text(view)
@@ -292,7 +318,7 @@ async def _post(db, run: UatRun, *, jira: JiraClient, transition) -> UatRun:
     run.tracker = tracker
     await uat_run_repository.save(db, run)
 
-    # 3. The transition, once.
+    # 4. The transition, once.
     action = (run.review or {}).get("next_step")
     if action and not (tracker.get("transition") or {}).get("done"):
         if transition is None:

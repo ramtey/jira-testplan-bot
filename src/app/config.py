@@ -330,6 +330,19 @@ class Settings(BaseSettings):
     uat_build_recheck_min: int = 30
     uat_build_alert_hours: int = 4
     uat_build_wait_hours: int = 24
+    # Where an approved run's walkthrough video goes (src/app/services/uat_video.py).
+    # "jira" attaches the shrunk video to the ticket and works anywhere.
+    # "drive_folder" copies it into UAT_VIDEO_DRIVE_DIR, a folder Google Drive
+    # for desktop syncs, and posts the Drive link; it falls back to Jira when
+    # Drive is not running. Share that folder once (e.g. anyone at the company
+    # with the link) and every video in it inherits the setting.
+    # MOVING TO THE MAC MINI OR A SERVER: sign Drive for desktop in there, or
+    # set "jira", or add a host that needs no desktop app (Drive API with a
+    # service account, or the hosted hub serving the file). See uat_video.py.
+    uat_video_host: str = "jira"
+    uat_video_drive_dir: str = ""
+    # How long to wait for Drive for desktop to give a copied file its id.
+    uat_video_drive_wait_s: int = 90
 
     # Database (MongoDB)
     # Connection string for the QA bot's Mongo database. Point this at the NPE

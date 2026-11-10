@@ -166,20 +166,29 @@ export const formatUatResultsAsJira = (view, opts = {}) => {
   }
 
   const media = view.media || {}
-  const attached = [media.video, ...(media.fail_frames || [])].filter((m) => m && !m.too_large)
-  const tooLarge = [media.video, ...(media.fail_frames || [])].filter((m) => m && m.too_large)
+  const frames = (media.fail_frames || []).filter((m) => !m.too_large)
+  const framesTooLarge = (media.fail_frames || []).filter((m) => m.too_large)
+  const pub = media.published
+  const shows = view.how_to_see_it ? `What it shows: ${String(view.how_to_see_it).replace(/\n+/g, ' ')}` : null
   lines.push('', '### Video')
-  if (media.video && !media.video.too_large) {
-    lines.push(`📎 ${media.video.name} (attached to this ticket)`)
-    if (view.how_to_see_it) lines.push(`What it shows: ${String(view.how_to_see_it).replace(/\n+/g, ' ')}`)
+  if (pub?.link) {
+    lines.push(`📹 [Watch the walkthrough](${pub.link})`)
+    if (shows) lines.push(shows)
+  } else if (pub?.attachment_id) {
+    lines.push(`📎 ${pub.name} (attached to this ticket)`)
+    if (shows) lines.push(shows)
+  } else if (pub?.too_large) {
+    lines.push(`Recorded, but still too large to attach after shrinking: ${pub.name}`)
+  } else if (pub?.error) {
+    lines.push(`Recorded, but the video could not be made: ${pub.error}`)
+  } else if (media.video) {
+    lines.push(`📹 The walkthrough (${media.video.parts.length} recording${media.video.parts.length === 1 ? '' : 's'}) is linked here when the results are posted.`)
   } else {
-    lines.push(media.video ? `Recorded but too large to attach: ${media.video.name}` : 'No walkthrough was recorded in this run.')
+    lines.push('No walkthrough was recorded in this run.')
   }
-  const frames = attached.filter((m) => m !== media.video)
+  if (pub?.fallback_reason) lines.push(`(Attached to Jira because the video host failed: ${pub.fallback_reason})`)
   if (frames.length) lines.push(`Failure frames attached: ${frames.map((m) => m.name).join(', ')}`)
-  if (tooLarge.length && tooLarge.some((m) => m !== media.video)) {
-    lines.push(`Too large to attach: ${tooLarge.filter((m) => m !== media.video).map((m) => m.name).join(', ')}`)
-  }
+  if (framesTooLarge.length) lines.push(`Too large to attach: ${framesTooLarge.map((m) => m.name).join(', ')}`)
 
   lines.push('', `_Run by the UAT runner; results were checked by a person before posting._`)
   return lines.join('\n') + '\n'

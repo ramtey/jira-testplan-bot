@@ -21,7 +21,8 @@ const view = (over = {}) => ({
     { id: 'edge_cases:2', title: 'In CI', result: { status: 'not_run', not_run: { code: 'deferred_to_ci' } } },
     { id: 'edge_cases:3', title: 'Never reached', result: null },
   ],
-  media: { video: { name: '07-walkthrough-narrated.mp4', too_large: false }, fail_frames: [] },
+  media: { video: { name: 'walkthrough-final.mp4', parts: ['07-walkthrough-narrated.mp4'], host: 'jira' },
+    published: { host: 'jira', name: 'walkthrough-final.mp4', attachment_id: '9' }, fail_frames: [] },
   how_to_see_it: 'Open Orders and save one.',
   review: null,
   ...over,
@@ -56,6 +57,17 @@ test('preview options win until a decision is recorded', () => {
 })
 
 test('the video is named and described; a missing one is said so', () => {
-  assert.match(formatUatResultsAsJira(view()), /📎 07-walkthrough-narrated\.mp4[^\n]*\nWhat it shows: Open Orders and save one\./)
+  assert.match(formatUatResultsAsJira(view()), /📎 walkthrough-final\.mp4 \(attached[^\n]*\nWhat it shows: Open Orders and save one\./)
   assert.match(formatUatResultsAsJira(view({ media: { video: null, fail_frames: [] } })), /No walkthrough was recorded/)
+})
+
+test('a hosted video is a link; a fallback, a failure and a pending post each say so', () => {
+  const media = (published) => ({ media: { video: { name: 'walkthrough-final.mp4', parts: ['a.mp4', 'b.mp4'], host: 'drive_folder' }, published, fail_frames: [] } })
+  const link = 'https://drive.google.com/file/d/abc/view'
+  assert.match(formatUatResultsAsJira(view(media({ host: 'drive_folder', link }))), /📹 \[Watch the walkthrough\]\(https:\/\/drive\.google\.com\/file\/d\/abc\/view\)\nWhat it shows/)
+  const fell = formatUatResultsAsJira(view(media({ host: 'jira', name: 'walkthrough-final.mp4', attachment_id: '3', fallback_reason: 'Drive folder not found' })))
+  assert.match(fell, /📎 walkthrough-final\.mp4 \(attached/)
+  assert.match(fell, /because the video host failed: Drive folder not found/)
+  assert.match(formatUatResultsAsJira(view(media({ host: 'jira', error: 'ffmpeg is not installed' }))), /could not be made: ffmpeg is not installed/)
+  assert.match(formatUatResultsAsJira(view(media(null))), /walkthrough \(2 recordings\) is linked here when the results are posted/)
 })

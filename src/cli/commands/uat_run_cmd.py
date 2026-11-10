@@ -298,6 +298,7 @@ def uat_run(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Tell the runner it is a dry run")] = False,
     route_only: Annotated[bool, typer.Option("--route-only", help="Start the run and show routing; launch no runner")] = False,
     resume: Annotated[int | None, typer.Option("--run", help="Resume this run: replay spooled results, close legs a runner already ran, launch pending ones")] = None,
+    repost: Annotated[int | None, typer.Option("--repost", help="Re-post this approved run: re-make its video and edit its Jira comment in place")] = None,
 ):
     """
     Run a ticket's live plan with the headless UAT runner, ending awaiting review.
@@ -307,7 +308,23 @@ def uat_run(
         testplan uat-run PROJ-123 --leg mobile
         testplan uat-run PROJ-123 --route-only
         testplan uat-run PROJ-123 --run 42
+        testplan uat-run PROJ-123 --repost 42
     """
+    if repost is not None:
+        run = _get(f"/uat-runs/{repost}")
+        if run["ticket_key"] != ticket_key.upper():
+            _fail(f"run {repost} is for {run['ticket_key']}, not {ticket_key.upper()}")
+        console.print(f"Re-posting run {repost} on {run['ticket_key']} (making the video can take a few minutes)…")
+        view = _post(f"/uat-runs/{repost}/repost", {}, timeout=900)
+        t = view.get("tracker") or {}
+        v = t.get("video") or {}
+        console.print(f"  outcome: {t.get('outcome')}" + (f" — {t.get('error')}" if t.get("error") else ""))
+        if v:
+            where = v.get("link") or (f"attached ({v.get('name')})" if v.get("attachment_id") else None)
+            console.print(f"  video: {where or v.get('error') or ('too large: ' + str(v.get('bytes')))}"
+                          + (f" [yellow](Drive failed, used Jira: {v['fallback_reason']})[/yellow]"
+                             if v.get("fallback_reason") else ""))
+        return
     try:
         profiles = load_profiles()
     except RunRefused as e:

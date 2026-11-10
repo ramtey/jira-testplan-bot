@@ -19,9 +19,21 @@ from pathlib import Path
 import pytest
 
 from src.app.repositories import test_plan_progress_repository, uat_run_repository
-from src.app.services import uat_review, uat_runs
+from src.app.services import uat_review, uat_runs, uat_video
 from src.app.services.uat_runs import RunRefused
 from tests.test_uat_runs import _live_plan, _pass, _start, api, db  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _fake_ffmpeg(monkeypatch):
+    """Tests write placeholder bytes, not video: "shrinking" just joins them."""
+    async def prepare(evidence_dir):
+        parts = uat_video.sources(evidence_dir)
+        out = parts[0].parent / uat_video.FINAL_NAME
+        out.write_bytes(b"".join(p.read_bytes() for p in parts))
+        return out
+    monkeypatch.setattr(uat_video, "prepare", prepare)
+    monkeypatch.setattr(uat_video.settings, "uat_video_host", "jira")
 
 
 class TrackerJira:
@@ -102,11 +114,11 @@ async def test_approve_counts_agent_passes_then_posts_and_moves(db, monkeypatch,
     assert run.status == "approved"
     assert run.review["decision"] == "approved" and run.review["actor"]["kind"] == "human"
     assert run.tracker["outcome"] == "posted"
-    assert jira.uploads == ["07-sk1-walkthrough-narrated.mp4", "03-sk1-save--FAIL-no-toast.png"]
+    assert jira.uploads == ["walkthrough-final.mp4", "03-sk1-save--FAIL-no-toast.png"]
     (_cid, text), = jira.comments
     assert text.startswith("🤖 UAT run results — plan v1")
     assert "Fail back to In Progress" in text and "toast missing" in text
-    assert "07-sk1-walkthrough-narrated.mp4" in text
+    assert "📎 walkthrough-final.mp4 (attached to this ticket)" in text
     assert moves == [("SK-1", "fail-to-in-progress")]
     assert "happy_path:0" in await _checked(db, run)
 
@@ -153,7 +165,7 @@ async def test_a_failed_step_is_named_and_approving_again_resumes(db, monkeypatc
     run = await uat_review.approve(db, run, next_step="ignored-on-resume", notes=None,
                                    jira=jira, transition=transition)
     assert run.tracker["outcome"] == "posted"
-    assert jira.uploads == ["01-walkthrough.mp4"]  # never uploaded twice
+    assert jira.uploads == ["walkthrough-final.mp4"]  # never uploaded twice
     assert moves == [("SK-1", "pass-to-uat")]  # moved once
     # A retried comment edits the one already written rather than adding one.
     assert [cid for cid, _ in jira.comments][1:] == ["c-9"] * (len(jira.comments) - 1)
@@ -224,3 +236,84 @@ async def test_routes_review_override_approve(db, monkeypatch, api):
         assert r.status_code == 200 and r.json()["tracker"]["outcome"] == "posted"
         r = await c.post(f"/uat-runs/{run.id}/approve", json={"next_step": None})
         assert r.status_code == 409 and r.json()["detail"]["error"] == "not_awaiting_review"
+
+
+async def _run_with_video(db, monkeypatch, *parts: str):
+    run = await _finished_run(db, monkeypatch)
+    Path(run.evidence_dir).mkdir(parents=True, exist_ok=True)
+    for name in parts:
+        (Path(run.evidence_dir) / name).write_bytes(b"mp4-" + name.encode())
+    return run
+
+
+@pytest.mark.asyncio
+async def test_drive_folder_host_posts_a_link_and_joins_the_parts(db, monkeypatch, tmp_path):
+    drive = tmp_path / "drive"
+    drive.mkdir()
+    monkeypatch.setattr(uat_video.settings, "uat_video_host", "drive_folder")
+    monkeypatch.setattr(uat_video.settings, "uat_video_drive_dir", str(drive))
+
+    async def drive_id(path, wait_s):
+        return "FILE123"
+    monkeypatch.setattr(uat_video, "_drive_id", drive_id)
+    run = await _run_with_video(db, monkeypatch, "02-walkthrough-raw.mp4", "07-walkthrough-part2-raw.mp4")
+
+    view = await uat_review.review_view(db, run)
+    assert view["media"]["video"]["parts"] == ["02-walkthrough-raw.mp4", "07-walkthrough-part2-raw.mp4"]
+    assert view["media"]["video"]["host"] == "drive_folder"
+
+    jira = TrackerJira()
+    run = await uat_review.approve(db, run, next_step=None, notes=None, jira=jira, transition=_transition([]))
+    assert run.tracker["outcome"] == "posted" and jira.uploads == []
+    copied = drive / "SK-1" / f"run-{run.id}-walkthrough.mp4"
+    assert copied.read_bytes() == b"mp4-02-walkthrough-raw.mp4mp4-07-walkthrough-part2-raw.mp4"
+    (_cid, text), = jira.comments
+    assert "📹 [Watch the walkthrough](https://drive.google.com/file/d/FILE123/view)" in text
+
+
+@pytest.mark.asyncio
+async def test_drive_unavailable_falls_back_to_jira_and_says_why(db, monkeypatch, tmp_path):
+    monkeypatch.setattr(uat_video.settings, "uat_video_host", "drive_folder")
+    monkeypatch.setattr(uat_video.settings, "uat_video_drive_dir", str(tmp_path / "not-mounted"))
+    run = await _run_with_video(db, monkeypatch, "01-walkthrough.mp4")
+    jira = TrackerJira()
+    run = await uat_review.approve(db, run, next_step=None, notes=None, jira=jira, transition=_transition([]))
+    assert run.tracker["outcome"] == "posted" and jira.uploads == ["walkthrough-final.mp4"]
+    (_cid, text), = jira.comments
+    assert "because the video host failed: Drive folder not found" in text
+
+
+@pytest.mark.asyncio
+async def test_a_video_too_large_even_shrunk_is_said_so_not_dropped(db, monkeypatch):
+    monkeypatch.setattr(uat_video, "MAX_ATTACHMENT_BYTES", 3)
+    run = await _run_with_video(db, monkeypatch, "01-walkthrough.mp4")
+    jira = TrackerJira()
+    run = await uat_review.approve(db, run, next_step=None, notes=None, jira=jira, transition=_transition([]))
+    assert run.tracker["outcome"] == "posted" and jira.uploads == []
+    assert "still too large to attach after shrinking" in jira.comments[0][1]
+
+
+@pytest.mark.asyncio
+async def test_repost_remakes_the_video_and_edits_the_same_comment(db, monkeypatch):
+    monkeypatch.setattr(uat_video, "MAX_ATTACHMENT_BYTES", 3)
+    run = await _run_with_video(db, monkeypatch, "01-walkthrough.mp4")
+    jira, moves = TrackerJira(), []
+    run = await uat_review.approve(db, run, next_step="pass-to-uat", notes=None, jira=jira,
+                                   transition=_transition(moves))
+    assert run.tracker["video"]["too_large"]
+
+    monkeypatch.setattr(uat_video, "MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024)
+    run = await uat_review.repost(db, run, jira=jira, transition=_transition(moves))
+    assert run.tracker["outcome"] == "posted" and run.tracker["video"]["attachment_id"]
+    assert jira.uploads == ["walkthrough-final.mp4"]
+    assert [cid for cid, _ in jira.comments] == [None, "c-9"]  # edited in place
+    assert "📎 walkthrough-final.mp4 (attached" in jira.comments[-1][1]
+    assert moves == [("SK-1", "pass-to-uat")]  # the transition is not repeated
+
+
+@pytest.mark.asyncio
+async def test_repost_refuses_a_run_nobody_approved(db, monkeypatch):
+    run = await _finished_run(db, monkeypatch)
+    with pytest.raises(RunRefused) as e:
+        await uat_review.repost(db, run, jira=TrackerJira())
+    assert e.value.code == "not_approved"

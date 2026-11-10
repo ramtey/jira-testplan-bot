@@ -160,6 +160,18 @@ async def approve(run_id: int, request: ReviewDecision):
     return await uat_review.review_view(db, run)
 
 
+@router.post("/uat-runs/{run_id}/repost")
+async def repost(run_id: int):
+    """Re-post an approved run: re-make its video and edit its comment in place."""
+    db = get_db()
+    run = await _run(db, run_id)
+    try:
+        run = await uat_review.repost(db, run)
+    except RunRefused as e:
+        raise _refused(e)
+    return await uat_review.review_view(db, run)
+
+
 @router.post("/uat-runs/{run_id}/reject")
 async def reject(run_id: int, request: ReviewDecision):
     """Close the run without posting; its agent results never count."""

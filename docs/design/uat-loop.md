@@ -193,8 +193,12 @@ tester's own passes. The human actor is the `users` row named by
 6. Deploy-state sources must cover every repo a runner profile tests before
    unattended runs; a repo without one is marked "build: UI gate only" on its
    cases.
-7. The walkthrough is attached to the tracker on approval; external video
-   hosts stay optional and manual.
+7. The walkthrough is published on approval: the runner's recordings are
+   joined and shrunk with ffmpeg (~1 MB per minute), then sent to the host
+   `UAT_VIDEO_HOST` names (see "Walkthrough video hosting" below). Changed
+   2026-11-10 from "attached to the tracker": run 27's raw recordings were
+   223 MB, far over the attachment cap, so the video silently became a line
+   of text.
 8. Dollar budgets (per run, per day) **alert and never stop a run**; values come
    from P0 measurements. The per-run wall-clock cap is a real stop, because it is
    what frees the device from a hung run: SIGINT first so the recording
@@ -207,6 +211,35 @@ tester's own passes. The human actor is the `users` row named by
 10. The repo ships the generic contract (MCP tools, allowlist template, a
     skeleton agent); the team's runner agent stays in local configuration.
 11. Pre-existing marks are recorded as `legacy_unknown`.
+
+## Walkthrough video hosting
+
+The comment carries a link that plays in the browser, like a Loom. Where the
+video lives is one setting, so moving the runner to another machine changes
+a line of configuration, not code (`src/app/services/uat_video.py`).
+
+| `UAT_VIDEO_HOST` | Works on | Setup | Comment shows |
+|---|---|---|---|
+| `jira` (default) | any machine | none | the video attached to the ticket |
+| `drive_folder` | a Mac running Google Drive for desktop | `UAT_VIDEO_DRIVE_DIR`, a synced folder shared once (e.g. anyone at the company with the link) | a Drive link |
+| Drive API (not built) | any machine, servers included | a Google service account from IT | a Drive link |
+| hub (not built) | the hosted hub | ships with the hub | a link to the hub, behind company login |
+
+A host that fails falls back to a Jira attachment and the comment says why.
+`testplan uat-run KEY --repost RUN` re-makes and re-posts an approved run's
+video, editing its comment in place.
+
+**Loom** has no upload API (open request LOOM-185); the Record SDK only
+records in a browser, and upload from file is a web-app feature on Business
+plans. A Loom host would be a browser agent clicking through loom.com with a
+saved login: fragile, so build it only if someone asks for Loom links
+specifically.
+
+**Moving to the Mac mini or a server:** sign Drive for desktop in on that
+machine (a bot account's Drive, not a person's, so videos survive a
+departure) and point `UAT_VIDEO_DRIVE_DIR` at a folder shared with the team;
+or set `UAT_VIDEO_HOST=jira`; or, for a server, add the Drive API or hub host.
+ffmpeg must be installed either way (`brew install ffmpeg`).
 
 ## Edge cases
 
