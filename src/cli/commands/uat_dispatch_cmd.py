@@ -31,7 +31,6 @@ STATE_DIR = Path(os.environ.get("UAT_DISPATCH_STATE_DIR", Path.home() / ".jira-t
 LOCK_PATH = STATE_DIR / "uat-dispatch.lock"
 DAILY_ALERT_PATH = STATE_DIR / "uat-daily-budget.json"
 
-APP_URL = os.environ.get("TESTPLAN_APP_URL", "http://localhost:5173")
 
 
 def _notify_hourly(kind: str, title: str, message: str) -> None:
@@ -56,13 +55,12 @@ def _alert_once(run_id: int, kind: str, title: str, message: str) -> None:
 
 
 def _alert_for(view: dict) -> None:
-    """Tell a person about the state a run is left in, once per state."""
-    key, rid, status = view["ticket_key"], view["run_id"], view["status"]
-    c = view.get("counts") or {}
-    if status == "awaiting_review":
-        _alert_once(rid, "awaiting_review", f"UAT run ready: {key}",
-                    f"{c.get('passed', 0)} passed, {c.get('failed', 0)} failed, {c.get('not_run', 0)} not run. "
-                    f"Review: {APP_URL}/?key={key}")
+    """Tell a person about the state a run is left in, once per state.
+
+    No "run ready" alert: the counts it showed were often all not-run, and the
+    review is visible in the app anyway. Only budget problems interrupt.
+    """
+    key, rid = view["ticket_key"], view["run_id"]
     for name, leg in (view.get("legs") or {}).items():
         if leg.get("budget_alert"):
             _alert_once(rid, f"budget_{name}", f"UAT budget: {key}", leg["budget_alert"])
