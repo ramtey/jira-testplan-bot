@@ -29,6 +29,8 @@ import logging
 import re
 from datetime import datetime, timezone
 
+from .deployment_roles import classify_values
+
 logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"""^\s*tag:\s*["']?([^"'\s#]+)""", re.MULTILINE)
@@ -76,10 +78,15 @@ async def read_deploy_state(github_client, pull_requests: list[dict], sources: d
 
     async def one_env(repo: str, env: str, source: str) -> dict:
         entry = {"repo": repo, "env": env, "source": source, "tag": None,
-                 "deployed_commit": None, "error": None, "prs": []}
+                 "deployed_commit": None, "error": None, "prs": [],
+                 "role": None, "hosts": [], "signals": []}
         owner, name, path = (source.split("/", 2) + ["", ""])[:3]
         files = await github_client.fetch_files_at_ref(f"{owner}/{name}", None, [path])
         tag = parse_tag(files.get(path, "")) if path in files else None
+        if path in files:
+            # Serving (routes a host) or internal (worker / cron, no host):
+            # the build check and log steps name the copy the cases reach.
+            entry.update(classify_values(files[path]))
         entry["tag"] = tag
         deployed = commit_of_tag(tag)
         if path not in files:
@@ -137,12 +144,26 @@ def render_deploy_state(entries: list[dict], now: datetime | None = None) -> str
             lines.append(f"{head}: COULD NOT CHECK ({e['error']}). Do not claim this "
                          "environment has or lacks any PR.")
             continue
-        lines.append(f"{head}: runs {e['tag']}")
+        lines.append(f"{head}: runs {e['tag']}{_role_text(e)}")
         for p in e["prs"]:
             label = {True: "INCLUDED", False: "NOT INCLUDED", None: "COULD NOT CHECK"}[p["included"]]
             detail = f" — {p['detail']}" if p["detail"] else ""
             lines.append(f"    #{p['number']}: {label}{detail}")
     return "\n".join(lines)
+
+
+def _role_text(e: dict) -> str:
+    """What the values file says this copy is: serving a host, or internal."""
+    src = f" in {e['source']}" if e.get("source") else ""
+    sig = "; ".join((e.get("signals") or [])[:2])
+    if e.get("role") == "serving":
+        return f" — SERVING: routes {', '.join(e.get('hosts') or [])} ({sig}{src})"
+    if e.get("role") == "internal":
+        return (f" — INTERNAL worker/cron copy, no host ({sig}{src}): no request reaches it; "
+                "use it only for cron/job cases")
+    # "unknown" says nothing: most values files leave the host to chart
+    # defaults, and a line on each would only be noise in the prompt.
+    return ""
 
 
 DEPLOY_STATE_GUIDANCE = (
@@ -152,5 +173,10 @@ DEPLOY_STATE_GUIDANCE = (
     "rather than pointing a tester at a build that lacks the change. Never "
     "recommend sign-off on an environment marked NOT INCLUDED for a PR the "
     "ticket depends on. COULD NOT CHECK means unknown — say so; it is not "
-    "evidence either way."
+    "evidence either way. When an app has several deployments, a case's "
+    "build check and any step that reads logs (boot lines, request logs) name "
+    "the SERVING copy whose host the case calls, never an INTERNAL "
+    "worker/cron copy unless the case tests cron or job behaviour; if no copy "
+    "is marked SERVING for that host, list every candidate with its tag and "
+    "write \"confirm which deployment serves <host>\" instead of picking one."
 )

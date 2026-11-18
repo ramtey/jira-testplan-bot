@@ -1143,6 +1143,13 @@ async def run_evidence_checks(
     from ..platform_capabilities import flag_unsupported_steps
 
     platform_not_applicable = flag_unsupported_steps(test_plan, targets)
+    # Rule AJ: log-reading steps name the deployment that serves the case, and
+    # every build-check line is re-checked against the hosts the cases call
+    # (src/app/deployment_roles.py). Marks in place; step numbers never move.
+    from ..deployment_roles import check_log_steps, verify_build_check
+
+    log_steps = check_log_steps(test_plan, targets)
+    build_check_targeting = verify_build_check(test_plan, top, targets)
     # The build gate, once per repo, at the top of the plan: which PR is this
     # ticket's change and at which commit, or the open question when no PR
     # names the ticket. Cases that need no running build carry no check step.
@@ -1169,5 +1176,16 @@ async def run_evidence_checks(
                            "gate": t.get("gate"), "capabilities": t.get("capabilities")}
                           for t in targets],
         "platform_not_applicable": platform_not_applicable,
+        "deployment_targeting": _deployment_targeting(targets, log_steps, build_check_targeting),
         "critic_gap": critic_gap,
     }
+
+
+def _deployment_targeting(targets: list[dict], log_steps: list[dict], verified: dict) -> dict | None:
+    """Provenance for rule AJ: each deployment's role and what the checks did."""
+    roles = [{"repo": t["repo"], "env": d.get("env"), "source": d.get("source"), "tag": d.get("tag"),
+              "role": d.get("role"), "hosts": d.get("hosts") or [], "signals": d.get("signals") or []}
+             for t in targets for d in t.get("deploy") or [] if d.get("role")]
+    if not roles and not log_steps and not verified.get("downgraded"):
+        return None
+    return {"deployments": roles, "log_steps": log_steps, "build_check": verified}

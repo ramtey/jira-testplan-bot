@@ -6,7 +6,8 @@ a runnable case — the ones that do not depend on the model:
 
   - deployments discovery and deploy state (src/app/build_targets.py, deploy_state.py)
   - repo evidence: CI from every source, platform, app version (evidence_checks.py)
-  - per-case build checks (evidence_checks.enforce_deploy_precondition)
+  - the build check at the top of the plan (evidence_checks.enforce_deploy_precondition)
+    and which deployment it, and each log step, names (deployment_roles.py, rule AJ)
   - what leaves the checklist (case_disposition.route_out_of_uat)
   - empty / non-JSON error-body variants (error_variants.py)
   - CI claims a case argues from (reachability_checks.flag_ci_claims)
@@ -42,6 +43,7 @@ from src.app import case_disposition as cd  # noqa: E402
 from src.app import evidence_checks as ev  # noqa: E402
 from src.app.config import settings  # noqa: E402
 from src.app.deploy_state import read_deploy_state  # noqa: E402
+from src.app import deployment_roles as dr  # noqa: E402
 from src.app.error_variants import require_error_body_variants  # noqa: E402
 from src.app import grounding_verification as gv  # noqa: E402
 from src.app import source_facts as sf  # noqa: E402
@@ -86,7 +88,8 @@ def _as_model_output(body: dict) -> TestPlan:
             if c.pop("deploy_check_added", None) and steps and steps[0].startswith("Deploy check:"):
                 c["steps"] = steps[1:]
     return TestPlan(happy_path=b.get("happy_path") or [], edge_cases=b.get("edge_cases") or [],
-                    regression_checklist=[cd_strip(l) for l in b.get("regression_checklist") or []],
+                    regression_checklist=[cd_strip(l) if isinstance(l, str) else l
+                                          for l in b.get("regression_checklist") or []],
                     integration_tests=b.get("integration_tests") or [],
                     security_negative_tests=b.get("security_negative_tests") or [], risks_and_gaps=[])
 
@@ -111,7 +114,11 @@ async def replay(plan_id: int, as_json: bool) -> None:
 
     plan = _as_model_output(body)
     out = cd.route_out_of_uat(plan, dev_infos=[{"pull_requests": prs}])
-    ev.enforce_deploy_precondition(plan, targets=targets, when=when)
+    top: dict = {}
+    ev.enforce_deploy_precondition(plan, targets=targets, when=when, top=top)
+    # Rule AJ: log steps and build-check lines name the serving deployment.
+    log_steps = dr.check_log_steps(plan, targets)
+    targeting = dr.verify_build_check(plan, top, targets)
     variants = require_error_body_variants(plan)
     ci_flags = flag_ci_claims(plan, evidence)
     banner = ev.build_deployment_status(deploy_state, None, [t["repo"] for t in targets], when, targets=targets)
@@ -134,7 +141,10 @@ async def replay(plan_id: int, as_json: bool) -> None:
     print("deployments:", json.dumps({k: deployments[k] for k in ("deployments_repos", "deploy_sources")}),
           "pipelines:", {r: [p["source"] for p in ps] for r, ps in deployments["pipelines"].items()},
           "errors:", deployments["errors"])
-    print("deploy state:", [(e["env"], e["repo"], e["tag"], [p["included"] for p in e["prs"]]) for e in deploy_state])
+    print("deploy state:", [(e["env"], e["repo"], e["tag"], [p["included"] for p in e["prs"]],
+                             e.get("role"), e.get("hosts")) for e in deploy_state])
+    print("build check:", (top.get("build_check") or {}).get("step"))
+    print("rule AJ:", json.dumps({"log_steps": log_steps, "build_check": targeting}, ensure_ascii=False))
     print("CI, stored :", [f["finding"][:140] for f in body.get("build_and_ci") or []])
     print("CI, now    :", [f"{e['repo']}: {f['kind']}: {f['finding'][:140]}" for e in evidence
                            for f in (e["build"] or {}).get("findings") or []])

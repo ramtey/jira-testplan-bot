@@ -1,0 +1,47 @@
+{
+  "_note": "Sanitized shape of SK-3060 plan 721 v1: API cases on the public host, a boot-log step and a model-written build line that name the internal worker.",
+  "happy_path": [
+    {
+      "title": "Debug endpoint returns the fee breakdown for a known order",
+      "surface": "backend_http",
+      "environment": "staging (https://calc-app-staging.example.com)",
+      "preconditions": "Staging runs the merged change: staging-east runs main-0954a53 (read the image tag in example-org/ops-deployments/team/calc-app/staging-east/values.yaml).",
+      "steps": [
+        "Build check: read the image tag in example-org/ops-deployments/team/calc-app/ss-prod-west/values.yaml or example-org/ops-deployments/team/calc-app/staging-east/values.yaml and confirm it contains the merge.",
+        "Call GET https://calc-app-staging.example.com/api/trpc/gfeDebug.breakdown?input={\"orderId\":\"<id>\"} with a staff token",
+        "Confirm the response lists each fee line"
+      ],
+      "expected": "200 with a fee breakdown for the order",
+      "grounded_in": ["pr:apps/server/src/routers/gfeDebug.ts"]
+    },
+    {
+      "title": "Server boots with the new router registered",
+      "surface": "backend_http",
+      "environment": "staging",
+      "preconditions": "",
+      "steps": [
+        "Open the staging-east calc-app server pod logs in Grafana (Loki)",
+        "Find the startup line that lists registered tRPC routers",
+        "Call https://calc-app-staging.example.com/api/trpc/gfeDebug.ping"
+      ],
+      "expected": "The startup line lists gfeDebug and the ping returns 200",
+      "grounded_in": ["pr:apps/server/src/routers/index.ts"]
+    }
+  ],
+  "edge_cases": [
+    {
+      "title": "Nightly fee rollup cron still runs after the change",
+      "surface": "backend_http",
+      "environment": "staging",
+      "preconditions": "",
+      "steps": [
+        "Wait for the nightly Agenda rollup job to run",
+        "Read the worker pod logs for the rollup completion line"
+      ],
+      "expected": "The rollup job logs completion",
+      "grounded_in": ["pr:apps/server/src/jobs/rollup.ts"]
+    }
+  ],
+  "integration_tests": [],
+  "regression_checklist": []
+}

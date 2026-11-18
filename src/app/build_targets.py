@@ -272,7 +272,12 @@ async def discover_deployments(github, pull_requests: list[dict] | None, *,
                 if found:
                     srcs = out["deploy_sources"].setdefault(code, {})
                     for env, path in found.items():
-                        srcs.setdefault(env, f"{drepo}/{path}")
+                        # Two deployments repos may both record a "staging":
+                        # keep both copies (a public one and a worker, say)
+                        # instead of dropping the second.
+                        key = env if srcs.get(env, f"{drepo}/{path}") == f"{drepo}/{path}" \
+                            else f"{env} ({short_name(drepo)})"
+                        srcs.setdefault(key, f"{drepo}/{path}")
             paths = find_pipeline_files(tree, name)
             if paths:
                 pipeline_paths[code] = paths[:4]
@@ -425,7 +430,9 @@ def build_targets(pull_requests: list[dict] | None, repo_evidence: list[dict] | 
             inc = [p.get("included") for p in d.get("prs") or []]
             deploy.append({"env": d.get("env"), "source": d.get("source"), "tag": d.get("tag"),
                            "deployed_commit": d.get("deployed_commit"), "error": d.get("error"),
-                           "included": (None if not inc or None in inc else all(inc))})
+                           "included": (None if not inc or None in inc else all(inc)),
+                           "role": d.get("role"), "hosts": d.get("hosts") or [],
+                           "signals": d.get("signals") or []})
         targets.append({"repo": repo, "commit": commit, "platform": platform, "changed": changed,
                         "app": e.get("app_version"), "deploy": deploy,
                         "capabilities": e.get("capabilities"),
@@ -570,35 +577,97 @@ def _compare_cmd(repo: str, sha: str, deployed: str = "<deployed commit>") -> st
     return f"`gh api repos/{repo}/compare/{sha}...{deployed} --jq .status`"
 
 
-def _container_check(t: dict, when: str | None) -> str:
+def _deploy_status(d: dict) -> str:
+    if d.get("error"):
+        return f"{d['env']}: could not check ({d['error']})"
+    if d.get("included") is True:
+        return f"{d['env']} runs {d['tag']}, which contains it"
+    if d.get("included") is False:
+        return f"{d['env']} runs {d['tag']}, which does NOT contain it"
+    if d.get("tag"):
+        return f"{d['env']} runs {d['tag']} (containment not checked)"
+    return ""
+
+
+def choose_deployments(t: dict, surface: dict | None = None) -> dict:
+    """Which of a repo's deployments the build check reads (rule AJ).
+
+    ``{"primary", "internal", "extra", "confirm"}``: ``primary`` are the
+    entries the check names, ``internal`` the worker / cron copies listed
+    apart, ``extra`` copies whose role is unknown beside a serving one, and
+    ``confirm`` the sentence asking which deployment serves the host when
+    the values files do not show it. Entries without a role (stored before
+    deployments were classified) keep the old behaviour: every entry.
+    """
+    from .deployment_roles import _deploy_repo, app_hosts, host_phrase, partition
+
+    surface = surface or {}
+    hosts = surface.get("hosts") or []
+    p = partition(t.get("deploy") or [], hosts)
+    out = {"primary": list(t.get("deploy") or []), "internal": [], "extra": [], "confirm": ""}
+    if not p["classified"]:
+        return out
+    where = host_phrase(app_hosts(hosts, t["repo"]))
+    if p["serving"]:
+        # Cases also call other services (an identity provider, analytics),
+        # so a host no copy routes is not a question; the re-check records
+        # it as unconfirmed instead.
+        out["primary"] = p["matched"] or p["serving"]
+        out["internal"] = p["internal"]
+        out["extra"] = p["unknown"]
+        return out
+    out["primary"] = p["unknown"]
+    out["internal"] = p["internal"]
+    # Copies in one deployments repo with no host or worker flag are usually
+    # just its environments (integ, staging, prod), which the case's
+    # environment picks between: no question to ask. Copies spread over
+    # several deployments repos, or beside an internal one, are not.
+    spread = len({_deploy_repo(d) for d in p["unknown"]}) > 1
+    if not p["unknown"]:
+        out["confirm"] = (f" No deployment read for {t['repo']} routes {where}: every copy found is "
+                          f"internal. Confirm which deployment serves {where} (it may be recorded in a "
+                          f"deployments repo that was not read) and check that one.")
+    elif p["internal"] or spread:
+        out["confirm"] = (f" Confirm which deployment serves {where} before reading its tag: none of "
+                          f"these values files routes a host"
+                          + (" (chart defaults may)" if len(p["unknown"]) > 1 else "") + ".")
+    return out
+
+
+def _container_check(t: dict, when: str | None, surface: dict | None = None) -> str:
+    from .deployment_roles import describe, internal_note
+
     sha = _sha(t["commit"])
     what = f"merge commit {sha}" if sha else "the merged change"
-    readable = [d for d in t["deploy"] if d.get("source") and not d.get("error")]
+    chosen = choose_deployments(t, surface)
+    primary = chosen["primary"]
+    readable = [d for d in primary if d.get("source") and not d.get("error")]
     if readable:
         where = " or ".join(sorted({d["source"] for d in readable}))
         how = (f"read the image tag in {where} (the tag ends in the commit it was built from, "
                "e.g. `master-<sha>`)")
+    elif chosen["internal"] and not primary:
+        how = ("read the image tag of the deployment that serves the cases' host (its values file "
+               "routes that host), the ArgoCD app's image, or the running pod's image")
     else:
         how = ("read the deployed commit from this environment's deployment values file "
                "(the image tag ends in the commit it was built from), the ArgoCD app's image, "
                "or the running pod's image")
-    status = []
-    for d in t["deploy"]:
-        if d.get("error"):
-            status.append(f"{d['env']}: could not check ({d['error']})")
-        elif d.get("included") is True:
-            status.append(f"{d['env']} runs {d['tag']}, which contains it")
-        elif d.get("included") is False:
-            status.append(f"{d['env']} runs {d['tag']}, which does NOT contain it")
-        elif d.get("tag"):
-            status.append(f"{d['env']} runs {d['tag']} (containment not checked)")
+    status = [s for s in map(_deploy_status, primary) if s]
     snapshot = f" As of {when}: {'; '.join(status)}." if status and when else (
         f" Last read: {'; '.join(status)}." if status else "")
+    extra = ""
+    if chosen["extra"]:
+        extra = (" Also found, with no host in its values file: "
+                 + "; ".join(f"{describe(d)}" + (f" runs {d['tag']}" if d.get("tag") else "")
+                             + (f" (could not check: {d['error']})" if d.get("error") else "")
+                             for d in chosen["extra"]) + ".")
     return (f"{t['repo']} — confirm the deployed image contains {what}: {how}, then run "
             f"{_compare_cmd(t['repo'], sha or '<merge commit>')}; `ahead` or `identical` means "
             f"the build contains the merge, `behind` or `diverged` means it does not. Any later "
             f"build that contains it passes; the tag does not have to match a particular name."
-            f"{snapshot}")
+            f"{snapshot}{chosen['confirm']}{extra}"
+            f"{internal_note(chosen['internal'], bool((surface or {}).get('jobs')))}")
 
 
 def _ios_check(t: dict) -> str:
@@ -657,9 +726,9 @@ def _android_check(t: dict) -> str:
             f"{sha} (`git merge-base --is-ancestor {sha} <build commit>`).")
 
 
-def _web_check(t: dict, when: str | None) -> str:
+def _web_check(t: dict, when: str | None, surface: dict | None = None) -> str:
     if t["deploy"]:
-        return _container_check(t, when)
+        return _container_check(t, when, surface)
     sha = _sha(t["commit"])
     app = t.get("app") or {}
     ver = f" The bundle's version must be at least {app['version']} ({app['file']} at {sha})." if app.get("version") else ""
@@ -669,23 +738,32 @@ def _web_check(t: dict, when: str | None) -> str:
             f"{_compare_cmd(t['repo'], sha or '<merge commit>')}; `ahead` or `identical` passes.{ver}")
 
 
-def check_clause(t: dict, when: str | None = None) -> str:
-    """How a tester confirms the build they use contains this repo's merge."""
+def check_clause(t: dict, when: str | None = None, surface: dict | None = None) -> str:
+    """How a tester confirms the build they use contains this repo's merge.
+
+    ``surface`` (``{"hosts": [...], "jobs": bool}``) is what the cases using
+    this repo call: the hosts in their steps and whether any tests cron/job
+    behaviour. It picks the deployment that serves them (rule AJ).
+    """
     if t["platform"] == "ios":
         body = _ios_check(t)
     elif t["platform"] == "android":
         body = _android_check(t)
     elif t["platform"] == "web":
-        body = _web_check(t, when)
+        body = _web_check(t, when, surface)
     else:
-        body = _container_check(t, when)
+        body = _container_check(t, when, surface)
     gate = gate_sentence(t)
     return f"{body} {gate}" if gate else body
 
 
-def build_check_step(targets: list[dict], when: str | None = None) -> str:
-    """The first step of a case that needs a running build."""
-    clauses = [check_clause(t, when) for t in targets]
+def build_check_step(targets: list[dict], when: str | None = None,
+                     surfaces: dict[str, dict] | None = None) -> str:
+    """The build check at the top of the plan, one clause per repo.
+
+    ``surfaces`` maps a repo to what its cases call (see ``check_clause``).
+    """
+    clauses = [check_clause(t, when, (surfaces or {}).get(t["repo"])) for t in targets]
     body = clauses[0] if len(clauses) == 1 else " ".join(
         f"({n}) {c}" for n, c in enumerate(clauses, 1))
     return (f"Build check: {body} If it does not, stop: the case is blocked on "

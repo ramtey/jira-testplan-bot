@@ -888,7 +888,7 @@ async def generate_single(
             dev_for_prompt["deploy_state"] = deploy_state
             request = request.model_copy(update={"development_info": dev_for_prompt})
             provenance["deploy_state"] = [
-                {k: e[k] for k in ("env", "repo", "tag", "error")} for e in deploy_state
+                {k: e.get(k) for k in ("env", "repo", "tag", "error", "role", "hosts")} for e in deploy_state
             ]
             unread = sorted({f"{e['env']} ({e['repo']})" for e in deploy_state if e["error"]})
             if unread:
@@ -1157,6 +1157,7 @@ async def generate_single(
             provenance["build_targets"] = evidence["build_targets"]
         if evidence.get("platform_not_applicable"):
             provenance["platform_not_applicable"] = evidence["platform_not_applicable"]
+        _record_deployment_targeting(provenance, evidence.get("deployment_targeting"))
         # A client's error handling is tested against empty and non-JSON
         # bodies too (src/app/error_variants.py). Adds a step, never a case.
         variants = require_error_body_variants(test_plan)
@@ -1477,6 +1478,27 @@ def _record_deployments(provenance: dict, deployments: dict) -> None:
         provenance["deployments_discovered"] = {**found, "errors": deployments.get("errors") or []}
 
 
+def _record_deployment_targeting(provenance: dict, targeting: dict | None) -> None:
+    """Rule AJ: deployment roles, and log / build-check lines it marked.
+
+    Its downgrades also go into ``plan_recheck`` findings, so the plan's
+    "Grounding re-read" line lists them with the other rules.
+    """
+    if not targeting:
+        return
+    provenance["deployment_targeting"] = targeting
+    report = provenance.setdefault("plan_recheck", {})
+    for f in targeting.get("log_steps") or []:
+        if f.get("action") == "marked":
+            report.setdefault("findings", []).append({
+                "section": f["section"], "title": f["title"], "rule": "AJ", "action": "marked",
+                "reason": f"step {f['step']}: {f['reason']}"})
+    for d in (targeting.get("build_check") or {}).get("downgraded") or []:
+        report.setdefault("findings", []).append({
+            "section": d["where"].split(":")[0].split(" ")[0], "title": d.get("title") or "Build check",
+            "rule": "AJ", "action": "downgraded", "reason": d["reason"]})
+
+
 def _record_ci_claims(provenance: dict, flagged: list[dict]) -> None:
     if flagged:
         provenance["ci_claims_flagged"] = flagged
@@ -1685,7 +1707,7 @@ async def generate_multi(
             t["development_info"] = dev
         if batch_deploy_state:
             provenance["deploy_state"] = [
-                {k: e[k] for k in ("env", "repo", "tag", "error")} for e in batch_deploy_state
+                {k: e.get(k) for k in ("env", "repo", "tag", "error", "role", "hosts")} for e in batch_deploy_state
             ]
 
         mode = classify_multi_ticket_mode(tickets_data)
@@ -1813,6 +1835,7 @@ async def generate_multi(
             provenance["build_targets"] = evidence["build_targets"]
         if evidence.get("platform_not_applicable"):
             provenance["platform_not_applicable"] = evidence["platform_not_applicable"]
+        _record_deployment_targeting(provenance, evidence.get("deployment_targeting"))
         # A client's error handling is tested against empty and non-JSON
         # bodies too (src/app/error_variants.py). Adds a step, never a case.
         variants = require_error_body_variants(test_plan)

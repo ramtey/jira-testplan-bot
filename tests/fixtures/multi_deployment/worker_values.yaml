@@ -1,0 +1,24 @@
+# Sanitized from a real two-deployment app (SK-3060, plan 721): hostnames,
+# account ids, org and repo names are placeholders. This copy is the internal
+# scheduler: no host is routed to it.
+example-app:
+  image:
+    tag: main-c66d2f7
+  env: staging
+  # Single replica in staging; the job lock prevents duplicate fires.
+  replicaCount: 1
+  iamRoleArn: "arn:aws:iam::000000000000:role/staging-calc-app-role"
+  config:
+    NODE_ENV: production
+    PORT: "4000"
+    # Isolates staging onto its own database. This worker owns the
+    # Agenda cron writes, so it must match the value on the public
+    # staging-west copy that reads the same Mongo.
+    MONGODB_DB_NAME: calc-app-staging
+    # This deployment owns every Agenda job in staging. The public copy sets
+    # RUN_AGENDA_CRONS=false.
+    RUN_AGENDA_CRONS: "true"
+    # The worker links to the public app in the emails it sends: a base URL
+    # is not a host routed to this copy.
+    EXPO_PUBLIC_BASE_URL: https://calc-app-staging.example.com
+    MLS_SERVICE_URL: https://staging-mls.example.com/graphql

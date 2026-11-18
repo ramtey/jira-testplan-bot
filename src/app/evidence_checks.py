@@ -1023,8 +1023,13 @@ def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str |
     """
     from .build_targets import build_check_step, short_requirement, targets_for_case, unpin_tags
 
+    from .deployment_roles import case_text, hosts_in, is_job_case
+
     fixed = []
     used: dict[str, dict] = {}
+    # Rule AJ: what the cases on each repo call (hosts) and whether any tests
+    # cron/job behaviour, so the check names the deployment that serves them.
+    surfaces: dict[str, dict] = {}
     any_case = False
     cases = list(iter_cases(test_plan)) + [("needs_spec_cases", i, c)
                                             for i, c in enumerate(extra_cases or [])]
@@ -1041,8 +1046,12 @@ def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str |
         if not needs_deployed_env(case):
             continue
         any_case = True
+        hosts, jobs = hosts_in(case_text(case)), is_job_case(case)
         for t in mine:
             used[t["repo"]] = t
+            sf = surfaces.setdefault(t["repo"], {"hosts": [], "jobs": False})
+            sf["hosts"] += [h for h in hosts if h not in sf["hosts"]]
+            sf["jobs"] = sf["jobs"] or jobs
         pre = case.get("preconditions") if isinstance(case.get("preconditions"), str) else ""
         if BUILD_CHECK_PRECONDITION in pre:
             continue
@@ -1083,6 +1092,8 @@ def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str |
                 continue
             for t in mine:
                 used[t["repo"]] = t
+                sf = surfaces.setdefault(t["repo"], {"hosts": [], "jobs": False})
+                sf["hosts"] += [h for h in hosts_in(line) if h not in sf["hosts"]]
         elif sha and sha in line:
             continue
         any_case = True
@@ -1092,7 +1103,7 @@ def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str |
         fixed.append(f"regression_checklist:{i}")
     if top is not None and any_case:
         chosen = [t for t in (targets or []) if t["repo"] in used] or list(targets or [])
-        step = build_check_step(chosen, when) if chosen else deploy_check_step(commit, how)
+        step = build_check_step(chosen, when, surfaces) if chosen else deploy_check_step(commit, how)
         top["build_check"] = {
             "step": step,
             "repos": [t["repo"] for t in chosen],

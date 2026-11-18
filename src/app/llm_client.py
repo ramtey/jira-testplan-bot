@@ -1258,6 +1258,15 @@ not what runs now. Choose the check from the platform the case runs on:
 - Android app: versionName / versionCode (`adb shell dumpsys package <id>`),
   the same way; web app: the served bundle's commit or version.
 An app build has no image, ArgoCD app or pod: never send a tester to one.
+One app can run as several deployments (a public copy that routes the API or
+web host, and an internal worker / cron copy with no host, flags such as
+`RUN_*_CRONS: "true"` or `*_WORKER`), even in different deployments repos and
+clusters. The build check and every step that reads logs (boot lines, request
+logs, Loki) name the copy that serves the host the case calls — the one whose
+values file routes that host (ingress, gateway or Envoy host). An internal
+copy is only for cases that test cron or job behaviour. If no copy is shown to
+route the host, list every candidate with its image tag and write "confirm
+which deployment serves <host>" instead of picking one by environment name.
 Downstream code writes this check ONCE, at the top of the plan, and adds
 "Precondition: Build check passed" to every such case (rule Z); it removes a
 check step you wrote. Write the rest of the case as if the check passed. If the sources

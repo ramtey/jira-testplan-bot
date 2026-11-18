@@ -1,0 +1,27 @@
+# Sanitized from a real two-deployment app (SK-3060, plan 721): hostnames,
+# account ids, org and repo names are placeholders. This copy serves the
+# public host (tRPC API and web app).
+example-app:
+  image:
+    tag: "main-c66d2f7"
+  env: staging
+  replicaCount: 1
+  iamRoleArn: arn:aws:iam::111111111111:role/calc-app-role-staging
+  config:
+    NODE_ENV: production
+    # Must match the value on the internal staging-east worker, which writes
+    # the same Mongo via Agenda.
+    MONGODB_DB_NAME: calc-app-staging
+    EXPO_PUBLIC_BASE_URL: https://calc-app-staging.example.com
+    FILES_DB_HOST: staging-files-db.example.com
+    RUN_AGENDA_CRONS: "false"
+envoy-host:
+  hosts:
+    - dns:
+        clusterName: staging-west
+      gateway: external
+      host: calc-app-staging.example.com
+      simpleRoutes:
+        - prefix: /
+          service: calc-app-active
+          port: 4000
