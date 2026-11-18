@@ -1526,6 +1526,18 @@ turned into null), do not expect a crash; name the code that produces the
 visible result.
 ❌ BAD: expected "a blank screen, because loadDocument() returns null on failure" — when `val file = storage.open(id)` runs before the `runCatching { }` that wraps the parse, so a missing file throws and the screen's error handler shows the error alert.
 ✅ GOOD: traced_path "DocumentViewModel.kt:41 storage.open(id) — outside the runCatching at :44 → throws FileNotFoundException → caught by the collector's catch at DocumentScreen.kt:88 → showErrorAlert()"; expected "The 'Something went wrong' alert appears (DocumentScreen.kt:90)".
+When your trace contradicts what you first expected, the traced outcome
+REPLACES that claim: never write both outcomes in one Expected. Then check the
+steps still reach what the title is about. If the trace shows the failure
+happens before the component under test runs (an early lookup or validation
+fails, so the step the title is about never sends or never runs), change the
+steps and test data to a path that does reach it, or split the case: one case
+for what these steps really produce, and one that reaches the title's
+condition — or, when nothing a tester can drive reaches it, a
+`code_review_checks` entry saying why. Quote file, step and function names
+whole, exactly as the code spells them.
+❌ BAD: title "A step that fails still writes its redacted request XML to the debug ZIP", steps use an unknown county; Expected "County resolution fails before step 3, so the ZIP only has steps 1–2. The failed step's request XML is still in the ZIP." — county resolution is not a request, nothing after it is sent, and the Expected asserts two incompatible things.
+✅ GOOD: case 1 "An unknown county stops the debug run after step 2": Expected names the CountyResolution error and the step1/step2 files only. Case 2 drives a request step that fails after sending (or a code-review entry when no tester can make it fail), asserting its request XML is in the ZIP with the token redacted.
 
 **Q, first rejecting check — exact error text comes from the whole request
 path, never from one function.** Before an Expected quotes an exact error
@@ -2735,7 +2747,7 @@ Before generating each section, mentally sort your tests:
 ✅ Does every action step name an input the case's surface really has (a field, picker or fallback in that client's code, declared in `surface_inputs`)? → if the server needs a shape this surface cannot send, move the case to a surface that can, use the real route, write it as backend_http, or split it per surface (P)
 
 **TRACING SELF-CHECK (rules Q–Z) — re-read each case against the code before submitting:**
-✅ Did you trace the path to what the user sees, including the error path, in `traced_path`? Is any call outside the try/catch or runCatching that seems to protect it? Does a "returns null" claim rest on the line that makes it null, not on a nullable type? (Q)
+✅ Did you trace the path to what the user sees, including the error path, in `traced_path`? Is any call outside the try/catch or runCatching that seems to protect it? Does a "returns null" claim rest on the line that makes it null, not on a nullable type? Does any Expected assert two outcomes that cannot both be true, or steps that never reach the title's condition? (Q)
 ✅ Does any Expected quote an exact error message, status or error class? → traced from the real entry point in execution order to the FIRST check that rejects that input, one `rejection_traces` entry per input/table row, and `expected_outcome` says what the spec requires; if you cannot trace it, assert the outcome and mark the exact text unverified (Q, first rejecting check)
 ✅ Does every "reported / surfaced / logged / shown / sent" claim name the reporting line in `signal_sources`? Does every caller of a changed return value or status use it? → if not, a `kind: "unconsumed_result"` risk, not a working case (R)
 ✅ Does every "tests confirm" claim point at an assertion that checks exactly that? → otherwise "from reading the code (<file>:<line>); no test asserts this" (S)

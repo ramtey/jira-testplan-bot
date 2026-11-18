@@ -233,7 +233,11 @@ async def test_an_expected_result_the_error_path_contradicts_is_downgraded():
     report: dict = {}
     gap = await pr.run_trace_critic(_FakeLLM([read, _report(verdict)]), _ReadGH(), plan, DEV, report)
     case = plan.edge_cases[0]
-    assert gap is None and case["expected"].startswith("Contradicted by the code (rule Q): storage.open throws")
+    assert gap is None and case["expected"].startswith("Re-traced from the code (rule Q): storage.open throws")
+    # The contradicted claim is replaced, not kept beside the correction.
+    assert "blank screen" not in case["expected"] and "returns null" not in case["expected"]
+    assert case["trace_check"]["original_expected"].startswith("A blank screen")
+    assert case["grounding_downgrades"][-1]["original"].startswith("A blank screen")
     assert case["expected_verified"] is False and case["trace_check"]["verdict"] == "contradicted"
     assert report["findings"][0]["rule"] == "Q"
 
@@ -259,7 +263,10 @@ async def test_before_claims_are_checked_at_the_ticket_base():
     plan = _plan(happy_path=[_case(title="Download names the file", expected="Previously files were named by title.")])
     report: dict = {}
     await pr.run_trace_critic(llm, _ReadGH(), plan, DEV, report, bases={REPO: {"sha": "b" * 40, "pr": 7}})
-    assert plan.happy_path[0]["expected"].startswith("Unverified before-behaviour (rule T)")
+    exp = plan.happy_path[0]["expected"]
+    # The contradicted before-claim is replaced by what the old code did, never kept beside it.
+    assert exp.startswith("Before this change (rule T, re-read from the old code): the old code") and "Previously" not in exp
+    assert plan.happy_path[0]["before_check"]["original_expected"] == "Previously files were named by title."
 
 
 @pytest.mark.asyncio

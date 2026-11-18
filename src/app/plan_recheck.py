@@ -27,12 +27,16 @@ not trust that the generator followed them. Two passes:
     does not call changed code is made a pre-existing note, and one the plan
     itself calls "unverified against shipped code" leaves for the code-review
     list. **Q/T** — an agentic critic re-traces each failure-path case and each
-    "before this change" claim (at the ticket base) and marks the ones the code
-    contradicts. The critic never writes an expected result; it only marks.
+    "before this change" claim (at the ticket base). A contradicted Expected is
+    REPLACED by the traced outcome, never kept beside it (SK-3060), and when the
+    steps cannot reach the condition the title names, the case is refit to a
+    traced trigger, or split with the intent listed for code review.
 
 ``recheck_before_save`` (sync; after the scope checks, before the grounding
 re-read and quarantine)
-    **Q** an exact error message, status or error class with no traced path to
+    **Q** an Expected that keeps a contradicted claim beside its correction,
+    and a file or step name cut short of the code's name; an exact error
+    message, status or error class with no traced path to
     the first check that rejects that input — per table row
     (``first_rejection.check_pinned_messages``), **S** "tests confirm" without an assertion, **R** "reported / logged /
     surfaced" without the reporting line, **X** a case or regression line a
@@ -456,6 +460,10 @@ TRACE_SYSTEM_PROMPT = """You re-check manual QA test cases against the code befo
    - A nullable return type does not mean "returns null on failure". Find the line that turns each failure into null, or note that nothing does.
    - When the code catches a failure on purpose and turns it into a value (a missing row caught and returned as null), the user does not see a crash.
    Verdicts: "consistent" when the case's expected result matches what the traced path shows; "contradicted" when the code shows a different visible result (say which, with file:line for each hop you read, including the handler that produces it); "unverifiable" when you could not read what you needed.
+   For every "contradicted" item, also:
+   - `corrected_expected`: the whole Expected a tester grades for THESE steps, rewritten from your trace. It replaces the case's Expected, so it states only what the steps really produce and never repeats the contradicted claim. Quote every file, step, field and function name exactly as the code spells it, whole, never shortened.
+   - `steps_reach_intent`: does the trace reach the condition the case's TITLE is about? false when the failure happens before the component under test runs (an early validation or lookup fails, so the step the title is about is never sent or never runs).
+   - When `steps_reach_intent` is false: `actual_title` (a title for what these steps really test), and either `reachable_trigger` (steps and test data a tester can really drive that DO reach the title's condition, traced in the code you read, with its own expected result) or `unreachable_reason` (why nothing a tester can drive reaches it, and the unit test or code review that would check it). Never invent a trigger you did not trace.
 
 2. BEFORE-BEHAVIOUR (kind "before"). For a claim about how the code behaved before this change, read the file at the ticket base (read_file with at="base") or the '-' lines of the first PR's diff, and compare. Verdicts: "consistent" (quote the old line), "contradicted" (quote the old line that says otherwise), "unverifiable".
 
@@ -480,6 +488,22 @@ REPORT_RECHECK_TOOL = {
                         "traced_path": {"type": "string", "description": "The hops you read, file:line each."},
                         "actual": {"type": "string", "description": "For contradicted: what the user really sees (or what the old code really did), with the file:line that produces it."},
                         "reason": {"type": "string"},
+                        "corrected_expected": {"type": "string", "description": "For contradicted error_path items: the full Expected for these steps, from the trace. Replaces the old one; never repeats the contradicted claim; names quoted whole, exactly as in the code."},
+                        "steps_reach_intent": {"type": "boolean", "description": "For contradicted error_path items: whether these steps reach the condition the case's title is about."},
+                        "actual_title": {"type": "string", "description": "When steps_reach_intent is false: a title for what these steps really test."},
+                        "reachable_trigger": {
+                            "type": "object",
+                            "description": "When steps_reach_intent is false and the code shows a path a tester can drive that reaches the title's condition.",
+                            "properties": {
+                                "steps": {"type": "array", "items": {"type": "string"}},
+                                "test_data": {"type": "string"},
+                                "preconditions": {"type": "string"},
+                                "expected": {"type": "string"},
+                                "traced_path": {"type": "string", "description": "file:line per hop, files you read."},
+                            },
+                            "required": ["steps", "expected", "traced_path"],
+                        },
+                        "unreachable_reason": {"type": "string", "description": "When steps_reach_intent is false and no reachable trigger exists: why, and what unit test or review would check it."},
                         "rows": {
                             "type": "array",
                             "description": "Kind 3 only: one entry per input/row, traced from the entry point in execution order.",
@@ -567,7 +591,125 @@ def build_trace_message(items: list[dict], prs: list[dict], bases: dict[str, dic
     return "\n\n".join(parts)
 
 
-def apply_trace_verdicts(items: list[dict], verdicts: dict[str, dict], report: dict) -> dict:
+RETRACED_LABEL = "Re-traced from the code (rule Q):"
+BEFORE_RETRACED_LABEL = "Before this change (rule T, re-read from the old code):"
+NOT_REACHED_MARKER = "Unverified — these steps do not reach it (rule Q):"
+
+
+def _note_replaced(case: dict, old: str, why: str) -> None:
+    """The old claim lives on only in the grounding notes, never in the Expected a tester grades."""
+    notes = case.setdefault("grounding_downgrades", [])
+    if notes and notes[-1].get("claim", "").startswith("rule Q") and "original" not in notes[-1]:
+        notes[-1]["original"] = old
+    else:
+        notes.append({"claim": f"rule Q: replaced Expected: {old}"[:200], "reason": why[:300], "original": old})
+
+
+def _rewrite_contradicted(it: dict, v: dict, case: dict, why: str) -> None:
+    """Rule Q, contradicted: the code-traced outcome REPLACES the Expected.
+
+    The old sentence used to stay behind the marker, so the case asserted two
+    incompatible outcomes (SK-3060 plan 721: "hasErrors is true … The failed
+    step's request XML is still in the ZIP"). The old claim is kept on the
+    case's ``trace_check`` and grounding notes only.
+    """
+    exp = case.get("expected") or ""
+    corrected = (v.get("corrected_expected") or v.get("actual") or v.get("reason") or "").strip() \
+        or "record what the steps really produce; the traced path shows a different result."
+    outcome = (case.get("expected_outcome") or "").strip()
+    if it.get("pins") and outcome:
+        # Pinned text the trace contradicts: grade on the outcome the spec requires.
+        from .first_rejection import OUTCOME_ONLY
+
+        case["expected"] = f"{RETRACED_LABEL} {outcome} The code shows: {corrected} {OUTCOME_ONLY}"
+    else:
+        case["expected"] = f"{RETRACED_LABEL} {corrected}"
+    case["trace_check"] = {"verdict": "contradicted", "actual": (v.get("actual") or why).strip(),
+                           "traced_path": (v.get("traced_path") or "").strip(),
+                           "corrected_expected": corrected, "original_expected": exp}
+
+
+def _valid_trigger(t: Any) -> dict | None:
+    if not isinstance(t, dict):
+        return None
+    steps = [s.strip() for s in t.get("steps") or [] if isinstance(s, str) and s.strip()]
+    exp = (t.get("expected") or "").strip()
+    if not steps or not exp or not _FILE_LINE_RE.search(t.get("traced_path") or ""):
+        return None  # a trigger the critic did not trace is not a trigger
+    return {**t, "steps": steps, "expected": exp}
+
+
+def _refit_to_intent(it: dict, v: dict, case: dict, report: dict, test_plan: Any) -> None:
+    """The corrected trace shows the steps never reach the condition the title is about.
+
+    With a traced, reachable trigger the case keeps its title and gets the
+    steps that reach it, and what the old steps really produce becomes its own
+    case. Without one the case is retitled to what its steps produce, the
+    unreachable detail is marked unverified (never asserted), and the intent is
+    listed for code review / a unit test (``not_gradeable``, which
+    ``route_out_of_uat`` moves).
+    """
+    import copy
+
+    section = it["section"]
+    title = (case.get("title") or "").strip()
+    actual_title = (v.get("actual_title") or "").strip() or f"What these steps produce (they do not reach: {title})"
+    items = getattr(test_plan, section, None) if test_plan is not None else None
+    trig = _valid_trigger(v.get("reachable_trigger"))
+    if trig and isinstance(items, list):
+        as_written = copy.deepcopy(case)
+        as_written["title"] = actual_title
+        as_written["split_from"] = title
+        case["steps"] = trig["steps"]
+        for k in ("test_data", "preconditions"):
+            if (trig.get(k) or "").strip():
+                case[k] = trig[k].strip()
+        case["expected"] = f"{RETRACED_LABEL} {trig['expected']}"
+        case["traced_path"] = trig["traced_path"].strip()
+        case["trace_check"]["corrected_expected"] = trig["expected"]
+        case["trace_check"]["refit"] = "steps replaced with a traced path that reaches the title's condition"
+        items.append(as_written)
+        _record(report, case, section, "Q", "downgraded",
+                "the steps never reached the condition the title is about; they now follow a traced path that "
+                f"does, and what the old steps produce is its own case (\"{actual_title[:80]}\")", title)
+        return
+    reason = (v.get("unreachable_reason") or "").strip() or \
+        "the re-check found no path a tester can drive that reaches it; check it by code review or a unit test"
+    case["title"] = actual_title
+    case["intent_not_reached"] = {"intent": title, "reason": reason}
+    case["expected"] = f"{case['expected']} {NOT_REACHED_MARKER} {title} — {reason}"
+    if isinstance(items, list):
+        items.append({
+            "title": title, "steps": [], "expected": title,
+            "expected_source": case.get("expected_source") or "", "grounded_in": list(case.get("grounded_in") or []),
+            "traced_path": (v.get("traced_path") or "").strip(), "expected_verified": False,
+            "split_from": actual_title, "suggested_test": reason,
+            "not_gradeable": {"reason": f"No path a tester can drive reaches this (rule Q): {reason}"},
+        })
+    _record(report, case, section, "Q", "moved",
+            f"the steps never reach the condition the title is about ({reason}); the case now asserts only what "
+            "its steps produce and the intent is listed for code review", title)
+
+
+def _rewrite_before(it: dict, case: dict, why: str) -> bool:
+    """Rule T, contradicted: replace the before-claim sentences, never keep both."""
+    exp = case.get("expected") or ""
+    claims = [_norm(c) for c in it.get("claims") or [] if c]
+    out, replaced = [], False
+    for s in _sentences(exp):
+        if any(c and (c == _norm(s) or c in _norm(s)) for c in claims):
+            if not replaced:
+                out.append(f"{BEFORE_RETRACED_LABEL} {why}")
+                replaced = True
+        else:
+            out.append(s)
+    if replaced:
+        case["expected"] = " ".join(out)
+    return replaced
+
+
+def apply_trace_verdicts(items: list[dict], verdicts: dict[str, dict], report: dict,
+                         test_plan: Any = None) -> dict:
     changes = {"contradicted": [], "consistent": [], "unverifiable": []}
     for it in items:
         v = verdicts.get(it["id"])
@@ -588,29 +730,27 @@ def apply_trace_verdicts(items: list[dict], verdicts: dict[str, dict], report: d
                                                                     "first_rejecting_check", "message")}
                                             for r in rows]
             continue
-        why = ((v.get("actual") or v.get("reason") or "").strip() or "the traced path shows a different result")[:300]
+        # Never cut the critic's text: a 300-char slice cut a step file name
+        # in half in a tester's Expected (SK-3060 "step2_GetCustomerConfiguredPr").
+        why = (v.get("actual") or v.get("reason") or "").strip() or "the traced path shows a different result"
         exp = case.get("expected") or ""
         if it["kind"] == "error_path":
-            outcome = (case.get("expected_outcome") or "").strip()
-            if it.get("pins") and outcome and "(rule Q)" not in exp:
-                # Pinned text the trace contradicts: keep the outcome the spec requires, not the wording.
-                from .first_rejection import OUTCOME_ONLY
-
-                case["expected"] = (f"{CONTRADICTED_MARKER.format(why=why)} {outcome} {OUTCOME_ONLY} "
-                                    f"(Original expected: {exp})")
-            elif "(rule Q)" not in exp:
-                case["expected"] = f"{CONTRADICTED_MARKER.format(why=why)} {exp}".strip()
+            if "(rule Q)" in exp:
+                continue
+            _rewrite_contradicted(it, v, case, why)
             case["expected_verified"] = False
-            case["trace_check"] = {"verdict": "contradicted", "actual": why,
-                                   "traced_path": (v.get("traced_path") or "").strip()}
             _record(report, case, it["section"], "Q", "downgraded",
-                    f"expected result contradicts the traced error path: {why}", case.get("title") or "")
+                    f"expected result contradicts the traced error path; replaced with the traced outcome: "
+                    f"{why[:300]}", case.get("title") or "")
+            _note_replaced(case, exp, why)
+            if v.get("steps_reach_intent") is False and not it.get("protected"):
+                _refit_to_intent(it, v, case, report, test_plan)
         else:
-            if "(rule T)" not in exp:
-                case["expected"] = f"{BEFORE_MARKER.format(why=why)} {exp}".strip()
-            case["before_check"] = {"verdict": "contradicted", "actual": why}
+            if "(rule T)" not in exp and not _rewrite_before(it, case, why):
+                case["expected"] = f"{BEFORE_MARKER.format(why=why[:300])} {exp}".strip()
+            case["before_check"] = {"verdict": "contradicted", "actual": why, "original_expected": exp}
             _record(report, case, it["section"], "T", "downgraded",
-                    f"before-this-change claim contradicts the old code: {why}", case.get("title") or "")
+                    f"before-this-change claim contradicts the old code: {why[:300]}", case.get("title") or "")
     return changes
 
 
@@ -648,7 +788,7 @@ async def run_trace_critic(llm: Any, github: Any, test_plan: Any, dev_infos: lis
                 v = {**v, "verdict": "unverifiable",
                      "reason": "contradiction cites no file read in this run: " + (v.get("reason") or "")}
             verdicts[str(v.get("id"))] = v
-    changes = apply_trace_verdicts(items, verdicts, report)
+    changes = apply_trace_verdicts(items, verdicts, report, test_plan)
     report["trace"] = {**changes, "usage": result.get("usage"), "reads": ws.reads, "searches": ws.searches}
     return None
 
@@ -657,6 +797,157 @@ def _cites_read_file(v: dict, ws) -> bool:
     text = " ".join([v.get("actual") or "", v.get("traced_path") or "", v.get("reason") or ""])
     read = {posixpath.basename(p) for _, p in getattr(ws, "read_files", set())}
     return any(posixpath.basename(m.group(1)) in read for m in _PATH_RE.finditer(text))
+
+
+# ---------------------------------------------------------------------------
+# Q, save time. A correction never sits beside the claim it corrects, and a
+# name a tester is told to look for is the code's name, whole.
+# ---------------------------------------------------------------------------
+
+_LEGACY_Q_RE = re.compile(r"Contradicted by the code \(rule Q\):\s*(?P<why>.*?)\s+—\s+(?P<rest>.*)\Z", re.S)
+_ORIGINAL_RE = re.compile(r"\s*\(Original expected:.*\)\s*\Z", re.S)
+
+
+def _strip_contradicted(case: dict) -> tuple[str, str] | None:
+    """``(new_expected, removed)`` when the Expected keeps a contradicted claim; None when it does not."""
+    exp = case.get("expected") or ""
+    tc = case.get("trace_check") if isinstance(case.get("trace_check"), dict) else {}
+    if "Contradicted by the code" in exp:
+        # The old format: "<marker> <why> — <the contradicted Expected>", or the
+        # pinned form with "(Original expected: …)". Also what a generator copies
+        # from a previous plan shown in a regeneration prompt.
+        actual = (tc.get("corrected_expected") or tc.get("actual") or "").strip()
+        head, rest = exp, ""
+        if actual:
+            for cut in (300, len(actual)):
+                lead = f"{CONTRADICTED_MARKER.format(why=actual[:cut])} "
+                if exp.startswith(lead):
+                    head, rest = lead, exp[len(lead):]
+                    break
+        if not rest:
+            m = _LEGACY_Q_RE.search(exp)
+            if not m:
+                return None
+            actual = actual or m.group("why").strip()
+            head, rest = exp[:m.start("rest")], m.group("rest")
+        keep = ""
+        if _ORIGINAL_RE.search(rest):  # pinned form: the outcome stays, the original goes
+            keep = _ORIGINAL_RE.sub("", rest).strip()
+            removed = _ORIGINAL_RE.search(rest).group(0).strip()[len("(Original expected:"):-1].strip()
+        else:
+            removed = rest.strip()
+        before = exp[:exp.index("Contradicted by the code")].strip()
+        if len(actual) == 300 and not tc.get("corrected_expected"):
+            actual += "…"  # the old 300-char slice; show it was cut, not that it ends there
+        elif actual and actual[-1] not in ".!?…)":
+            actual += "."
+        new = " ".join(x for x in (before, RETRACED_LABEL, actual, keep) if x).strip()
+        return new, removed
+    original = (tc.get("original_expected") or "").strip()
+    if tc.get("verdict") == "contradicted" and original and RETRACED_LABEL in exp:
+        corrected = _norm(tc.get("corrected_expected") or "")
+        stale = [n for n in (_norm(x) for x in _sentences(original)) if n and n not in corrected]
+        sents = _sentences(exp)
+        # A stale sentence, or a piece of one, that the correction itself does not say.
+        drop = [x for x in sents if (n := _norm(x)) and n not in corrected
+                and any(n == st or (len(n) >= 20 and n in st) for st in stale)]
+        if drop:
+            return " ".join(x for x in sents if x not in drop), " ".join(drop)
+    return None
+
+
+def check_contradicted_expected(test_plan: Any, report: dict) -> int:
+    """Reject an Expected that carries both a rule Q correction and the claim it contradicts."""
+    n = 0
+    for section, _, case in _cases(test_plan, GRADED_SECTIONS + ("security_negative_tests",)):
+        got = _strip_contradicted(case)
+        if not got:
+            continue
+        new, removed = got
+        case["expected"] = new
+        case["expected_verified"] = False
+        tc = case.setdefault("trace_check", {"verdict": "contradicted"})
+        tc.setdefault("original_expected", removed)
+        n += 1
+        _record(report, case, section, "Q", "downgraded",
+                "Expected kept the claim the code contradicts beside its correction; the contradicted "
+                "sentence(s) were removed and are kept in the grounding notes only", case.get("title") or "")
+        _note_replaced(case, removed, "contradicted by the code (rule Q)")
+    return n
+
+
+# A file or step name: joined by "_", or ending in a file extension.
+_NAME_TOKEN_RE = re.compile(r"(?<![\w/.-])[A-Za-z][A-Za-z0-9]*(?:(?:_|\.)[A-Za-z0-9]+)+")
+_FILE_EXT_RE = re.compile(r"\.(?:xml|json|txt|csv|zip|pdf|html?|ya?ml|log|ts|tsx|js|jsx|py|kt|swift|java|cs|rb|go)$", re.I)
+_CODE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_IDENT_SEG_RE = re.compile(r"^(?=.{8,}$)(?:[a-z0-9]+[A-Z]|[A-Z][a-z0-9]+[A-Z])[A-Za-z0-9]*$")
+
+
+def _code_tokens(index) -> set[str] | None:
+    files = getattr(index, "files", None)
+    if not isinstance(files, dict) or not files:
+        return None
+    toks: set[str] = set()
+    for src in files.values():
+        for t in _CODE_TOKEN_RE.findall(getattr(src, "text", "") or ""):
+            toks.add(t)
+            toks.update(p for p in t.split("_") if p)
+    for paths in (getattr(index, "trees", None) or {}).values():
+        for path in paths or []:
+            for t in _CODE_TOKEN_RE.findall(posixpath.basename(path)):
+                toks.add(t)
+                toks.update(p for p in t.split("_") if p)
+    return toks
+
+
+def check_quoted_names(test_plan: Any, report: dict, index=None) -> int:
+    """A file or step name quoted in an Expected must be in the code whole.
+
+    Only a name that is a strict prefix of exactly one code token, or of one
+    base name the other matches extend (a cut name, like SK-3060's
+    ``step2_GetCustomerConfiguredPr``), is fixed; a prefix of several is marked; one with no match is counted as unchecked, because the
+    source index holds only the PRs' files ("not read" is never "not in the code").
+    """
+    tokens = _code_tokens(index)
+    n, unchecked = 0, []
+    for section, _, case in _cases(test_plan, GRADED_SECTIONS + ("security_negative_tests",)):
+        exp = case.get("expected") or ""
+        segs = {seg for tok in _NAME_TOKEN_RE.findall(exp) if "_" in tok or _FILE_EXT_RE.search(tok)
+                for seg in re.split(r"[_.]", tok) if _IDENT_SEG_RE.match(seg)}
+        if not segs:
+            continue
+        if tokens is None:
+            unchecked.append(case.get("title") or section)
+            continue
+        for seg in sorted(segs):
+            if seg in tokens:
+                continue
+            longer = sorted(t for t in tokens if t.startswith(seg) and len(t) > len(seg) and "_" not in t)
+            # GetCustomerConfiguredPropertyStates{,Result,Response}: the base name is the one cut.
+            base = min(longer, key=len) if longer else ""
+            if base and all(t.startswith(base) for t in longer):
+                longer = [base]
+            pat = re.compile(rf"(?<![A-Za-z0-9]){re.escape(seg)}(?![A-Za-z0-9])")
+            if len(longer) == 1:
+                case["expected"] = pat.sub(longer[0], case["expected"])
+                n += 1
+                _record(report, case, section, "Q", "fixed",
+                        f"Expected quoted a cut name \"{seg}\"; the code's name is \"{longer[0]}\"", seg)
+            elif longer:
+                case["expected"] = pat.sub(
+                    f"{seg} (Unverified — not a whole name in the code; it has {', '.join(longer[:3])})",
+                    case["expected"], count=1)
+                case["expected_verified"] = False
+                n += 1
+                _record(report, case, section, "Q", "marked",
+                        f"Expected quotes \"{seg}\", which is not a whole name in the code "
+                        f"(it has {', '.join(longer[:3])})", seg)
+            else:
+                unchecked.append(f"{case.get('title') or section}: {seg}")
+    if unchecked:
+        report.setdefault("unchecked", []).extend(
+            f"rule Q: quoted name not in the PRs' files (could not check) — {u}"[:200] for u in unchecked[:10])
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -696,10 +987,13 @@ async def recheck_before_routing(llm: Any, github: Any, test_plan: Any, dev_info
 
 def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dict] | None = None,
                         index=None) -> None:
-    """Rules S, R, Q (first rejecting check), X, Y, AD–AG, Z — code only, marks in place."""
+    """Rules Q (no correction beside its claim; whole names), S, R, Q (first rejecting check), X, Y,
+    AD–AG, Z — code only, marks in place."""
     from .build_commands import check_commands
     from .first_rejection import check_pinned_messages
 
+    check_contradicted_expected(test_plan, report)
+    check_quoted_names(test_plan, report, index)
     check_test_claims(test_plan, report)
     check_signal_claims(test_plan, report, index)
     check_pinned_messages(test_plan, report, index)

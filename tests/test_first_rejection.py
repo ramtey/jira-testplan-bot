@@ -313,7 +313,8 @@ async def test_the_critic_contradicting_the_put_row_downgrades_to_the_outcome():
     report: dict = {}
     await pr.run_trace_critic(_FakeLLM([_read(METHOD), _report(verdict)]), _ReadGH(), plan, DEV, report)
     case = plan.edge_cases[0]
-    assert case["expected"].startswith("Contradicted by the code (rule Q): row 2 (PUT)")
+    assert case["expected"].startswith(f"Re-traced from the code (rule Q): {OUTCOME} The code shows: row 2 (PUT)")
+    assert "(Original expected:" not in case["expected"]
     assert OUTCOME in case["expected"] and case["expected_verified"] is False
     # The save-time check does not stack a second marker.
     assert fr.check_pinned_messages(plan, {}, _index()) == 0

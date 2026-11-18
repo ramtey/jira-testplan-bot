@@ -1,0 +1,22 @@
+{
+  "_note": "SK-3060 plan 721 v1, edge_cases:0, as published (sanitized: no hosts, tokens or customer data). The Expected keeps the contradicted claim behind the rule Q marker, and the marker's 300-char slice cut the step2 file name in half.",
+  "why_full": "hasErrors is true because of a 'CountyResolution' error at gfe-quote-flow.ts:16 (County \"Notacounty\" not found in FNTG's list for CA), returned before GetCustomerByID or any later SOAP step runs. The ZIP only holds the successful step1_GetCustomerProductForQuote and step2_GetCustomerConfiguredPropertyStates request and response XML plus summary.txt.",
+  "original_expected": "summary.hasErrors is true. The failed step's request XML is still in the ZIP, and every AccessToken in it is [REDACTED].",
+  "case": {
+    "title": "A GFE step that fails still produces redacted request XML in the debug ZIP",
+    "preconditions": "Signed in as an internal user who can call the GFE debug endpoint on integ.",
+    "steps": [
+      "Call gfeDebug.generateDebugZip with state 'CA' and county 'Notacounty'",
+      "Open the returned ZIP and read summary.txt and every *_request.xml"
+    ],
+    "test_data": "state CA, county 'Notacounty'",
+    "expected": "Contradicted by the code (rule Q): hasErrors is true because of a 'CountyResolution' error at gfe-quote-flow.ts:16 (County \"Notacounty\" not found in FNTG's list for CA), returned before GetCustomerByID or any later SOAP step runs. The ZIP only holds the successful step1_GetCustomerProductForQuote and step2_GetCustomerConfiguredProper — summary.hasErrors is true. The failed step's request XML is still in the ZIP, and every AccessToken in it is [REDACTED].",
+    "expected_source": "apps/server/src/services/gfe-service/gfe-debug-service.ts:45",
+    "expected_verified": false,
+    "trace_check": {
+      "verdict": "contradicted",
+      "actual": "hasErrors is true because of a 'CountyResolution' error at gfe-quote-flow.ts:16 (County \"Notacounty\" not found in FNTG's list for CA), returned before GetCustomerByID or any later SOAP step runs. The ZIP only holds the successful step1_GetCustomerProductForQuote and step2_GetCustomerConfiguredProper",
+      "traced_path": "gfe-quote-flow.ts:13 → gfe-quote-flow.ts:16 onError('CountyResolution') → return at :17"
+    }
+  }
+}
