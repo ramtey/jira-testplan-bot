@@ -328,6 +328,24 @@ async def mark_plan_posted_to_jira(
         )
 
 
+async def update_plan_body(
+    db: AsyncIOMotorDatabase,
+    *,
+    plan_id: int,
+    body: str,
+) -> None:
+    """Rewrite a stored plan's body in place: same id, same version.
+
+    Only for edits that keep every case where it is (the post-time PR state
+    refresh, src/app/pr_state_recheck.py): the progress key fingerprints the
+    section counts, and a body with cases added or moved would silently
+    misattach the marks recorded against this plan.
+    """
+    await db[GeneratedPlan.__collection__].update_one(
+        {"_id": plan_id}, {"$set": {"body": body, "updated_at": utcnow()}}
+    )
+
+
 async def get_plan_with_cases(
     db: AsyncIOMotorDatabase,
     *,

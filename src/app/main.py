@@ -48,7 +48,7 @@ from .repositories import (
     walkthrough_repository,
 )
 from .runs_routes import router as runs_router
-from .services import auto_post, plan_adoption, plan_posting, plan_service
+from .services import auto_post, plan_adoption, plan_posting, plan_service, post_recheck
 from .services import mark_carryover
 from .services import progress_key as progress_key_service
 from .services.plan_service import NonTestableIssueError, SourceLookupUnavailableError
@@ -739,15 +739,24 @@ async def post_comment(request: PostCommentRequest):
     """
     jira = JiraClient()
     try:
+        # Re-read the plan's grounding PRs first (src/app/pr_state_recheck.py):
+        # a plan whose PRs moved is refused, one whose PRs only merged is
+        # refreshed and re-rendered before it goes up.
+        comment_text, recheck = await post_recheck.comment_text_for_post(
+            request.plan_id, request.comment_text, walkthrough_key=request.issue_key,
+        )
         result = await plan_posting.post_one(
             jira,
             issue_key=request.issue_key,
-            comment_text=request.comment_text,
+            comment_text=comment_text,
             plan_id=request.plan_id,
             kind=PlanCommentKind.single,
         )
+        result["pr_state_recheck"] = post_recheck.describe(recheck)
         await auto_post.log_manual_post(request.issue_key, result)
         return result
+    except post_recheck.PlanGroundingStale as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except JiraAuthError as e:
@@ -786,23 +795,31 @@ async def post_plan(request: PostPlanRequest):
         raise HTTPException(status_code=400, detail="No ticket key supplied.")
     jira = JiraClient()
     try:
+        comment_text, recheck = await post_recheck.comment_text_for_post(
+            request.plan_id, request.comment_text, walkthrough_key=keys[0],
+        )
         if len(keys) == 1:
             result = await plan_posting.post_one(
                 jira,
                 issue_key=keys[0],
-                comment_text=request.comment_text,
+                comment_text=comment_text,
                 plan_id=request.plan_id,
                 kind=PlanCommentKind.single,
             )
             result["scope"] = "single"
+            result["pr_state_recheck"] = post_recheck.describe(recheck)
             await auto_post.log_manual_post(keys[0], result)
             return result
-        return await plan_posting.post_batch(
+        result = await plan_posting.post_batch(
             jira,
             plan_id=request.plan_id,
-            comment_text=request.comment_text,
+            comment_text=comment_text,
             ticket_keys=keys,
         )
+        result["pr_state_recheck"] = post_recheck.describe(recheck)
+        return result
+    except post_recheck.PlanGroundingStale as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except JiraNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except JiraAuthError as e:

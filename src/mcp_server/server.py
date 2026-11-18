@@ -318,10 +318,9 @@ def _provenance_text(test_plan_dict: dict) -> str:
             entry.get("url") or entry.get("title") or "unidentified PR"
         )
         state = _PR_STATE_LABELS.get(entry.get("state"), entry.get("state") or "unknown")
-        sha = entry.get("head_sha") or ""
-        text += f"  • {name} — {state}"
-        if len(sha) >= 7:
-            text += f" @ {sha[:7]}"
+        from src.app.pr_state_recheck import sha_suffix
+
+        text += f"  • {name} — {state}{sha_suffix(entry)}"
         if not entry.get("used_as_grounding"):
             text += " (excluded)"
         text += "\n"

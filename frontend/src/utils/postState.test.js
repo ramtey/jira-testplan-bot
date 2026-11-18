@@ -121,3 +121,9 @@ test('a post the app did not record says the plan is on the ticket', () => {
   assert.equal(s.warning, 'Not recorded')
   assert.match(s.hint, /on the ticket/)
 })
+
+test('a plan whose grounding PR moved is not offered for posting as it is', () => {
+  const s = at({ last_auto_post: { action: 'skipped', reason: 'grounding_moved', detail: 'org/repo#31 has new commits since the plan was written', plan_id: 9 } })
+  assert.match(s.hint, /Regenerate the plan/)
+  assert.doesNotMatch(s.hint, /as it is/)
+})

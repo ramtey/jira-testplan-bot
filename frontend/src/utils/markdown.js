@@ -411,6 +411,54 @@ const formatSharedStepsJira = (plan) => {
   return `${jira}\nCases refer to these as "Precondition: Build check passed" or "Precondition: <id> passed" instead of repeating them.\n\n`
 }
 
+// ─── PR state re-check (src/app/pr_state_recheck.py) ─────────────────────────
+// Before save and before every post the plan's grounding PRs are re-read. A PR
+// that merged after the plan was written, with the code the plan read, updates
+// the plan in place; this block says what changed, so a tester comparing it
+// with an earlier copy knows why blockers went away. Unconfirmed is said too.
+export const prStateRefreshLines = (plan) => {
+  const r = plan?.pr_state_refresh
+  if (!r || typeof r !== 'object') return null
+  const when = r.phase === 'save' ? 'before save' : 'at post time'
+  const lines = []
+  ;(Array.isArray(r.refuse) ? r.refuse : []).forEach((x) => lines.push(`⚠️ Grounding out of date: ${x}.`))
+  ;(Array.isArray(r.changes) ? r.changes : []).forEach((c) => {
+    const files = Array.isArray(c.files_compared) ? c.files_compared.length : 0
+    const merged = c.merged_at ? ` ${String(c.merged_at).replace('T', ' ').replace(/(:\d\d)(\.\d+)?(Z|\+00:00)$/, '$1 UTC')}` : ''
+    lines.push(`${c.pr}: ${c.from || 'open'} → merged${merged} (merge commit ${shortSha(c.merge_commit_sha) || 'unknown'}). ` +
+      `Head ${shortSha(c.head_sha) || 'unknown'} unchanged; ${files} cited file(s) identical in the merged tree.`)
+  })
+  ;(Array.isArray(r.blockers_dropped) ? r.blockers_dropped : []).forEach((b) =>
+    lines.push(`Blocker removed from ${b.case}${b.title ? ` “${b.title}”` : ''}: ${b.blocker}`))
+  ;(Array.isArray(r.blockers_unverified) ? r.blockers_unverified : []).forEach((b) =>
+    lines.push(`Blocker unverified ${when} on ${b.case}${b.title ? ` “${b.title}”` : ''}: ${b.blocker} (${b.why})`))
+  const stale = Array.isArray(r.stale_sentences_marked) ? r.stale_sentences_marked : []
+  if (stale.length > 0) {
+    lines.push(`Marked [stale] where a case or setup step still calls a merged PR a draft or unmerged: ${[...new Set(stale.map((x) => x.case))].join(', ')}.`)
+  }
+  ;(Array.isArray(r.build_check_added) ? r.build_check_added : []).forEach((b) =>
+    lines.push(`Build check now also requires merge commit ${shortSha(b.sha)} (${b.pr}).`))
+  if (Array.isArray(r.unreadable) && r.unreadable.length > 0 && r.phase !== 'save') {
+    lines.push(`Could not re-read ${r.unreadable.join(', ')}: their state is as recorded when the plan was written, unconfirmed now.`)
+  }
+  if (lines.length === 0) return null
+  const head = `PR state refreshed ${when}${r.checked_at ? ` (${r.checked_at})` : ''}` +
+    (r.plan_created_at ? ` — plan written ${r.plan_created_at}` : '')
+  return { head, lines }
+}
+
+const formatPrStateRefreshMarkdown = (plan) => {
+  const r = prStateRefreshLines(plan)
+  if (!r) return ''
+  return `## 🔄 ${r.head}\n\n${r.lines.map((l) => `- ${l}`).join('\n')}\n\n`
+}
+
+const formatPrStateRefreshJira = (plan) => {
+  const r = prStateRefreshLines(plan)
+  if (!r) return ''
+  return `🔄 ${r.head.toUpperCase()}\n\n${r.lines.map((l) => `  • ${l}`).join('\n')}\n\n════════════════════════════════════════════\n\n`
+}
+
 const formatEvidenceMarkdown = (plan) => {
   let md = formatSharedStepsMarkdown(plan) + formatTopologyMarkdown(plan)
   const warnings = deploymentWarnings(plan)
@@ -783,7 +831,10 @@ const formatProvenanceMarkdown = (plan) => {
     const sha = shortSha(e.head_sha)
     md += `- ${e.url ? `[${prLabel(e)}](${e.url})` : prLabel(e)} — ${state}`
     if (e.borrowed && e.ticket_key) md += ` — from ${e.ticket_key}`
-    if (sha) md += ` @ \`${sha}\``
+    const merge = e.state === 'merged' ? shortSha(e.merge_commit_sha) : null
+    if (merge) md += ` @ merge \`${merge}\`${sha ? ` (head \`${sha}\`)` : ''}`
+    else if (sha) md += ` @ \`${sha}\``
+    if (e.state_at_generation) md += ` — was ${e.state_at_generation} when the plan was written; refreshed ${e.state_refreshed_at || ''}`.trimEnd()
     if (!e.used_as_grounding) md += ' — **excluded**'
     md += '\n'
   })
@@ -868,7 +919,10 @@ const formatProvenanceJira = (plan) => {
     const sha = shortSha(e.head_sha)
     jira += `  • ${prLabel(e)} — ${state}`
     if (e.borrowed && e.ticket_key) jira += ` — from ${e.ticket_key}`
-    if (sha) jira += ` @ ${sha}`
+    const merge = e.state === 'merged' ? shortSha(e.merge_commit_sha) : null
+    if (merge) jira += ` @ merge ${merge}${sha ? ` (head ${sha})` : ''}`
+    else if (sha) jira += ` @ ${sha}`
+    if (e.state_at_generation) jira += ` — was ${e.state_at_generation} when the plan was written; refreshed ${e.state_refreshed_at || ''}`.trimEnd()
     if (!e.used_as_grounding) jira += ' (excluded)'
     if (e.url) jira += `\n    ${e.url}`
     jira += '\n'
@@ -1062,6 +1116,7 @@ export const formatTestPlanAsMarkdown = (plan, ticketData, walkthrough = null) =
 
   const hasAcs = planHasAnyAcs(plan)
 
+  markdown += formatPrStateRefreshMarkdown(plan)
   markdown += formatEvidenceMarkdown(plan)
   markdown += formatUatGuideMarkdown(plan, walkthrough)
   markdown += formatProvenanceMarkdown(plan)
@@ -1453,6 +1508,7 @@ export const formatTestPlanAsJira = (plan, walkthrough = null) => {
 
   let jira = ''
 
+  jira += formatPrStateRefreshJira(plan)
   jira += formatEvidenceJira(plan)
   jira += formatUatGuideJira(plan, walkthrough)
   jira += formatProvenanceJira(plan)

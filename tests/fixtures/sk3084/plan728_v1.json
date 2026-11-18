@@ -1,0 +1,217 @@
+{
+ "_about": "Sanitized SK-3084 plan 728 v1: generated 2026-11-17T15:59:41Z while PR #31 was open; #31 merged 2026-11-17T16:38:09Z (merge 7e106a0, head c1d2c33 unchanged; only CODEOWNERS differs); posted 2026-11-18. Repo, URLs and SHAs (beyond the 7-char prefixes) are placeholders.",
+ "ticket_key": "SK-3084",
+ "happy_path": [
+  {
+   "title": "Majors list returns for a valid user",
+   "preconditions": "Precondition: Build check passed for mobile-functions (see Build check at the top of the plan).",
+   "environment": "integ",
+   "steps": [
+    "GET /majors?userId=<test user>"
+   ],
+   "expected": "200 with the majors list",
+   "expected_source": "functions/src/majors/validate.ts:12",
+   "grounded_in": [
+    "pr:functions/src/majors/validate.ts"
+   ]
+  }
+ ],
+ "edge_cases": [
+  {
+   "title": "Missing userId returns the error list",
+   "priority": "high",
+   "preconditions": "BLOCKED BY SETUP (rule AF): PR #31 is not merged or deployed \u2014 run once it exists. Precondition: Build check passed for mobile-functions (see Build check at the top of the plan). ",
+   "blocked_by_setup": "PR #31 is not merged or deployed",
+   "required_setup": [
+    {
+     "need": "PR #31 is not merged or deployed",
+     "status": "missing",
+     "how_to_get": "wait for PR #31 to merge and deploy"
+    }
+   ],
+   "environment": "integ",
+   "steps": [
+    "POST /majors with no userId",
+    "Read the response body"
+   ],
+   "expected": "400 {errors:['userId parameter is required.', ...]}",
+   "expected_source": "functions/src/majors/handler.ts:41",
+   "grounded_in": [
+    "pr:functions/src/majors/handler.ts"
+   ],
+   "grounded_in_unmerged": true
+  },
+  {
+   "title": "Empty userId returns the error list",
+   "priority": "high",
+   "preconditions": "BLOCKED BY SETUP (rule AF): PR #31 is not merged or deployed \u2014 run once it exists. Precondition: Build check passed for mobile-functions (see Build check at the top of the plan). ",
+   "blocked_by_setup": "PR #31 is not merged or deployed",
+   "required_setup": [
+    {
+     "need": "PR #31 is not merged or deployed",
+     "status": "missing",
+     "how_to_get": "wait for PR #31 to merge and deploy"
+    }
+   ],
+   "environment": "integ",
+   "steps": [
+    "POST /majors with no userId",
+    "Read the response body"
+   ],
+   "expected": "400 {errors:['userId parameter is required.', ...]}",
+   "expected_source": "functions/src/majors/handler.ts:41",
+   "grounded_in": [
+    "pr:functions/src/majors/handler.ts"
+   ],
+   "grounded_in_unmerged": true
+  }
+ ],
+ "integration_tests": [
+  {
+   "title": "Majors call reaches the downstream service",
+   "environment": "integ",
+   "preconditions": "Precondition: Build check passed for mobile-functions (see Build check at the top of the plan).",
+   "steps": [
+    "Call /majors"
+   ],
+   "expected": "Downstream call logged",
+   "grounded_in": [
+    "pr:functions/src/majors/validate.ts"
+   ]
+  },
+  {
+   "title": "Ingestion picks up a majors error event",
+   "priority": "high",
+   "preconditions": "BLOCKED BY SETUP (rule AF): PR #31 is not merged or deployed; ingestion deploy needs Lead approval \u2014 run once it exists. Precondition: Build check passed for mobile-functions (see Build check at the top of the plan). ",
+   "blocked_by_setup": "PR #31 is not merged or deployed; ingestion deploy needs Lead approval",
+   "required_setup": [
+    {
+     "need": "PR #31 is not merged or deployed",
+     "status": "missing",
+     "how_to_get": "wait for PR #31 to merge and deploy"
+    }
+   ],
+   "environment": "integ",
+   "steps": [
+    "POST /majors with no userId",
+    "Read the response body"
+   ],
+   "expected": "400 {errors:['userId parameter is required.', ...]}",
+   "expected_source": "functions/src/majors/handler.ts:41",
+   "grounded_in": [
+    "pr:functions/src/majors/handler.ts"
+   ],
+   "grounded_in_unmerged": true
+  },
+  {
+   "title": "Majors error event carries the userId field",
+   "priority": "high",
+   "preconditions": "BLOCKED BY SETUP (rule AF): PR #31 is not merged or deployed \u2014 run once it exists. Precondition: Build check passed for mobile-functions (see Build check at the top of the plan). ",
+   "blocked_by_setup": "PR #31 is not merged or deployed",
+   "required_setup": [
+    {
+     "need": "PR #31 is not merged or deployed",
+     "status": "missing",
+     "how_to_get": "wait for PR #31 to merge and deploy"
+    }
+   ],
+   "environment": "integ",
+   "steps": [
+    "POST /majors with no userId",
+    "Read the response body"
+   ],
+   "expected": "400 {errors:['userId parameter is required.', ...]}",
+   "expected_source": "functions/src/majors/handler.ts:41",
+   "grounded_in": [
+    "pr:functions/src/majors/handler.ts"
+   ],
+   "grounded_in_unmerged": true
+  }
+ ],
+ "regression_checklist": [
+  "\ud83d\udfe2 Majors list still loads in the app"
+ ],
+ "deployment_status": {
+  "status": "not_deployed",
+  "deployed_envs": [],
+  "warnings": [
+   "The majors PR (#31) is still a draft and is not deployed anywhere (PR #31 description)"
+  ]
+ },
+ "build_check": {
+  "step": "Build check: example-org/mobile-functions \u2014 confirm the deployed image contains merge commit 577c933: read the deployed commit from this environment's deployment values file (the image tag ends in the commit it was built from), the ArgoCD app's image, or the running pod's image, then run `gh api repos/example-org/mobile-functions/compare/577c933...<deployed commit> --jq .status`; `ahead` or `identical` means the build contains the merge, `behind` or `diverged` means it does not. Any later build that contains it passes; the tag does not have to match a particular name. This ticket's change is PR #30 (merge commit 577c933). If it does not, stop: the case is blocked on deployment.",
+  "repos": [
+   "example-org/mobile-functions"
+  ],
+  "summary": "the deployed mobile-functions build contains 577c933",
+  "cases": 6
+ },
+ "build_and_ci": [
+  {
+   "kind": "build_gate",
+   "finding": "example-org/mobile-functions: This ticket's change is PR #30 (merge commit 577c933).",
+   "evidence": "",
+   "repo": "example-org/mobile-functions"
+  }
+ ],
+ "source_provenance": {
+  "pull_requests": [
+   {
+    "number": 30,
+    "repository": "example-org/mobile-functions",
+    "url": "https://github.com/example-org/mobile-functions/pull/30",
+    "title": "Majors endpoint: validate userId",
+    "state": "merged",
+    "head_sha": "a30a30a000000000000000000000000000000000",
+    "merge_commit_sha": "577c933000000000000000000000000000000000",
+    "merged_at": "2026-11-17T14:02:00Z",
+    "source_branch": null,
+    "used_as_grounding": true
+   },
+   {
+    "number": 31,
+    "repository": "example-org/mobile-functions",
+    "url": "https://github.com/example-org/mobile-functions/pull/31",
+    "title": "Majors endpoint: error list",
+    "state": "open",
+    "head_sha": "c1d2c33000000000000000000000000000000000",
+    "merge_commit_sha": null,
+    "merged_at": null,
+    "source_branch": null,
+    "used_as_grounding": true
+   }
+  ],
+  "commit_shas": [],
+  "branches": [],
+  "merged_pr_count": 1,
+  "open_pr_count": 1,
+  "excluded_pr_count": 0,
+  "state_unverified_pr_count": 0,
+  "grounded_on_unmerged": true,
+  "authoritative": false,
+  "generated_at": "2026-11-17T15:59:41+00:00",
+  "build_targets": [
+   {
+    "repo": "example-org/mobile-functions",
+    "commit": "577c933000000000000000000000000000000000",
+    "platform": "backend",
+    "app_version": null,
+    "gate": {
+     "pr": {
+      "number": 30,
+      "url": "https://github.com/example-org/mobile-functions/pull/30",
+      "title": "Majors endpoint: validate userId",
+      "sha": "577c933000000000000000000000000000000000",
+      "merged": true,
+      "match": null
+     },
+     "later": [],
+     "set_aside": [],
+     "verified": true,
+     "keys": []
+    },
+    "capabilities": null
+   }
+  ]
+ }
+}

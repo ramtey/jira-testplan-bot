@@ -34,6 +34,13 @@ const describeMiss = (last) => {
         warning: 'Not auto-posted',
         hint: `Not auto-posted: ${last.detail}. Regenerate against the merged code, or post this version as it is.`,
       }
+    case 'grounding_moved':
+      // A PR the plan rests on moved since it was written (pr_state_recheck).
+      // The Post button refuses it for the same reason, so it is not offered.
+      return {
+        warning: 'Not auto-posted',
+        hint: `Not auto-posted: ${last.detail}. Regenerate the plan; this version cannot be posted.`,
+      }
     case 'freshness_unknown':
       return {
         warning: 'Not auto-posted',

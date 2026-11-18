@@ -127,6 +127,9 @@ def _provenance_entry(pr: dict, state: str) -> dict:
         "title": pr.get("title"),
         "state": state,
         "head_sha": pr.get("head_sha"),
+        # The commit the merge produced. Recorded so the plan's build check
+        # and a later re-check of this PR (pr_state_recheck) can name it.
+        "merge_commit_sha": pr.get("merge_commit_sha"),
         "merged_at": pr.get("merged_at"),
         "source_branch": pr.get("source_branch"),
         "used_as_grounding": state in GROUNDING_STATES,

@@ -427,6 +427,9 @@ async def phase_replay(rows, limit):
     settings.deploy_state_sources = {}
     # Flag state likewise: today's targeting, not the bounce's.
     settings.ld_flag_sources = {}
+    # And PR state: the save-time re-check reads today's GitHub, where the
+    # PRs a rewound plan saw open have since merged or moved.
+    settings.pr_state_recheck_before_save = False
     # Exploration reads default branches, which today may hold the fix. Off
     # unless EVAL_EXPLORATION=1, which pins its reads to the bounce cutoff
     # (settings.exploration_as_of, set per ticket below).

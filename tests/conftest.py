@@ -220,6 +220,12 @@ def no_live_repo_evidence(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(GitHubClient, "fetch_pr_commit_messages", _not_read)
 
+    # The save-time PR state re-check re-reads every fixture PR from GitHub
+    # (src/app/pr_state_recheck.py). Its own tests pass a fake client.
+    from src.app.config import settings
+
+    monkeypatch.setattr(settings, "pr_state_recheck_before_save", False)
+
 
 @pytest.fixture(autouse=True)
 def no_previous_plan(monkeypatch: pytest.MonkeyPatch):

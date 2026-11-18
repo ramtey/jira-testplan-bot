@@ -470,11 +470,15 @@ def gate_sentence(t: dict) -> str:
         out = (f"Open question: {_pr_ref(pr)} ({what} {_sha(pr['sha'])}) is linked to this ticket, "
                f"but its branch and title do not name {keys} and {why}; confirm it is this "
                f"ticket's change before trusting this check.")
+    # Every merged PR the plan grounds on is named, not only the first and
+    # the newest: SK-3084's check named PR #30's merge alone while the build
+    # under test also carried #31.
     later = [p for p in g.get("later") or [] if p and p.get("sha")]
     if later:
         last = later[-1]
-        out += (f" Build must be at or after {_sha(last['sha'])} ({_pr_ref(last)}, a later PR "
-                f"for this ticket), which is the commit checked here.")
+        named = ", ".join(f"{_pr_ref(p)} (merge commit {_sha(p['sha'])})" for p in later)
+        out += (f" Later PRs for this ticket also merged: {named}. Build must be at or after "
+                f"{_sha(last['sha'])} ({_pr_ref(last)}, the newest), which is the commit checked here.")
     for p in g.get("set_aside") or []:
         if not p:
             continue

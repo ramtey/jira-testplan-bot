@@ -17,6 +17,9 @@ person:
 * **A plan with no cases** — this repo's recurring failure is a transient
   error saved as a plan (an empty tool_use, an off-VPN run). Posting it would
   put that failure on the ticket looking like a finished plan.
+* **A plan whose grounding PRs moved** — new commits, closed unmerged, or
+  merged code that differs from what the plan read (pr_state_recheck). A PR
+  that only merged, with the code the plan read, refreshes the plan instead.
 * **A plan older than the merged code** — the watcher never regenerates, so a
   PR merged after the plan leaves it describing code that moved. In the app
   StalePlanNotice says so; posted unattended, the comment would not. A merge
@@ -39,6 +42,7 @@ from src.app.config import settings
 from src.app.db.mongo import get_db
 from src.app.jira_client import JiraClient, PlanCommentKind, _comment_marker_kind
 from src.app.repositories import auto_post_repository, plan_repository
+from src.app.pr_state_recheck import PHASE_POST, recheck_pr_states
 from src.app.services import plan_posting, plan_service
 from src.app.source_grounding import PR_STATE_MERGED, classify_pr_state
 from src.app import uat_readiness
@@ -54,6 +58,9 @@ SKIP_EMPTY_PLAN = "empty_plan"
 SKIP_ALREADY_LIVE = "already_live"
 SKIP_COMMENT_EXISTS = "plan_comment_exists"
 SKIP_STALE_PLAN = "stale_plan"
+# A PR the plan is grounded on moved since it was written (new commits,
+# closed, or merged code that differs): src/app/pr_state_recheck.py.
+SKIP_GROUNDING_MOVED = "grounding_moved"
 # Not an auto-post outcome: a plan generated before its ticket reached
 # testing. History only, so "nothing logged" never has to be explained.
 SKIP_NOT_IN_TESTING = "not_in_testing"
@@ -204,12 +211,17 @@ def _parse_ts(value) -> datetime | None:
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
-def freshness_problem(serialized: dict, plan_created_at) -> tuple[str, str, str] | None:
+def freshness_problem(
+    serialized: dict, plan_created_at, accounted_for: set[str] | frozenset[str] = frozenset()
+) -> tuple[str, str, str] | None:
     """`(action, reason, detail)` if the plan may predate its merged code.
 
     The server-side twin of `mergesAfterPlan` (frontend/utils/planFreshness),
     plus what that one can afford to ignore: here "could not tell" has to
     stop the post, because nobody is looking at the plan when it goes up.
+
+    `accounted_for` holds the URLs of PRs the PR state re-check already
+    confirmed merged with the code the plan read, and refreshed the plan for.
     """
     if serialized.get("dev_status_unavailable"):
         return FAILED, FAIL_FRESHNESS_UNKNOWN, "Jira's development panel did not answer"
@@ -226,7 +238,7 @@ def freshness_problem(serialized: dict, plan_created_at) -> tuple[str, str, str]
                 FAILED, FAIL_FRESHNESS_UNKNOWN,
                 f"no merge time for {pr.get('url') or 'a merged PR'}",
             )
-        if merged > planned:
+        if merged > planned and pr.get("url") not in accounted_for:
             return (
                 SKIPPED, SKIP_STALE_PLAN,
                 f"{pr.get('url') or 'a PR'} merged after the plan was written",
@@ -321,12 +333,16 @@ async def auto_post_own_plan(
 
 # Outcomes worth interrupting someone for. Everything else is either a post,
 # a normal "nothing to do yet", or a choice a person already made.
-_ALERT_SKIPS = {SKIP_STALE_PLAN, SKIP_EMPTY_PLAN}
+_ALERT_SKIPS = {SKIP_STALE_PLAN, SKIP_EMPTY_PLAN, SKIP_GROUNDING_MOVED}
 
 
 def _alert_text(outcome: AutoPostOutcome) -> str:
     if outcome.reason == SKIP_STALE_PLAN:
         return f"{outcome.detail}. Regenerate, or post it as it is."
+    if outcome.reason == SKIP_GROUNDING_MOVED:
+        # A manual post is refused for the same reason, so "post it as it is"
+        # is not on offer here.
+        return f"{outcome.detail}."
     if outcome.reason == SKIP_EMPTY_PLAN:
         return "The plan has no cases, so it was not posted."
     if outcome.reason in ("partial", "truncated"):
@@ -391,18 +407,30 @@ async def _decide_and_post(
         return AutoPostOutcome(key, FAILED, "plan_missing", f"plan {plan_id} not found", plan_id)
     stored, _cases = found
 
+    # Re-read every PR the plan is grounded on (src/app/pr_state_recheck.py).
+    # New commits, an abandoned PR, or merged code that differs from what the
+    # plan read: not posted. A PR that only merged: the plan is refreshed in
+    # place, and that merge no longer makes the plan stale below.
+    body = json.loads(stored.body)
+    report = await recheck_pr_states(body, phase=PHASE_POST, created_at=stored.created_at)
+    if report["refuse"]:
+        return AutoPostOutcome(key, SKIPPED, SKIP_GROUNDING_MOVED, "; ".join(report["refuse"]), plan_id)
+    refreshed = {c["url"] for c in report["changes"]}
+
     # Last of the checks because it is the slow one: the development panel
     # fans out to GitHub for merge times, 5-14s on a real ticket.
     serialized = plan_service.serialize_issue(await jira.get_issue(key))
-    problem = freshness_problem(serialized, stored.created_at)
+    problem = freshness_problem(serialized, stored.created_at, accounted_for=refreshed)
     if problem:
         action, reason, detail = problem
         return AutoPostOutcome(key, action, reason, detail, plan_id)
 
     if dry_run:
         return AutoPostOutcome(key, SKIPPED, "dry_run", f"would post plan {plan_id}", plan_id)
+    if report["modified"]:
+        await plan_repository.update_plan_body(db, plan_id=plan_id, body=json.dumps(body))
     plan = {
-        **json.loads(stored.body),
+        **body,
         "plan_id": stored.id,
         "version": stored.version,
         "created_at": stored.created_at.isoformat() if stored.created_at else None,

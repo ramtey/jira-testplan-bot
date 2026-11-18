@@ -165,6 +165,10 @@ class Settings(BaseSettings):
     # (each repo's last default-branch commit before it). Set per ticket by the
     # replay eval so exploration cannot read a fix merged after the bounce.
     exploration_as_of: str | None = None
+    # Re-read every grounding PR from GitHub just before a plan is saved
+    # (src/app/pr_state_recheck.py). Replay evals turn it off: it reads
+    # today's PR state, which a plan rewound to an earlier date must not see.
+    pr_state_recheck_before_save: bool = True
 
     # On a single-ticket regeneration, show the generator the previous plan and
     # its recorded QA marks so it rewords cases in place instead of moving them

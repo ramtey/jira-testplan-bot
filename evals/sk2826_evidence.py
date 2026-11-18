@@ -100,6 +100,9 @@ def _stub_persistence():
 
     plan_service._read_deploy_state = _deploy
     plan_service._read_repo_evidence = _repo
+    # The fixture's PR states are as of plan 608; the save-time re-check would
+    # read today's GitHub instead.
+    plan_service.settings.pr_state_recheck_before_save = False
     plan_service._load_seed_regressions = _no_seeds
 
     async def _no_previous(*_a, **_k):

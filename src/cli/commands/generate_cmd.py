@@ -412,8 +412,9 @@ def _provenance_lines(test_plan: dict, format: str) -> list[str]:
             entry.get("url") or entry.get("title") or "unidentified PR"
         )
         state = _PR_STATE_LABELS.get(entry.get("state"), entry.get("state") or "unknown")
-        sha = entry.get("head_sha") or ""
-        suffix = f" @ {sha[:7]}" if len(sha) >= 7 else ""
+        from src.app.pr_state_recheck import sha_suffix
+
+        suffix = sha_suffix(entry)
         excluded = "" if entry.get("used_as_grounding") else " (excluded)"
         lines.append(f"- {name} — {state}{suffix}{excluded}")
     if any(not e.get("used_as_grounding") for e in entries):

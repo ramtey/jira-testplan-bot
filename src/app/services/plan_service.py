@@ -1320,6 +1320,10 @@ async def generate_single(
         # chapters fall. Built from the finished body, not test_plan.happy_path,
         # so its case ids are the body's own (validated against case_index). A
         # snapshot: readers rebuild it through walkthrough_from_plan_body.
+        # Re-read the grounding PRs before save: one that merged while the
+        # plan was generating (minutes) is refreshed now, and every blocker
+        # naming a PR's merge state is checked against it (pr_state_recheck).
+        await llm_usage.timed("pr_state_recheck", _recheck_pr_states_before_save(response))
         response["video_walkthrough"] = walkthrough_from_plan_body(response)
         if spec_only is not None:
             response["source_notice"] = provenance["spec_only"]
@@ -1360,6 +1364,24 @@ async def generate_single(
     except Exception as e:
         await run_tracker.fail(run_ctx, error_code=_error_code(e), stages=llm_usage.stage_summary())
         raise
+
+
+async def _recheck_pr_states_before_save(response: dict) -> None:
+    """The save-time PR state re-check. Never raises: a plan is still saved."""
+    from src.app.pr_state_recheck import PHASE_SAVE, recheck_pr_states
+
+    if not settings.pr_state_recheck_before_save:
+        return
+    try:
+        report = await recheck_pr_states(response, phase=PHASE_SAVE)
+    except Exception:
+        logger.exception("PR state re-check before save failed")
+        return
+    if report["refuse"]:
+        # Grounding moved during generation. The plan is saved (it is what was
+        # generated), with the reason on it; posting it will be refused.
+        response["pr_state_refresh"] = {**report, "modified": None}
+        logger.warning("grounding moved while generating: %s", report["refuse"])
 
 
 def _ticket_bases(repo_evidence) -> dict[str, dict]:
@@ -1921,6 +1943,10 @@ async def generate_multi(
         # chapters fall. Built from the finished body, not test_plan.happy_path,
         # so its case ids are the body's own (validated against case_index). A
         # snapshot: readers rebuild it through walkthrough_from_plan_body.
+        # Re-read the grounding PRs before save: one that merged while the
+        # plan was generating (minutes) is refreshed now, and every blocker
+        # naming a PR's merge state is checked against it (pr_state_recheck).
+        await llm_usage.timed("pr_state_recheck", _recheck_pr_states_before_save(response))
         response["video_walkthrough"] = walkthrough_from_plan_body(response)
         if cross_project_payload is not None:
             response["cross_project_summary"] = (

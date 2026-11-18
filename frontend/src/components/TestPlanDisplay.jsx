@@ -2293,6 +2293,18 @@ function TestPlanDisplay({ testPlan, ticketData, ticketsData, postState, runHist
     // attached. If that attach failed it was split the old way, and the tester
     // needs to know why the ticket has several comments again.
     let spread = parts > 1 ? ` across ${parts} comments` : ''
+    // The server re-reads the plan's PRs before posting (pr_state_recheck).
+    // When one merged since the plan was written, the posted comment is the
+    // refreshed plan, not the copy on screen — say so and how to see it.
+    const rc = result.pr_state_recheck
+    if (rc?.modified) {
+      const prs = (rc.changes || []).map((c) => c.pr).join(', ')
+      spread += ` — PR state refreshed at post time${prs ? ` (${prs} merged since the plan was written)` : ''}` +
+        `${rc.blockers_dropped ? `, ${rc.blockers_dropped} stale blocker(s) removed` : ''}` +
+        `${rc.blockers_unverified ? `, ${rc.blockers_unverified} blocker(s) marked unverified` : ''}; reload the plan to see it`
+    } else if (rc?.error) {
+      spread += ` — the linked PRs were NOT re-checked before posting (${rc.error}); blockers and the build check are as of when the plan was written`
+    }
     if (result.attachment_filename) {
       spread += ` as a case index — full plan attached as ${result.attachment_filename}`
     } else if (result.attachment_error) {
