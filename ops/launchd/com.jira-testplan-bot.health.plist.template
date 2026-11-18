@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jira-testplan-bot.health</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO__/ops/launchd/healthcheck.sh</string>
+  </array>
+
+  <!-- Every minute. Two consecutive failures = down, so worst-case alert lag
+       is ~2 minutes. Doesn't fire while the Mac sleeps. -->
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/jira-testplan-health.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/jira-testplan-health.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

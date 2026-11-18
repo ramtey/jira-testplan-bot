@@ -86,6 +86,13 @@ uv run uvicorn src.app.main:app --reload    # → http://localhost:8000
 cd frontend && npm run dev                  # → http://localhost:5173
 ```
 
+On macOS you can run both always-on instead: `ops/launchd/install-servers.sh`
+installs LaunchAgents that start them at login and restart them on a crash,
+plus a once-a-minute health check that sends a macOS notification when either
+goes down or recovers (with times in `~/Library/Logs/jira-testplan-health.log`).
+Restart after `uv sync` / `npm install` with `ops/launchd/restart-servers.sh`;
+undo with `ops/launchd/uninstall-servers.sh`.
+
 → Every setting, including the four that describe your team:
 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 
