@@ -1326,6 +1326,9 @@ async def generate_single(
         # Re-read the grounding PRs before save: one that merged while the
         # plan was generating (minutes) is refreshed now, and every blocker
         # naming a PR's merge state is checked against it (pr_state_recheck).
+        # Rule AL, last of the re-checks: every pass above may have rewritten
+        # text, so the finished body is what gets checked for tool-call markup.
+        await llm_usage.timed("tool_markup_recheck", _recheck_tool_markup(llm, response, provenance))
         await llm_usage.timed("pr_state_recheck", _recheck_pr_states_before_save(response))
         response["video_walkthrough"] = walkthrough_from_plan_body(response)
         if spec_only is not None:
@@ -1367,6 +1370,30 @@ async def generate_single(
     except Exception as e:
         await run_tracker.fail(run_ctx, error_code=_error_code(e), stages=llm_usage.stage_summary())
         raise
+
+
+async def _recheck_tool_markup(llm, response: dict, provenance: dict) -> None:
+    """Rule AL (src/app/tool_markup.py): no tool-call markup is saved in a
+    plan field; a field that was nothing but markup is re-asked for."""
+    from ..llm_client import SUBMIT_TEST_PLAN_TOOL
+    from ..tool_markup import recheck_tool_markup
+
+    report = provenance.setdefault("plan_recheck", {})
+    await recheck_tool_markup(llm, response, report, schema=_body_schema(SUBMIT_TEST_PLAN_TOOL))
+    report.update(summarize_recheck(report))
+
+
+def _body_schema(tool: dict) -> dict:
+    """The generator's schema as it applies to the saved body: extended to
+    keys holding the same shapes under other names (cases moved to
+    needs-spec), without the keys the body rebuilds in its own shape
+    (``deployment_status`` is evidence_checks' banner, ``copy_only`` lives in
+    provenance)."""
+    schema = tool["input_schema"]
+    props = {k: v for k, v in (schema.get("properties") or {}).items()
+             if k not in ("deployment_status", "copy_only")}
+    props.setdefault("needs_spec_cases", props["edge_cases"])
+    return {**schema, "properties": props}
 
 
 async def _recheck_pr_states_before_save(response: dict) -> None:
@@ -1973,6 +2000,9 @@ async def generate_multi(
         # Re-read the grounding PRs before save: one that merged while the
         # plan was generating (minutes) is refreshed now, and every blocker
         # naming a PR's merge state is checked against it (pr_state_recheck).
+        # Rule AL, last of the re-checks: every pass above may have rewritten
+        # text, so the finished body is what gets checked for tool-call markup.
+        await llm_usage.timed("tool_markup_recheck", _recheck_tool_markup(llm, response, provenance))
         await llm_usage.timed("pr_state_recheck", _recheck_pr_states_before_save(response))
         response["video_walkthrough"] = walkthrough_from_plan_body(response)
         if cross_project_payload is not None:

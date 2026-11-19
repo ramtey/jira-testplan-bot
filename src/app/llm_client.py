@@ -110,8 +110,19 @@ def _scrub_test_case(case: Any) -> Any:
 
 
 def _scrub_test_plan_data(test_plan_data: dict) -> dict:
-    """Strip email addresses from any field in the LLM-returned test plan."""
-    return {key: _scrub_test_case(value) for key, value in test_plan_data.items()}
+    """Strip email addresses from any field in the LLM-returned test plan, and
+    take every field from the tool-call arguments, never from an envelope.
+
+    Rule AL (src/app/tool_markup.py): a field the model wrote as a nested
+    ``<parameter name=…>`` string is split back into the fields it names, and
+    any envelope tag left in free text is removed. A field that is still not
+    usable is re-asked for before save, in ``recheck_tool_markup``.
+    """
+    from .tool_markup import normalize_plan_fields
+
+    scrubbed = {key: _scrub_test_case(value) for key, value in test_plan_data.items()}
+    normalize_plan_fields(scrubbed, SUBMIT_TEST_PLAN_TOOL["input_schema"])
+    return scrubbed
 
 
 _PLAN_CASE_SECTIONS = ("happy_path", "edge_cases", "integration_tests", "regression_checklist")
@@ -3058,6 +3069,12 @@ class LLMClient(ABC):
         pass existed, and every line stays exactly as generated.
         """
         return {}
+
+    async def regenerate_plan_field(self, field: str, schema: dict, context: str) -> Any | None:
+        """Rule AL — re-ask for one plan field that came back as tool-call
+        markup (see ``tool_markup.recheck_tool_markup``). None when it could
+        not run; the field is then left clean but marked."""
+        return None
 
     async def rewrite_platform_assumptions(self, items: list[dict]) -> dict[str, dict] | None:
         """Rule G critic — rewrite expected results that depend on the host OS
@@ -6780,6 +6797,46 @@ class ClaudeClient(LLMClient):
         if not tool_block:
             return None
         return parse_coverage_verdicts(tool_block.get("input"))
+
+    async def regenerate_plan_field(self, field: str, schema: dict, context: str) -> Any | None:
+        """Re-ask for one plan field whose first answer was tool-call markup.
+
+        Returns the new value (unvalidated — the caller cleans and checks it),
+        or None if the call could not run or returned nothing.
+        """
+        tool = {
+            "name": "resubmit_field",
+            "description": f"Submit the value of the test plan field `{field}`.",
+            "input_schema": {"type": "object", "properties": {"value": schema}, "required": ["value"]},
+        }
+        prompt = (
+            f"You generated a QA test plan. Its field `{field}` came back as raw tool-call "
+            "markup (for example `<parameter name=\"summary\">`) instead of a value, so it was "
+            "discarded. Write that field again from the plan below. Call `resubmit_field` with the "
+            "value only: plain prose, no XML or tool-call tags, no leading or trailing whitespace. "
+            "Follow the field's schema description exactly.\n\n" + context
+        )
+        try:
+            data = await self._post_messages(
+                {
+                    "model": self.model,
+                    "max_tokens": self._budget(2048, thinking=4096),
+                    "messages": [{"role": "user", "content": prompt}],
+                    **self._temperature_kwargs(0.0),
+                    "tools": [tool],
+                    "tool_choice": {"type": "tool", "name": "resubmit_field"},
+                },
+                timeout=60.0,
+            )
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, LLMError):
+            import logging
+            logging.getLogger(__name__).warning(
+                "regenerate_plan_field(%s): transport error; field left marked", field, exc_info=True)
+            return None
+        block = next((b for b in (data.get("content") or []) if b.get("type") == "tool_use"), None)
+        if not block:
+            return None
+        return (block.get("input") or {}).get("value")
 
     async def rewrite_platform_assumptions(self, items: list[dict]) -> dict[str, dict] | None:
         """Ask Claude to rewrite platform-dependent expected results in place.
