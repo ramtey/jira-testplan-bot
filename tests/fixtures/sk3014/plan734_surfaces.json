@@ -1,0 +1,215 @@
+{
+ "_note": "SK-3014 plan 734 v1, case shape only: titles, priority, surface and step counts as stored. Steps, expected results, hosts and every other field are stripped. Every case is backend_http or cli; the video walkthrough builder finds no chapters.",
+ "ticket_key": "SK-3014",
+ "uat_complexity": "high",
+ "happy_path": [
+  {
+   "title": "A hard refusal sets blocked_at, and later turns are refused without changing the lock",
+   "priority": "critical",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3",
+    "step 4",
+    "step 5"
+   ]
+  },
+  {
+   "title": "The third soft refusal locks the chat: soft_refusals goes 1, then 2, then blocked_at is set",
+   "priority": "critical",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3",
+    "step 4",
+    "step 5"
+   ]
+  },
+  {
+   "title": "Approved turns never write blocked_at or soft_refusals, so a soft count survives later normal turns",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3"
+   ]
+  }
+ ],
+ "edge_cases": [
+  {
+   "title": "A hard refusal sent in parallel with an approved turn on the same chat stays locked",
+   "priority": "critical",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3",
+    "step 4"
+   ]
+  },
+  {
+   "title": "Two soft refusals sent in parallel are both counted",
+   "priority": "critical",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3",
+    "step 4"
+   ]
+  },
+  {
+   "title": "A chat whose blocked_at is set but whose messages carry no refusal is still refused",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3"
+   ]
+  },
+  {
+   "title": "A legacy debug_data.softRefusals count higher than the column is kept (rollout compatibility)",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3"
+   ]
+  },
+  {
+   "title": "A refused first message on a brand-new UUID creates the row with the right owner and saved messages",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2"
+   ]
+  },
+  {
+   "title": "A client disconnecting mid-stream on a locked chat doesn't unlock it",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3",
+    "step 4"
+   ]
+  },
+  {
+   "title": "A user JWT can't clear the lock through PostgREST or call record_chat_refusal",
+   "priority": "critical",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3"
+   ]
+  }
+ ],
+ "integration_tests": [
+  {
+   "title": "[Backend] Run the guardrails suite and the pgTAP lock tests by hand (CI does not run them)",
+   "priority": "high",
+   "surface": "cli",
+   "steps": [
+    "step 1",
+    "step 2",
+    "step 3"
+   ]
+  }
+ ],
+ "security_negative_tests": [
+  {
+   "title": "Anonymous chat turn (no token) is rejected before any refusal is recorded",
+   "priority": "critical",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2"
+   ]
+  },
+  {
+   "title": "Another user's turn on A's chat gets 403 and no refusal is recorded",
+   "priority": "critical",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2"
+   ]
+  },
+  {
+   "title": "Owner control: A's off-topic turn on A's own chat is refused and counted",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2"
+   ]
+  },
+  {
+   "title": "Unauthenticated sweep: a garbage bearer token is rejected",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1"
+   ]
+  },
+  {
+   "title": "Unauthenticated sweep: no Authorization header on a new UUID creates no row",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2"
+   ]
+  },
+  {
+   "title": "Client-sent userId (anonymous): rejected by auth before the body is used",
+   "priority": "medium",
+   "surface": "backend_http",
+   "steps": [
+    "step 1"
+   ]
+  },
+  {
+   "title": "Client-sent userId (other user): B can't record a refusal on A's chat by claiming A's id",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2"
+   ]
+  },
+  {
+   "title": "Client-sent userId (owner control): a body userId naming another user doesn't redirect the refusal",
+   "priority": "medium",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2"
+   ]
+  },
+  {
+   "title": "A soft-deleted user's still-valid token on the chat route",
+   "priority": "high",
+   "surface": "backend_http",
+   "steps": [
+    "step 1",
+    "step 2"
+   ]
+  }
+ ],
+ "regression_checklist": [
+  "🔴 Normal approved chat still saves",
+  "🔴 Foreign chat UUID still returns 403 before anything is written",
+  "🟡 Older app builds (no x-chat-stream-protocol header, v4 data stream) still get a locked rejection",
+  "🟡 No refusal_lock write failures in logs",
+  "🟡 Unverified"
+ ]
+}

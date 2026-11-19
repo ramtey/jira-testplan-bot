@@ -9,6 +9,7 @@ import Icon from './Icon'
 import { holdReasonLabel } from '../hooks/useTicketHold'
 import { Btn, Cbx, Alert, Modal } from './ui'
 import { describeAutoPost } from '../utils/autoPost'
+import { walkthroughPromptCopy } from '../utils/walkthroughGate'
 
 // Match the CSS exit duration so the feedback element stays in the DOM long enough.
 const MESSAGE_EXIT_MS = 220
@@ -866,8 +867,11 @@ function WorkflowActions({
   // high-complexity and no walkthrough is attached. Client-side pre-checks
   // moved to the server in step 5 — the frontend just handles the 409.
   //   null                            → no prompt
-  //   { message: string, retry: fn }  → prompt open, retry() resends with the
-  //                                     override flag on confirm
+  //   { message, reason, retry }      → prompt open, retry() resends with the
+  //                                     override flag on confirm. `reason` is
+  //                                     the server's walkthrough_reason.
+  // A backend-only ticket (every case an API or terminal check) never gets
+  // the 409, so it never sees this prompt.
   const [walkthroughOverridePrompt, setWalkthroughOverridePrompt] = useState(null)
   // Refs so the "insert [[img:filename]]" chip button can drop the token
   // at the current caret position in whichever textarea the tester is
@@ -1319,6 +1323,7 @@ function WorkflowActions({
             message:
               data.detail.message ||
               'This ticket has no walkthrough. Pass to UAT anyway?',
+            reason: data.detail.walkthrough_reason || null,
             retry: () => {
               setWalkthroughOverridePrompt(null)
               runAction(action, body, files, true)
@@ -1865,8 +1870,8 @@ function WorkflowActions({
           the user can add a Loom / screenshot / notes and try again. */}
       {walkthroughOverridePrompt && (
         <Modal
-          title="Pass to UAT without a walkthrough?"
-          sub="This ticket is flagged high-complexity — testers usually need a video, screenshot, or notes to run it."
+          title={walkthroughPromptCopy(walkthroughOverridePrompt.reason).title}
+          sub={walkthroughPromptCopy(walkthroughOverridePrompt.reason).sub}
           onClose={() => setWalkthroughOverridePrompt(null)}
           width={460}
           foot={

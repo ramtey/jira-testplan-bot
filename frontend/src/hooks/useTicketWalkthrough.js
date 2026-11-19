@@ -94,6 +94,11 @@ export function useTicketWalkthrough(ticketKey) {
     walkthroughPresent: walkthrough?.walkthrough_present ?? false,
     walkthroughSources: walkthrough?.walkthrough_sources ?? [],
     needsWalkthrough: walkthrough?.needs_walkthrough ?? false,
+    // Why the server decided that, e.g. `backend_only` when every case is an
+    // API or terminal check and there is nothing to record. `uatSurface` is
+    // the plan's surface (`ui`, `mixed`, `backend`, `manual`, `unknown`).
+    walkthroughReason: walkthrough?.walkthrough_reason ?? null,
+    uatSurface: walkthrough?.uat_surface ?? null,
     saving,
     refresh,
     save,

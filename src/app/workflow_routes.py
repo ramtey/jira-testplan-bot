@@ -263,6 +263,10 @@ async def _enforce_pass_to_uat_walkthrough_gate(
     where it was. The frontend sets `override_missing_walkthrough` once the
     tester has consciously acknowledged the missing walkthrough (or when it
     sees material the server can't — e.g., PR-attached demo video).
+
+    A ticket whose plan has no UI cases at all (every case `backend_http` or
+    `cli`) is not gated: there is nothing to record. SK-3014 was the case
+    that showed it — see `src/app/uat_surface.py`.
     """
     override = bool(parsed_payload and parsed_payload.override_missing_walkthrough)
     form_looms = bool(
@@ -300,23 +304,53 @@ async def _enforce_pass_to_uat_walkthrough_gate(
         return
 
     db = get_db()
-    readiness = await uat_readiness.fetch_readiness(db, ticket_key=issue_key)
+    # The route's own JiraClient, so a test that stubs it stubs this too.
+    readiness = await uat_readiness.fetch_readiness(
+        db,
+        ticket_key=issue_key,
+        load_attachments=lambda key: JiraClient().get_attachments(key),
+    )
     if not readiness.get("needs_walkthrough"):
         return
 
+    reason = readiness.get("walkthrough_reason")
     raise HTTPException(
         status_code=409,
         detail={
             "error_code": "walkthrough_required",
             "uat_complexity": readiness.get("uat_complexity"),
-            "message": (
-                "This ticket is high-complexity for UAT and has "
-                "no walkthrough attached. Add a Loom, screenshot, "
-                "or notes on the walkthrough card, or resubmit "
-                "with override_missing_walkthrough=true."
+            "uat_surface": readiness.get("uat_surface"),
+            "walkthrough_reason": reason,
+            "message": _WALKTHROUGH_GATE_MESSAGES.get(
+                reason, _WALKTHROUGH_GATE_MESSAGES[None]
             ),
         },
     )
+
+
+# What the 409 tells the tester, by `walkthrough_reason`. Backend-only plans
+# never reach here (`derive_readiness` clears them), so every message is for a
+# ticket that has something a person has to look at.
+_WALKTHROUGH_GATE_MESSAGES = {
+    None: (
+        "This ticket is high-complexity for UAT and has "
+        "no walkthrough attached. Add a Loom, screenshot, "
+        "or notes on the walkthrough card, or resubmit "
+        "with override_missing_walkthrough=true."
+    ),
+    walkthrough_repository.REASON_MANUAL: (
+        "This ticket is high-complexity for UAT and its plan has manual "
+        "checks but no UI cases. Add notes on the walkthrough card, or attach "
+        "the results (a .md, .txt, .zip or screenshot) to the Jira ticket, or "
+        "resubmit with override_missing_walkthrough=true."
+    ),
+    walkthrough_repository.REASON_UNCHECKED: (
+        "This ticket is high-complexity for UAT and Jira could not be asked "
+        "for its attachments, so any evidence attached there was not checked. "
+        "Add notes on the walkthrough card, try again, or resubmit with "
+        "override_missing_walkthrough=true."
+    ),
+}
 
 
 async def _validate_and_read_images(

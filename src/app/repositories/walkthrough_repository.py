@@ -52,20 +52,20 @@ def decode_screenshots(row: TicketWalkthrough | None) -> list[dict]:
     return cleaned
 
 
-def derive_readiness(
-    walkthrough: dict,
-    uat_complexity: str | None,
-) -> dict:
-    """Compute the UAT-readiness signal from a serialized walkthrough.
+# Why `needs_walkthrough` came out the way it did. The 409 detail and the
+# readiness response both carry it so the UI can say why instead of guessing.
+REASON_NOT_HIGH = "not_high_complexity"
+REASON_PRESENT = "walkthrough_present"
+REASON_BACKEND_ONLY = "backend_only"
+REASON_TEXT_EVIDENCE = "evidence_attached"
+REASON_UI = "ui_needs_walkthrough"
+REASON_MANUAL = "manual_checks_need_evidence"
+REASON_UNKNOWN = "surface_unknown"
+REASON_UNCHECKED = "attachments_unchecked"
 
-    Single source of truth for "does this ticket have walkthrough material?" —
-    both the walkthrough card and the Pass-to-UAT gate historically re-derived
-    this rule in JS and drifted. Returning it from the API keeps them aligned
-    and lets the Pass-to-UAT route (future) enforce the same rule server-side.
 
-    ``sources`` names which fields carry material — useful for UI hints like
-    "Notes and screenshots attached" without the caller re-inspecting it.
-    """
+def walkthrough_sources(walkthrough: dict) -> list[str]:
+    """Which walkthrough-card fields carry material."""
     sources: list[str] = []
     if walkthrough.get("loom_url"):
         sources.append("loom")
@@ -75,11 +75,71 @@ def derive_readiness(
     notes = walkthrough.get("notes")
     if isinstance(notes, str) and notes.strip():
         sources.append("notes")
+    return sources
+
+
+def attachments_could_decide(
+    walkthrough: dict, uat_complexity: str | None, uat_surface: str | None
+) -> bool:
+    """True when the ticket's Jira attachments would change the decision —
+    the only case worth a Jira round trip."""
+    return (
+        uat_complexity == "high"
+        and uat_surface == "manual"
+        and not walkthrough_sources(walkthrough)
+    )
+
+
+def derive_readiness(
+    walkthrough: dict,
+    uat_complexity: str | None,
+    *,
+    uat_surface: str | None = None,
+    evidence_attachments: list[dict] | None = (),
+) -> dict:
+    """Compute the UAT-readiness signal from a serialized walkthrough.
+
+    Single source of truth for "does this ticket have walkthrough material?" —
+    both the walkthrough card and the Pass-to-UAT gate historically re-derived
+    this rule in JS and drifted. Returning it from the API keeps them aligned
+    and lets the Pass-to-UAT route enforce the same rule server-side.
+
+    ``sources`` names which fields carry material — useful for UI hints like
+    "Notes and screenshots attached" without the caller re-inspecting it.
+
+    ``uat_surface`` comes from ``src.app.uat_surface.classify``:
+      - ``backend``: every case is an API call or a terminal command. There is
+        nothing to film, so no walkthrough is needed (SK-3014).
+      - ``manual``: no screen cases but some manual checks. Written evidence
+        counts: the card's notes, or ``evidence_attachments`` (non-plan Jira
+        attachments added after the plan; ``None`` means Jira could not be
+        asked, which is reported as unchecked rather than as missing).
+      - ``ui``, ``mixed``, ``unknown`` or absent: the gate is unchanged.
+    """
+    sources = walkthrough_sources(walkthrough)
     present = len(sources) > 0
+    if uat_complexity != "high":
+        needs, reason = False, REASON_NOT_HIGH
+    elif present:
+        needs, reason = False, REASON_PRESENT
+    elif uat_surface == "backend":
+        needs, reason = False, REASON_BACKEND_ONLY
+    elif uat_surface == "manual":
+        if evidence_attachments is None:
+            needs, reason = True, REASON_UNCHECKED
+        elif evidence_attachments:
+            needs, reason = False, REASON_TEXT_EVIDENCE
+        else:
+            needs, reason = True, REASON_MANUAL
+    elif uat_surface in ("ui", "mixed"):
+        needs, reason = True, REASON_UI
+    else:
+        needs, reason = True, REASON_UNKNOWN
     return {
         "walkthrough_present": present,
         "walkthrough_sources": sources,
-        "needs_walkthrough": uat_complexity == "high" and not present,
+        "needs_walkthrough": needs,
+        "walkthrough_reason": reason,
     }
 
 
