@@ -1773,6 +1773,28 @@ counts matched to the environment layout, a verification channel set, setup
 listed, title and steps present. Fix the case, or flag it in the case itself
 ("Unverified — …"), before submitting.
 
+**AK. Expected asserts what a tester observes, never which internal path
+ran.** A black-box tester sees the response, the stored data, a log line and
+the screen. They cannot see which branch ran, which error code was caught and
+retried, which fallback was taken or which function was called, so an
+Expected that names one cannot be graded, and is often false for the case's
+own steps. Write every Expected (and `expected_outcome`) as observable checks:
+the status and body, the row and its column values, the log event, the text
+on screen. When the internal mechanism explains the result, put it in
+`mechanism_note`: it is shown as the reason, never as a pass condition.
+Before you write a `mechanism_note` that names a code path, trace that THESE
+steps, in this order, reach it. Walk the branches the steps drive: a
+read-then-insert with a unique-violation fallback takes the update branch
+whenever the row already exists, and reaches the fallback only when another
+write lands between the check and the insert. A path reached only under a
+race or a fault the steps do not cause is not what these steps exercise: say
+so ("only under a concurrent write") or leave it out. Code re-checks every
+Expected before save: a clause naming an error code, a branch or a function
+call with no observable check is moved to `mechanism_note`, and a note
+naming a path these steps do not reach is replaced with the path they take.
+❌ BAD: expected "The RPC created the row first, and upsertStreamedText then took the 23505 → update path with no error." — when upsertStreamedText reads the row first (streamedTextsRepository.ts:114) and, because the refusal RPC already created it, goes straight to the owner-scoped update (:139-150); the 23505 fallback (:128-135) needs a concurrent insert that one sequential message never makes.
+✅ GOOD: expected "The response is a judgeRejection (blocked:false). Exactly one streamed_texts row exists for the UUID, with user_id = test user A, soft_refusals = 1 and messages/debug_data filled in. No streamed_text_write_failed event for the UUID in the API logs."; mechanism_note "record_chat_refusal creates the row; upsertStreamedText then finds it (streamedTextsRepository.ts:114) and updates it, scoped to the owner (:139-150)."
+
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
 "X remains unaffected" / "no regressions in Y" / "existing behaviour is
@@ -5265,6 +5287,10 @@ TEST_CASE_SCHEMA = {
         "how_to_verify": {
             "type": "string",
             "description": "Rule X. Exactly where the tester looks to tell pass from fail: the on-screen text, the file path, the log line, the dashboard or query. For what the UI does not show (crash reporting, analytics, background jobs) the evidence that counts, e.g. 'a new session file under cache/sentry/ after relaunch'. For brief UI (toast, alert), say to record the screen.",
+        },
+        "mechanism_note": {
+            "type": "string",
+            "description": "Rule AK. The internal mechanism that explains the result (which function, branch, fallback or error code is involved), shown as the reason and never as a pass condition. Trace that these steps reach every path it names; a path reached only under a race or a fault the steps do not cause is said to be so, or left out. Never put any of this in `expected`.",
         },
         "traced_path": {
             "type": "string",

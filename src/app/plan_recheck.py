@@ -45,6 +45,11 @@ re-read and quarantine)
     (``build_commands.check_commands``), **Z** setup repeated across cases is
     written once in ``shared_preconditions``.
 
+**AK** (src/app/observable_expected.py) runs at the start of both passes: an
+Expected clause naming an error code, an internal branch or a function call
+with no observable check moves to the case's ``mechanism_note``; the trace
+critic (kind 4) checks that the case's steps reach the path a note names.
+
 Like every pass since the progress key, these **mark in place** and never
 reorder. The two moves (rule U) happen before ``route_out_of_uat``, the same
 place rules H and L move cases, and spare cases QA already passed. Every
@@ -452,7 +457,7 @@ MAX_TURNS = 6
 MAX_SEARCHES = 6
 MAX_READS = 14
 
-TRACE_SYSTEM_PROMPT = """You re-check manual QA test cases against the code before the plan is published. You check two things and nothing else.
+TRACE_SYSTEM_PROMPT = """You re-check manual QA test cases against the code before the plan is published. You check the kinds of claim below and nothing else.
 
 1. ERROR PATH (kind "error_path"). For a case about a failure (an error, a missing record, null, a crash, offline, a timeout), trace what the code really does, hop by hop, from the trigger to what the user sees. Read the files; do not infer.
    - Find the call that fails and how it fails (throws, returns null, returns false, a Result.failure, an error code).
@@ -470,7 +475,12 @@ TRACE_SYSTEM_PROMPT = """You re-check manual QA test cases against the code befo
 3. FIRST REJECTING CHECK (items that list "Pinned error text"). The case quotes an exact error message, HTTP status or error class. Do not check it against the one function the case cites. Start at the real entry point a tester's input reaches (the handler, the exported function the harness or route calls) and walk it IN EXECUTION ORDER: input validation, parsing and encoding (URL parsing, JSON decode), auth, allow-lists and policy checks, decryption or comparison, then the target function. The first check that rejects this specific input decides the message; a later check never runs. For a table or repeated inputs, trace EACH ROW separately — different rows are often rejected by different checks — and return one entry per row in `rows`.
    Verdicts: "consistent" only when every row's first rejection produces the quoted text (give `rows`); "contradicted" when an earlier check rejects some row first (say which row, which check, file:line, and the message it produces in `actual`); "unverifiable" when you could not read the entry point or a check on the way.
 
-Never judge whether the change is correct, only whether the case's claim matches the code. Every file:line you give must be one you read in this run. Call report_recheck exactly once, with one verdict per item id."""
+4. INTERNAL PATH (kind "internal_path"). The case's note names an internal code path as the reason for its result: an error code caught, a fallback or retry taken, which function or branch runs. Trace whether a tester following THESE steps, in this order, actually reaches that path. Walk the code the steps drive, in execution order: existence checks, early returns, the branch each condition picks for this input.
+   - A fallback for a unique violation, conflict, deadlock or serialization failure that sits behind an existence check (read, then insert) runs only when another write lands between the check and the insert. Sequential steps never reach it: they take the branch the check picks (row found → update).
+   - A catch or fallback for a failure the steps do not cause (a network error, a timeout, a database fault) is reached only under that fault.
+   Verdicts: "consistent" when these steps reach the named path (give `traced_path`); "contradicted" when they take a different path — put the path they DO take in `actual` (file:line per hop, in a sentence a reader understands), and set `reached_only_under` to "race" or "fault" when the named path runs only then, or "" when nothing reaches it; "unverifiable" when you could not read what you needed.
+
+Never judge whether the change is correct, only whether the case's claim matches the code. When you write any Expected (`corrected_expected`, a trigger's `expected`), state only what a tester can observe — the response, the stored data, a log line, what is on screen — never which internal branch, error code or function ran. Every file:line you give must be one you read in this run. Call report_recheck exactly once, with one verdict per item id."""
 
 REPORT_RECHECK_TOOL = {
     "name": "report_recheck",
@@ -504,6 +514,7 @@ REPORT_RECHECK_TOOL = {
                             "required": ["steps", "expected", "traced_path"],
                         },
                         "unreachable_reason": {"type": "string", "description": "When steps_reach_intent is false and no reachable trigger exists: why, and what unit test or review would check it."},
+                        "reached_only_under": {"type": "string", "enum": ["race", "fault", ""], "description": "Kind 4, contradicted: the named path runs only under a race (another write between a check and a write) or a fault the steps do not cause; empty when nothing reaches it."},
                         "rows": {
                             "type": "array",
                             "description": "Kind 3 only: one entry per input/row, traced from the entry point in execution order.",
@@ -553,6 +564,12 @@ def collect_trace_items(test_plan: Any, protected_titles: frozenset[str] = froze
             items.append({"id": f"{section}:{i}:t", "kind": "before", "section": section, "_case": case,
                           "claims": claims[:3], "before_change": before[:3],
                           "protected": _protected(case, protected_titles)})
+    # Rule AK: a note naming an internal path is traced from these steps (kind 4).
+    from .observable_expected import NOTE_FIELD, collect_path_items
+
+    for section, i, case in collect_path_items(test_plan)[:MAX_ITEMS // 2]:
+        items.append({"id": f"{section}:{i}:p", "kind": "internal_path", "section": section, "_case": case,
+                      "note": case.get(NOTE_FIELD) or "", "protected": _protected(case, protected_titles)})
     return items
 
 
@@ -572,6 +589,8 @@ def build_trace_message(items: list[dict], prs: list[dict], bases: dict[str, dic
             head += f"\nTest data: {c.get('test_data') or '-'}"
             if it.get("rows"):
                 head += f"\nTrace each of these {len(it['rows'])} rows separately."
+        if it["kind"] == "internal_path":
+            head += f"\nNote naming an internal path (check kind 4): {it['note']}"
         if it["kind"] == "before":
             head += "\nBefore-claims to check:\n" + "\n".join(f"  - {cl}" for cl in it["claims"])
             for b in it.get("before_change") or []:
@@ -718,6 +737,11 @@ def apply_trace_verdicts(items: list[dict], verdicts: dict[str, dict], report: d
             changes["unverifiable"].append(it["id"])
             continue
         changes[v["verdict"]].append(it["id"])
+        if it["kind"] == "internal_path":
+            from .observable_expected import apply_path_verdict
+
+            apply_path_verdict(case, it["section"], v, report)
+            continue
         if v["verdict"] != "contradicted":
             if v["verdict"] == "consistent" and it["kind"] == "error_path" and not (case.get("traced_path") or "").strip() \
                     and (v.get("traced_path") or "").strip():
@@ -958,8 +982,12 @@ async def recheck_before_routing(llm: Any, github: Any, test_plan: Any, dev_info
                                  index=None, exploration: dict | None = None,
                                  bases: dict[str, dict] | None = None,
                                  protected_titles: frozenset[str] = frozenset()) -> list[str]:
-    """Rules U, Q, T, then AG, AE, AC, AA, AB. Returns gap sentences for checks that could not run."""
+    """Rules AK, U, Q, T, then AG, AE, AC, AA, AB. Returns gap sentences for checks that could not run."""
     gaps = []
+    # Rule AK first, so the trace critic sees each internal-path claim as a note to trace (kind 4).
+    from .observable_expected import check_observable_expected
+
+    check_observable_expected(test_plan, report)
     try:
         report["scope"] = await check_graded_scope(test_plan, dev_infos, report, index=index, github=github,
                                                    exploration=exploration, protected_titles=protected_titles)
@@ -987,12 +1015,17 @@ async def recheck_before_routing(llm: Any, github: Any, test_plan: Any, dev_info
 
 def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dict] | None = None,
                         index=None) -> None:
-    """Rules Q (no correction beside its claim; whole names), S, R, Q (first rejecting check), X, Y,
+    """Rules Q (no correction beside its claim; whole names), AK, S, R, Q (first rejecting check), X, Y,
     AD–AG, Z — code only, marks in place."""
     from .build_commands import check_commands
     from .first_rejection import check_pinned_messages
 
+    from .observable_expected import check_observable_expected, label_unchecked_race_paths
+
     check_contradicted_expected(test_plan, report)
+    # Rule AK again: an Expected rewritten since routing (rule Q corrections, a regeneration) is held to it too.
+    check_observable_expected(test_plan, report)
+    label_unchecked_race_paths(test_plan, report)
     check_quoted_names(test_plan, report, index)
     check_test_claims(test_plan, report)
     check_signal_claims(test_plan, report, index)

@@ -1,0 +1,44 @@
+{
+  "plan": 734,
+  "version": 1,
+  "section": "edge_cases",
+  "index": 4,
+  "commit": "78690e84",
+  "case": {
+    "title": "A refused first message on a brand-new UUID creates the row with the right owner and saved messages",
+    "priority": "high",
+    "category": "error_handling",
+    "preconditions": "BLOCKED BY SETUP (rule AF): Database access unconfirmed. — run once it exists. Precondition: S1, S2 and S4 passed.",
+    "steps": [
+      "Generate a new UUID that has never been used. Send an off-topic (soft-rule) message as its first message.",
+      "Query user_id, soft_refusals, blocked_at, messages and debug_data for the UUID."
+    ],
+    "expected": "The response is a judgeRejection (blocked:false). The row exists with user_id = test user A and soft_refusals=1, and messages/debug_data are filled in. The RPC created the row first, and upsertStreamedText then took the 23505 → update path with no error.",
+    "expected_outcome": "The insert race between the refusal RPC and the message upsert is handled.",
+    "surface": "backend_http",
+    "credentials": "Supabase user access token (Bearer JWT) for test user A",
+    "environment": "target test env — API base URL not in sources",
+    "expected_verified": true,
+    "expected_source": "packages/supabase/src/public/repositories/streamedTextsRepository.ts:116-160",
+    "how_to_verify": "Checked from outside (HTTP response): Run the SQL query. In the API logs there should be no streamed_text_write_failed event for this UUID.",
+    "verification_channel": "outside_http",
+    "grounded_in": [
+      "pr:packages/supabase/src/public/repositories/streamedTextsRepository.ts"
+    ],
+    "required_setup": [
+      {
+        "need": "Database read access",
+        "status": "unconfirmed",
+        "how_to_get": "Agent Coach engineering"
+      }
+    ],
+    "blocked_by_setup": "Database access unconfirmed.",
+    "grounding_downgrades": [
+      {
+        "claim": "rule AF: marked",
+        "reason": "blocked by setup: Database access unconfirmed."
+      }
+    ],
+    "covers_acs": []
+  }
+}

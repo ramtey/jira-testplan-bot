@@ -84,3 +84,26 @@ test('rule Q first rejecting check: the per-row trace is shown, and its downgrad
   assert.match(formatTestPlanAsJira(traced, TICKET), /First rejecting check, traced from the entry point:\n- outer method PUT/)
   assert.match(groundingRereadLine(traced), /“IP literals” — downgraded: exact error text without a traced first rejecting check: \[::1\] is rejected first by url-encoding\.js:3 \(rule Q\)/)
 })
+
+// Rule AK (src/app/observable_expected.py): the internal mechanism is shown as
+// the reason, never in the Expected a tester grades.
+test('rule AK: mechanism_note renders as the reason, outside Expected', () => {
+  const p = {
+    happy_path: [],
+    edge_cases: [{
+      title: 'A refused first message on a brand-new UUID creates the row',
+      priority: 'high',
+      steps: ['Send an off-topic first message on a new UUID', 'Query the row'],
+      expected: 'The response is a judgeRejection (blocked:false). The row exists with soft_refusals=1.',
+      how_to_verify: 'Run the SQL query.',
+      mechanism_note: 'Why (the reason, not a pass condition — rule AK): upsertStreamedText finds the row and updates it (streamedTextsRepository.ts:114, :139-150).',
+    }],
+    regression_checklist: [],
+  }
+  for (const out of [formatTestPlanAsMarkdown(p, TICKET), formatTestPlanAsJira(p, TICKET)]) {
+    assert.match(out, /Why \(not a pass condition\):(\*\*)? upsertStreamedText finds the row and updates it/)
+    assert.doesNotMatch(out, /rule AK\): upsertStreamedText/)
+    const expectedLine = out.split('\n').find((l) => l.includes('judgeRejection'))
+    assert.doesNotMatch(expectedLine, /upsertStreamedText/)
+  }
+})

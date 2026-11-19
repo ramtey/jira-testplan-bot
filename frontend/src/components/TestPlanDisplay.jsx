@@ -7,6 +7,7 @@ import { Fragment, useState, useRef, useEffect, useMemo } from 'react'
 import {
   formatTestPlanAsMarkdown, formatTestPlanAsJira, CODE_REVIEW_BLURB, PRE_EXISTING_BLURB, LOW_CONFIDENCE_BLURB,
   clientTokenParts, logicClaims, groundingRereadLine, rereadDowngrades, RISK_KIND, rejectionTraces, environmentTopologyLines,
+  mechanismNote, MECHANISM_LABEL,
 } from '../utils/markdown'
 import { API_BASE_URL } from '../config'
 import { useTicketWalkthrough } from '../hooks/useTicketWalkthrough'
@@ -338,6 +339,7 @@ function formatSingleTestForClipboard(test) {
   }
   if (test.expected) lines.push('', 'Expected:', String(test.expected))
   if (test.how_to_verify) lines.push('', 'How to verify:', String(test.how_to_verify))
+  if (mechanismNote(test)) lines.push('', `${MECHANISM_LABEL}:`, mechanismNote(test))
   logicClaims(test).forEach((c) => lines.push('', `Rule, from the code${c.source ? ` (${c.source})` : ''}: ${c.rule}`))
   rejectionTraces(test).forEach((t, i) => lines.push(...(i === 0 ? ['', 'First rejecting check, traced from the entry point:'] : []),
     `- ${t.input}: ${t.message ? `"${t.message}"` : 'rejected'}${t.check ? ` at ${t.check}` : ''}${t.path ? ` (${t.path})` : ''}`))
@@ -764,6 +766,12 @@ function TestCard({ test, section, index, checked, onToggle, expanded, onToggleE
           <>
             <span className="lbl" style={{ marginTop: 2 }}>Verify</span>
             <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)' }}>{renderInline(test.how_to_verify)}</div>
+          </>
+        )}
+        {mechanismNote(test) && (
+          <>
+            <span className="lbl" style={{ marginTop: 2 }} title="The internal mechanism behind the result. Do not grade on it (rule AK).">Why</span>
+            <div style={{ fontSize: 'var(--t-sm)', color: 'var(--fg-muted)', fontStyle: 'italic' }}>{renderInline(mechanismNote(test))} <span style={{ fontStyle: 'normal' }}>(not a pass condition)</span></div>
           </>
         )}
         {test.test_data && (

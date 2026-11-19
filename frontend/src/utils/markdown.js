@@ -294,6 +294,14 @@ const formatLogicClaims = (test, jira = false) => logicClaims(test)
 // Rule X: where the tester looks to tell pass from fail.
 const howToVerify = (test) => (typeof test?.how_to_verify === 'string' ? test.how_to_verify.trim() : '')
 
+// Rule AK (src/app/observable_expected.py): the internal mechanism behind the
+// result. Shown as the reason, never as something to grade.
+export const MECHANISM_LABEL = 'Why (not a pass condition)'
+export const mechanismNote = (test) => {
+  const note = typeof test?.mechanism_note === 'string' ? test.mechanism_note.trim() : ''
+  return note.replace(/^Why \(the reason, not a pass condition — rule AK\):\s*/, '')
+}
+
 // Rule Q, first rejecting check (src/app/first_rejection.py): the path each
 // input takes from the entry point to the check that rejects it first. It is
 // the citation for any exact error text in Expected.
@@ -319,6 +327,7 @@ export const formatRejectionTraces = (test, jira = false) => {
 
 const formatExpectedVerification = (test) =>
   (howToVerify(test) ? `**How to verify:** ${howToVerify(test)}\n\n` : '') +
+  (mechanismNote(test) ? `**${MECHANISM_LABEL}:** ${mechanismNote(test)}\n\n` : '') +
   formatLogicClaims(test) + formatRejectionTraces(test) + formatExpectedVerificationOnly(test)
 
 const formatExpectedVerificationOnly = (test) => {
@@ -1483,6 +1492,7 @@ const formatSurfaceJira = (test) => {
 
 const formatExpectedVerificationJira = (test) =>
   (howToVerify(test) ? `How to verify: ${howToVerify(test)}\n\n` : '') +
+  (mechanismNote(test) ? `${MECHANISM_LABEL}: ${mechanismNote(test)}\n\n` : '') +
   formatLogicClaims(test, true) + formatRejectionTraces(test, true) + formatExpectedVerificationJiraOnly(test)
 
 const formatExpectedVerificationJiraOnly = (test) => {
