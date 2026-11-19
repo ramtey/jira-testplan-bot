@@ -1,4 +1,4 @@
-"""Re-check that every expected result is something a tester can see on the deployed environment (rules AA–AG).
+"""Re-check that every expected result is something a tester can see on the deployed environment (rules AA–AI).
 
 Plans for an HTTP service (mobile-api) predicted results the tester never saw:
 
@@ -26,6 +26,11 @@ sends to the code-review list get there)
     **AC** a malformed-URL case that pins one status code is rewritten to the
     outcome a tester can see (rejected before downstream, any 4xx), and the
     handler's status goes to the code-review list as a unit/integration test.
+    **AI** every endpoint a case names is traced from its definition through
+    every router and mount to the server entry (``endpoint_paths``): a partial
+    name is rewritten to the full path, an untraceable or disputed one is
+    marked unverified, the chain's guards are carried over, and a negative case
+    says how to tell its rejection from "route not found".
     **AA/AB** every HTTP call in a step needs a ``route_sources`` entry whose
     cited file has the path's segments, and every response field a case reads
     needs a ``response_fields`` entry whose cited file has the field.
@@ -413,7 +418,8 @@ def route_locators(test_plan: Any) -> list[str]:
     for section, _, case in _cases(test_plan, ALL_CASE_SECTIONS):
         for r in case.get("route_sources") or []:
             if isinstance(r, dict):
-                locs += [_text(r.get("source")), _text(r.get("mount_source"))]
+                locs += [_text(r.get("source")), _text(r.get("mount_source")), _text(r.get("caller_source"))]
+                locs += [_text(c.get("source")) for c in r.get("mount_chain") or [] if isinstance(c, dict)]
         for f in case.get("response_fields") or []:
             if isinstance(f, dict):
                 locs.append(_text(f.get("source")))
@@ -449,9 +455,16 @@ def _route_problem(method: str, path: str, routes: list[dict], index,
     src_text = _file_text(index, src)
     if src_text is None:
         return "", "", "unchecked"
+    # Each mount of the chain (rule AI) holds its own part of the path.
+    mounts = [mount] + [_text(c.get("source")) for c in match.get("mount_chain") or [] if isinstance(c, dict)]
+    mounts = [m for m in mounts if m]
     # File-based routers (Next.js, SvelteKit, Nuxt) keep the path in the file's own path.
-    blob = "\n".join([src_text, _file_text(index, mount) or "", src.split(":")[0], mount.split(":")[0]]).lower()
-    missing = [s for s in _static_segments(_text(match.get("path"))) if s.lower() not in blob]
+    blob = "\n".join([src_text, src.split(":")[0]] + [(_file_text(index, m) or "") + "\n" + m.split(":")[0]
+                                                       for m in mounts]).lower()
+    # A tRPC path names one router key per dot: /trpc/admin.reports.export.
+    statics = [p for s in _static_segments(_text(match.get("path"))) for p in (s.split(".") if "." in s and not
+               re.search(r"\.(?:json|xml|csv|pdf|zip|txt|html?)$", s, re.I) else [s]) if p]
+    missing = [s for s in statics if s.lower() not in blob]
     if missing:
         why = f"'{missing[0]}' of {_text(match.get('path'))} is not in {src}" + (f" or {mount}" if mount else "")
         return ROUTE_NOT_FOUND_MARKER.format(why=why), f"{method} {path}: {why}", "downgraded"
@@ -470,7 +483,7 @@ def check_routes(test_plan: Any, report: dict, index=None) -> int:
         steps = case.get("steps") or []
         reasons, action = [], "marked"
         for i, step in enumerate(steps):
-            if not isinstance(step, str) or "(rule AA)" in step:
+            if not isinstance(step, str) or "(rule AA)" in step or "(rule AI)" in step:
                 continue
             for method, path in _calls(step):
                 problem = _route_problem(method, path, routes, index, prefixes)
@@ -543,8 +556,7 @@ def check_response_fields(test_plan: Any, report: dict, index=None) -> int:
     return n
 
 
-async def check_routes_and_shapes(test_plan: Any, report: dict, *, index=None, github=None) -> int:
-    """AA and AB, reading the cited router and response files first."""
+async def _read_cited_routes(test_plan: Any, index, github) -> None:
     if index is not None and not isinstance(index, str) and github is not None:
         from .source_facts import read_cited
 
@@ -552,7 +564,6 @@ async def check_routes_and_shapes(test_plan: Any, report: dict, *, index=None, g
             await read_cited(index, github, route_locators(test_plan))
         except Exception as e:  # noqa: BLE001 — checks below treat unread as unchecked
             logger.warning("could not read cited route files: %s", e)
-    return check_routes(test_plan, report, index) + check_response_fields(test_plan, report, index)
 
 
 # ---------------------------------------------------------------------------
@@ -807,11 +818,23 @@ def check_repo_claims(test_plan: Any, report: dict, repo_evidence: list[dict] | 
 
 async def recheck_before_routing(test_plan: Any, report: dict, *, index=None, github=None,
                                  protected_titles: frozenset[str] = frozenset()) -> None:
-    """AG (complete cases), AE (unit-only cases), AC, AA, AB."""
+    """AG (complete cases), AE (unit-only cases), AC, AI (full mounted paths), AA, AB."""
     check_complete_cases(test_plan, report, protected_titles)
     route_unit_only_cases(test_plan, report, protected_titles)
     check_malformed_urls(test_plan, report, protected_titles)
     await check_routes_and_shapes(test_plan, report, index=index, github=github)
+
+
+async def check_routes_and_shapes(test_plan: Any, report: dict, *, index=None, github=None) -> int:
+    """AI, AA and AB, reading the cited router, mount, caller and response files first.
+
+    AI runs first: it rewrites a partial endpoint name to the traced full path
+    (and fills the route's mount chain), so AA then checks the full path."""
+    from .endpoint_paths import check_endpoint_paths
+
+    await _read_cited_routes(test_plan, index, github)
+    n = await check_endpoint_paths(test_plan, report, index=index, github=github)
+    return n + check_routes(test_plan, report, index) + check_response_fields(test_plan, report, index)
 
 
 def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dict] | None = None) -> None:

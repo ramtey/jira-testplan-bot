@@ -1697,7 +1697,45 @@ reuse one from an older plan, a ticket or a doc without finding it in the
 router. If you cannot find the registration, the step is unverified: say
 "route not found in the router — confirm the path before running".
 ❌ BAD: "POST /split-and-assign/process" because the feature is called split-and-assign — when the router registers `router.post('/split/process', …)` (routes/split.ts:14).
-✅ GOOD: step "POST /split/process", route_sources [{"method": "POST", "path": "/split/process", "source": "src/routes/split.ts:14", "mount_source": "src/app.ts:42"}].
+✅ GOOD: step "POST /split/process", route_sources [{"method": "POST", "path": "/split/process", "source": "src/routes/split.ts:14", "mount_chain": [{"key": "/", "source": "src/app.ts:42"}]}].
+
+**AI. Name every endpoint by its full mounted path.** Routers are nested and
+prefixed (tRPC, Fastify, Express, Hono, Next.js route handlers and the like):
+the callable path is the URL prefix the server adds, plus every parent router's
+key or prefix, plus the route or procedure name. The file that defines an
+endpoint shows only its own part. For every endpoint a step or Expected names
+(an HTTP route, a tRPC/GraphQL procedure, an RPC method, a webhook path):
+1. Trace it from its definition up through every router and mount to the
+   server entry, and write the full callable path everywhere the case names it
+   (steps, Expected, `request.route`): `/trpc/admin.reports.exportCsv`, not
+   `reports.exportCsv`; `POST /api/v2/orders/:id/refund`, not
+   `POST /orders/:id/refund`. In `route_sources`, `path` is that full path,
+   `source` is the definition, and `mount_chain` lists each mount from the
+   inside out, the last one being where the server adds its URL prefix, each
+   with `key` (router key or path prefix) and `source` (`<file>:<line>`).
+2. Where you can, cross-check the path against a real caller in the repo (a
+   client hook, an `api.x.y.z` call, a fetch URL, an e2e test) and cite it in
+   `caller_source`. If the caller and your trace disagree, say so in the case;
+   do not pick one silently.
+3. Carry over the auth or role guard that comes with the chain (an admin-only
+   procedure builder or parent router, middleware on a prefix) in `guards`,
+   and make the case's token/role line and negative-auth expectations match it.
+4. If you cannot trace the whole chain from the code you have, never present a
+   guessed path as fact: write the part you know, set `unverified` to what is
+   missing, write "endpoint path unverified: <what's missing>" in the case,
+   and tell the tester to confirm the path from a real client call before
+   grading.
+5. A negative case (no token, a bad token, the wrong role, a malformed input)
+   must say how to tell "rejected by the check under test" from "route not
+   found": fill `rejection_vs_not_found` with the status and error shape of
+   each. tRPC answers an unknown path with 404 NOT_FOUND "No procedure found on
+   path"; Express with 404 "Cannot POST /x"; Fastify with 404 "Route POST:/x
+   not found". A 404 is never a pass for an auth check.
+Downstream code traces each chain again before the plan is saved, rewrites a
+partial name to the traced path, and marks a path it cannot trace, or one your
+trace or the caller disputes, as unverified.
+❌ BAD: security cases call `gfeDebug.generateDebugZip`, the key in the router file that defines it — the server serves it as `/trpc/admin.gfeDebug.generateDebugZip`, so every call gets "No procedure found on path" and the no-token case "passes" because the route is missing.
+✅ GOOD: request.route "/trpc/admin.reports.exportCsv", route_sources [{"method": "POST", "path": "/trpc/admin.reports.exportCsv", "source": "api/router/admin/reports.ts:40", "mount_chain": [{"key": "reports", "source": "api/router/admin/index.ts:12"}, {"key": "admin", "source": "api/root.ts:20"}, {"key": "/trpc", "source": "src/index.ts:88"}], "caller_source": "apps/admin/src/app/reports/page.tsx:31", "guards": [{"name": "requireAdminRole", "source": "api/router/admin/reports.ts:41"}]}], rejection_vs_not_found {"rejected": {"status": "401", "error_shape": "tRPC error code UNAUTHORIZED"}, "not_found": {"status": "404", "error_shape": "NOT_FOUND, 'No procedure found on path'"}}.
 
 **AB. Every response value a step reads comes from the code that builds the
 response.** Before a step reads a field from a response ("the response
@@ -2804,6 +2842,7 @@ Before generating each section, mentally sort your tests:
 
 **DEPLOYED-ENVIRONMENT SELF-CHECK (rules AA–AH) — would a tester on the deployed environment see this?**
 ✅ Is every method and path read from the router at the commit under test and cited in `route_sources`? (AA)
+✅ Is every endpoint named by its FULL mounted path (URL prefix + every parent router key + the name), with each mount in `mount_chain`, the guards it brings, and a real caller where one exists? Untraceable → "endpoint path unverified: <what's missing>". Does every negative case say how its rejection differs from "route not found"? (AI)
 ✅ Is every response field a step reads cited in `response_fields` from the code that builds the response — and if the API does not return it, is there an `alternate_check` or "not visible from outside"? (AB)
 ✅ Does any case send a malformed URL (dot segments, encoded slashes, encoded/unicode characters, double slashes, very long paths)? → expected is "rejected before downstream, no downstream call, any 4xx passes"; the handler's exact status goes to a unit test or `code_review_checks` (AC)
 ✅ Does any case state a count or limit? → `environment_topology` says the pods and whether the state is per pod or shared, and a per-pod limit is given as the range a tester sees (AD)
@@ -5333,12 +5372,44 @@ TEST_CASE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "method": {"type": "string", "description": "GET, POST, …"},
-                    "path": {"type": "string", "description": "The registered path pattern, with the mount prefix, e.g. '/user/:id/firebase'."},
+                    "path": {"type": "string", "description": "Rule AI. The FULL callable path: the server's URL prefix, every parent router key or prefix, and the route or procedure name, e.g. '/api/v2/orders/:id/refund' or '/trpc/admin.reports.exportCsv' — never just the part the defining file shows."},
                     "source": {"type": "string", "description": "`<file>:<line>` of the route registration."},
-                    "mount_source": {"type": "string", "description": "`<file>:<line>` where the router is mounted under a prefix, when it is."},
+                    "mount_source": {"type": "string", "description": "Legacy: one mount. Use mount_chain."},
+                    "mount_chain": {
+                        "type": "array",
+                        "description": "Rule AI. Every mount from the defining router up to the server entry, innermost first; the last is where the server adds its URL prefix (or registers the root router with none).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {"type": "string", "description": "The router key ('admin') or path prefix ('/api/v2', '/trpc') this mount adds; '' for a merge."},
+                                "source": {"type": "string", "description": "`<file>:<line>` of the mount."},
+                            },
+                            "required": ["key", "source"],
+                        },
+                    },
+                    "caller_source": {"type": "string", "description": "Rule AI. `<file>:<line>` of a real caller in the repo (client hook, api.x.y.z call, fetch URL, e2e test) that calls this same path."},
+                    "caller_path": {"type": "string", "description": "What that caller calls, as written there, e.g. 'api.admin.reports.exportCsv'."},
+                    "guards": {
+                        "type": "array",
+                        "description": "Rule AI. Auth or role guards on this path, on the procedure or anywhere on its mount chain.",
+                        "items": {"type": "object", "properties": {"name": {"type": "string"}, "source": {"type": "string"}},
+                                  "required": ["name", "source"]},
+                    },
+                    "unverified": {"type": "string", "description": "Rule AI. When the chain could not be traced: what is missing (e.g. 'the file that mounts adminRouter was not in the code read'). Leave empty when traced."},
                 },
                 "required": ["method", "path", "source"],
             },
+        },
+        "rejection_vs_not_found": {
+            "type": "object",
+            "description": "Rule AI. Negative cases only (no token, bad token, wrong role, malformed input): how the tester tells the rejection under test from the route not being found.",
+            "properties": {
+                "rejected": {"type": "object", "properties": {"status": {"type": "string"}, "error_shape": {"type": "string"}},
+                             "required": ["status", "error_shape"]},
+                "not_found": {"type": "object", "properties": {"status": {"type": "string"}, "error_shape": {"type": "string"}},
+                              "required": ["status", "error_shape"]},
+            },
+            "required": ["rejected", "not_found"],
         },
         "response_fields": {
             "type": "array",
@@ -5614,7 +5685,7 @@ SUBMIT_TEST_PLAN_TOOL = {
                                 },
                                 "route": {
                                     "type": "string",
-                                    "description": "The real path or procedure name from the diff, with a placeholder for each path parameter, e.g. '/api/share-flow/{linkId}/activate' or 'shareFlowRecipient.authenticate'.",
+                                    "description": "Rule AI. The FULL callable path as the server serves it — URL prefix, every parent router key, then the route or procedure — with a placeholder for each path parameter, e.g. '/api/share-flow/{linkId}/activate' or '/trpc/shareFlowRecipient.authenticate' (not the bare procedure key from the router file that defines it).",
                                 },
                                 "params": {
                                     "type": "string",

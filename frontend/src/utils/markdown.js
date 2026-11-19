@@ -858,7 +858,7 @@ const formatProvenanceMarkdown = (plan) => {
 
 // How many code claims the re-read before save checked and downgraded
 // (source_provenance.grounding_verification, src/app/grounding_verification.py).
-// Plus the re-check against rules Q–AG (source_provenance.plan_recheck,
+// Plus the re-check against rules Q–AL (source_provenance.plan_recheck,
 // src/app/plan_recheck.py), and every downgrade one by one: a count alone
 // told nobody which expected results not to trust.
 const MAX_LISTED_DOWNGRADES = 40
@@ -872,9 +872,11 @@ export const rereadDowngrades = (plan) => {
   })
   const r = plan?.source_provenance?.plan_recheck
   ;(Array.isArray(r?.findings) ? r.findings : []).forEach((f) => {
-    if (f.action === 'fixed') return
+    // Fixes are counted, not listed — except a corrected endpoint path (rule AI):
+    // the tester must know the plan now calls a different path than the generator wrote.
+    if (f.action === 'fixed' && !(f.rule === 'AI' && /callable path is/.test(f.reason || ''))) return
     const who = f.title ? `“${f.title}”` : (f.section || 'the plan')
-    const verb = f.action === 'moved' ? 'moved out of the graded cases' : 'downgraded'
+    const verb = f.action === 'moved' ? 'moved out of the graded cases' : f.action === 'fixed' ? 'endpoint path corrected' : 'downgraded'
     out.push(`${who} — ${verb}: ${f.reason} (rule ${f.rule})`)
   })
   return out
@@ -901,7 +903,7 @@ export const groundingRereadLine = (plan) => {
     const down = findings.filter((f) => f.action === 'downgraded' || f.action === 'marked').length
     const moved = findings.filter((f) => f.action === 'moved').length
     const fixed = findings.filter((f) => f.action === 'fixed').length
-    let s = `${hasV ? 'Re-check' : 'Grounding re-read'} against the code (rules Q–AG): ${down} downgraded or marked, ${moved} moved out of the graded cases, ${fixed} fixed in place.`
+    let s = `${hasV ? 'Re-check' : 'Grounding re-read'} against the code (rules Q–AL): ${down} downgraded or marked, ${moved} moved out of the graded cases, ${fixed} fixed in place.`
     if (Array.isArray(r.not_run) && r.not_run.length > 0) s += ` ⚠️ Not checked: ${r.not_run.join('; ')}.`
     sentences.push(s)
   }

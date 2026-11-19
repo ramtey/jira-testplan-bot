@@ -56,7 +56,7 @@ test('each case says how to verify it', () => {
 test('the grounding re-read line lists every downgrade, not only a count', () => {
   const line = groundingRereadLine(plan)
   assert.match(line, /^Grounding re-read: 5 code claim\(s\) re-read against the cited files, 1 downgraded to unverified\./)
-  assert.match(line, /Re-check against the code \(rules Q–AG\): 1 downgraded or marked, 1 moved out of the graded cases, 1 fixed in place\./)
+  assert.match(line, /Re-check against the code \(rules Q–AL\): 1 downgraded or marked, 1 moved out of the graded cases, 1 fixed in place\./)
   assert.match(line, /\(1\) “Sign-out clears the document cache” — expected: the cited line does not say it/)
   assert.match(line, /\(2\) “Missing file shows a blank screen” — downgraded: expected result contradicts the traced error path: an error alert shows \(rule Q\)/)
   assert.match(line, /\(3\) “Theme toggles” — moved out of the graded cases: graded case on untouched code \(rule U\)/)
@@ -106,4 +106,15 @@ test('rule AK: mechanism_note renders as the reason, outside Expected', () => {
     const expectedLine = out.split('\n').find((l) => l.includes('judgeRejection'))
     assert.doesNotMatch(expectedLine, /upsertStreamedText/)
   }
+})
+
+test('a corrected endpoint path (rule AI) is listed; other fixes are only counted', () => {
+  const line = groundingRereadLine({ source_provenance: { plan_recheck: { findings: [
+    { section: 'security_negative_tests', title: 'No token is rejected', rule: 'AI', action: 'fixed', reason: "named 'reports.exportCsv'; the callable path is /trpc/admin.reports.exportCsv (defined at a.ts:4, mounted as 'reports' at b.ts:9)" },
+    { section: 'security_negative_tests', title: 'No token is rejected', rule: 'AI', action: 'fixed', reason: 'guard carried over from the mount chain: requireAdminRole (a.ts:4)' },
+    { section: 'security_negative_tests', title: 'Bad token is rejected', rule: 'AI', action: 'downgraded', reason: "reports.exportCsv: no file mounts 'adminRouter'" },
+  ] } } })
+  assert.match(line, /“No token is rejected” — endpoint path corrected: named 'reports\.exportCsv'; the callable path is \/trpc\/admin\.reports\.exportCsv/)
+  assert.match(line, /“Bad token is rejected” — downgraded: reports\.exportCsv: no file mounts 'adminRouter' \(rule AI\)/)
+  assert.doesNotMatch(line, /guard carried over/)
 })

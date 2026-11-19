@@ -45,9 +45,12 @@ def _index(files: dict[str, str]):
 
 
 FILES = {
-    ROUTER: "import { Router } from 'express'\nconst r = Router()\nr.post('/split/process', handler)\n",
-    USER_ROUTER: "r.get('/user/:id/firebase', getFirebase)\nr.put('/user/:id/firebase', putFirebase)\n",
-    APP: "app.use('/', splitRouter)\napp.use('/', userRouter)\n",
+    ROUTER: "import { Router } from 'express'\nexport const splitRouter = Router()\nsplitRouter.post('/split/process', handler)\n",
+    USER_ROUTER: ("import { Router } from 'express'\nexport const userRouter = Router()\n"
+                  "userRouter.get('/user/:id/firebase', getFirebase)\nuserRouter.put('/user/:id/firebase', putFirebase)\n"),
+    APP: ("import express from 'express'\nimport { splitRouter } from './routes/split'\n"
+          "import { userRouter } from './routes/user'\nconst app = express()\n"
+          "app.use('/', splitRouter)\napp.use('/', userRouter)\napp.listen(3000)\n"),
     USER_CTRL: "export const getFirebase = (req, res) => res.json({ registered: true })\n",
 }
 

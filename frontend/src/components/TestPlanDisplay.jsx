@@ -1255,7 +1255,7 @@ function EvidencePanel({ plan }) {
     .filter((p) => p && typeof p.text === 'string' && p.text.trim())
   // Rule AD: what sits in front of the service, per environment.
   const topology = environmentTopologyLines(plan)
-  // Rule 11: every downgrade the re-read and the rules Q–AG re-check made.
+  // Rule 11: every downgrade the re-read and the rules Q–AL re-check made.
   const rereadLine = groundingRereadLine(plan)
   const downgrades = rereadDowngrades(plan)
   return (
