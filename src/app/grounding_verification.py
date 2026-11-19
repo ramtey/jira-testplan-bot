@@ -57,6 +57,7 @@ import posixpath
 import re
 from dataclasses import dataclass
 
+from . import code_presence as cp
 from . import source_facts as sf
 from .source_facts import SourceFile, SourceIndex
 
@@ -188,12 +189,49 @@ def _mark(text: str, marker: str, detail: str) -> str:
     return f"{marker} ({detail}): {text}"
 
 
-def _label_detail(label: str, near: list[sf.UIString], cited: list[SourceFile]) -> str:
+def _label_detail(label: str, near: list[sf.UIString], cited: list[SourceFile],
+                  index: SourceIndex | None = None) -> str:
+    """Why a label stays unverified, and where it was looked for."""
+    scope = f"; {cp.searched_scope(index)}" if index is not None else ""
     if near:
         alt = near[0]
-        return f"“{label}”; the cited code has “{alt.text}” at {alt.where()}"
+        return f"“{label}”; the cited code has “{alt.text}” at {alt.where()}{scope}"
     names = ", ".join(posixpath.basename(f.path) for f in cited[:3])
-    return f"“{label}” is not a string in {names}"
+    return f"“{label}” is not a string in {names}{scope}"
+
+
+def _locate_label(label: str, index: SourceIndex, files: list[SourceFile]) -> tuple[str, str] | None:
+    """``(path, line)`` where the code has ``label``, or None.
+
+    On-screen text: a literal in the cited files, or one changed file only
+    (``_unique_elsewhere``). A code-shaped label (``softRefusals``,
+    ``debug_data.softRefusals``) is a key or identifier, not on-screen text:
+    it is searched in every file read and the whole diff, in every syntactic
+    form, at its exact spelling. SK-3014: the cited file had only the
+    ``soft_refusals`` column; another changed file writes
+    ``debug_data.softRefusals``.
+    """
+    literals = [lit for f in files for lit in index.literals_for(f)]
+    hit = sf.find_literal(label, literals) or _unique_elsewhere(label, index, files)
+    if hit:
+        return hit.path, str(hit.line)
+    if cp.is_code_identifier(label):
+        exact, _ = cp.find_identifier(index, label)
+        if exact:
+            return exact.path, str(exact.line)
+    return None
+
+
+def _identifier_variant(label: str, index: SourceIndex) -> sf.UIString | None:
+    """The code's own spelling of a code-shaped label, as a near match."""
+    if not cp.is_code_identifier(label):
+        return None
+    _, variant = cp.find_identifier(index, label)
+    if variant is None:
+        return None
+    m = next((m.group(0) for v in cp.spellings(re.split(r"\.|->>?|::", label)[-1])[1:]
+              for m in [re.search(rf"(?<![\w$]){re.escape(v)}(?![\w$])", variant.text)] if m), None)
+    return sf.UIString(m or variant.text, variant.path, variant.line, None, variant.repo)
 
 
 def _downgrade(case: dict, outcome: Outcome) -> None:
@@ -238,13 +276,14 @@ def _verify_labels(case_id: str, case: dict, index: SourceIndex) -> list[Outcome
         literals = [lit for f in files for lit in index.literals_for(f)]
         failed: list[str] = []
         for label in labels:
-            hit = sf.find_literal(label, literals) or _unique_elsewhere(label, index, files)
-            if hit:
+            found = _locate_label(label, index, files)
+            if found:
                 out.append(Outcome(case_id, "label", f"step {i}: “{label}”", "verified",
-                                   source=f"{hit.path}:{hit.line}"))
+                                   source=f"{found[0]}:{found[1]}"))
                 continue
-            near = sf.near_literals(label, literals) or sf.near_literals(label, _all_literals(index))
-            detail = _label_detail(label, near, files)
+            near = ([v] if (v := _identifier_variant(label, index)) else []) or (
+                sf.near_literals(label, literals) or sf.near_literals(label, _all_literals(index)))
+            detail = _label_detail(label, near, files, index)
             failed.append(detail)
             o = Outcome(case_id, "label", f"step {i}: “{label}”", "downgraded", detail,
                         ", ".join(posixpath.basename(f.path) for f in files[:3]))
@@ -306,6 +345,18 @@ def _verify_elements(case_id: str, case: dict, index: SourceIndex) -> list[Outco
             if m:
                 text = "\n".join(got.lines[int(m.group(1)) - 1: int(m.group(2) or m.group(1))])
         missing = [i for i in ids if i not in text]
+        # Not in the cited file, but in another file the PRs change or the
+        # plan cites: the identifier is in the code, at a different citation.
+        elsewhere_hits = {i: cp.find_identifier(index, i)[0] for i in missing}
+        if missing and all(elsewhere_hits.values()):
+            first = elsewhere_hits[missing[0]]
+            e["cited_source_was"] = e.get("source")
+            e["source"] = f"pr:{first.path}"
+            e["lines"] = str(first.line)
+            out.append(Outcome(case_id, "element", claim, "verified",
+                               f"found at {first.where()}, not in the cited {posixpath.basename(got.path)}",
+                               first.where()))
+            continue
         if not missing:
             out.append(Outcome(case_id, "element", claim, "verified", source=got.path))
             continue
@@ -314,7 +365,8 @@ def _verify_elements(case_id: str, case: dict, index: SourceIndex) -> list[Outco
         o = Outcome(case_id, "element", claim, "downgraded",
                     f"{', '.join(missing)} not in {posixpath.basename(got.path)}"
                     + (f" lines {rng[0]}-{rng[1]}" if rng else "")
-                    + (f" (found in {', '.join(elsewhere[:3])})" if elsewhere else ""), got.path)
+                    + (f" (found in {', '.join(elsewhere[:3])})" if elsewhere else "")
+                    + f"; {cp.searched_scope(index)}", got.path)
         out.append(o)
         _downgrade(case, o)
         e["verified"] = False
@@ -655,6 +707,154 @@ def _verify_client_token(case_id: str, case: dict, index: SourceIndex,
     return out
 
 
+# --- re-test every "unverified" / "not checked" mark ------------------------
+
+#: Every section, security included: rule AA marks security requests too.
+RETEST_SECTIONS = ("happy_path", "edge_cases", "integration_tests", "security_negative_tests")
+
+_LABEL_MARK_RE = re.compile(
+    r"^\s*(?:⚠️\s*)?Unverified — label per ticket, not found in code(?:\s*\((?P<detail>[^\n]*?)\))?\s*:\s*(?P<rest>.*)$",
+    re.S)
+_ELEMENT_MARK_RE = re.compile(
+    r"^\s*(?:⚠️\s*)?Unverified — not found in the cited code\s*\(“(?P<ids>[^”]*)”[^\n]*?\)\s*:\s*(?P<rest>.*)$", re.S)
+_ROUTE_MARK_RE = re.compile(
+    r"^\s*Route not (?:checked against the router|found where the plan cites it) \(rule AA\):[^—\n]*—\s*(?P<rest>.*)$",
+    re.S)
+
+
+def _marked_labels(detail: str | None, rest: str) -> list[str]:
+    """The labels a label mark is about: the first quote of each ``;`` part of
+    its detail ("“X”; the cited code has “Y” …" is about X), or the quoted
+    labels of the step when the generator wrote the mark with no detail."""
+    out: list[str] = []
+    for part in (detail or "").split(";"):
+        part = part.strip()
+        if part.startswith("“"):
+            m = re.match(r"“([^”]+)”", part)
+            if m:
+                out.append(m.group(1))
+    if not out:
+        out = sf.quoted_labels(rest) or [q for q in sf.QUOTED_RE.findall(rest) if cp.is_code_identifier(q)]
+    return list(dict.fromkeys(out))
+
+
+def _clear_downgrades(case: dict, test) -> None:
+    case["grounding_downgrades"] = [d for d in case.get("grounding_downgrades") or []
+                                    if not (isinstance(d, dict) and test(d))]
+    if not case["grounding_downgrades"]:
+        case.pop("grounding_downgrades")
+
+
+def _retest_text(text: str, index: SourceIndex, case: dict, files: list[SourceFile],
+                 step: int | None, prefixes: set[str]) -> tuple[str, list[tuple[str, str, str]]] | None:
+    """The text without a mark whose fact is found, and ``[(kind, claim, cite)]``;
+    None when the mark stands (or there is none)."""
+    from .deployed_env_checks import _calls, _segments
+
+    m = _LABEL_MARK_RE.match(text)
+    if m:
+        labels = _marked_labels(m.group("detail"), m.group("rest"))
+        hits = [(lb, _locate_label(lb, index, files)) for lb in labels]
+        if not labels or not all(h for _, h in hits):
+            return None
+        cites = [("label", lb, f"{h[0]}:{h[1]}") for lb, h in hits]
+        _clear_downgrades(case, lambda d: d.get("kind") == "label" and any(lb in (d.get("claim") or "") for lb in labels)
+                          and (step is None or (d.get("claim") or "").startswith(f"step {step}:")))
+        case["unverified_labels"] = [u for u in case.get("unverified_labels") or []
+                                     if not (isinstance(u, dict) and u.get("label") in labels
+                                             and (step is None or u.get("step") == step))]
+        if not case["unverified_labels"]:
+            case.pop("unverified_labels")
+        return m.group("rest"), cites
+    m = _ELEMENT_MARK_RE.match(text)
+    if m:
+        ids = [i.strip() for i in m.group("ids").split(",") if i.strip()]
+        hits = [(i, cp.find_identifier(index, i)[0]) for i in ids]
+        if not ids or not all(h for _, h in hits):
+            return None
+        for e in case.get("step_grounding") or []:
+            if isinstance(e, dict) and e.get("step") == step and e.get("verified") is False:
+                e["verified"] = True
+        _clear_downgrades(case, lambda d: d.get("kind") == "element"
+                          and (step is None or (d.get("claim") or "").startswith(f"step {step}:")))
+        return m.group("rest"), [("element", i, h.where()) for i, h in hits]
+    m = _ROUTE_MARK_RE.match(text)
+    if m:
+        calls = _calls(m.group("rest"))
+        if not calls:
+            return None
+        found = []
+        for method, path in calls:
+            segs = _segments(path)
+            alt = ["/" + "/".join(segs[1:])] if segs and segs[0].lower() in prefixes else []
+            r = cp.resolve_route(index, method, path, alt)
+            if r.match is None:
+                return None
+            found.append(r.match)
+        routes = [r for r in case.get("route_sources") or [] if isinstance(r, dict)]
+        for r in found:
+            src = r.as_route_source()
+            if not any(x.get("path") == src["path"] and x.get("source") == src["source"] for x in routes):
+                routes.append(src)
+        case["route_sources"] = routes
+        _clear_downgrades(case, lambda d: (d.get("claim") or "").startswith(
+            f"rule AA: step {step}:" if step is not None else "rule AA:"))
+        return m.group("rest"), [("route", f"{r.method} {r.pattern}", r.cite()) for r in found]
+    return None
+
+
+def retest_marks(test_plan, index: SourceIndex | None) -> list[Outcome]:
+    """Re-test every "unverified" and "not checked" mark against the code, and
+    drop the ones whose fact is found.
+
+    Runs last, over every case section, whichever pass (or the generator
+    itself) wrote the mark: a label, an identifier, or a route. A mark is
+    dropped only when every fact it names is found; the text then cites where
+    instead ("(in code: BaseStreamText.ts:584)"). A mark whose fact is not
+    found stays as written — it already says where it was looked for.
+    """
+    if index is None or isinstance(index, str):
+        return []
+    from .deployed_env_checks import gateway_prefixes
+
+    prefixes = gateway_prefixes(test_plan)
+    out: list[Outcome] = []
+    for section in RETEST_SECTIONS:
+        for ci, case in enumerate(getattr(test_plan, section, None) or []):
+            if not isinstance(case, dict):
+                continue
+            cid = f"{section}:{ci}"
+            files, _ = _code_sources(index, [s for s in case.get("grounded_in") or [] if isinstance(s, str)]
+                                     + [e.get("source") for e in case.get("step_grounding") or []
+                                        if isinstance(e, dict) and isinstance(e.get("source"), str)])
+            slots: list[tuple[str, int | None]] = [("steps", i) for i in range(len(case.get("steps") or []))]
+            slots += [("preconditions", None), ("expected", None)]
+            for field_name, i in slots:
+                text = case["steps"][i] if i is not None else case.get(field_name)
+                if not isinstance(text, str):
+                    continue
+                step = (i + 1) if i is not None else (0 if field_name == "preconditions" else None)
+                cites: list[tuple[str, str, str]] = []
+                for _ in range(4):  # marks can stack
+                    got = _retest_text(text, index, case, files, step, prefixes)
+                    if got is None:
+                        break
+                    text, found = got
+                    cites += found
+                if not cites:
+                    continue
+                where = ", ".join(dict.fromkeys(c for _, _, c in cites))
+                text = f"{text.rstrip()} (in code: {where})"
+                if i is not None:
+                    case["steps"][i] = text
+                else:
+                    case[field_name] = text
+                for kind, claim, cite in cites:
+                    out.append(Outcome(cid, kind, f"{field_name if i is None else f'step {step}'}: {claim}",
+                                       "cleared", "the mark's fact is in the code", cite))
+    return out
+
+
 # --- the pass ----------------------------------------------------------------
 
 
@@ -717,7 +917,19 @@ async def run_grounding_verification(test_plan, index: SourceIndex | None, githu
     try:
         if github is not None:
             await sf.read_cited(index, github, cited)
-        return verify_plan(test_plan, index, shown=shown, token_sources=token_sources)
+        report = verify_plan(test_plan, index, shown=shown, token_sources=token_sources)
+        cleared = retest_marks(test_plan, index)
+        report["cleared"] = len(cleared)
+        if cleared:
+            report["cleared_claims"] = [o.as_dict() for o in cleared][:60]
+            # A label this run downgraded and the re-test then found is not a downgrade.
+            def key(case_id, claim):
+                return case_id, str(claim or "").split(": ", 1)[-1].strip("“”")
+            gone = {key(o.case_id, o.claim) for o in cleared}
+            kept = [d for d in report.get("downgraded_claims") or [] if key(d.get("case_id"), d.get("claim")) not in gone]
+            report["downgraded"] -= len(report.get("downgraded_claims") or []) - len(kept)
+            report["downgraded_claims"] = kept
+        return report
     except Exception as e:  # noqa: BLE001 — a broken check must not pass as a clean plan
         return {"error": f"grounding verification failed: {type(e).__name__}: {e}",
                 "checked": 0, "downgraded": 0, "unchecked": 0}

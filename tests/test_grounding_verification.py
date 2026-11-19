@@ -360,9 +360,13 @@ async def test_a_file_that_could_not_be_read_is_unchecked_not_downgraded():
 
 
 @pytest.mark.asyncio
-async def test_a_flag_named_in_the_wrong_file_is_downgraded_with_where_it_is():
+async def test_a_flag_named_in_the_wrong_file_is_recited_where_it_is_not_downgraded():
     """The stored happy_path:0 cited FeatureManager.swift for the Remote Config
-    keys; the strings live in RemoteConfigKey.swift, which edge_cases:0 cites."""
+    keys; the strings live in RemoteConfigKey.swift, which edge_cases:0 cites.
+
+    The identifiers are in the code, so the step is not marked: the entry is
+    re-cited to the file that has them (SK-3014 rule: search the whole diff,
+    not only the cited file, before calling a fact unverified)."""
     prs, gh, body = _sk2719()
     index, _ = await _index_and_facts(prs, gh)
     wrong = copy.deepcopy(body["edge_cases"][0])
@@ -374,9 +378,11 @@ async def test_a_flag_named_in_the_wrong_file_is_downgraded_with_where_it_is():
     gv.verify_plan(plan, index)
 
     assert not [d for d in plan.edge_cases[0].get("grounding_downgrades") or [] if d["kind"] == "element"]
-    [d] = [d for d in plan.edge_cases[1]["grounding_downgrades"] if d["kind"] == "element"]
-    assert d["reason"] == "sign_in_person, sign_now not in FeatureManager.swift (found in RemoteConfigKey.swift)"
-    assert plan.edge_cases[1]["steps"][0].startswith(gv.ELEMENT_MARKER)
+    assert not [d for d in plan.edge_cases[1].get("grounding_downgrades") or [] if d["kind"] == "element"]
+    assert not plan.edge_cases[1]["steps"][0].startswith(gv.ELEMENT_MARKER)
+    [e] = [e for e in plan.edge_cases[1]["step_grounding"] if e["kind"] == "flag"]
+    assert e["source"].endswith("RemoteConfigKey.swift") and e["lines"].isdigit()
+    assert e["cited_source_was"] == "pr:Acme/Services/FeatureManager.swift"
 
 
 @pytest.mark.asyncio

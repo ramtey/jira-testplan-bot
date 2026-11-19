@@ -984,6 +984,9 @@ class SourceIndex:
     trees: dict[str, list[str] | None] = field(default_factory=dict)
     #: (repo, path) -> new-file line numbers the PRs added or changed.
     changed_lines: dict[tuple[str, str], set[int]] = field(default_factory=dict)
+    #: (repo, path) -> the PR's unified diff for it, every file type (a SQL
+    #: migration is in the diff but is not read whole).
+    patches: dict[tuple[str, str], str] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
     def candidates(self, locator: str) -> list[tuple[str, str]]:
@@ -1106,6 +1109,8 @@ async def read_source_index(github, pull_requests: list[dict] | None) -> SourceI
                 if not name or f.get("status") == "removed":
                     continue
                 index.changed_lines.setdefault((repo, name), set()).update(added_lines(f.get("patch")))
+                if isinstance(f.get("patch"), str) and f["patch"]:
+                    index.patches[(repo, name)] = f["patch"]
                 if is_source_path(name) and name not in changed:
                     changed.append(name)
                     if f.get("full_content"):

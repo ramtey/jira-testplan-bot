@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 ALL_CASE_SECTIONS = GRADED_SECTIONS + ("security_negative_tests",)
 
-ROUTE_UNCHECKED_MARKER = "Route not checked against the router (rule AA): {route} —"
+ROUTE_UNCHECKED_MARKER = "Route not checked against the router (rule AA): {route} ({searched}) —"
 ROUTE_NOT_FOUND_MARKER = "Route not found where the plan cites it (rule AA): {why} —"
 FIELD_MARKER = "Response field not confirmed (rule AB): {why} —"
 NOT_VISIBLE_MARKER = "Not visible from outside (rule AB): {why} —"
@@ -372,7 +372,11 @@ def check_malformed_urls(test_plan: Any, report: dict,
 # AA. Routes come from the router; AB. response fields from the response code
 # ---------------------------------------------------------------------------
 
-_CALL_RE = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+[`\"']?(?:https?://[^\s/`\"']+)?(/[^\s`\"'<>,;)]*)")
+# A ``<uuid>``-style placeholder is one path segment, not the end of the path:
+# SK-3014's "POST /api/stream-text/chat/<uuid>" was read as ".../chat/" and
+# matched no route, even the one the case cited.
+_CALL_RE = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+[`\"']?(?:https?://[^\s/`\"'<>]+)?"
+                      r"(/(?:<[^<>\n/]{1,40}>|[^\s`\"'<>,;)])*)")
 _CURL_RE = re.compile(r"\bcurl\b(?P<args>[^\n]*?)(?P<url>https?://[^\s`\"']+)")
 _PARAM_SEG_RE = re.compile(r"^(?::\w+\??|\{[^}]*\}|<[^>]*>|\[[^\]]*\]|\*\w*|\$\w+|_+)$")
 _HTTP_SECTIONS_SURFACES = ("backend_http",)
@@ -438,19 +442,49 @@ def gateway_prefixes(test_plan: Any) -> set[str]:
     return out
 
 
+def _from_code(method: str, paths: list[str], index, routes: list[dict]):
+    """The route resolved from the router code itself (registration prefix +
+    the route's own path, across files); appended to ``routes`` when found."""
+    from .code_presence import resolve_route
+
+    found = resolve_route(None if isinstance(index, str) else index, method, paths[0], paths[1:])
+    if found.match is not None:
+        routes.append(found.match.as_route_source())
+    return found
+
+
+def _unchecked_marker(method: str, path: str, found) -> str:
+    where = found.where() if found is not None else "no router file was read"
+    if found is not None and found.unmounted:
+        d = found.unmounted[0]
+        where = (f"{d.src.path.rsplit('/', 1)[-1]}:{d.line} declares {d.path or '/'}, but no read file "
+                 f"registers it, so its prefix is unknown; {where}")
+    return ROUTE_UNCHECKED_MARKER.format(route=f"{method} {path}", searched=where)
+
+
 def _route_problem(method: str, path: str, routes: list[dict], index,
                    prefixes: set[str] = frozenset()) -> tuple[str, str, str] | None:
-    """``(marker, reason, action)`` for a call the route citations do not back;
-    ``("", "", "unchecked")`` when the cited file could not be read; None when fine."""
+    """``(marker, reason, action)`` for a call neither the route citations nor
+    the router code back; ``("", "", "unchecked")`` when the cited file could
+    not be read; None when fine. A route found in the code is appended to
+    ``routes`` (the case's ``route_sources``) as its citation."""
     segs = _segments(path)
     paths = [path] + (["/" + "/".join(segs[1:])] if segs and segs[0].lower() in prefixes else [])
     match = next((r for r in routes for p in paths if route_matches(_text(r.get("path")), p)
                   and _text(r.get("method")).upper() in (method, "ALL", "ANY", "")), None)
     if match is None:
-        return (ROUTE_UNCHECKED_MARKER.format(route=f"{method} {path}"),
-                f"{method} {path}: no route_sources entry backs it", "marked")
+        found = _from_code(method, paths, index, routes)
+        if found.match is not None:
+            return None
+        return (_unchecked_marker(method, path, found),
+                f"{method} {path}: no route_sources entry backs it and no router registration resolves to it "
+                f"({found.where()})", "marked")
     src, mount = _text(match.get("source")), _text(match.get("mount_source"))
     if not _FILE_LINE_RE.search(src):
+        found = _from_code(method, paths, index, routes)
+        if found.match is not None:
+            routes.remove(match)
+            return None
         return ROUTE_NOT_FOUND_MARKER.format(why="no <file>:<line> cited"), f"{method} {path}: no file:line cited", "marked"
     src_text = _file_text(index, src)
     if src_text is None:
@@ -466,8 +500,13 @@ def _route_problem(method: str, path: str, routes: list[dict], index,
                re.search(r"\.(?:json|xml|csv|pdf|zip|txt|html?)$", s, re.I) else [s]) if p]
     missing = [s for s in statics if s.lower() not in blob]
     if missing:
+        # The citation is off, not necessarily the route: resolve it from the router.
+        found = _from_code(method, paths, index, routes)
+        if found.match is not None:
+            routes.remove(match)
+            return None
         why = f"'{missing[0]}' of {_text(match.get('path'))} is not in {src}" + (f" or {mount}" if mount else "")
-        return ROUTE_NOT_FOUND_MARKER.format(why=why), f"{method} {path}: {why}", "downgraded"
+        return ROUTE_NOT_FOUND_MARKER.format(why=why), f"{method} {path}: {why}; {found.where()}", "downgraded"
     return None
 
 
@@ -480,6 +519,7 @@ def check_routes(test_plan: Any, report: dict, index=None) -> int:
         if not _needs_http_checks(section, case):
             continue
         routes = [r for r in case.get("route_sources") or [] if isinstance(r, dict) and _text(r.get("path"))]
+        before = list(routes)
         steps = case.get("steps") or []
         reasons, action = [], "marked"
         for i, step in enumerate(steps):
@@ -497,6 +537,11 @@ def check_routes(test_plan: Any, report: dict, index=None) -> int:
                 reasons.append(f"step {i + 1}: {why}")
                 action = "downgraded" if act == "downgraded" else action
                 break
+        if routes != before:
+            # Routes resolved from the router code: they are the citation.
+            case["route_sources"] = routes + [r for r in case.get("route_sources") or [] if not isinstance(r, dict)]
+            report["routes_resolved_from_code"] = report.get("routes_resolved_from_code", 0) + sum(
+                1 for r in routes if r.get("resolved_from_code") and r not in before)
         if reasons:
             n += 1
             _record(report, case, section, "AA", action, "; ".join(reasons)[:300], reasons[0])
@@ -556,14 +601,26 @@ def check_response_fields(test_plan: Any, report: dict, index=None) -> int:
     return n
 
 
-async def _read_cited_routes(test_plan: Any, index, github) -> None:
+async def _read_cited_routes(test_plan: Any, report: dict, index, github) -> None:
     if index is not None and not isinstance(index, str) and github is not None:
+        from .code_presence import read_router_context
         from .source_facts import read_cited
 
         try:
             await read_cited(index, github, route_locators(test_plan))
         except Exception as e:  # noqa: BLE001 — checks below treat unread as unchecked
             logger.warning("could not read cited route files: %s", e)
+        # The app entry and router files, so a route no case cites is resolved
+        # from its registration rather than marked unchecked.
+        called = [p for section, _, case in _cases(test_plan, ALL_CASE_SECTIONS) if _needs_http_checks(section, case)
+                  for s in _steps(case) for _, p in _calls(s)]
+        if called:
+            try:
+                read = await read_router_context(index, github, called)
+                if read:
+                    report["router_files_read"] = read[:20]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("could not read router files: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -832,7 +889,7 @@ async def check_routes_and_shapes(test_plan: Any, report: dict, *, index=None, g
     (and fills the route's mount chain), so AA then checks the full path."""
     from .endpoint_paths import check_endpoint_paths
 
-    await _read_cited_routes(test_plan, index, github)
+    await _read_cited_routes(test_plan, report, index, github)
     n = await check_endpoint_paths(test_plan, report, index=index, github=github)
     return n + check_routes(test_plan, report, index) + check_response_fields(test_plan, report, index)
 

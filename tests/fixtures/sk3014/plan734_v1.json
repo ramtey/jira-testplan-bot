@@ -1,0 +1,266 @@
+{
+ "_note": "SK-3014 plan 734 v1 rows as stored (marks included), sanitized: repo renamed, no hostnames. Code is excerpted from the PR head at 78690e84; line numbers are the excerpt's own.",
+ "repo": "example-org/agent-coach",
+ "ref": "78690e8400000000000000000000000000000000",
+ "files": {
+  "apps/agent-coach-api/src/app.ts": "import cors from '@fastify/cors';\nimport { createClient } from '@supabase/supabase-js';\nimport Fastify, { FastifyError, FastifyInstance, FastifyReply, FastifyServerOptions } from 'fastify';\nimport { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';\n\nimport config from './config';\nimport { adminMiddleware } from './middleware/admin-middleware';\nimport { authMiddleware } from './middleware/auth';\nimport { rootRoutes } from './routes';\nimport { adminRoutes } from './routes/admin/admin';\nimport { aiRoutes } from './routes/ai-controller';\nimport { feedbackRoutes } from './routes/feedback';\nimport { generateRoutes } from './routes/generate';\nimport { healthRoutes } from './routes/health';\nimport { personasRoutes } from './routes/personas';\nimport { streamObjectRoutes } from './routes/stream-object';\nimport { streamTextRoutes } from './routes/stream-text';\nimport { userRoutes } from './routes/users';\nimport models from './utils/models';\n\nconst isDev = process.env.NODE_ENV !== 'production';\n\nexport const buildServer = (\n  options: { logger?: FastifyServerOptions['logger']; models?: typeof models } = {}\n): FastifyInstance => {\n  const fastify = Fastify({ logger: options.logger ?? defaultLogger });\n\n  // Register all routes with /api prefix\n  fastify.register(healthRoutes, { prefix: '/api' });\n  fastify.register(rootRoutes, { prefix: '/api' });\n  fastify.register(personasRoutes, { prefix: '/api' });\n  fastify.register(aiRoutes, { prefix: '/api/ai' });\n  fastify.register(generateRoutes, { prefix: '/api/generate' });\n  fastify.register(streamTextRoutes, { prefix: '/api/stream-text' });\n  fastify.register(streamObjectRoutes, { prefix: '/api/stream-object' });\n  fastify.register(feedbackRoutes, { prefix: '/api/feedback' });\n  fastify.register(userRoutes, { prefix: '/api/users' });\n\n  return fastify;\n};\n",
+  "apps/agent-coach-api/src/routes/stream-text.ts": "const CHAT_TEMPERATURE = 0.5;\n\n// Schema for the UUID parameter\nconst UuidParamSchema = z.object({\n  uuid: z.string().uuid(),\n});\n\nexport async function streamTextRoutes(server: FastifyInstance) {\n  // Every route here reads or generates a user's chat, so none may run without an authenticated user.\n  server.addHook('onRequest', requireUser);\n\n  // Route for creating a new chat or continuing an existing one with UUID in URL path\n  server.withTypeProvider<ZodTypeProvider>().route({\n    method: 'POST',\n    url: '/chat/:uuid',\n    schema: {\n      body: CommandRequestSchema,\n      params: UuidParamSchema,\n    },\n    handler: async (request, reply) => {\n      const userId = request.user?.id;\n      const { uuid } = request.params;\n\n      if (!userId) {\n        return reply.code(401).send({ error: 'Unauthorized' });\n      }\n\n      return reply.send({});\n    },\n  });\n}\n",
+  "packages/generate/src/v2/streamText/BaseStreamText.ts": "    }\n\n    try {\n      const context = (await this.getContext()) as any;\n      const systemMessage = await this.systemMessage();\n\n      const streamedTextRecord = await this.streamedTextsRepository.upsertStreamedText({\n        uuid,\n        class: this.constructor.name,\n        status,\n        user_id: this.userId,\n        messages: messages\n          ? JSON.parse(JSON.stringify(messages))\n          : this.messages.length > 0\n            ? JSON.parse(JSON.stringify(this.messages))\n            : [],\n        debug_data: {\n          error: error ? JSON.parse(JSON.stringify(error)) : undefined,\n          model: this.model.modelId,\n          modelProvider: this.model.provider,\n          debug: this.textStreammingOptions.debug || false,\n          lastUpdated: new Date().toISOString(),\n          systemMessage,\n          context,\n          // Carried forward on every write; softRefusals is for API instances that predate the soft_refusals column.\n          softRefusals: this.softRefusals,\n          refusedTextHashes: [...this.refusedTextHashes],\n          ...additionalDebugData,\n        },\n      });\n\n",
+  "packages/supabase/src/public/repositories/streamedTextsRepository.ts": "\n    return data;\n  }\n\n  /**\n   * Upsert a streamed text record (create if doesn't exist, update if it does). An existing record is updated only if\n   * it belongs to streamedText.user_id; otherwise this throws, so a chat UUID can't be taken over from another user.\n   * @param streamedText The streamed text data to upsert\n   * @returns The upserted streamed text record\n   */\n  async upsertStreamedText(\n    streamedText: Partial<Omit<StreamedText, 'created_at' | 'blocked_at' | 'soft_refusals'>> &\n      Pick<StreamedText, 'uuid' | 'user_id'>\n  ): Promise<StreamedText> {\n    if (!streamedText.uuid) {\n      throw new Error('UUID is required for streamed text upsert');\n    }\n\n    // First check if the record exists\n    const existingRecord = await this.getStreamedTextByUuid(streamedText.uuid);\n\n    if (!existingRecord) {\n      // Create new record\n      const { data, error } = await this.supabase\n        .schema('public')\n        .from('streamed_texts')\n"
+ },
+ "plan": {
+  "happy_path": [
+   {
+    "title": "A hard refusal sets blocked_at, and later turns are refused without changing the lock",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — Generate a new chat UUID (v4). POST /api/stream-text/chat/<uuid> with a message that clearly breaks a hard rule (for example profanity aimed at the assistant).",
+     "Check the response body contains \"toolName\":\"judgeRejection\" and \"blocked\":true.",
+     "Query: select user_id, blocked_at, soft_refusals from streamed_texts where uuid='<uuid>'. Note the blocked_at value.",
+     "Send 3 more harmless messages to the same UUID, one after another (e.g. 'how do I follow up with a lead?').",
+     "Re-run the query from step 3."
+    ],
+    "expected": "Step 2: the rejection is returned with blocked:true. Step 3: user_id is test user A and blocked_at is set (not null). Step 4: every response is a judgeRejection with blocked:true and no coaching reply. Step 5: blocked_at is exactly the value noted in step 3 (coalesce keeps the first timestamp), and soft_refusals is unchanged.",
+    "expected_source": "packages/generate/src/v2/streamText/BaseStreamText.ts:442-508",
+    "surface": "backend_http",
+    "grounded_in": [
+     "pr:packages/generate/src/v2/streamText/BaseStreamText.ts",
+     "pr:apps/agent-coach-api/src/routes/stream-text.ts",
+     "pr:packages/supabase/migrations/20261117000000_add_streamed_texts_refusal_lock.sql"
+    ],
+    "route_sources": [
+     {
+      "method": "POST",
+      "path": "/api/stream-text/chat/:uuid",
+      "source": "apps/agent-coach-api/src/routes/stream-text.ts:80-82",
+      "mount_source": "apps/agent-coach-api/src/app.ts:84-92"
+     }
+    ],
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     },
+     {
+      "claim": "rule AF: marked",
+      "reason": "blocked by setup: Test user A credentials and Supabase read access in the target environment are not confirmed. Agent Coach engineering can provide them."
+     },
+     {
+      "kind": "expected",
+      "claim": "expected verified against packages/generate/src/v2/streamText/BaseStreamText.ts:442-508",
+      "status": "downgraded",
+      "reason": "its logic_claims rule names too little of BaseStreamText.ts:79-111, 122-130, 341-355, 427-429, 436-440, 442-492 … (executeRejection, createRejectionModel, determineBlockMode, isConversationBlocked, modelMessages, recordRefusal, refusalKey) to check; restates the rule in BaseStreamText.ts:79-111, 122-130, 341-355, 427-429, 436-440, 442-492 … (executeRejection, createRejectionModel, determineBlockMode, isConversationBlocked, modelMessages, recordRefusal, refusalKey) without role matches \"tool\" (line 345); (index !== lastIndex (line 348); role matches \"system\" (line 351); kind matches \"foreign_owner\" (line 499); Error matches \"The chat belongs to another user\" (line 499); kind matches \"recorded\" (line 500)",
+      "source": "packages/generate/src/v2/streamText/BaseStreamText.ts:442-508"
+     }
+    ]
+   },
+   {
+    "title": "The third soft refusal locks the chat: soft_refusals goes 1, then 2, then blocked_at is set",
+    "steps": [
+     "On a new chat UUID, send an off-topic message that breaks only a mild rule, e.g. song lyrics unrelated to real estate (the tests use rule 'real-estate-focused' as the soft rule).",
+     "Query blocked_at and soft_refusals for the UUID.",
+     "Send a second off-topic message (different text). Query again.",
+     "Send a third off-topic message (different text). Query again.",
+     "Send a harmless real-estate question."
+    ],
+    "expected": "Step 1: judgeRejection with blocked:false. Step 2: soft_refusals=1, blocked_at null. Step 3: blocked:false, soft_refusals=2, blocked_at null. Step 4: blocked:true, blocked_at set, soft_refusals still 2 (a locking refusal does not add to the count). Step 5: refused with blocked:true and no model reply.",
+    "surface": "backend_http",
+    "grounded_in": [
+     "pr:packages/generate/src/v2/streamText/BaseStreamText.ts",
+     "pr:apps/agent-coach-api/src/__tests__/stream-text-guardrails.test.ts"
+    ],
+    "grounding_downgrades": [
+     {
+      "claim": "rule AF: marked",
+      "reason": "blocked by setup: Credentials and database access are unconfirmed."
+     }
+    ]
+   },
+   {
+    "title": "Approved turns never write blocked_at or soft_refusals, so a soft count survives later normal turns",
+    "steps": [
+     "On a new chat UUID, get one soft refusal (an off-topic message). Confirm soft_refusals=1.",
+     "Send 2 harmless real-estate questions, letting each one finish.",
+     "Unverified — label per ticket, not found in code (“softRefusals”; the cited code has “soft_refusals” at streamedTextsRepository.ts:106): Query soft_refusals, blocked_at, and debug_data->'softRefusals'."
+    ],
+    "expected": "Step 2: both get normal coaching replies. Step 3: soft_refusals is still 1 and blocked_at is still null. The approved turns' message writes did not reset the lock columns.",
+    "expected_source": "packages/supabase/src/public/repositories/streamedTextsRepository.ts:97-160",
+    "surface": "backend_http",
+    "grounded_in": [
+     "pr:packages/supabase/src/public/repositories/streamedTextsRepository.ts"
+    ],
+    "grounding_downgrades": [
+     {
+      "claim": "rule AF: marked",
+      "reason": "blocked by setup: Credentials and database access are unconfirmed."
+     },
+     {
+      "kind": "label",
+      "claim": "step 3: “softRefusals”",
+      "status": "downgraded",
+      "reason": "“softRefusals”; the cited code has “soft_refusals” at streamedTextsRepository.ts:106",
+      "source": "streamedTextsRepository.ts"
+     }
+    ],
+    "unverified_labels": [
+     {
+      "step": 3,
+      "label": "softRefusals",
+      "code_has": "soft_refusals",
+      "code_at": "packages/supabase/src/public/repositories/streamedTextsRepository.ts:106"
+     }
+    ]
+   }
+  ],
+  "security_negative_tests": [
+   {
+    "title": "Anonymous chat turn (no token) is rejected before any refusal is recorded",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — POST /api/stream-text/chat/<A's chat uuid> with no Authorization header and the S4 body.",
+     "Query soft_refusals and blocked_at for the UUID."
+    ],
+    "expected": "401 {\"error\":\"Missing authorization header\"}. Lock columns unchanged.",
+    "expected_source": "apps/agent-coach-api/src/middleware/auth.ts:23-26",
+    "surface": "backend_http",
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     }
+    ]
+   },
+   {
+    "title": "Another user's turn on A's chat gets 403 and no refusal is recorded",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — As user B, POST /api/stream-text/chat/<A's uuid> with an off-topic message.",
+     "Query soft_refusals, blocked_at and user_id for the UUID."
+    ],
+    "expected": "403 {\"error\":\"Forbidden: You cannot access this chat\"}. user_id is still A, and soft_refusals/blocked_at are unchanged.",
+    "expected_source": "apps/agent-coach-api/src/routes/stream-text.ts:99-100",
+    "surface": "backend_http",
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     },
+     {
+      "claim": "rule AF: marked",
+      "reason": "blocked by setup: Test user B unconfirmed."
+     }
+    ]
+   },
+   {
+    "title": "Owner control: A's off-topic turn on A's own chat is refused and counted",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — As A, POST /api/stream-text/chat/<A's uuid> with an off-topic message.",
+     "Query soft_refusals."
+    ],
+    "expected": "200 streamed judgeRejection, and soft_refusals goes up by 1 (or the chat locks if this is the third soft refusal).",
+    "expected_source": "packages/generate/src/v2/streamText/BaseStreamText.ts:495-508",
+    "surface": "backend_http",
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     }
+    ]
+   },
+   {
+    "title": "Unauthenticated sweep: a garbage bearer token is rejected",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — POST /api/stream-text/chat/<uuid> with Authorization: Bearer not-a-jwt."
+    ],
+    "expected": "401 {\"error\":\"Invalid token\"}. No streamed_texts row is created for a new UUID.",
+    "expected_source": "apps/agent-coach-api/src/middleware/auth.ts:31-35",
+    "surface": "backend_http",
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     }
+    ]
+   },
+   {
+    "title": "Unauthenticated sweep: no Authorization header on a new UUID creates no row",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — POST /api/stream-text/chat/<new uuid> with no Authorization header.",
+     "Query streamed_texts for that UUID."
+    ],
+    "expected": "401 {\"error\":\"Missing authorization header\"}, and no row exists.",
+    "expected_source": "apps/agent-coach-api/src/middleware/auth.ts:23-26",
+    "surface": "backend_http",
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     }
+    ]
+   },
+   {
+    "title": "Client-sent userId (anonymous): rejected by auth before the body is used",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — POST /api/stream-text/chat/<A's uuid> with no token and a body that adds \"userId\":\"<A id>\"."
+    ],
+    "expected": "401 {\"error\":\"Missing authorization header\"}. The body is never processed.",
+    "expected_source": "apps/agent-coach-api/src/middleware/auth.ts:23-26",
+    "surface": "backend_http",
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     }
+    ]
+   },
+   {
+    "title": "Client-sent userId (other user): B can't record a refusal on A's chat by claiming A's id",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — As B, POST /api/stream-text/chat/<A's uuid> with body field \"userId\":\"<A id>\".",
+     "Query A's chat lock columns."
+    ],
+    "expected": "Unverified — assumption: the route uses request.user.id (stream-text.ts:88), not the body, so B gets 403 Forbidden (or 400 if the body schema rejects unknown keys — record which). A's soft_refusals/blocked_at are unchanged.",
+    "surface": "backend_http",
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     },
+     {
+      "claim": "rule AF: marked",
+      "reason": "blocked by setup: User B unconfirmed."
+     }
+    ]
+   },
+   {
+    "title": "Client-sent userId (owner control): a body userId naming another user doesn't redirect the refusal",
+    "steps": [
+     "As A, POST to A's own chat with an off-topic message and \"userId\":\"<B id>\" in the body.",
+     "Query user_id and soft_refusals for A's chat and confirm B has no row for that UUID."
+    ],
+    "expected": "Unverified — assumption: the refusal is recorded on A's chat (user_id A, soft_refusals +1), or the request gets 400 for an unknown key — record which. Nothing is attributed to B.",
+    "surface": "backend_http"
+   },
+   {
+    "title": "A soft-deleted user's still-valid token on the chat route",
+    "steps": [
+     "Route not checked against the router (rule AA): POST /api/stream-text/chat/ — POST /api/stream-text/chat/<that user's chat uuid> with the old token and an off-topic message.",
+     "Query the lock columns."
+    ],
+    "expected": "Exact message unverified (rule Q, first rejecting check): no traced path from the entry point to the first check that rejects this input — pass or fail on the outcome the spec requires, not on this wording; record the exact message, status and error shown. Predicted: Unverified — assumption: supabase.auth.getUser rejects a deleted user, giving 401 'Invalid token' or 'User not found' (auth.ts:31-40). Record the status. No refusal is recorded either way.",
+    "surface": "backend_http",
+    "grounding_downgrades": [
+     {
+      "claim": "rule AA: step 1: POST /api/stream-text/chat/: no route_sources entry backs it",
+      "reason": "step 1: POST /api/stream-text/chat/: no route_sources entry backs it"
+     },
+     {
+      "claim": "rule Q: User not found",
+      "reason": "exact error text without a traced first rejecting check: no traced path from the entry point to the first check that rejects this input"
+     },
+     {
+      "claim": "rule AF: marked",
+      "reason": "blocked by setup: A disposable deletable user is needed from Engineering."
+     }
+    ]
+   }
+  ]
+ }
+}

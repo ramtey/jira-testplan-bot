@@ -319,7 +319,11 @@ def test_recheck_before_routing_runs_the_new_rules():
     report: dict = {}
     asyncio.run(de.recheck_before_routing(plan, report, index=_index(FILES)))
     rules = {f["rule"] for f in report["findings"]}
-    assert {"AC", "AA"} <= rules
+    assert "AC" in rules
+    # The route is registered in the code read (app.ts mounts user.ts), so AA
+    # cites it instead of marking it.
+    assert "AA" not in rules and report["routes_resolved_from_code"] == 1
+    assert case["route_sources"][0]["path"] == "/user/:id/firebase"
 
 
 # --- false positives seen on stored plans ------------------------------------------
