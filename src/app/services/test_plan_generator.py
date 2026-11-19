@@ -1094,6 +1094,7 @@ async def run_evidence_checks(
         build_deployment_status,
         enforce_deploy_precondition,
         enforce_unit_test_coverage,
+        recheck_lockfile_claims,
     )
 
     repo_evidence = repo_evidence or []
@@ -1110,6 +1111,12 @@ async def run_evidence_checks(
         if e.get("error"):
             findings.append({"kind": "repo_unread", "finding": e["error"].capitalize() + ".",
                              "evidence": "", "repo": e["repo"]})
+
+    # Rule F, re-read: lockfile facts against the lines they cite, and the
+    # model's lockfile prose against the facts.
+    findings, lockfile_rechecked = recheck_lockfile_claims(findings, test_plan, repo_evidence)
+    if lockfile_rechecked:
+        logger.info("evidence: lockfile claims re-checked: %s", lockfile_rechecked)
 
     demoted, surviving = enforce_unit_test_coverage(test_plan, test_sources, suites)
     critic_gap = None
@@ -1178,6 +1185,7 @@ async def run_evidence_checks(
         "platform_not_applicable": platform_not_applicable,
         "deployment_targeting": _deployment_targeting(targets, log_steps, build_check_targeting),
         "critic_gap": critic_gap,
+        "lockfile_rechecked": lockfile_rechecked,
     }
 
 

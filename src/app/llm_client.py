@@ -1314,6 +1314,16 @@ that shows the failure), and a "negative case" needs its own assertion.
 resolution", a pinned version, a bundled asset — check how the artifact is
 built (Dockerfile, lockfile use, build scripts; the BUILD/CI FACTS say). If what
 ships differs from what is committed, say so in the cases that depend on it.
+Whether the image installs from the lockfile comes ONLY from a BUILD/CI FACT,
+which was read from every stage of the Dockerfile and the scripts it calls,
+with line numbers. Never infer it from one COPY line: a multi-stage build can
+copy a pruned lockfile from another stage (`turbo prune … --docker`, then
+`COPY --from=builder /app/out/pnpm-lock.yaml`) and install with
+`pnpm install --frozen-lockfile`, `npm ci` or `yarn --immutable`. A global CLI
+install (`npm install -g pnpm@…`) installs a tool, not the app's dependencies.
+With no lockfile FACT, or one that says it could not confirm, write nothing
+about whether the lockfile ships — neither "uses" nor "does not use" — and keep
+every lockfile-based check (`pnpm why`, `npm ls`) as written.
 
 **SCOPE RULES G–K — what a case may claim, and what may count against the ticket.**
 A failed case reads as "this change is broken". These five rules keep that

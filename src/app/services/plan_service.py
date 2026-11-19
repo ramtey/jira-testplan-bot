@@ -1158,6 +1158,8 @@ async def generate_single(
         if evidence.get("platform_not_applicable"):
             provenance["platform_not_applicable"] = evidence["platform_not_applicable"]
         _record_deployment_targeting(provenance, evidence.get("deployment_targeting"))
+        if evidence.get("lockfile_rechecked"):
+            provenance["lockfile_rechecked"] = evidence["lockfile_rechecked"]
         # A client's error handling is tested against empty and non-JSON
         # bodies too (src/app/error_variants.py). Adds a step, never a case.
         variants = require_error_body_variants(test_plan)
@@ -1836,6 +1838,8 @@ async def generate_multi(
         if evidence.get("platform_not_applicable"):
             provenance["platform_not_applicable"] = evidence["platform_not_applicable"]
         _record_deployment_targeting(provenance, evidence.get("deployment_targeting"))
+        if evidence.get("lockfile_rechecked"):
+            provenance["lockfile_rechecked"] = evidence["lockfile_rechecked"]
         # A client's error handling is tested against empty and non-JSON
         # bodies too (src/app/error_variants.py). Adds a step, never a case.
         variants = require_error_body_variants(test_plan)

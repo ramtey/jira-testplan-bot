@@ -35,6 +35,7 @@ never reported as a finding about the repo.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import posixpath
@@ -380,6 +381,30 @@ def _context_dir(dockerfile: str, copies: list[str], tree: set[str]) -> str:
     return posixpath.dirname(dockerfile)
 
 
+def _lockfile_context(dockerfile: str, parsed: dict, tree: set[str]) -> tuple[str, bool]:
+    """The build context for the lockfile check, and whether it is known.
+
+    A `turbo prune` build reads the whole monorepo, so its context is the repo
+    root. Otherwise a COPY source that exists in the repo pins it. With only
+    `COPY . .` and the Dockerfile in a subdirectory, the context depends on
+    how the image is built, which the repo does not say.
+    """
+    if any(re.search(r"\bturbo\s+prune\b", r) for r in parsed["runs"]):
+        return "", True
+    named = [_rel(s) for s in parsed["copies"] if _rel(s) not in ("", ".", "*")]
+    for s in named:
+        if s in tree or any(t.startswith(s + "/") for t in tree):
+            return "", True
+    here = posixpath.dirname(dockerfile)
+    if not here:
+        return "", True
+    for s in named:
+        full = posixpath.join(here, s)
+        if full in tree or any(t.startswith(full + "/") for t in tree):
+            return here, True
+    return here, False
+
+
 def _copied(path: str, copies: list[str], ctx: str) -> bool:
     """Whether a COPY/ADD with these sources puts ``path`` into the image."""
     for src in copies:
@@ -426,6 +451,392 @@ def _package_test_script(pkg_text: str | None) -> str | None:
         return ((json.loads(pkg_text or "") or {}).get("scripts") or {}).get("test")
     except (ValueError, AttributeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# F. Does the image install from the lockfile? Read every stage.
+# ---------------------------------------------------------------------------
+#
+# SK-3060 (plan 721) said "the shipped build does not use the committed
+# lockfile" about a turbo-prune build that does: the builder stage runs
+# `turbo prune … --docker`, the installer stage copies the pruned
+# out/pnpm-lock.yaml with `COPY --from=builder` and runs
+# `pnpm install --frozen-lockfile`. The old check skipped every `COPY --from`,
+# fell back to the Dockerfile's own directory as the build context for
+# `COPY . .`, and counted `npm install -g pnpm@…` (a CLI, not the app's
+# dependencies) as the install. Each answer below cites the lines it rests on,
+# and anything it cannot pin to lines is "could not confirm", never "no".
+
+#: Lockfiles each JavaScript package manager reads.
+_TOOL_LOCKS = {
+    "npm": ("package-lock.json", "npm-shrinkwrap.json"),
+    "pnpm": ("pnpm-lock.yaml",),
+    "yarn": ("yarn.lock",),
+    "bun": ("bun.lockb", "bun.lock"),
+}
+_JS_LOCK_NAMES = frozenset(n for v in _TOOL_LOCKS.values() for n in v)
+#: Flags that take a separate value, so the value is not read as a package name.
+_VALUE_FLAGS = frozenset({
+    "--omit", "--include", "--only", "--prefix", "-w", "--workspace", "--registry", "--cache",
+    "--loglevel", "--filter", "-F", "--network-timeout", "--store-dir", "--mode", "--cwd", "-C",
+    "--dir", "--modules-folder", "--reporter", "--config",
+})
+_SCRIPT_RE = re.compile(r"(?:^|\s)(?:(?:ba|z)?sh\s+|\.\s+)?(\.{0,2}/?[\w./-]*\.sh)\b")
+
+
+def dockerfile_instructions(text: str) -> list[dict]:
+    """Every instruction, with the physical line it starts on and its stage.
+
+    ``{"line", "kind", "stage", "text"}`` plus, for FROM, ``base`` and
+    ``name``; for COPY/ADD, ``srcs``, ``dest`` and ``from`` (the stage or image
+    a ``--from=`` copy reads, else None); for RUN, ``cmd``.
+    """
+    out: list[dict] = []
+    stage = -1
+
+    def add(full: str, line: int):
+        nonlocal stage
+        word, _, rest = full.partition(" ")
+        word, rest = word.upper(), rest.strip()
+        item = {"line": line, "kind": word, "stage": stage, "text": f"{word} {rest}".strip()}
+        if word == "FROM":
+            stage += 1
+            toks = [t for t in rest.split() if not t.startswith("--")]
+            item["stage"] = stage
+            item["base"] = toks[0] if toks else ""
+            item["name"] = toks[2] if len(toks) >= 3 and toks[1].upper() == "AS" else None
+        elif word in ("COPY", "ADD"):
+            frm = None
+            m = re.search(r"--from=(\S+)", rest)
+            if m:
+                frm = m.group(1)
+            args = re.sub(r"(?:^|\s)--\S+", " ", rest).strip()
+            if args.startswith("["):
+                try:
+                    parts = [str(a) for a in json.loads(args)]
+                except ValueError:
+                    parts = args.strip("[]").replace('"', "").split(",")
+            else:
+                parts = args.split()
+            parts = [p.strip() for p in parts if p.strip()]
+            item.update(srcs=parts[:-1], dest=parts[-1] if len(parts) >= 2 else "", **{"from": frm})
+        elif word == "RUN":
+            item["cmd"] = re.sub(r"^(?:--\S+\s+)+", "", rest)
+        else:
+            return
+        out.append(item)
+
+    cur, start = "", 0
+    for i, raw in enumerate((text or "").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue  # blank lines and comments, inside a continuation too
+        if not cur:
+            start = i
+        if line.endswith("\\"):
+            cur += line[:-1] + " "
+            continue
+        add((cur + line).strip(), start)
+        cur = ""
+    if cur.strip():
+        add(cur.strip(), start)
+    return out
+
+
+def _shell_segments(cmd: str) -> list[str]:
+    return [s.strip() for s in re.split(r"&&|\|\||;|\|", cmd or "") if s.strip()]
+
+
+def classify_install(segment: str) -> dict | None:
+    """What one shell command installs.
+
+    ``{"tool", "global": True}`` for a CLI install (`npm install -g pnpm@10`,
+    `yarn global add turbo`), which says nothing about the app's dependencies;
+    ``{"tool", "global": False, "frozen": bool}`` for an install of the
+    manifest's dependencies; None for anything else, including adding named
+    packages.
+    """
+    m = re.match(r"(?:[A-Za-z_][\w]*=\S*\s+)*(?:corepack\s+)?(npm|pnpm|yarn|bun)\b(.*)$", segment.strip())
+    if not m:
+        return None
+    tool, args = m.group(1), m.group(2).split()
+    flags = {a.split("=")[0] for a in args if a.startswith("-")}
+    words, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a.startswith("-"):
+            skip = a in _VALUE_FLAGS
+            continue
+        words.append(a)
+    if "-g" in flags or "--global" in flags or (words and words[0] == "global"):
+        return {"tool": tool, "global": True}
+    verb, named = (words[0] if words else ""), words[1:]
+    if tool == "npm":
+        if verb in ("ci", "clean-install"):
+            return {"tool": tool, "global": False, "frozen": True}
+        if verb in ("i", "install") and not named:
+            return {"tool": tool, "global": False, "frozen": False}
+        return None
+    if tool == "pnpm":
+        if verb == "fetch":
+            return {"tool": tool, "global": False, "frozen": True}
+        if verb in ("i", "install") and not named:
+            return {"tool": tool, "global": False, "frozen": "--frozen-lockfile" in flags}
+        return None
+    if tool == "yarn":
+        if verb in ("", "install") and not named:
+            return {"tool": tool, "global": False,
+                    "frozen": bool({"--immutable", "--frozen-lockfile"} & flags)}
+        return None
+    if verb in ("i", "install") and not named:  # bun
+        return {"tool": tool, "global": False, "frozen": "--frozen-lockfile" in flags}
+    return None
+
+
+def _run_scripts(cmd: str, tree: Iterable[str]) -> dict[str, str | None]:
+    """Repo scripts one RUN command calls: {as written: repo path, or None if not found}."""
+    tree = list(tree)
+    out: dict[str, str | None] = {}
+    for m in _SCRIPT_RE.finditer(cmd or ""):
+        written = m.group(1)
+        rel = written.lstrip("./")
+        hits = [p for p in tree if p == rel or p.endswith("/" + rel)]
+        if not hits and "/" in rel:  # /app/scripts/build.sh → scripts/build.sh
+            tail = rel.split("/", 1)[1]
+            hits = [p for p in tree if p == tail or p.endswith("/" + tail)]
+        out[written] = hits[0] if len(hits) == 1 else None
+    return out
+
+
+def dockerfile_scripts(text: str, tree: Iterable[str]) -> list[str]:
+    """Repo paths of the scripts a Dockerfile's RUN lines call, to read with it."""
+    tree = list(tree)
+    return sorted({p for i in dockerfile_instructions(text) if i["kind"] == "RUN"
+                   for p in _run_scripts(i["cmd"], tree).values() if p})
+
+
+def _stage_index(ref: str | None, stages: list[dict]) -> int | None:
+    if ref is None:
+        return None
+    for s in stages:
+        if s.get("name") and s["name"].lower() == ref.lower():
+            return s["stage"]
+    if ref.isdigit() and int(ref) < len(stages):
+        return int(ref)
+    return None
+
+
+def lockfile_use(df: str, text: str, tree: set[str], files: dict[str, str],
+                 ctx: str, ctx_known: bool) -> dict | None:
+    """Whether the image ``df`` builds installs its dependencies from a lockfile.
+
+    Reads every stage the final image draws on (its FROM chain and every
+    stage a ``COPY --from`` reads) and any repo script a RUN line calls.
+    Returns None when the image installs no dependencies, else
+    ``{"status": "uses" | "not_used" | "unverified" | "present", "install",
+    "lock_copy", "globals", "why", "cites"}``; ``cites`` are
+    ``{"path", "line", "text"}`` for the lines the answer rests on.
+    """
+    ins = dockerfile_instructions(text)
+    stages = [i for i in ins if i["kind"] == "FROM"]
+    if not stages:
+        return None
+    by_stage: dict[int, list[dict]] = {}
+    for i in ins:
+        by_stage.setdefault(i["stage"], []).append(i)
+
+    def base_of(s: int) -> int | None:
+        b = _stage_index(stages[s]["base"], stages)
+        return b if b is not None and b < s else None
+
+    # Stages the final image is built from.
+    final = stages[-1]["stage"]
+    keep, todo = set(), [final]
+    while todo:
+        s = todo.pop()
+        if s in keep:
+            continue
+        keep.add(s)
+        b = base_of(s)
+        if b is not None:
+            todo.append(b)
+        for i in by_stage.get(s, []):
+            f = _stage_index(i.get("from"), stages) if i["kind"] in ("COPY", "ADD") else None
+            if f is not None and f != s:
+                todo.append(f)
+
+    # Every install in those stages, including inside a script a RUN calls.
+    installs, globals_, unread_scripts = [], [], []
+    for i in ins:
+        if i["kind"] != "RUN" or i["stage"] not in keep:
+            continue
+        cmds = [(seg, {"path": df, "line": i["line"], "text": i["text"]}) for seg in _shell_segments(i["cmd"])]
+        for written, path in _run_scripts(i["cmd"], tree).items():
+            if path and path in files:
+                for n, line in enumerate(files[path].splitlines(), 1):
+                    if line.strip() and not line.strip().startswith("#"):
+                        cmds += [(seg, {"path": path, "line": n, "text": line.strip()})
+                                 for seg in _shell_segments(line)]
+            else:
+                unread_scripts.append(path or written)
+        for seg, cite in cmds:
+            c = classify_install(seg)
+            if not c:
+                continue
+            entry = {**c, "cmd": seg, "cite": cite, "at": i}
+            (globals_ if c["global"] else installs).append(entry)
+
+    if not installs:
+        if unread_scripts:
+            return {"status": "unverified", "install": None, "lock_copy": None, "globals": globals_,
+                    "why": (f"{df} runs {', '.join(sorted(set(unread_scripts)))}, which could not be "
+                            "read, and no install line was found in the Dockerfile itself"),
+                    "cites": []}
+        return None
+
+    def chain(s: int) -> list[int]:
+        out = [s]
+        while (b := base_of(out[-1])) is not None:
+            out.append(b)
+        return out[::-1]
+
+    def find_lock(inst: dict) -> tuple[dict | None, list[str]]:
+        """The COPY that puts a lockfile in front of ``inst``, and doubts."""
+        names = _JS_LOCK_NAMES  # any committed JS lockfile; the tool decides how strictly it is read
+        tree_locks = [p for p in tree if posixpath.basename(p) in names]
+        at = inst["at"]
+        doubts: list[str] = []
+        found = None
+        for s in chain(at["stage"]):
+            for c in by_stage.get(s, []):
+                if c["kind"] not in ("COPY", "ADD"):
+                    continue
+                if s == at["stage"] and c["line"] >= at["line"]:
+                    break
+                if c["from"] is not None:
+                    src_stage = _stage_index(c["from"], stages)
+                    if any(posixpath.basename(x.rstrip("/")) in names for x in c["srcs"]) or \
+                            posixpath.basename(c["dest"].rstrip("/")) in names:
+                        pruned = src_stage is not None and any(
+                            r["kind"] == "RUN" and re.search(r"\bturbo\s+prune\b", r["cmd"])
+                            for r in by_stage.get(src_stage, []))
+                        prune_line = next((r["line"] for r in by_stage.get(src_stage, [])
+                                           if r["kind"] == "RUN" and re.search(r"\bturbo\s+prune\b", r["cmd"])),
+                                          None)
+                        found = {"copy": c, "pruned": pruned, "prune_line": prune_line}
+                    elif src_stage is not None and any(
+                            x.endswith("/") or posixpath.basename(x) in (".", "*")
+                            or not posixpath.splitext(x)[1] and x.rstrip("/") in ("", "/app", "/usr/src/app")
+                            for x in c["srcs"]):
+                        # A directory from a stage built from this repo may carry its
+                        # lockfile; a file from an external image (`--from=watchdog`)
+                        # never does.
+                        doubts.append(f"line {c['line']} (`{c['text']}`) copies a directory from "
+                                      f"the {c['from']} stage, which may hold a lockfile")
+                    continue
+                for src in c["srcs"]:
+                    hit = next((lk for lk in tree_locks if _copied_glob(lk, src, ctx)), None)
+                    if hit and (ctx_known or posixpath.basename(_rel(src)) in names):
+                        found = {"copy": c, "lock": hit, "pruned": False, "prune_line": None}
+                    elif not ctx_known and _rel(src) in ("", ".", "*") and tree_locks:
+                        doubts.append(f"line {c['line']} (`{c['text']}`) copies the whole build context, "
+                                      f"and whether that context holds {', '.join(sorted(tree_locks))} "
+                                      "depends on where the image is built from")
+        return found, doubts
+
+    results = []
+    for inst in installs:
+        found, doubts = find_lock(inst)
+        if found and inst["frozen"]:
+            status = "uses"
+        elif found:
+            status = "present"
+        elif inst["frozen"]:
+            status = "unverified"
+            doubts = [f"{_cite(inst['cite'])} runs `{inst['cmd']}`, which fails without a lockfile, but "
+                      "no line copying one into that stage names it"] + doubts
+        elif doubts:
+            status = "unverified"
+        else:
+            status = "not_used"
+        results.append({"inst": inst, "found": found, "status": status, "doubts": doubts})
+
+    statuses = {r["status"] for r in results}
+    if statuses <= {"uses", "present"} and "uses" in statuses:
+        r = next(r for r in reversed(results) if r["status"] == "uses")
+        status = "uses"
+    elif statuses == {"present"}:
+        return None  # a lockfile is there, not enforced: no claim either way (as before)
+    elif statuses == {"not_used"}:
+        r, status = results[0], "not_used"
+    else:
+        r, status = next((x for x in results if x["status"] != "uses"), results[0]), "unverified"
+    inst, found = r["inst"], r["found"]
+    cites = []
+    if found:
+        cites.append({"path": df, "line": found["copy"]["line"], "text": found["copy"]["text"]})
+    cites.append(inst["cite"])
+    why = "; ".join(dict.fromkeys(d for x in results for d in x["doubts"]))
+    if status == "unverified" and statuses & {"uses", "not_used", "present"} and not why:
+        why = ("its stages install dependencies more than one way: "
+               + "; ".join(f"line {x['inst']['at']['line']} runs `{x['inst']['cmd']}`" for x in results))
+    return {"status": status, "install": inst, "lock_copy": found, "globals": globals_,
+            "why": why, "cites": cites}
+
+
+def _copied_glob(path: str, src: str, ctx: str) -> bool:
+    """`_copied` for one COPY source, with Docker's wildcards (`pnpm-*.yaml`)."""
+    if not re.search(r"[*?\[]", src) or _rel(src) in ("", ".", "*"):
+        return _copied(path, [src], ctx)
+    pattern = posixpath.normpath(posixpath.join(ctx, _rel(src)))
+    return fnmatch.fnmatchcase(path, pattern) or fnmatch.fnmatchcase(path, pattern + "/*")
+
+
+def _cite(c: dict) -> str:
+    return f"{c['path']}:{c['line']}"
+
+
+def _lockfile_finding(hits: list[dict], kind: str) -> dict:
+    """One Build & CI fact for every image with the same answer."""
+    first = hits[0]
+    lk, df = first["lock"], first["df"]
+    inst = lk["install"]
+    others = [h["df"] for h in hits[1:]]
+    also = (f" The same holds for {', '.join(others)}, which also ship the changed code."
+            if others else "")
+    tools = ""
+    if lk["globals"]:
+        g = lk["globals"][0]
+        tools = (f" (`{g['cmd']}` at {_cite(g['cite'])} installs the {g['cmd'].split()[-1]} CLI only, "
+                 "not the app's dependencies.)")
+    evidence = "; ".join(f"{_cite(c)} {c['text']}" for c in lk["cites"])
+    if kind == "lockfile_shipped":
+        copy = lk["lock_copy"]["copy"]
+        what = ("the pruned lockfile that `turbo prune` writes"
+                + (f" (line {lk['lock_copy']['prune_line']})" if lk["lock_copy"].get("prune_line") else "")
+                if lk["lock_copy"]["pruned"] else
+                (lk["lock_copy"].get("lock") or posixpath.basename(copy["dest"]) or "the lockfile"))
+        text = (f"The shipped build installs from the committed lockfile: {df} line {copy['line']} "
+                f"copies {what} (`{copy['text']}`), and {_cite(inst['cite'])} runs `{inst['cmd']}`, "
+                f"which installs exactly what the lockfile pins and fails the build if the lockfile and "
+                f"package.json disagree. Dependency versions read from the lockfile at this commit are "
+                f"what ships.{tools}{also}")
+    elif kind == "lockfile_not_shipped":
+        pkg = first.get("pkg") or "package.json"
+        locks = first.get("locks") or []
+        text = (f"The shipped build does not use the committed lockfile: {df} copies {pkg} but not "
+                f"{', '.join(locks) or 'a lockfile'} in any stage, then {_cite(inst['cite'])} runs "
+                f"`{inst['cmd']}`. Dependency versions are resolved when the image is built, from the "
+                f"ranges in {pkg}{first.get('deps') or ''}, so what ships can differ from what the "
+                f"lockfile pins.{tools}{also}")
+    else:
+        text = (f"Could not confirm whether the image installs from the lockfile: {lk['why']} "
+                f"({df}). Make no claim either way about whether the lockfile is what ships."
+                + also)
+    return {"kind": kind, "finding": text, "evidence": evidence,
+            "cites": [c for h in hits[:1] for c in h["lock"]["cites"]]}
 
 
 def analyze_build(
@@ -486,6 +897,7 @@ def analyze_build(
         return (not (d and re.search(rf"\b{re.escape(d)}\b", mentioned)), df)
 
     lockfile_hits: list[dict] = []
+    cited_texts: dict[str, str] = {}  # the files lockfile facts cite, for the re-check
     for df in sorted((p for p in tree if is_dockerfile(p)), key=_named_first):
         text = files.get(df)
         if text is None:
@@ -522,53 +934,54 @@ def analyze_build(
             docker_runners.append({"dockerfile": df, "cmd": run, "ctx": ctx,
                                    "copies": parsed["copies"], "unknown": False})
 
-        # F: does the image install from the committed lockfile?
-        installs = [r for r in parsed["runs"] if _INSTALL_RE.search(r)]
-        for pkg in pkg_srcs:
-            if not installs:
-                break
-            locks = []
-            d = posixpath.dirname(pkg)
-            while True:
-                for name in _LOCKFILES["package.json"]:
-                    cand = posixpath.join(d, name) if d else name
-                    if cand in tree_set:
-                        locks.append(cand)
-                if not d:
-                    break
-                d = posixpath.dirname(d)
-            if not locks:
-                continue
-            if any(_copied(lock, parsed["copies"], ctx) for lock in locks):
-                continue
-            deps = ""
-            try:
-                dep_map = (json.loads(files.get(pkg) or "{}") or {}).get("dependencies") or {}
-                order = sorted(dep_map, key=lambda k: k not in mentioned)
-                named = [f"{k} {dep_map[k]}" for k in order]
-                if named:
-                    deps = " (ranges such as " + ", ".join(named[:4]) + ")"
-            except ValueError:
-                pass
-            lockfile_hits.append({"df": df, "pkg": pkg, "locks": locks, "install": installs[0],
-                                  "deps": deps, "copies": parsed["copies"]})
+        # F: does the image install from the committed lockfile? Every stage.
+        lk_ctx, lk_known = _lockfile_context(df, parsed, tree_set)
+        lk = lockfile_use(df, text, tree_set, files, lk_ctx, lk_known)
+        if lk:
+            hit = {"df": df, "lock": lk}
+            if lk["status"] == "not_used":
+                pkgs = [posixpath.normpath(posixpath.join(lk_ctx, _rel(s)))
+                        for s in parsed["copies"] if s.endswith("package.json")]
+                if not pkgs and posixpath.join(lk_ctx, "package.json").lstrip("/") in tree_set:
+                    pkgs = [posixpath.join(lk_ctx, "package.json").lstrip("/")]
+                if not pkgs:
+                    lk["status"] = "unverified"
+                    lk["why"] = (f"{_cite(lk['install']['cite'])} runs `{lk['install']['cmd']}`, but no line "
+                                 "copying a package.json into the image was found")
+                else:
+                    pkg = pkgs[0]
+                    locks, d = [], posixpath.dirname(pkg)
+                    names = _LOCKFILES["package.json"]
+                    while True:
+                        locks += [c for c in ((posixpath.join(d, n) if d else n) for n in names) if c in tree_set]
+                        if not d:
+                            break
+                        d = posixpath.dirname(d)
+                    if not locks:
+                        lk = None  # nothing committed to be ignored: no claim, as before
+                    else:
+                        deps = ""
+                        try:
+                            dep_map = (json.loads(files.get(pkg) or "{}") or {}).get("dependencies") or {}
+                            order = sorted(dep_map, key=lambda k: k not in mentioned)
+                            named = [f"{k} {dep_map[k]}" for k in order]
+                            if named:
+                                deps = " (ranges such as " + ", ".join(named[:4]) + ")"
+                        except (ValueError, AttributeError):
+                            pass
+                        hit.update(pkg=pkg, locks=locks, deps=deps)
+            if lk:
+                lockfile_hits.append(hit)
+                cited_texts[df] = text
+                for c in lk["cites"]:
+                    if c["path"] in files:
+                        cited_texts[c["path"]] = files[c["path"]]
 
-    if lockfile_hits:
-        first = lockfile_hits[0]
-        others = [h["df"] for h in lockfile_hits[1:]]
-        also = (f" The same holds for {', '.join(others)}, which also ship the changed code."
-                if others else "")
-        findings.append({
-            "kind": "lockfile_not_shipped",
-            "finding": (
-                f"The shipped build does not use the committed lockfile: {first['df']} copies "
-                f"{first['pkg']} but not {', '.join(first['locks'])}, then runs `{first['install']}`. "
-                f"Dependency versions are resolved when the image is built, from the ranges in "
-                f"{first['pkg']}{first['deps']}, so what ships can differ from what the lockfile "
-                f"pins.{also}"
-            ),
-            "evidence": f"{first['df']}: COPY {' '.join(first['copies'])}; RUN {first['install']}",
-        })
+    for status, kind in (("uses", "lockfile_shipped"), ("not_used", "lockfile_not_shipped"),
+                         ("unverified", "lockfile_unverified")):
+        hits = [h for h in lockfile_hits if h["lock"]["status"] == status]
+        if hits:
+            findings.append(_lockfile_finding(hits, kind))
 
     suites: dict[str, dict] = {}
     for t in test_paths:
@@ -648,7 +1061,96 @@ def analyze_build(
         })
     return {"suites": suites, "findings": findings, "ci_files": ci_files,
             "external_ci": [x["source"] for x in external_ci or [] if x.get("source")],
-            "dockerfiles": relevant_docker}
+            "dockerfiles": relevant_docker, "cited_texts": cited_texts}
+
+
+# ---------------------------------------------------------------------------
+# F, re-checked: lockfile claims before the plan is saved
+# ---------------------------------------------------------------------------
+
+_LOCKISH = r"(?:the\s+|its\s+|a\s+)?(?:committed\s+|root\s+|pruned\s+)?[\w./@-]*lock(?:file)?\b[\w.-]*"
+_LOCK_NOT_USED_RE = re.compile(
+    r"\b(?:does\s+not|doesn't|do\s+not|don't|never|not)\s+(?:use|install(?:s|ed)?\s+from|ship\s+(?:with|from)|"
+    r"cop(?:y|ies)|honou?r|respect|read)\s+" + _LOCKISH
+    + r"|\bwithout\s+" + _LOCKISH
+    + r"|\bresolv\w*\s+(?:dependency\s+)?versions?\s+(?:when|at|during)\s+(?:the\s+)?image\s+(?:is\s+)?buil"
+    + r"|\blockfile\s+is\s+not\s+what\s+ships", re.I)
+_LOCK_USED_RE = re.compile(
+    r"\b(?:installs?|installed|resolved|built)\s+(?:\w+\s+){0,3}from\s+" + _LOCKISH, re.I)
+
+
+def _cited_line_holds(text: str | None, cite: dict) -> bool:
+    """Whether line ``cite['line']`` of ``text`` starts the instruction quoted."""
+    if text is None:
+        return False
+    lines = text.splitlines()
+    n = cite.get("line") or 0
+    if not 1 <= n <= len(lines):
+        return False
+
+    def norm(x: str) -> str:
+        return " ".join(x.split()).lower()
+
+    raw = lines[n - 1].rstrip()
+    continues = raw.endswith("\\")
+    head = norm(raw.removesuffix("\\"))
+    quoted = norm(cite.get("text") or "")
+    if not head or not quoted:
+        return False
+    # A continued instruction opens on the cited line; anything else is the
+    # whole line (a Dockerfile instruction, or a line of the script it calls).
+    return quoted.startswith(head) if continues else quoted == head
+
+
+def recheck_lockfile_claims(findings: list[dict], test_plan, repo_evidence: list[dict] | None
+                            ) -> tuple[list[dict], list[dict]]:
+    """Rule F, re-read before save.
+
+    Every Build & CI lockfile fact is re-checked against the Dockerfile (and
+    script) text it cites: if a cited line is not the COPY or install it
+    claims, the fact becomes "could not confirm". Then any lockfile claim the
+    model wrote in Risks & Gaps that no fact supports — "does not install from
+    pnpm-lock.yaml" while the image runs `pnpm install --frozen-lockfile` on a
+    copied lockfile — is removed. Returns the facts and what was changed.
+    """
+    texts: dict[tuple[str, str], str] = {}
+    for e in repo_evidence or []:
+        for path, t in ((e.get("build") or {}).get("cited_texts") or {}).items():
+            texts[(e.get("repo") or "", path)] = t
+    changes: list[dict] = []
+    out: list[dict] = []
+    for f in findings:
+        if f.get("kind") in ("lockfile_shipped", "lockfile_not_shipped"):
+            bad = [c for c in f.get("cites") or []
+                   if not _cited_line_holds(texts.get((f.get("repo") or "", c["path"])), c)]
+            if bad or not f.get("cites"):
+                where = ", ".join(_cite(c) for c in bad) or "no line"
+                changes.append({"kind": "fact_downgraded", "was": f["finding"], "lines": where})
+                f = {**f, "kind": "lockfile_unverified", "cites": [],
+                     "finding": (f"Could not confirm whether the image installs from the lockfile: on "
+                                 f"re-reading, {where} does not hold the COPY or install line the check "
+                                 f"read. Make no claim either way about whether the lockfile is what ships.")}
+        out.append(f)
+
+    kinds = {f.get("kind") for f in out}
+    risks = getattr(test_plan, "risks_and_gaps", None) or []
+    kept = []
+    for r in risks:
+        blob = " ".join(str(v) for v in (r.values() if isinstance(r, dict) else [r]) if isinstance(v, str))
+        says_not = bool(_LOCK_NOT_USED_RE.search(blob))
+        says_uses = not says_not and bool(_LOCK_USED_RE.search(blob))
+        unsupported = ((says_not and "lockfile_not_shipped" not in kinds)
+                       or (says_uses and "lockfile_not_shipped" in kinds and "lockfile_shipped" not in kinds))
+        if unsupported:
+            changes.append({"kind": "risk_removed",
+                            "claim": "does not use the lockfile" if says_not else "uses the lockfile",
+                            "was": (r.get("gap") if isinstance(r, dict) else str(r)) or blob[:300],
+                            "facts": sorted(k for k in kinds if k and k.startswith("lockfile_")) or ["none"]})
+            continue
+        kept.append(r)
+    if len(kept) != len(risks):
+        test_plan.risks_and_gaps = kept
+    return out, changes
 
 
 # ---------------------------------------------------------------------------
@@ -1313,7 +1815,9 @@ async def gather_repo_evidence(github, pull_requests: list[dict] | None, mention
         from .build_commands import command_files, read_command_facts, ticket_base
 
         cmd_paths = [p for p in command_files(tree) if p not in manifests]
-        wanted = sorted({m for m in manifests if m in tree} | set(cmd_paths))
+        # Rule F: build scripts the Dockerfiles call can install dependencies too.
+        scripts = {p for df in dockerfiles for p in dockerfile_scripts(first.get(df) or "", tree)}
+        wanted = sorted({m for m in manifests if m in tree} | set(cmd_paths) | scripts)
         second = await github.fetch_files_at_ref(repo, ref, wanted)
         files = {**first, **second}
         try:
