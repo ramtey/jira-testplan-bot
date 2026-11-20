@@ -24,3 +24,12 @@ test('an unknown skip reason still shows up', () => {
 test('a queued post says it is on its way, not that it landed', () => {
   assert.equal(describeAutoPost({ action: 'queued' }), ' · posting the plan to Jira')
 })
+
+test('a regeneration that replaced the live comment says it updated', () => {
+  assert.match(describeAutoPost({ action: 'posted', reason: 'updated', detail: 'plan 9 (v2) updated in place' }), /updated in Jira/)
+})
+
+test('a newer version held back names the version Jira does not show', () => {
+  const text = describeAutoPost({ action: 'skipped', reason: 'already_live', detail: 'v2 not posted to Jira: plan 7 (v1) was posted after it was generated, so it was chosen' })
+  assert.match(text, /v2 not posted to Jira/)
+})

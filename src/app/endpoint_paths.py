@@ -429,6 +429,15 @@ async def _trace(ep: dict, entry: dict | None, index, github, cache: dict) -> mo
                 t = await mount_tracer.trace(index, github, src, sub_path=sub, method=args["method"])
                 if t is None or t.full_path or not (t.missing or "").startswith("no single route registration"):
                     break
+            else:
+                # A plugin's root route: Fastify serves ``POST /api/podcasts`` from
+                # ``post('/')`` registered under prefix '/api/podcasts'. Taken only
+                # when the traced path is the one called, so a catch-all or another
+                # route is never adopted.
+                if segs and t is not None and not t.full_path:
+                    root = await mount_tracer.trace(index, github, src, sub_path="/", method=args["method"])
+                    if root is not None and root.full_path and _same_path(root.full_path, ep["leaf"]):
+                        t = root
     except Exception as e:  # noqa: BLE001 — a failed trace is "not traced", never "absent"
         logger.warning("mount trace failed for %s: %s", src, e)
         t = mount_tracer.Trace("unknown", missing=f"the mount trace failed ({type(e).__name__})")

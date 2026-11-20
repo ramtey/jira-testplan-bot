@@ -113,12 +113,89 @@ async def test_a_batch_only_ticket_is_left_to_the_tester():
     h.post_one.assert_not_awaited()
 
 
-async def test_a_live_plan_is_never_replaced():
-    # A newer unposted regeneration behind a live plan is the tester's choice.
-    run = SimpleNamespace(ticket_keys=["SK-1"])
-    with _Harness(rows=[_row(plan_id=9)], live=[(run, SimpleNamespace(id=7))]) as h:
+def _live(plan_id=7, version=1, posted_at="2026-10-10T00:00:00+00:00", comment_id="c-live"):
+    return (
+        SimpleNamespace(ticket_keys=["SK-1"]),
+        SimpleNamespace(
+            id=plan_id, version=version, jira_comment_id=comment_id,
+            posted_at=datetime.fromisoformat(posted_at),
+        ),
+    )
+
+
+def _regenerated_row(plan_id=9, version=2, created_at="2026-10-16T00:00:00+00:00"):
+    return {**_row(plan_id=plan_id), "version": version, "created_at": created_at}
+
+
+def _single_marker():
+    return patch.object(
+        auto_post, "_comment_marker_kind", return_value=auto_post.PlanCommentKind.single
+    )
+
+
+async def test_the_live_version_itself_is_not_posted_again():
+    with _Harness(live=[_live(plan_id=7)]) as h:
         out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
     assert out.reason == auto_post.SKIP_ALREADY_LIVE
+    h.post_one.assert_not_awaited()
+
+
+async def test_a_regeneration_updates_the_live_comment_in_place():
+    # SK-2835: plan 735 v1 live, plan 748 v2 generated after it went up. The
+    # v2 auto-post was skipped as "already_live" and Jira kept v1.
+    with _Harness(
+        rows=[_regenerated_row(plan_id=748, version=2)],
+        live=[_live(plan_id=735, version=1, comment_id="c-735")],
+        post_result={"recorded": True, "comment_id": "c-735", "updated": True},
+    ) as h, _single_marker():
+        h.jira.get_comments.return_value = [{"id": "c-735"}]
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1", trigger=auto_post.TRIGGER_GENERATE)
+
+    assert (out.action, out.reason) == (auto_post.POSTED, auto_post.POSTED_UPDATED)
+    assert out.reason != auto_post.SKIP_ALREADY_LIVE
+    assert "updated in place" in out.detail and "replaces v1, plan 735" in out.detail
+    kwargs = h.post_one.await_args.kwargs
+    # Same single-ticket slot: post_comment edits the comment(s) there,
+    # including every part of a split plan, instead of adding one.
+    assert kwargs["plan_id"] == 748 and kwargs["kind"] is auto_post.PlanCommentKind.single
+    assert h.record.await_args.kwargs["outcome"]["reason"] == auto_post.POSTED_UPDATED
+
+
+async def test_a_regeneration_with_its_comment_deleted_in_jira_is_posted_fresh():
+    with _Harness(rows=[_regenerated_row()], live=[_live()]) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert (out.action, out.reason) == (auto_post.POSTED, auto_post.POSTED_UPDATED)
+
+
+async def test_a_version_posted_after_the_newer_one_existed_is_a_choice_and_stays():
+    # Someone re-posted v1 after v2 was generated: that is the plan they want up.
+    with _Harness(
+        rows=[_regenerated_row(created_at="2026-10-16T00:00:00+00:00")],
+        live=[_live(posted_at="2026-10-17T00:00:00+00:00")],
+    ) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.reason == auto_post.SKIP_ALREADY_LIVE
+    assert out.detail.startswith("v2 not posted to Jira")
+    h.post_one.assert_not_awaited()
+
+
+async def test_a_regeneration_never_overwrites_a_comment_the_app_did_not_record_for_the_live_plan():
+    with _Harness(rows=[_regenerated_row()], live=[_live(comment_id="c-live")]) as h, _single_marker():
+        h.jira.get_comments.return_value = [{"id": "someone-elses"}]
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.reason == auto_post.SKIP_COMMENT_EXISTS
+    assert "v2 not posted to Jira" in out.detail
+    h.post_one.assert_not_awaited()
+
+
+async def test_a_regeneration_held_back_by_a_check_says_which_version_jira_still_shows():
+    with _Harness(
+        rows=[_regenerated_row()], live=[_live()],
+        prs=[_merged(merged_at="2026-10-17T00:00:00Z")],
+    ) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.reason == auto_post.SKIP_STALE_PLAN
+    assert out.detail.startswith("v2 not posted to Jira (Jira still shows v1, plan 7)")
     h.post_one.assert_not_awaited()
 
 

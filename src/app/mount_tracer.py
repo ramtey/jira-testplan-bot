@@ -224,6 +224,10 @@ class _Files:
         return out, unread
 
 
+# Test files build throwaway apps; never a mount of the real one.
+_TEST_FILE = re.compile(r"(?:^|/)(?:tests?|__tests__|spec|e2e|fixtures?|mocks?)/|\.(?:test|spec)\.[cm]?[jt]sx?$", re.I)
+
+
 def _ancestors(path: str, stop_at: str = "") -> list[str]:
     out = []
     d = posixpath.dirname(path)
@@ -491,7 +495,9 @@ def _http_definition(text: str, sub_path: str | None, method: str | None) -> tup
         # A catch-all ('*', '/:any') is not the definition of a named path.
         statics = lambda p: [x for x in p.split("/") if x and not x.startswith((":", "*", "{", "[")) and x != "(.*)"]
         exact = [h for h in hits if route_matches(h[1] or "/", sub_path)
-                 and (statics(h[1]) or not statics(sub_path))]
+                 and (statics(h[1]) or not statics(sub_path))
+                 # The plugin root is only the route registered at '' or '/'.
+                 and (sub_path.strip("/") or not (h[1] or "/").strip("/"))]
         return exact[0] if len(exact) == 1 else None
     return hits[0] if len(hits) == 1 else None
 
@@ -510,7 +516,30 @@ def _http_mounts(text: str, names: set[str]) -> list[tuple[str, int, str, list[s
             out.append((_options_prefix(args[1] if len(args) > 1 else None), _line_of(text, m.start()), m.group(1), []))
         for m in re.finditer(rf"\b([A-Za-z_$][\w$]*)\s*\.\s*use\s*\(\s*{en}\b(?:\.routes\(\))?\s*\)", text):
             out.append(("", _line_of(text, m.start()), m.group(1), []))
+        out += [(pre, ln, pv, []) for pre, ln, pv in _call_mounts(text, n)]
     return list({(a, b, c): (a, b, c, d) for a, b, c, d in out}.values())
+
+
+def _call_mounts(text: str, fn: str) -> list[tuple[str, int, str]]:
+    """``(prefix, line, app var)`` for each statement that calls ``fn(app)``.
+
+    A bootstrap like ``server.ts`` often hands the app to a registration
+    function (``await registerRoutes(app)``) that does the ``register(…,
+    { prefix })`` calls itself. That call is the mount: it adds no prefix of
+    its own, and the routes are served on whatever ``app`` is. Only a call
+    standing as its own statement counts, with a plain identifier as its
+    first argument — not the definition, an import, or ``x.fn(app)``.
+    """
+    out = []
+    for m in re.finditer(rf"(?:^|[;{{}}]|\bawait|\bvoid|\breturn)\s*(?<![\w$.]){re.escape(fn)}\s*\(\s*"
+                         rf"([A-Za-z_$][\w$]*)\s*[,)]", text, re.M):
+        line_start = text.rfind("\n", 0, m.start(1)) + 1
+        line = text[line_start: text.find("\n", m.end()) if text.find("\n", m.end()) != -1 else len(text)]
+        if re.match(r"\s*(?:import|export\s*\{)", line) or re.search(
+                rf"\bfunction\s*\*?\s*{re.escape(fn)}\s*\(", line):
+            continue
+        out.append(("", _line_of(text, m.start(1)), m.group(1)))
+    return out
 
 
 DEFAULT = "<default>"
@@ -632,6 +661,17 @@ async def trace_http(files: _Files, def_path: str, sub_path: str | None, method:
                         parents += [(p, ptext, *x) for x in _http_mounts(ptext, imported)]
                 if parents:
                     break
+        if not parents:
+            # A registration file outside the ancestor directories
+            # (src/http/register-routes.ts for src/routes/cron.ts) may already
+            # be read: the route re-check reads the entry and what it mounts.
+            for (repo, p), f in list(files.index.files.items()):
+                if repo != files.repo or p == cur_path or not p.endswith(CODE_EXT) or (
+                        stop and not p.startswith(stop + "/")) or _TEST_FILE.search(p):
+                    continue
+                imported = {loc for loc, imp in _imports_child(p, f.text, cur_path) if imp in names}
+                if imported:
+                    parents += [(p, f.text, *x) for x in _http_mounts(f.text, imported)]
         if len({(p, pre, pv) for p, _, pre, _, pv, _ in parents}) > 1:
             where = "; ".join(f"{p}:{ln} under '{pre}'" for p, _, pre, ln, _, _ in parents[:3])
             t.missing = f"'{var}' is mounted in more than one place ({where})"

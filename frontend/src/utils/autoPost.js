@@ -9,7 +9,9 @@ export const describeAutoPost = (autoPost) => {
   const { action, reason, detail } = autoPost
   // The route posts after it responds; the Post control shows how it went.
   if (action === 'queued') return ' · posting the plan to Jira'
-  if (action === 'posted') return ' · plan posted to Jira'
+  if (action === 'posted') {
+    return reason === 'updated' ? ' · plan updated in Jira (replaces the older version)' : ' · plan posted to Jira'
+  }
   if (action === 'failed') {
     return ` · plan NOT posted to Jira (${detail || reason || 'unknown error'})`
   }
@@ -20,7 +22,8 @@ export const describeAutoPost = (autoPost) => {
       return ' · plan has no cases, so it was not posted'
     case 'already_live':
     case 'plan_comment_exists':
-      return ' · plan already on Jira'
+      // A newer version held back says so ("v2 not posted to Jira …").
+      return detail && /not posted to Jira/.test(detail) ? ` · ${detail}` : ' · plan already on Jira'
     default:
       return reason ? ` · plan not posted (${reason})` : ''
   }

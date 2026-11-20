@@ -5,13 +5,18 @@ transition; the watcher sweep calls it for tickets dragged into the column on
 the board, which nothing here sees happen. Both go through `auto_post_own_plan`
 so they skip the same tickets for the same reasons.
 
-What it posts is deliberately narrow: the ticket's own single-ticket plan, and
-only onto a ticket that has no plan comment yet. Everything else is left to a
-person:
+What it posts is deliberately narrow: the ticket's own single-ticket plan,
+onto a ticket that has no plan comment yet — or, for a regeneration, over the
+comment this app recorded for the older live version, edited in place as the
+Update Jira button does. Everything else is left to a person:
 
-* **A plan already live, in Jira or in the store** — someone posted it, or
-  chose which version to post. Replacing it would undo that choice, and an
-  unposted regeneration sitting behind a live plan is exactly such a choice.
+* **A version a person chose** — the live plan was posted after the newer one
+  was generated, so someone picked it over the newer one. A regeneration
+  generated after the live post is not such a choice: Jira would keep a plan
+  that no longer matches the store, which is what testers run (SK-2835,
+  SK-3059). Every skip of a newer version says "vN not posted to Jira".
+* **A plan comment the app did not record** — in the slot with no record, or
+  not the comment recorded for the live plan. Never overwritten.
 * **No plan of its own** — still generating, never generated, or covered only
   by a batch plan, whose host is the tester's call.
 * **A plan with no cases** — this repo's recurring failure is a transient
@@ -65,6 +70,8 @@ SKIP_GROUNDING_MOVED = "grounding_moved"
 # testing. History only, so "nothing logged" never has to be explained.
 SKIP_NOT_IN_TESTING = "not_in_testing"
 FAIL_FRESHNESS_UNKNOWN = "freshness_unknown"
+# A POSTED outcome that edited the live older version's comment in place.
+POSTED_UPDATED = "updated"
 
 _FORMATTER = (
     Path(__file__).resolve().parents[3] / "frontend" / "scripts" / "format-plan-jira.mjs"
@@ -294,7 +301,8 @@ async def auto_post_own_plan(
     dry_run: bool = False,
     trigger: str = TRIGGER_SWEEP,
 ) -> AutoPostOutcome:
-    """Post `ticket_key`'s own plan if nothing is live yet. Never raises.
+    """Post `ticket_key`'s own plan, or update the live comment in place with
+    a regeneration nobody chose against. Never raises.
 
     `dry_run` runs every check and stops short of posting. Every real outcome
     is recorded per ticket, so a skip in the watcher is visible on the plan.
@@ -388,19 +396,40 @@ async def _decide_and_post(
 
     live = await plan_repository.list_live_plans_for_ticket(db, ticket_key=key)
     own_live = [p for run, p in live if len(run.ticket_keys or []) == 1]
-    if own_live:
-        return AutoPostOutcome(
-            key, SKIPPED, SKIP_ALREADY_LIVE,
-            f"plan {own_live[0].id} is already live", plan_id,
-        )
+    # A regeneration replaces the live version in place: the tester follows
+    # the Jira comment, and a comment older than the store's plan is a plan
+    # nobody is running any more (SK-2835 kept v1's 4 cases under a 28-case
+    # v2; SK-3059 the same). A version a person posted on purpose — posted
+    # after the newer one already existed — is still left alone.
+    replacing = own_live[0] if own_live else None
+    if replacing is not None:
+        if replacing.id == plan_id or not _is_newer(row, replacing):
+            return AutoPostOutcome(
+                key, SKIPPED, SKIP_ALREADY_LIVE, f"plan {replacing.id} is already live", plan_id,
+            )
+        if not _is_unposted_regeneration(row, replacing):
+            return AutoPostOutcome(
+                key, SKIPPED, SKIP_ALREADY_LIVE,
+                f"{_version(row.get('version'))} not posted to Jira: plan {replacing.id} "
+                f"({_version(replacing.version)}) was posted after it was generated, so it was chosen",
+                plan_id,
+            )
     if not row.get("case_count"):
-        return AutoPostOutcome(key, SKIPPED, SKIP_EMPTY_PLAN, None, plan_id)
+        return AutoPostOutcome(key, SKIPPED, SKIP_EMPTY_PLAN, _not_posted(row, replacing), plan_id)
 
     # The store can miss a post: one from before posts were recorded, or
-    # one whose record failed. The comment itself is the final word.
+    # one whose record failed. The comment itself is the final word. When a
+    # regeneration replaces a live plan, the comment in the slot must be the
+    # one recorded for that plan — anything else was not posted by this app
+    # for this plan, and is not overwritten.
     comments = await jira.get_comments(key)
-    if any(_comment_marker_kind(c) is PlanCommentKind.single for c in comments):
-        return AutoPostOutcome(key, SKIPPED, SKIP_COMMENT_EXISTS, None, plan_id)
+    slot = [str(c.get("id")) for c in comments if _comment_marker_kind(c) is PlanCommentKind.single]
+    if slot and (replacing is None or slot[0] != str(replacing.jira_comment_id or "")):
+        detail = None if replacing is None else (
+            f"{_not_posted(row, replacing)}: the plan comment on the ticket ({slot[0]}) is not the one "
+            f"recorded for plan {replacing.id} ({replacing.jira_comment_id or 'none'})"
+        )
+        return AutoPostOutcome(key, SKIPPED, SKIP_COMMENT_EXISTS, detail, plan_id)
 
     found = await plan_repository.get_plan_with_cases(db, plan_id=plan_id)
     if found is None:
@@ -414,7 +443,10 @@ async def _decide_and_post(
     body = json.loads(stored.body)
     report = await recheck_pr_states(body, phase=PHASE_POST, created_at=stored.created_at)
     if report["refuse"]:
-        return AutoPostOutcome(key, SKIPPED, SKIP_GROUNDING_MOVED, "; ".join(report["refuse"]), plan_id)
+        return AutoPostOutcome(
+            key, SKIPPED, SKIP_GROUNDING_MOVED,
+            _prefixed(_not_posted(row, replacing), "; ".join(report["refuse"])), plan_id,
+        )
     refreshed = {c["url"] for c in report["changes"]}
 
     # Last of the checks because it is the slow one: the development panel
@@ -423,10 +455,11 @@ async def _decide_and_post(
     problem = freshness_problem(serialized, stored.created_at, accounted_for=refreshed)
     if problem:
         action, reason, detail = problem
-        return AutoPostOutcome(key, action, reason, detail, plan_id)
+        return AutoPostOutcome(key, action, reason, _prefixed(_not_posted(row, replacing), detail), plan_id)
 
     if dry_run:
-        return AutoPostOutcome(key, SKIPPED, "dry_run", f"would post plan {plan_id}", plan_id)
+        verb = f"would update plan {replacing.id}'s comment in place with" if replacing else "would post"
+        return AutoPostOutcome(key, SKIPPED, "dry_run", f"{verb} plan {plan_id}", plan_id)
     if report["modified"]:
         await plan_repository.update_plan_body(db, plan_id=plan_id, body=json.dumps(body))
     plan = {
@@ -468,5 +501,52 @@ async def _decide_and_post(
             key, FAILED, "not_recorded",
             f"posted, but {result.get('record_error')}", plan_id,
         )
+    if replacing is not None:
+        logger.info("auto-post: plan %s replaced plan %s in place on %s", plan_id, replacing.id, key)
+        return AutoPostOutcome(
+            key, POSTED, POSTED_UPDATED,
+            f"plan {plan_id} ({_version(stored.version)}) updated in place "
+            f"(replaces {_version(replacing.version)}, plan {replacing.id})",
+            plan_id,
+        )
     logger.info("auto-post: posted plan %s on %s", plan_id, key)
     return AutoPostOutcome(key, POSTED, None, f"plan {plan_id}", plan_id)
+
+
+def _version(v) -> str:
+    return f"v{v}" if v is not None else "this version"
+
+
+def _is_newer(row: dict, live) -> bool:
+    return (row.get("version") or 0, row["plan_id"]) > ((live.version or 0), live.id)
+
+
+def _is_unposted_regeneration(row: dict, live) -> bool:
+    """Whether the newest own plan `row` is a regeneration nobody chose against.
+
+    Newer than the live plan, and generated after that plan went up. A live
+    plan posted after `row` existed was picked over it by a person (or a
+    re-post of the old version), and stays.
+    """
+    if not _is_newer(row, live):
+        return False
+    created = _parse_ts(row.get("created_at"))
+    posted = _parse_ts(getattr(live, "posted_at", None))
+    if created is None or posted is None:
+        # Cannot tell which came first: the newer version is the plan.
+        return True
+    return created > posted
+
+
+def _not_posted(row: dict, replacing) -> str | None:
+    """"vN not posted to Jira", when a live older version stays on the ticket."""
+    if replacing is None:
+        return None
+    return (f"{_version(row.get('version'))} not posted to Jira "
+            f"(Jira still shows {_version(replacing.version)}, plan {replacing.id})")
+
+
+def _prefixed(head: str | None, detail: str | None) -> str | None:
+    if not head:
+        return detail
+    return f"{head}: {detail}" if detail else head

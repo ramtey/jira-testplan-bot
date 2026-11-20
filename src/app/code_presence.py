@@ -335,6 +335,43 @@ def mounts(src: SourceFile) -> list[Mount]:
     for m in _PY_MOUNT_RE.finditer(text):
         p = _PY_PREFIX_KW_RE.search(m.group(2) or "")
         out.append(Mount(p.group(1) if p else "", m.group(1), src, _line(text, m.start())))
+    out += _call_mounts(src)
+    return out
+
+
+# ``await registerRoutes(app)``: a statement handing an app (or the instance a
+# plugin receives) to a function another file defines.
+_CALL_MOUNT_RE = re.compile(
+    r"(?:^|[;{}]|\bawait|\bvoid|\breturn)\s*(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*[,)]", re.M)
+_APP_ARG_NAMES = {"app", "server", "fastify", "instance", "router", "api", "application", "srv"}
+
+
+def _call_mounts(src: SourceFile) -> list[Mount]:
+    """A bootstrap that calls a registration function with its app.
+
+    ``server.ts`` doing ``await registerRoutes(app)``, where
+    ``routes/index.ts`` holds the ``register(…, { prefix })`` calls, mounts
+    that file with no prefix of its own. Without this the chain stops at the
+    registration file — nothing ``register``s or ``use``s it, and it does not
+    create the app — and every route under it reads "prefix unknown"
+    (SK-2835, SK-3059). Narrow on purpose: the callee must be imported (so it
+    resolves to a file), and the argument must be the app this file creates
+    or a conventional app/instance name.
+    """
+    text = src.text
+    created = {m.group(1) for m in re.finditer(
+        r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*([^;\n]*)", text)
+        if _APP_ROOT_RE.search(m.group(2))}
+    out = []
+    for m in _CALL_MOUNT_RE.finditer(text):
+        fn, arg = m.group(1), m.group(2)
+        if fn in ("if", "for", "while", "switch", "catch", "function", "return", "await", "require", "import"):
+            continue
+        if arg not in created and arg not in _APP_ARG_NAMES:
+            continue
+        if import_spec(src, fn) is None:
+            continue
+        out.append(Mount("", fn, src, _line(text, m.start(1))))
     return out
 
 
@@ -529,7 +566,10 @@ def resolve_route(index: SourceIndex | None, method: str, path: str,
 # --- reading the router files ------------------------------------------------
 
 _ENTRY_STEMS = {"app", "server", "index", "main", "routes", "route", "router", "routers", "plugins", "api", "urls",
-                "register", "http"}
+                "register", "http", "bootstrap", "start", "registry", "setup"}
+# Registration files named for what they do: register-routes.ts, routes.plugin.ts,
+# app-server.ts. Read so the prefix chain is followed, never assumed unknown.
+_ENTRY_STEM_RE = re.compile(r"route|register|bootstrap|server", re.I)
 MAX_ROUTER_FILES = 16
 
 
@@ -556,9 +596,13 @@ async def read_router_context(index: SourceIndex, github, called_paths: list[str
                 if not d:
                     break
                 d = posixpath.dirname(d)
+        def entry(p: str) -> bool:
+            return posixpath.dirname(p) in dirs and (_stem(p).lower() in _ENTRY_STEMS
+                                                     or bool(_ENTRY_STEM_RE.search(_stem(p))))
         want = [p for p in code if p not in have and (
-            (posixpath.dirname(p) in dirs and _stem(p).lower() in _ENTRY_STEMS)
-            or _norm(_stem(p)) in seg_names or _norm(_ROUTER_SUFFIX_RE.sub("", _stem(p))) in seg_names)]
+            entry(p) or _norm(_stem(p)) in seg_names or _norm(_ROUTER_SUFFIX_RE.sub("", _stem(p))) in seg_names)]
+        # Exact entry names first, so the budget goes to the bootstrap before lookalikes.
+        want.sort(key=lambda p: (_stem(p).lower() not in _ENTRY_STEMS, p.count("/")))
         for _ in range(2):  # entry files, then what they mount
             want = list(dict.fromkeys(want))[:MAX_ROUTER_FILES - len(read)]
             if not want:

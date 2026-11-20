@@ -2,9 +2,10 @@
  * How the single-ticket Post control reads, from what the server says is live.
  *
  * Auto-post (src/app/services/auto_post.py) handles the first post when the
- * ticket enters testing, so the button's job is everything it deliberately
- * leaves alone: a regenerated version behind a live one, a post that failed,
- * a plan posted before testing starts. It is loud only when there is
+ * ticket enters testing, and updates the live comment in place when a plan
+ * is regenerated, so the button's job is everything it leaves alone: a
+ * regeneration auto-post held back, a post that failed, a plan posted before
+ * testing starts. It is loud only when there is
  * something to do.
  *
  * `postState` is the `post_state` of /runs/by-ticket, tagged with the ticket
@@ -120,12 +121,20 @@ export const planPostState = ({ plan, ticketKey, ticketStatus, postState, runs }
   if (live) {
     const from = live.version
     const to = plan?.version
+    // Auto-post updates the live comment in place with a regeneration
+    // (auto_post.py). When it did not, say so loudly: a tester following
+    // Jira is running a plan the app no longer shows.
+    const held = last && last.plan_id === planId && last.action !== 'posted'
+    const notPosted = to != null ? `v${to} not posted to Jira` : 'This version is not posted to Jira'
     return {
       mode: 'outdated',
       prominent: true,
       label: to != null ? `Update Jira · v${from} → v${to}` : 'Update Jira',
       buttonText: to != null ? `Update Jira · v${from} → v${to}` : 'Update Jira',
-      hint: `Jira still shows v${from}. A live plan is never replaced automatically, so this version goes up only when you post it.`,
+      warning: notPosted,
+      hint: held
+        ? `${notPosted}; Jira still shows v${from}. Auto-post held it back: ${last.detail || last.reason}.`
+        : `${notPosted}; Jira still shows v${from}. Auto-post updates it in place once the ticket is in testing, or post it now.`,
     }
   }
 

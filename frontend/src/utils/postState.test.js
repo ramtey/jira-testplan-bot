@@ -29,6 +29,22 @@ test('a regeneration behind a live plan asks to update, naming both versions', (
   assert.equal(s.buttonText, 'Update Jira · v2 → v3')
 })
 
+test('a regeneration behind a live plan says it is not posted to Jira', () => {
+  const s = at({ live_own_plan: { plan_id: 4, version: 2 } })
+  assert.equal(s.warning, 'v3 not posted to Jira')
+  assert.match(s.hint, /Jira still shows v2/)
+})
+
+test('a regeneration auto-post held back says why, next to the update button', () => {
+  const s = at({
+    live_own_plan: { plan_id: 4, version: 2 },
+    last_auto_post: { action: 'skipped', reason: 'stale_plan', detail: 'v3 not posted to Jira (Jira still shows v2, plan 4): pr/1 merged after the plan was written', plan_id: 9 },
+  })
+  assert.equal(s.mode, 'outdated')
+  assert.equal(s.warning, 'v3 not posted to Jira')
+  assert.match(s.hint, /held it back: v3 not posted.*pr\/1 merged/)
+})
+
 test('a failed auto-post of this plan is loud and says why', () => {
   const s = at({ last_auto_post: { action: 'failed', reason: 'post_failed', detail: 'JiraConnectionError: down', plan_id: 9 } })
   assert.equal(s.mode, 'auto_missed')

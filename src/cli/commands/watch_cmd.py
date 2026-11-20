@@ -98,6 +98,7 @@ _AUTO_POST_LABEL = {
     auto_post.SKIP_NO_OWN_PLAN: "no plan of its own yet",
     auto_post.SKIP_EMPTY_PLAN: "plan has no cases — not posted",
     auto_post.SKIP_ALREADY_LIVE: "a plan is already live",
+    auto_post.POSTED_UPDATED: "regeneration updated in place",
     auto_post.SKIP_COMMENT_EXISTS: "ticket already has a plan comment",
     "dry_run": "would post",
 }
