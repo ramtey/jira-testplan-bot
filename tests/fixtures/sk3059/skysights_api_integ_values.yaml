@@ -1,0 +1,20 @@
+skyslope-app:
+  vaultSecrets:
+    enabled: true
+    team: mobile
+  image:
+    tag: release1.6.0-7c754c2
+  env: integ
+  config:
+    NODE_ENV: integ
+    AWS_REGION: us-east-1
+envoy-host:
+  hosts:
+    - dns:
+        clusterName: integ-east
+      gateway: external
+      host: skysights-api.integ.example.com
+      simpleRoutes:
+        - prefix: /api
+          service: skysights-api-active
+          port: 8000

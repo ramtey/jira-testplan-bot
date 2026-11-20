@@ -1,0 +1,20 @@
+skyslope-app:
+  vaultSecrets:
+    enabled: true
+    team: mobile
+  image:
+    tag: release1.5.0-0e941af
+  env: staging
+  config:
+    NODE_ENV: staging
+    AWS_REGION: us-east-1
+envoy-host:
+  hosts:
+    - dns:
+        clusterName: staging-east
+      gateway: external
+      host: skysights-api.staging.example.com
+      simpleRoutes:
+        - prefix: /api
+          service: skysights-api-active
+          port: 8000

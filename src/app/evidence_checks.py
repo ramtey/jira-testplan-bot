@@ -1617,15 +1617,57 @@ def enforce_deploy_precondition(test_plan, commit: str | None = None, how: str |
     return fixed
 
 
+_COMMENT_ID_RE = re.compile(r"\b(\d{4,})\b")
+
+
+def comment_dates(comments: list[dict] | None) -> dict[str, str]:
+    """``{comment id: "YYYY-MM-DD"}`` for the ticket's comments that carry both."""
+    out = {}
+    for c in comments or []:
+        if isinstance(c, dict) and c.get("id") and c.get("created"):
+            out[str(c["id"])] = str(c["created"])[:10]
+    return out
+
+
+def cited_comments(text: str, dates: dict[str, str]) -> list[str]:
+    """The ticket comment ids a sentence cites, in order, known ids only."""
+    seen = []
+    for m in _COMMENT_ID_RE.finditer(text or ""):
+        if m.group(1) in dates and m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def comment_claim_sentence(statement: str, ids: list[str], dates: dict[str, str],
+                           superseded: str = "") -> str:
+    """A ticket comment's deployment claim, dated and labelled as a point in time."""
+    newest = max(dates[i] for i in ids)
+    cites = ", ".join(f"comment {i} ({dates[i]})" for i in ids)
+    out = (f"As of {newest}, a ticket comment said: {statement.strip().rstrip('.')} ({cites}). "
+           "That is a point-in-time claim, not a deployment read: it blocks no case, and the "
+           "build check at the top of the plan decides.")
+    return f"{out} {superseded}".strip()
+
+
 def build_deployment_status(deploy_state: list[dict] | None, model_status: dict | None,
-                            repos: list[str], when: str, targets: list[dict] | None = None) -> dict:
+                            repos: list[str], when: str, targets: list[dict] | None = None,
+                            comments: list[dict] | None = None) -> dict:
     """The banner at the top of the plan: is the change running anywhere?
 
     With ``targets``, an app repo (iOS, Android) is never said to lack a
     deployment source: an app has no deployment, and its cases check the
     installed build instead. A deployments repo is not a target at all.
+
+    The status comes from a deployment read only (``deploy_state``). The
+    model's ``deployment_status`` is shown, but a statement that rests on
+    ticket comments is dated ("as of <comment date>") and never makes the
+    plan ``not_deployed``: SK-3059's regenerated plan kept "PR #100 is not
+    deployed (comment 346733)" after the change had shipped to integ. With no
+    readable source the status is ``unknown``.
     """
-    warnings, deployed_envs = [], []
+    warnings, deployed_envs, concerns = [], [], []
+    deployed_repos: set = set()
+    dates = comment_dates(comments)
     if targets is not None:
         from .build_targets import short_requirement
 
@@ -1637,32 +1679,52 @@ def build_deployment_status(deploy_state: list[dict] | None, model_status: dict 
                     f"{short_requirement([t])}."
                 )
         repos = [t["repo"] for t in targets if t["platform"] not in ("ios", "android")]
-    for e in deploy_state or []:
+    relevant = [e for e in deploy_state or [] if e.get("ships") is not False]
+    skipped = sorted({e.get("service") or e.get("env") for e in deploy_state or []
+                      if e.get("ships") is False})
+    for e in relevant:
         if e.get("error"):
-            warnings.append(f"Could not check {e['env']} ({e['repo']}): {e['error']}.")
+            w = f"Could not check {e['env']} ({e['repo']}): {e['error']}."
+            warnings.append(w)
+            concerns.append(w)
             continue
         prs = e.get("prs") or []
         missing = [f"#{p['number']}" for p in prs if p.get("included") is False]
         if prs and len(missing) == len(prs):
-            warnings.append(
-                f"Not deployed to {e['env']} as of {e.get('source') or 'the deployment config'} "
-                f"({when}): it runs {e.get('tag')}, which does not contain {', '.join(missing)}."
-            )
+            w = (f"Not deployed to {e['env']} as of {e.get('source') or 'the deployment config'} "
+                 f"({when}): it runs {e.get('tag')}, which does not contain {', '.join(missing)}.")
+            warnings.append(w)
+            concerns.append(w)
         elif missing:
-            warnings.append(f"Partly deployed to {e['env']}: {e.get('tag')} lacks {', '.join(missing)}.")
+            w = f"Partly deployed to {e['env']}: {e.get('tag')} lacks {', '.join(missing)}."
+            warnings.append(w)
+            concerns.append(w)
         elif prs and all(p.get("included") for p in prs):
             deployed_envs.append(e["env"])
+            deployed_repos.add(e.get("repo"))
+    if skipped:
+        warnings.append(f"Not read for this change: {', '.join(skipped)} — no changed file ships in "
+                        f"{'that image' if len(skipped) == 1 else 'those images'}.")
     ms = model_status if isinstance(model_status, dict) else {}
     if (ms.get("deployed") in ("no", "unknown")) and (ms.get("statement") or "").strip():
-        src = f" ({ms['source']})" if ms.get("source") else ""
-        warnings.append(f"{ms['statement'].strip()}{src}")
+        statement = ms["statement"].strip()
+        src = str(ms.get("source") or "")
+        ids = cited_comments(f"{src} {statement}", dates)
+        if ids:
+            superseded = (f"Superseded by the deployment read at {when}: "
+                          f"{', '.join(deployed_envs)} {'runs a build' if len(deployed_envs) == 1 else 'run builds'} "
+                          "that contain the change." if deployed_envs else "")
+            statement = re.sub(r"\s*\((?:comments?\s+\d+(?:,\s*)?)+\)\s*$", "", statement)
+            warnings.append(comment_claim_sentence(statement, ids, dates, superseded))
+        else:
+            warnings.append(f"{statement}{f' ({src})' if src else ''}")
     checked = {e.get("repo") for e in deploy_state or []}
     unchecked = [r for r in repos if r not in checked]
     if unchecked and targets is not None:
         warnings.append(
             f"Deployment was not checked: no deployment source is configured or was found for "
-            f"{', '.join(unchecked)}. Every case that needs a deployed environment "
-            "starts with a deploy check."
+            f"{', '.join(unchecked)}, so whether it is deployed is unknown. Every case that needs "
+            "a deployed environment starts with the build check; none is blocked on deployment."
         )
     elif targets is None and not deploy_state and not warnings:
         warnings.append(
@@ -1670,10 +1732,12 @@ def build_deployment_status(deploy_state: list[dict] | None, model_status: dict 
             f"{', '.join(repos) or 'this repo'}. Every case that needs a deployed environment "
             "starts with a deploy check."
         )
-    if deployed_envs and not [w for w in warnings if not w.startswith(tuple(
-            t["repo"] for t in targets or [] if t["platform"] in ("ios", "android")))]:
+    # Deployed when every repo the change needs has some environment running
+    # all its PRs: a tester can test there, even while staging and prod still
+    # lack it (those lines stay listed). A repo nobody could read is unknown.
+    if deployed_envs and (all(r in deployed_repos for r in repos) if repos else not concerns):
         status = "deployed"
-    elif any(w.startswith("Not deployed") for w in warnings) or ms.get("deployed") == "no":
+    elif not deployed_envs and any(c.startswith("Not deployed") for c in concerns):
         status = "not_deployed"
     else:
         status = "unknown"

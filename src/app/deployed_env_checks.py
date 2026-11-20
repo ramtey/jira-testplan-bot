@@ -725,16 +725,144 @@ _SPECIAL_DATA_RE = re.compile(
     r"|\b(?:no|without\s+(?:a|an)?)\s*(?:subscriber|subscription|payment method|license|seat)\b", re.I)
 
 
-def check_setup(test_plan: Any, report: dict) -> int:
+# A setup need that is the change being deployed, not an account or record.
+# "a test org on the deployed integ environment" is an account, not this:
+# "deploy" counts only beside what ships (a PR, the change, a commit, a build).
+_SHIPS = r"(?:PRs?\b|#\d+|change|fix|commit|merge|build|image|code|branch|functions?|version|release|\b[0-9a-f]{7,40}\b)"
+_DEPLOY_NEED_RE = re.compile(
+    r"\b(?:not\s+(?:yet\s+)?(?:been\s+)?(?:re)?deployed|undeployed|firebase\s+deploy)\b"
+    rf"|{_SHIPS}[^.;]{{0,60}}?\b(?:re)?deploy(?:ed|ment|s|ing)?\b"
+    rf"|\b(?:re)?deploy(?:ed|ment|s|ing)?\b[^.;]{{0,60}}?{_SHIPS}", re.I)
+# Not a deployment-state claim, even beside "deploy": the PR is not merged
+# (a PR-state fact, read from GitHub), or a person must approve or grant it.
+_NOT_DEPLOY_STATE_RE = re.compile(
+    r"\b(?:not\s+(?:yet\s+)?merged|unmerged|draft|open\s+PR|approv\w*|permission|sign-?off|grant\w*)\b", re.I)
+
+
+def _is_deploy_claim(text: str) -> bool:
+    return bool(_DEPLOY_NEED_RE.search(text or "")) and not _NOT_DEPLOY_STATE_RE.search(text or "")
+
+
+_BLOCK_SENTENCE_RE = re.compile(r"^\s*(?:BLOCKED BY SETUP\b|Blocked\b)", re.I)
+#: ``required_setup`` status for a deployment need the build check covers.
+BUILD_CHECK_STATUS = "build_check"
+DEPLOY_RELEASED_NOTE = ("Deployment (rule AF): {claim} The build check at the top of the plan decides "
+                        "whether this environment runs the change; this case is not blocked on it.")
+
+
+def _source_says_missing(ctx: dict) -> list[dict]:
+    """Deployment reads that show the change missing everywhere it was read.
+
+    Non-empty only when at least one readable source lacks it and none has it:
+    that is the one case a deployment block stands on evidence.
+    """
+    entries = [e for e in ctx.get("entries") or [] if e.get("ships") is not False and not e.get("error")]
+    if any(e.get("included") is True for e in entries):
+        return []
+    return [e for e in entries if e.get("included") is False]
+
+
+def _comment_reason(ids: list[str], ctx: dict) -> str:
+    """Why a comment's "not deployed" no longer counts, with dates (rule AF, deploy)."""
+    dates = ctx.get("comment_dates") or {}
+    newest = max(dates[i] for i in ids)
+    cites = ", ".join(f"comment {i} ({dates[i]})" for i in ids)
+    older = []
+    merges = [m for m in ctx.get("merges") or [] if m.get("merged_at")]
+    if merges:
+        last = max(merges, key=lambda m: str(m["merged_at"]))
+        merged = str(last["merged_at"])[:10]
+        if newest < merged:
+            older.append(f"older than the newest merge (PR #{last.get('number')}, {merged})")
+    dep = [e for e in ctx.get("entries") or [] if (e.get("source_commit") or {}).get("date")]
+    dep = [e for e in dep if e.get("ships") is True] or [e for e in dep if e.get("ships") is not False]
+    if dep:
+        e = max(dep, key=lambda e: e["source_commit"]["date"])
+        if newest < e["source_commit"]["date"][:10]:
+            older.append(f"older than the newest deployments-repo commit to {e.get('source')} "
+                         f"({e['source_commit']['date'][:10]})")
+    claim = f"as of {newest}, a ticket comment said the change was not deployed ({cites})"
+    claim = claim[0].upper() + claim[1:]
+    if older:
+        claim += "; that comment is " + " and ".join(older)
+    return claim + ". A comment is a point-in-time claim, not a deployment read."
+
+
+def release_deploy_blocks(case: dict, section: str, ctx: dict | None, report: dict) -> bool:
+    """Rules AF + B: a case is blocked on deployment only by a deployment read.
+
+    A "not deployed" in ``blocked_by_setup``, a deployment item in
+    ``required_setup``, or a model-written "Blocked until … deployed"
+    precondition is released (the build check stays the gate) unless a
+    readable deployment source shows the change missing from every
+    environment read. A ticket comment is never enough on its own: SK-3059's
+    regenerated plan kept "BLOCKED BY SETUP: PR #100 is not deployed
+    (comment 346733)" after #100 was running on integ. Returns True when it
+    changed the case.
+    """
+    ctx = ctx or {}
+    blocked = _text(case.get("blocked_by_setup")).strip()
+    parts = [p.strip() for p in re.split(r";\s+", blocked) if p.strip()] if blocked else []
+    deploy_parts = [p for p in parts if _is_deploy_claim(p)]
+    items = [s for s in case.get("required_setup") or [] if isinstance(s, dict)
+             and _is_deploy_claim(_text(s.get("need")) + " " + _text(s.get("how_to_get")))
+             and s.get("status") not in ("exists", BUILD_CHECK_STATUS)]
+    pre = _text(case.get("preconditions"))
+    pre_sents = _sentences(pre)
+    pre_blocks = [x for x in pre_sents if _BLOCK_SENTENCE_RE.search(x) and _is_deploy_claim(x)]
+    if not (deploy_parts or items or pre_blocks):
+        return False
+    missing = _source_says_missing(ctx)
+    if missing:
+        # A deployment read backs the block: keep it, citing the read.
+        cite = "; ".join(f"{e.get('env')} runs {e.get('tag')}, which does not contain the change "
+                         f"({e.get('source')})" for e in missing[:3])
+        others = [p for p in parts if p not in deploy_parts]
+        case["blocked_by_setup"] = "; ".join(others + [f"not deployed per the deployment read at "
+                                                       f"{ctx.get('when') or 'generation'}: {cite}"])
+        _record(report, case, section, "AF", "marked", f"deployment block kept on a deployment read: {cite}"[:200])
+        return True
+    dates = ctx.get("comment_dates") or {}
+    hay = " ".join(deploy_parts + pre_blocks + [_text(s.get("need")) + " " + _text(s.get("how_to_get"))
+                                                 for s in items])
+    ids = []
+    for m in re.finditer(r"\b(\d{4,})\b", hay):
+        if m.group(1) in dates and m.group(1) not in ids:
+            ids.append(m.group(1))
+    if ids:
+        claim = _comment_reason(ids, ctx)
+    elif any(e.get("included") is True for e in ctx.get("entries") or []):
+        claim = "no deployment read shows the change missing."
+    else:
+        claim = "no deployment source could be read, so whether it is deployed is unknown."
+    claim = claim[0].upper() + claim[1:]
+    others = [p for p in parts if p not in deploy_parts]
+    if others:
+        case["blocked_by_setup"] = "; ".join(others)
+    else:
+        case.pop("blocked_by_setup", None)
+    for s in items:
+        s["status"] = BUILD_CHECK_STATUS
+    kept = [x for x in pre_sents if x not in pre_blocks]
+    note = DEPLOY_RELEASED_NOTE.format(claim=claim)
+    case["preconditions"] = " ".join([note] + kept).strip()
+    case["deployment_block_released"] = claim
+    _record(report, case, section, "AF", "released",
+            f"deployment block released: {claim}"[:300])
+    return True
+
+
+def check_setup(test_plan: Any, report: dict, deploy_context: dict | None = None) -> int:
     n = 0
     for section, _, case in _cases(test_plan, ALL_CASE_SECTIONS):
+        release_deploy_blocks(case, section, deploy_context, report)
         pre = _text(case.get("preconditions"))
-        if "(rule AF)" in pre:
+        if SETUP_MARKER.split("{")[0] in pre:
             continue
         setup = [s for s in case.get("required_setup") or [] if isinstance(s, dict) and _text(s.get("need"))]
         blocked = _text(case.get("blocked_by_setup")).strip()
         if not blocked:
-            open_items = [s for s in setup if s.get("status") != "exists"]
+            open_items = [s for s in setup if s.get("status") not in ("exists", BUILD_CHECK_STATUS)]
             if open_items:
                 blocked = "; ".join(f"{_text(s.get('need'))} ({s.get('status') or 'unconfirmed'}"
                                     + (f": {_text(s.get('how_to_get'))}" if _text(s.get("how_to_get")) else "") + ")"
@@ -894,10 +1022,11 @@ async def check_routes_and_shapes(test_plan: Any, report: dict, *, index=None, g
     return n + check_routes(test_plan, report, index) + check_response_fields(test_plan, report, index)
 
 
-def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dict] | None = None) -> None:
-    """AD, AE (labels), AF, AG (repo claims)."""
+def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dict] | None = None,
+                        deploy_context: dict | None = None) -> None:
+    """AD, AE (labels), AF (with deployment blocks held to a deployment read), AG (repo claims)."""
     check_limits(test_plan, report)
     label_channels(test_plan, report)
-    check_setup(test_plan, report)
+    check_setup(test_plan, report, deploy_context)
     check_repo_claims(test_plan, report, repo_evidence)
 

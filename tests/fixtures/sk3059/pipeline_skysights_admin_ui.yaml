@@ -1,0 +1,24 @@
+argo-pipeline:
+  pipelines:
+    skysights-admin-ui:
+      defaultBranch: main
+      harborRepoName: skysights-admin-ui
+      trigger:
+        repoName: broker-wrapped
+        triggerBranchGlob: "{main,release/**,hotfix/**}"
+        disableTags: true
+        type: github
+      envVars:
+        NEXT_PUBLIC_BASE_PATH: /admin
+      simpleSteps:
+        steps:
+          - - type: harbor
+              parameters:
+                dockerfile: apps/skysights-admin-ui/Dockerfile
+          - - name: gitops-update-integ
+              type: argocd-deploy
+              parameters:
+                app-clusters: integ-east
+                deployments-repo: app-deployments
+                app-project: mobile
+                app-name: skysights-admin-ui

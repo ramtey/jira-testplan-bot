@@ -57,17 +57,27 @@ def _pr_commit(pr: dict) -> str | None:
     return pr.get("head_sha")
 
 
-async def read_deploy_state(github_client, pull_requests: list[dict], sources: dict) -> list[dict]:
+async def read_deploy_state(github_client, pull_requests: list[dict], sources: dict,
+                            services: dict | None = None) -> list[dict]:
     """One entry per (repo, environment) that a ticket PR's repo is mapped to.
 
     Entry shape::
 
         {"repo", "env", "source", "tag", "deployed_commit", "error",
-         "prs": [{"number", "url", "included": True | False | None, "detail"}]}
+         "service", "kind", "context", "ships", "source_commit",
+         "prs": [{"number", "url", "included": True | False | None, "detail", "ships"}]}
 
     ``included`` is None when it could not be checked, with ``detail`` saying
     why. ``error`` is set when the environment's build could not be read at all.
+    ``services`` (``discover_deployments``' ``deploy_services``) says which
+    image a source is when a repo ships several; ``ships`` is whether that
+    image carries the PR's changed files (None: cannot tell).
+    ``source_commit`` is the deployments repo's newest commit to the values
+    file (``{"sha", "date"}``), when it could be read.
     """
+    from .build_targets import ships_change
+
+    services = services or {}
     if not sources or not pull_requests or github_client is None:
         return []
     by_repo: dict[str, list[dict]] = {}
@@ -77,9 +87,13 @@ async def read_deploy_state(github_client, pull_requests: list[dict], sources: d
             by_repo.setdefault(repo, []).append(pr)
 
     async def one_env(repo: str, env: str, source: str) -> dict:
+        svc = (services.get(repo) or {}).get(env) or {}
         entry = {"repo": repo, "env": env, "source": source, "tag": None,
                  "deployed_commit": None, "error": None, "prs": [],
-                 "role": None, "hosts": [], "signals": []}
+                 "role": None, "hosts": [], "signals": [],
+                 "service": svc.get("service"), "kind": svc.get("kind"),
+                 "context": svc.get("context"), "dockerfile": svc.get("dockerfile"),
+                 "ships": None, "source_commit": None}
         owner, name, path = (source.split("/", 2) + ["", ""])[:3]
         files = await github_client.fetch_files_at_ref(f"{owner}/{name}", None, [path])
         tag = parse_tag(files.get(path, "")) if path in files else None
@@ -96,9 +110,19 @@ async def read_deploy_state(github_client, pull_requests: list[dict], sources: d
         elif not deployed:
             entry["error"] = f"tag {tag} does not name a commit"
         entry["deployed_commit"] = deployed
+        latest = getattr(github_client, "latest_commit_for_path", None)
+        if latest is not None and path in files:
+            try:
+                entry["source_commit"] = await latest(f"{owner}/{name}", path)
+            except Exception as e:  # a date only refines a reason; never fail on it
+                logger.warning("could not date %s: %s", source, e)
 
+        ships = []
         for pr in by_repo[repo]:
-            item = {"number": pr.get("number"), "url": pr.get("url"), "included": None, "detail": ""}
+            changed = [f.get("filename") for f in pr.get("files_changed") or [] if isinstance(f, dict)]
+            item = {"number": pr.get("number"), "url": pr.get("url"), "included": None, "detail": "",
+                    "ships": ships_change(entry["context"], changed, entry["service"]) if changed else None}
+            ships.append(item["ships"])
             pr_commit = _pr_commit(pr)
             if entry["error"]:
                 item["detail"] = "environment's build could not be read"
@@ -119,6 +143,7 @@ async def read_deploy_state(github_client, pull_requests: list[dict], sources: d
                 else:
                     item["included"] = False
             entry["prs"].append(item)
+        entry["ships"] = True if True in ships else (False if ships and all(x is False for x in ships) else None)
         return entry
 
     jobs = [one_env(repo, env, src)
@@ -144,12 +169,25 @@ def render_deploy_state(entries: list[dict], now: datetime | None = None) -> str
             lines.append(f"{head}: COULD NOT CHECK ({e['error']}). Do not claim this "
                          "environment has or lacks any PR.")
             continue
-        lines.append(f"{head}: runs {e['tag']}{_role_text(e)}")
+        lines.append(f"{head}: runs {e['tag']}{_service_text(e)}{_role_text(e)}")
         for p in e["prs"]:
             label = {True: "INCLUDED", False: "NOT INCLUDED", None: "COULD NOT CHECK"}[p["included"]]
             detail = f" — {p['detail']}" if p["detail"] else ""
             lines.append(f"    #{p['number']}: {label}{detail}")
     return "\n".join(lines)
+
+
+def _service_text(e: dict) -> str:
+    """Which image this source is, when the repo ships several (a monorepo)."""
+    if not e.get("service"):
+        return ""
+    from .build_targets import DEPLOYABLE_KIND_LABEL
+
+    kind = DEPLOYABLE_KIND_LABEL.get(e.get("kind") or "", "container")
+    built = f", built from {e['dockerfile']}" if e.get("dockerfile") else ""
+    ships = {True: "; ships this change", False: "; does NOT ship this change (no changed file is in it)",
+             None: ""}[e.get("ships")]
+    return f" — image {e['service']} ({kind}{built}{ships})"
 
 
 def _role_text(e: dict) -> str:
@@ -173,7 +211,9 @@ DEPLOY_STATE_GUIDANCE = (
     "rather than pointing a tester at a build that lacks the change. Never "
     "recommend sign-off on an environment marked NOT INCLUDED for a PR the "
     "ticket depends on. COULD NOT CHECK means unknown — say so; it is not "
-    "evidence either way. When an app has several deployments, a case's "
+    "evidence either way. This read, not a ticket comment, decides what is "
+    "deployed: a comment saying \"not deployed\" is only what was true on the "
+    "day it was written. When an app has several deployments, a case's "
     "build check and any step that reads logs (boot lines, request logs) name "
     "the SERVING copy whose host the case calls, never an INTERNAL "
     "worker/cron copy unless the case tests cron or job behaviour; if no copy "

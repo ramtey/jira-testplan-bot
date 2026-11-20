@@ -223,6 +223,163 @@ def names_repo(text: str, repo_name: str) -> bool:
                           rf"{re.escape(repo_name)}[\"']?\s*$", text or "", re.M))
 
 
+# ---------------------------------------------------------------------------
+# Services a code repo ships under another name
+# ---------------------------------------------------------------------------
+#
+# SK-3059 / SK-2835: skyslope/broker-wrapped ships as the images
+# ``skysights-api`` (apps/broker-wrapped-api/Dockerfile) and
+# ``skysights-admin-ui``. Nothing in the deployments repo is named
+# "broker-wrapped" except the pipeline trigger (``repoName: broker-wrapped``),
+# so a name match found no deployment source, and the plan fell back to a
+# ticket comment that said "not deployed yet" — which stayed authoritative
+# after the change shipped. The pipeline that builds a repo names the image
+# (``harborRepoName``), the Argo app (``app-name``) and the Dockerfile; the
+# app's per-environment values files carry the tag.
+
+_PIPE_KEY_RE = re.compile(r"^\s*-?\s*(harborRepoName|app-name|dockerfile)\s*:\s*[\"']?([^\"'\s#]+)", re.M)
+_API_NAME = re.compile(r"(?:^|[-_/])(?:api|server|backend|gateway|service|svc|worker)(?:$|[-_/])", re.I)
+_FUNCTIONS_NAME = re.compile(r"(?:^|[-_/])(?:functions?|lambdas?|cloud-functions)(?:$|[-_/])", re.I)
+_WEB_NAME = re.compile(r"(?:^|[-_/])(?:ui|web|frontend|site|portal|dashboard|spa|www|admin-ui)(?:$|[-_/])", re.I)
+
+#: What a deployable is called in a build check, by kind.
+DEPLOYABLE_KIND_LABEL = {"api": "API container", "web": "web app container", "service": "container",
+                         "functions": "serverless functions deploy"}
+
+
+def deployable_kind(*names: str | None) -> str:
+    """``api``, ``web`` or ``service`` from a service, image or directory name."""
+    joined = " ".join(n for n in names if n)
+    for n in names:
+        if n and _FUNCTIONS_NAME.search(posixpath.basename(n.rstrip("/")) or n):
+            return "functions"
+    for n in names:
+        if n and _WEB_NAME.search(posixpath.basename(n.rstrip("/")) or n):
+            return "web"
+    for n in names:
+        if n and _API_NAME.search(posixpath.basename(n.rstrip("/")) or n):
+            return "api"
+    return "web" if _WEB_NAME.search(joined) else "api" if _API_NAME.search(joined) else "service"
+
+
+def parse_service_pipeline(text: str, path: str) -> list[dict]:
+    """The services a pipeline definition builds: ``[{"service", "image", "dockerfile", "context"}]``.
+
+    The service is the Argo app it deploys (``app-name``), else the image
+    (``harborRepoName``), else the pipeline's directory name.
+    """
+    found: dict[str, list[str]] = {}
+    for k, v in _PIPE_KEY_RE.findall(text or ""):
+        if "{{" in v:
+            continue
+        found.setdefault(k, [])
+        if v not in found[k]:
+            found[k].append(v)
+    image = (found.get("harborRepoName") or [None])[0]
+    names = found.get("app-name") or ([image] if image else [posixpath.basename(posixpath.dirname(path))])
+    dockerfile = (found.get("dockerfile") or [None])[0]
+    context = posixpath.dirname(dockerfile.lstrip("./")) if dockerfile else None
+    return [{"service": n, "image": image or n, "dockerfile": dockerfile, "context": context or None,
+             "kind": deployable_kind(n, context)} for n in names if n]
+
+
+_NON_SHIPPING = re.compile(r"(^|/)(docs?|\.github)/|\.(md|mdx|txt)$|(^|/)(AGENTS|CLAUDE|README|CHANGELOG)[^/]*$", re.I)
+
+
+def ships_change(context: str | None, changed: Iterable[str], service: str | None = None) -> bool | None:
+    """Whether a deployable built from ``context`` carries any of ``changed``.
+
+    True when a changed file is under its directory; False when every
+    shipping file is under a sibling directory (another app in the same
+    monorepo); None when it cannot be told (root lockfiles, shared packages,
+    no context known) — never guessed either way.
+    """
+    files = [f for f in changed if f and not _NON_SHIPPING.search(f)]
+    if not context:
+        # One shared Dockerfile built per app (``--build-arg APP=<name>``):
+        # a changed file in a directory named for the service ships in it.
+        if service and any(f"/{service}/" in f"/{f}" for f in files):
+            return True
+        return None
+    ctx = context.strip("/")
+    if any(f.startswith(ctx + "/") for f in files):
+        return True
+    parent = posixpath.dirname(ctx)
+    if files and parent and all(f.startswith(parent + "/") and not f.startswith(ctx + "/") for f in files):
+        return False
+    return None
+
+
+def deployables_from_paths(changed: Iterable[str]) -> list[dict]:
+    """The app directories a monorepo change ships from: ``[{"context", "kind"}]``.
+
+    One entry per ``apps/<name>``-style directory with a shipping file in
+    it; empty when the repo is not laid out that way.
+    """
+    dirs: list[str] = []
+    for f in changed:
+        if not f or _NON_SHIPPING.search(f):
+            continue
+        m = re.match(r"^((?:apps|services|packages/apps|cmd)/[^/]+)/", f)
+        if m and m.group(1) not in dirs:
+            dirs.append(m.group(1))
+    return [{"context": d, "kind": deployable_kind(d), "service": posixpath.basename(d)} for d in sorted(dirs)]
+
+
+def deployable_from_paths(changed: Iterable[str]) -> dict | None:
+    """The one app directory a change ships from, when there is exactly one."""
+    found = deployables_from_paths(changed)
+    return found[0] if len(found) == 1 else None
+
+
+async def _services_by_trigger(github, code: str, deploy_repos: list[str],
+                               trees: dict[str, list[str]], out: dict) -> None:
+    """Fill ``deploy_sources`` / ``deploy_services`` for a repo whose name no
+    values directory matches, from the pipelines its pushes trigger.
+
+    One code search over every deployments repo (``"repoName: <name>"``),
+    then a read of each hit. A search that could not run is an error, never
+    "no deployment".
+    """
+    search = getattr(github, "search_code_hits", None)
+    listed = [d for d in deploy_repos if trees.get(d) is not None]
+    if search is None or not listed:
+        return
+    name = short_name(code)
+    try:
+        hits = await search(f'"repoName: {name}"', " ".join(f"repo:{d}" for d in listed), max_hits=20)
+    except Exception as e:
+        out["errors"].append(f"could not search {', '.join(listed)} for the pipelines that build {code} "
+                             f"under another name ({type(e).__name__}), so its deployments were not read")
+        return
+    by_drepo: dict[str, list[str]] = {}
+    for h in hits or []:
+        d, p = h.get("repo"), h.get("path") or ""
+        if d in listed and "/pipelines/" in f"/{p}" and p in set(trees[d]):
+            by_drepo.setdefault(d, []).append(p)
+    for drepo, paths in by_drepo.items():
+        texts = await github.fetch_files_at_ref(drepo, None, sorted(set(paths)))
+        for p in sorted(set(paths)):
+            if p not in texts:
+                out["errors"].append(f"could not read {drepo}/{p}, a pipeline that may deploy {code}")
+                continue
+            if not names_repo(texts[p], name):
+                continue
+            for svc in parse_service_pipeline(texts[p], p):
+                values = find_deploy_values(trees[drepo], svc["service"])
+                if not values:
+                    continue
+                srcs = out["deploy_sources"].setdefault(code, {})
+                svcs = out["deploy_services"].setdefault(code, {})
+                for env, vpath in values.items():
+                    label = f"{env} ({svc['service']})"
+                    if label in srcs:
+                        continue
+                    srcs[label] = f"{drepo}/{vpath}"
+                    svcs[label] = {**svc, "pipeline": f"{drepo}/{p}",
+                                   "values_dir": posixpath.dirname(posixpath.dirname(vpath))}
+
+
 async def discover_deployments(github, pull_requests: list[dict] | None, *,
                                configured_sources: dict | None = None,
                                deployments_repos: Iterable[str] = ()) -> dict:
@@ -232,15 +389,20 @@ async def discover_deployments(github, pull_requests: list[dict] | None, *,
 
         {"deployments_repos": [...],
          "deploy_sources": {code_repo: {env: "owner/repo/path"}},
+         "deploy_services": {code_repo: {env: {"service", "image", "dockerfile",
+                                               "context", "kind", "pipeline"}}},
          "pipelines": {code_repo: [{"source": "owner/repo/path", "text": str}]},
          "errors": [str]}
 
     Configured ``DEPLOY_STATE_SOURCES`` win for a repo they name; discovery
-    only fills repos nobody configured. A deployments repo whose tree could not
+    only fills repos nobody configured. A repo no values directory is named
+    after is matched through the pipelines it triggers (``deploy_services``
+    says which image each source is). A deployments repo whose tree could not
     be listed is an error, never "nothing deployed".
     """
     configured_sources = configured_sources or {}
-    out = {"deployments_repos": [], "deploy_sources": {}, "pipelines": {}, "errors": []}
+    out = {"deployments_repos": [], "deploy_sources": {}, "deploy_services": {}, "pipelines": {},
+           "errors": []}
     if github is None:
         return out
     by_repo: dict[str, list[str]] = {}
@@ -258,8 +420,10 @@ async def discover_deployments(github, pull_requests: list[dict] | None, *,
     out["deployments_repos"] = deploy_repos
     if not code_repos or not deploy_repos:
         return out
+    trees: dict[str, list[str] | None] = {}
     for drepo in deploy_repos:
         tree = await github.list_tree(drepo, "HEAD")
+        trees[drepo] = tree
         if tree is None:
             out["errors"].append(f"could not list {drepo}, so deployments and pipelines recorded "
                                  "there were not checked")
@@ -292,6 +456,10 @@ async def discover_deployments(github, pull_requests: list[dict] | None, *,
                 if names_repo(texts[p], short_name(code)) or f"/{short_name(code)}/" in f"/{p}":
                     out["pipelines"].setdefault(code, []).append(
                         {"source": f"{drepo}/{p}", "text": texts[p]})
+    for code in code_repos:
+        if code in configured_sources or out["deploy_sources"].get(code):
+            continue
+        await _services_by_trigger(github, code, deploy_repos, trees, out)
     return out
 
 
@@ -432,7 +600,10 @@ def build_targets(pull_requests: list[dict] | None, repo_evidence: list[dict] | 
                            "deployed_commit": d.get("deployed_commit"), "error": d.get("error"),
                            "included": (None if not inc or None in inc else all(inc)),
                            "role": d.get("role"), "hosts": d.get("hosts") or [],
-                           "signals": d.get("signals") or []})
+                           "signals": d.get("signals") or [],
+                           "service": d.get("service"), "kind": d.get("kind"),
+                           "context": d.get("context"), "dockerfile": d.get("dockerfile"),
+                           "ships": d.get("ships")})
         targets.append({"repo": repo, "commit": commit, "platform": platform, "changed": changed,
                         "app": e.get("app_version"), "deploy": deploy,
                         "capabilities": e.get("capabilities"),
@@ -603,8 +774,14 @@ def choose_deployments(t: dict, surface: dict | None = None) -> dict:
 
     surface = surface or {}
     hosts = surface.get("hosts") or []
-    p = partition(t.get("deploy") or [], hosts)
-    out = {"primary": list(t.get("deploy") or []), "internal": [], "extra": [], "confirm": ""}
+    # An image that carries none of the changed files (another app in the
+    # same monorepo) is not where the change runs.
+    # When some images are known to carry it, the check reads only those.
+    every = list(t.get("deploy") or [])
+    deploy = ([d for d in every if d.get("ships") is True]
+              or [d for d in every if d.get("ships") is not False] or every)
+    p = partition(deploy, hosts)
+    out = {"primary": deploy, "internal": [], "extra": [], "confirm": ""}
     if not p["classified"]:
         return out
     where = host_phrase(app_hosts(hosts, t["repo"]))
@@ -632,6 +809,38 @@ def choose_deployments(t: dict, surface: dict | None = None) -> dict:
                           f"these values files routes a host"
                           + (" (chart defaults may)" if len(p["unknown"]) > 1 else "") + ".")
     return out
+
+
+def deployable_label(t: dict, entries: list[dict] | None = None) -> str:
+    """What ships the change: ``the skysights-api API container (built from
+    apps/broker-wrapped-api/Dockerfile)``. From the matched deployments-repo
+    manifests first, else from the one app directory the diff touches. Empty
+    when neither says."""
+    entries = entries if entries is not None else (t.get("deploy") or [])
+    svcs: dict[str, dict] = {}
+    for d in sorted(entries, key=lambda d: d.get("ships") is not True):
+        if d.get("service") and d.get("ships") is not False:
+            svcs.setdefault(d["service"], d)
+    if svcs:
+        sure = [d for d in svcs.values() if d.get("ships") is True]
+        parts = [f"the {name} {DEPLOYABLE_KIND_LABEL.get(d.get('kind') or '', 'container')}"
+                 + (f" (built from {d['dockerfile']})" if d.get("dockerfile") else "")
+                 for name, d in svcs.items() if not sure or d in sure]
+        if len(parts) > 3:
+            names = [n for n, d in svcs.items() if not sure or d in sure]
+            return (f"one of the {len(names)} images built from this repo that may carry the change "
+                    f"({', '.join(names[:3])} and {len(names) - 3} more; check the one the case calls)")
+        return " and ".join(parts)
+    found = deployables_from_paths(t.get("changed") or [])
+    if len(found) == 1:
+        return (f"the {DEPLOYABLE_KIND_LABEL[found[0]['kind']]} built from {found[0]['context']} "
+                "(every changed app file is there)")
+    if found:
+        apps = " or ".join(f"{d['context']} ({DEPLOYABLE_KIND_LABEL[d['kind']]})" for d in found)
+        return (f"the image built from the app the case exercises — {apps}" if t.get("deploy") else
+                f"the deployable built from the app the case exercises — {apps}; no deployment "
+                "source was read to say which serves the cases")
+    return ""
 
 
 def _container_check(t: dict, when: str | None, surface: dict | None = None) -> str:
@@ -662,7 +871,9 @@ def _container_check(t: dict, when: str | None, surface: dict | None = None) -> 
                  + "; ".join(f"{describe(d)}" + (f" runs {d['tag']}" if d.get("tag") else "")
                              + (f" (could not check: {d['error']})" if d.get("error") else "")
                              for d in chosen["extra"]) + ".")
-    return (f"{t['repo']} — confirm the deployed image contains {what}: {how}, then run "
+    label = deployable_label(t, primary)
+    head = f"{t['repo']} — {label}" if label else t["repo"]
+    return (f"{head} — confirm the deployed image contains {what}: {how}, then run "
             f"{_compare_cmd(t['repo'], sha or '<merge commit>')}; `ahead` or `identical` means "
             f"the build contains the merge, `behind` or `diverged` means it does not. Any later "
             f"build that contains it passes; the tag does not have to match a particular name."
@@ -728,6 +939,10 @@ def _android_check(t: dict) -> str:
 
 def _web_check(t: dict, when: str | None, surface: dict | None = None) -> str:
     if t["deploy"]:
+        return _container_check(t, when, surface)
+    # A monorepo with a web app in it is detected as "web", but a change
+    # that only touches its API app ships in that API's container (SK-3059).
+    if any(d["kind"] != "web" for d in deployables_from_paths(t.get("changed") or [])):
         return _container_check(t, when, surface)
     sha = _sha(t["commit"])
     app = t.get("app") or {}

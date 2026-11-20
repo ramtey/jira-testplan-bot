@@ -1072,6 +1072,7 @@ async def run_evidence_checks(
     dev_info: dict | None,
     when: str,
     deployments: dict | None = None,
+    comments: list[dict] | None = None,
 ) -> dict:
     """Hold the plan to evidence rules B–F (see src/app/evidence_checks.py).
 
@@ -1168,11 +1169,12 @@ async def run_evidence_checks(
 
     repos = [t["repo"] for t in targets]
     deployment = build_deployment_status(deploy_state, claims.get("deployment_status"), repos, when,
-                                         targets=targets)
+                                         targets=targets, comments=comments)
     gaps = build_acceptance_gaps(requirements, claims.get("requirement_check"))
 
     return {
         "deployment_status": deployment,
+        "deploy_context": deploy_context(deploy_state, prs, comments, when),
         "acceptance_gaps": gaps,
         "build_and_ci": findings,
         "coverage_reverted": demoted,
@@ -1187,6 +1189,24 @@ async def run_evidence_checks(
         "critic_gap": critic_gap,
         "lockfile_rechecked": lockfile_rechecked,
     }
+
+
+def deploy_context(deploy_state: list[dict] | None, prs: list[dict], comments: list[dict] | None,
+                   when: str) -> dict:
+    """What the re-check needs to hold a case's deployment block to a
+    deployment read (rule AF, src/app/deployed_env_checks.release_deploy_blocks)."""
+    from ..evidence_checks import comment_dates
+
+    entries = []
+    for e in deploy_state or []:
+        inc = [p.get("included") for p in e.get("prs") or []]
+        entries.append({"repo": e.get("repo"), "env": e.get("env"), "tag": e.get("tag"),
+                        "source": e.get("source"), "error": e.get("error"), "ships": e.get("ships"),
+                        "source_commit": e.get("source_commit"),
+                        "included": None if not inc or None in inc else all(inc)})
+    merges = [{"number": p.get("number"), "merged_at": p.get("merged_at"), "sha": p.get("merge_commit_sha")}
+              for p in prs if (p.get("status") or "").upper() == "MERGED" and p.get("merged_at")]
+    return {"entries": entries, "merges": merges, "comment_dates": comment_dates(comments), "when": when}
 
 
 def _deployment_targeting(targets: list[dict], log_steps: list[dict], verified: dict) -> dict | None:

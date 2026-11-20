@@ -1014,7 +1014,7 @@ async def recheck_before_routing(llm: Any, github: Any, test_plan: Any, dev_info
 
 
 def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dict] | None = None,
-                        index=None) -> None:
+                        index=None, deploy_context: dict | None = None) -> None:
     """Rules Q (no correction beside its claim; whole names), AK, S, R, Q (first rejecting check), X, Y,
     AD–AG, Z — code only, marks in place."""
     from .build_commands import check_commands
@@ -1042,7 +1042,8 @@ def recheck_before_save(test_plan: Any, report: dict, *, repo_evidence: list[dic
     # so a "blocked by setup" mark is never folded into a shared precondition.
     from . import deployed_env_checks
 
-    deployed_env_checks.recheck_before_save(test_plan, report, repo_evidence=repo_evidence)
+    deployed_env_checks.recheck_before_save(test_plan, report, repo_evidence=repo_evidence,
+                                            deploy_context=deploy_context)
     hoist_shared_preconditions(test_plan, report)
 
 

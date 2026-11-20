@@ -1,0 +1,7 @@
+skyslope-app:
+  image:
+    tag: main-aa91729
+  env: integ
+  config:
+    APP_ENV: integ
+    NODE_ENV: production

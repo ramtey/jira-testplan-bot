@@ -108,7 +108,7 @@ async def replay(plan_id: int, as_json: bool) -> None:
                                                 deployments_repos=settings.deployments_repos)
     sources = {**deployments["deploy_sources"], **settings.deploy_state_sources}
     evidence = await ev.gather_repo_evidence(gh, prs, "", deployments)
-    deploy_state = await read_deploy_state(gh, prs, sources)
+    deploy_state = await read_deploy_state(gh, prs, sources, services=deployments.get("deploy_services"))
     targets = bt.build_targets(prs, evidence, deploy_state, deployments["deployments_repos"])
     when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -122,6 +122,21 @@ async def replay(plan_id: int, as_json: bool) -> None:
     variants = require_error_body_variants(plan)
     ci_flags = flag_ci_claims(plan, evidence)
     banner = ev.build_deployment_status(deploy_state, None, [t["repo"] for t in targets], when, targets=targets)
+    # Rule AF, deployment blocks: a stored "BLOCKED BY SETUP: … not deployed"
+    # stands only on a deployment read (deployed_env_checks.release_deploy_blocks).
+    from src.app import deployed_env_checks as dec
+    from src.app.services.test_plan_generator import deploy_context
+
+    stored_blocks = [f"{s}:{i}" for s in SECTIONS for i, c in enumerate(body.get(s) or [])
+                     if isinstance(c, dict) and dec._is_deploy_claim(
+                         (c.get("blocked_by_setup") or "") if isinstance(c.get("blocked_by_setup"), str) else "")]
+    af_report: dict = {}
+    ctx = deploy_context(deploy_state, prs, None, when)
+    for s in SECTIONS:
+        for i, c in enumerate(getattr(plan, s) or []):
+            if isinstance(c, dict):
+                dec.release_deploy_blocks(c, s, ctx, af_report)
+    af = [(f["section"], f["action"], f["reason"][:160]) for f in af_report.get("findings") or []]
     # What the generator was shown is replayed from the diffs alone: a stored
     # plan predates the source-facts section, so its "not shown" verdicts are
     # the ones its own prompt earned. Exploration findings are not stored, so
@@ -149,6 +164,7 @@ async def replay(plan_id: int, as_json: bool) -> None:
     print("CI, now    :", [f"{e['repo']}: {f['kind']}: {f['finding'][:140]}" for e in evidence
                            for f in (e["build"] or {}).get("findings") or []])
     print("banner     :", banner)
+    print("AF deployment blocks: stored", stored_blocks, "→ re-check", af)
     print("moved out of UAT:", out["moved"])
     print("error-body variants added:", variants, "· CI claims flagged:", ci_flags)
     print(f"grounding re-read: {reread.get('checked')} checked, {reread.get('downgraded')} downgraded, "

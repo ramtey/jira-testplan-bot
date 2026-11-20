@@ -306,12 +306,21 @@ def test_not_deployed_banner_names_the_environment_and_source():
     assert "main-ab5a6d3" in status["warnings"][0]
 
 
-def test_a_note_saying_not_deployed_reaches_the_banner_without_a_deploy_source():
+def test_a_note_saying_not_deployed_reaches_the_banner_dated_but_never_sets_not_deployed():
+    # SK-3059: a comment is what was true the day it was written; only a
+    # deployment read makes a plan "not deployed".
     status = ev.build_deployment_status(
         [], {"deployed": "no", "statement": "Not confirmed deployed anywhere yet", "source": f"comment {TESTING_NOTE}"},
+        ["acme/x"], "now", comments=[{"id": TESTING_NOTE, "created": "2026-10-01T09:00:00.000+0000"}])
+    assert status["status"] == "unknown"
+    assert status["warnings"][0].startswith("As of 2026-10-01, a ticket comment said: Not confirmed deployed")
+    assert "point-in-time claim" in status["warnings"][0]
+    # Without the comment's date the statement is still shown, and still not a status.
+    bare = ev.build_deployment_status(
+        [], {"deployed": "no", "statement": "Not confirmed deployed anywhere yet", "source": f"comment {TESTING_NOTE}"},
         ["acme/x"], "now")
-    assert status["status"] == "not_deployed"
-    assert status["warnings"] == [f"Not confirmed deployed anywhere yet (comment {TESTING_NOTE})"]
+    assert bare["status"] == "unknown"
+    assert bare["warnings"] == [f"Not confirmed deployed anywhere yet (comment {TESTING_NOTE})"]
 
 
 def test_unchecked_deployment_is_said_out_loud():

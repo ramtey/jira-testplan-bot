@@ -153,8 +153,9 @@ def _render_batch_evidence(tickets: list[dict]) -> str:
         out.append("**Deployment state — which environment runs which PR:**\n" + text
                    + f"\n⚠️ REQUIRED: {DEPLOY_STATE_GUIDANCE}")
     else:
-        out.append("**Deployment state:** not read — no deployment source is configured. Apply "
-                   "rule B: every case that needs a deployed environment starts with a deploy check.")
+        out.append("**Deployment state:** not read — no deployment source is configured, so deployment "
+                   "is unknown. Apply rule B: every case that needs a deployed environment starts with a "
+                   "deploy check; none is blocked on deployment, whatever a comment says.")
     if evidence:
         out.append("**Tests, CI and build — read from each repo at the merge commit:**\n"
                    + render_repo_evidence(evidence)
@@ -1280,10 +1281,15 @@ route the host, list every candidate with its image tag and write "confirm
 which deployment serves <host>" instead of picking one by environment name.
 Downstream code writes this check ONCE, at the top of the plan, and adds
 "Precondition: Build check passed" to every such case (rule Z); it removes a
-check step you wrote. Write the rest of the case as if the check passed. If the sources
-say it is not deployed — the deployment state shows NOT INCLUDED, or a note
-says "not deployed" — set `deployment_status` to deployed "no" with the
-statement and its source, and do not write cases that assume the deployment.
+check step you wrote. Write the rest of the case as if the check passed. Only a
+deployment read says what is deployed: when the deployment state shows NOT
+INCLUDED in every environment, set `deployment_status` to deployed "no" with
+that read as the source. A ticket comment saying "not deployed" (or "not
+deployed yet") is what was true on the day it was written: put it in
+`deployment_status` as deployed "unknown", dated ("as of <comment date>,
+comment <id> said …"), and never turn it into `blocked_by_setup` or a
+"blocked until deployed" precondition — the build check is that case's gate.
+With no deployment state, deployment is "unknown", not "no".
 
 **C. Prove unit-test coverage from the test code.** `covered_by_unit_test: true`
 only after you read the test body and found an assertion that checks the case's
@@ -1796,7 +1802,9 @@ record in a given state), each with `status` (`exists` when you confirmed it,
 `unconfirmed`, `missing`) and `how_to_get`. If any is not confirmed, set
 `blocked_by_setup` to what is missing and who can provide it, and still write
 the steps as they will run once it exists. Never write steps that presuppose
-data nobody has confirmed.
+data nobody has confirmed. The change being deployed is not setup: it is the
+build check (rule B), never a `required_setup` item, and never `blocked_by_setup`
+unless the deployment state shows the change NOT INCLUDED everywhere it was read.
 
 **AG. Every case is complete, and claims about the repo come from its files.**
 Never output a case with an empty title or no steps; if you cannot write steps
@@ -3800,7 +3808,8 @@ TICKET INFORMATION
                 prompt += "concrete environment, setup, trigger, verification and rollback steps in the matching "
                 prompt += "cases, set `source_comment_ids` on every case that uses one, and record any point where "
                 prompt += "your plan departs from a note in `note_disagreements`. A note's statement that the "
-                prompt += "change is not deployed goes into `deployment_status`.\n\n"
+                prompt += "change is not deployed goes into `deployment_status` as deployed \"unknown\", dated with the "
+                prompt += "comment's date — it is a point-in-time claim and never blocks a case.\n\n"
             prompt += "**Use these comments to:**\n"
             prompt += "- If a manual test plan is present, use it as the primary source of truth for test cases — preserve its structure, numbering, and coverage\n"
             prompt += "- Incorporate manually suggested test scenarios and edge cases\n"
@@ -4210,8 +4219,10 @@ TICKET INFORMATION
             else:
                 prompt += (
                     "\n**Deployment state:** not read — no deployment source is configured for "
-                    "this repo. Apply rule B: every case that needs a deployed environment starts "
-                    "with a step that checks the merged commit is running there, and says how.\n"
+                    "this repo, so deployment is unknown (`deployment_status` deployed \"unknown\"). "
+                    "Apply rule B: every case that needs a deployed environment starts with a step "
+                    "that checks the merged commit is running there, and says how. No case is "
+                    "blocked on deployment, whatever a comment says.\n"
                 )
 
             # Rules C, D, F: the test code itself, and what CI and the build

@@ -1292,6 +1292,24 @@ class GitHubClient:
             return None
         return r.json()[0].get("sha")
 
+    async def latest_commit_for_path(self, repo: str, path: str) -> dict | None:
+        """``{"sha", "date"}`` of the default branch's newest commit touching
+        ``path``; None when GitHub would not say (never "no commit")."""
+        if not self.token or not path:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(f"{self.base_url}/repos/{repo}/commits",
+                                     params={"path": path, "per_page": 1}, headers=self._headers())
+        except httpx.HTTPError as e:
+            logger.warning("Commit lookup %s:%s failed: %s", repo, path, e)
+            return None
+        if r.status_code != 200 or not r.json():
+            return None
+        c = r.json()[0]
+        return {"sha": c.get("sha"),
+                "date": ((c.get("commit") or {}).get("committer") or {}).get("date")}
+
     async def compare_commits(self, repo: str, base: str, head: str) -> dict | None:
         """GitHub's compare of `base...head` in `repo`: ``{"status", "ahead_by",
         "behind_by"}``, where status "ahead"/"identical" means `head` contains

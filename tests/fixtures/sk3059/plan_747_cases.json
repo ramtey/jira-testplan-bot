@@ -1,0 +1,113 @@
+{
+  "_note": "Sanitized SK-3059 plan 747 v2 cases as the model wrote them, before the stages that add the build check (Precondition: Build check passed) and the AF marker. Comment 346733 is the newest comment ('#100 is not deployed yet').",
+  "happy_path": [
+    {
+      "title": "Manual podcast trigger with a valid slug logs the slug as a %s argument and returns an execution",
+      "surface": "backend_http",
+      "environment": "integ \u2014 base URL unverified (S3)",
+      "preconditions": "Precondition: S1 and S3 passed. Blocked until PR #100 (8b5eb66) is deployed to integ (comment 346733).",
+      "steps": [
+        "GET {base}/api/cron/schedules with the S1 token and note one schedule slug from the response.",
+        "POST {base}/api/cron/trigger/{slug} with the S1 token, Content-Type application/json and body {\"variables\":{}}.",
+        "Record the HTTP status and body.",
+        "In the API pod logs, find the line for this request."
+      ],
+      "expected": "The log contains exactly one line `[CRON-API] \ud83c\udfaf Manual trigger: <slug>`, with the slug written as sent. The response is a success and its body includes `execution.id`. Record the exact status. Neither a 5xx nor the handler's 400 'Failed to trigger podcast generation' is a pass.",
+      "grounded_in": [
+        "pr:apps/broker-wrapped-api/src/routes/cron.ts"
+      ],
+      "required_setup": [
+        {
+          "need": "PR #100 deployed to integ",
+          "status": "missing",
+          "how_to_get": "the mobile team deploys skysights-api built from a commit that contains 8b5eb66"
+        },
+        {
+          "need": "Admin test token (S1)",
+          "status": "unconfirmed",
+          "how_to_get": "Okta admin for the integ scopes"
+        }
+      ],
+      "blocked_by_setup": "PR #100 is not deployed (comment 346733). The owner is the mobile team.",
+      "source_comment_ids": [
+        "346733"
+      ],
+      "credentials": "S1 admin Okta token (user principal with openid, skysights.api.integ and skysights.admin.integ). Required by adminAuthHook (cron.ts:5-9)."
+    },
+    {
+      "title": "Re-check the CVE tracker after the new images are scanned",
+      "surface": "manual_only",
+      "environment": "https://<host>",
+      "preconditions": "",
+      "steps": [
+        "After PR #100's images are deployed and scanned, open https://<host>",
+        "Record the open, urgent and critical counts.",
+        "Compare the open alerts with the 'still open' lists in PR #99 and PR #100."
+      ],
+      "expected": "Unverified \u2014 assumption: the urgent and critical counts are lower than the baseline of 27 urgent and 23 critical (491 open). Every remaining critical or urgent alert is on the PRs' intentional-leftover list (zod, tinypool, sharp, image-size, ip-address, decode-uri-component, @babel/core in functions, @smithy/config-resolver, deepmerge, tsup 7, ai/svelte, vitest). Record any alert outside that list.",
+      "grounded_in": [
+        "ticket:SK-3059-desc"
+      ],
+      "blocked_by_setup": "Needs PR #100 deployed and scanned. The owner is the mobile team.",
+      "source_comment_ids": [
+        "346224",
+        "346733"
+      ],
+      "credentials": "Access to the SkySlope CVE tracker."
+    }
+  ],
+  "edge_cases": [
+    {
+      "title": "Unknown slug containing format specifiers: rejected, and the failure log prints the slug literally next to the error",
+      "surface": "backend_http",
+      "environment": "integ \u2014 base URL unverified",
+      "preconditions": "Precondition: S1 and S3 passed. Blocked until PR #100 (8b5eb66) is deployed.",
+      "steps": [
+        "POST {base}/api/cron/trigger/qa-%25s-%25d with the S1 token and body {\"variables\":{}}.",
+        "Record the status, the body, and which layer answered.",
+        "If the handler answered, find the '[CRON-API] \u274c Manual trigger failed for' line in the API logs."
+      ],
+      "expected": "The request is rejected with no podcast generated, and any 4xx passes; record the status and which layer answered (rule AC: the CDN, ingress or router may handle a percent-encoded path first). If the handler answered (body error 'Failed to trigger podcast generation'), the log line reads `[CRON-API] \u274c Manual trigger failed for qa-%s-%d:` with the slug literal and the error printed after it, not substituted into the slug.",
+      "grounded_in": [
+        "pr:apps/broker-wrapped-api/src/routes/cron.ts"
+      ],
+      "required_setup": [
+        {
+          "need": "PR #100 deployed",
+          "status": "missing",
+          "how_to_get": "the mobile team"
+        }
+      ],
+      "blocked_by_setup": "PR #100 is not deployed (comment 346733).",
+      "credentials": "S1 admin Okta token."
+    }
+  ],
+  "integration_tests": [
+    {
+      "title": "Firebase postReviews still posts to Slack after the axios ^1.16.0 bump (Node 22, deployed separately)",
+      "surface": "manual_only",
+      "environment": "Firebase project skysights-integ",
+      "preconditions": "Blocked until apps/functions is deployed with firebase deploy to skysights-integ from a commit that contains 8b5eb66.",
+      "steps": [
+        "Write a test document to reviews/{docId} in skysights-integ Firestore, with test-only content.",
+        "Watch the integ Slack reviews channel.",
+        "Read the postReviews function logs."
+      ],
+      "expected": "Unverified \u2014 assumption (from code exploration of apps/functions/src/index.ts:50-123): the Slack message arrives, and the function logs have no 'Error sending Slack notification'.",
+      "grounded_in": [
+        "pr:apps/functions/package.json"
+      ],
+      "required_setup": [
+        {
+          "need": "functions deployed to skysights-integ",
+          "status": "unconfirmed",
+          "how_to_get": "Mobile team runs firebase deploy"
+        }
+      ],
+      "blocked_by_setup": "It is not confirmed that functions have been deployed since this change.",
+      "credentials": "Firestore write access to skysights-integ."
+    }
+  ],
+  "security_negative_tests": [],
+  "regression_checklist": []
+}

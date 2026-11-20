@@ -586,7 +586,8 @@ async def _read_deploy_state(development_info: dict | None, deployments: dict | 
         return []
     from ..github_client import GitHubClient
     try:
-        return await read_deploy_state(GitHubClient(), prs, sources)
+        return await read_deploy_state(GitHubClient(), prs, sources,
+                                       services=(deployments or {}).get("deploy_services"))
     except Exception as e:
         logger.warning("deploy state unavailable: %s", e)
         return []
@@ -888,7 +889,7 @@ async def generate_single(
             dev_for_prompt["deploy_state"] = deploy_state
             request = request.model_copy(update={"development_info": dev_for_prompt})
             provenance["deploy_state"] = [
-                {k: e.get(k) for k in ("env", "repo", "tag", "error", "role", "hosts")} for e in deploy_state
+                {k: e.get(k) for k in ("env", "repo", "tag", "error", "role", "hosts", "service", "ships")} for e in deploy_state
             ]
             unread = sorted({f"{e['env']} ({e['repo']})" for e in deploy_state if e["error"]})
             if unread:
@@ -1146,6 +1147,7 @@ async def generate_single(
             dev_info=request.development_info,
             when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             deployments=deployments,
+            comments=request.comments,
         ))
         if evidence["critic_gap"]:
             provenance.setdefault("critics_unavailable", []).append(evidence["critic_gap"])
@@ -1198,7 +1200,7 @@ async def generate_single(
         # Rules S, R, X, Y, Z: marks in place, before the grounding re-read so
         # a downgraded expected result counts in quarantine.
         _recheck_before_save(test_plan, provenance, repo_evidence=repo_evidence, index=source_index,
-                             label=request.ticket_key)
+                             label=request.ticket_key, deploy_context=evidence.get("deploy_context"))
         # Re-read every label, element, expected result and client token the
         # plan cites, after every pass that rewrites step text and before
         # quarantine, so a downgraded expected result counts there.
@@ -1434,11 +1436,12 @@ async def _recheck_before_routing(llm, test_plan, dev_infos: list, provenance: d
         provenance.setdefault("critics_unavailable", []).append(g)
 
 
-def _recheck_before_save(test_plan, provenance: dict, *, repo_evidence, index, label: str) -> None:
+def _recheck_before_save(test_plan, provenance: dict, *, repo_evidence, index, label: str,
+                         deploy_context: dict | None = None) -> None:
     """Rules S, R, X, Y, Z (src/app/plan_recheck.py), before the grounding re-read."""
     report = provenance.setdefault("plan_recheck", {})
     recheck_before_save(test_plan, report, repo_evidence=repo_evidence,
-                        index=None if isinstance(index, str) else index)
+                        index=None if isinstance(index, str) else index, deploy_context=deploy_context)
     counts = summarize_recheck(report)
     report.update(counts)
     logger.info("plan re-check for %s: %d downgraded/marked, %d moved, %d fixed",
@@ -1736,7 +1739,7 @@ async def generate_multi(
             t["development_info"] = dev
         if batch_deploy_state:
             provenance["deploy_state"] = [
-                {k: e.get(k) for k in ("env", "repo", "tag", "error", "role", "hosts")} for e in batch_deploy_state
+                {k: e.get(k) for k in ("env", "repo", "tag", "error", "role", "hosts", "service", "ships")} for e in batch_deploy_state
             ]
 
         mode = classify_multi_ticket_mode(tickets_data)
@@ -1853,6 +1856,7 @@ async def generate_multi(
             dev_info=batch_dev_info,
             when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             deployments=batch_deployments,
+            comments=[c for t in tickets_data for c in (t.get("comments") or [])],
         ))
         if evidence["critic_gap"]:
             provenance.setdefault("critics_unavailable", []).append(evidence["critic_gap"])
@@ -1894,7 +1898,7 @@ async def generate_multi(
         _record_scope(provenance, scope, "batch")
         _record_ci_claims(provenance, flag_ci_claims(test_plan, batch_repo_evidence))
         _recheck_before_save(test_plan, provenance, repo_evidence=batch_repo_evidence, index=batch_index,
-                             label="batch")
+                             label="batch", deploy_context=evidence.get("deploy_context"))
         await llm_usage.timed("grounding_reread", _verify_grounding(
             test_plan, batch_index, [batch_dev_info], provenance, multi=True,
             facts=batch_facts, repo_evidence=batch_repo_evidence, exploration=None, label="batch",
