@@ -1,0 +1,16 @@
+image:
+  repository: acme/mcp-server
+  tag: main-5f0c2ab
+replicaCount: 2
+service:
+  port: 3000
+ingress:
+  enabled: true
+  className: envoy
+  host: mcp.example.test
+  annotations:
+    # Public DNS is proxied through Cloudflare (orange cloud): responses carry `server: cloudflare`.
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+env:
+  MCP_ALLOWED_HOSTS: mcp.example.test
+  MCP_ISSUER: https://id.example.test/oauth2/mcp

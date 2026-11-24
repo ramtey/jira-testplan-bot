@@ -1,0 +1,47 @@
+{
+ "_about": "SK-3174 plan 752 v1, the rows that went wrong, sanitized for this public repo: host is mcp.example.test, tool names generic, no tokens. Line numbers point at the fixture's repo/ files.",
+ "ticket_key": "SK-3174",
+ "happy_path": [
+  {
+   "title": "A member lists their files through POST /mcp",
+   "steps": ["Send POST https://mcp.example.test/mcp with tools/call files_search {\"pageSize\":3}."],
+   "expected": "HTTP 200 with a table headed Name, File ID.",
+   "credentials": "Bearer token for test user A (files.read), minted through the connector sign-in",
+   "surface": "backend_http",
+   "how_to_verify": "Checked from outside (HTTP response): result text.",
+   "route_sources": [{"method": "POST", "path": "/mcp", "source": "server/src/app.ts:64"}]
+  }
+ ],
+ "edge_cases": [],
+ "integration_tests": [],
+ "security_negative_tests": [
+  {
+   "title": "POST /mcp tools/call with no Authorization header",
+   "security_category": "unauth_sweep",
+   "persona": "anonymous",
+   "request": {"method": "POST", "route": "/mcp",
+               "params": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"files_get\"}}",
+               "auth": "none — no Authorization header", "protocol": "http"},
+   "steps": ["Send the request with no Authorization header.", "Record the status, WWW-Authenticate header and body."],
+   "expected": "HTTP 401, WWW-Authenticate error=\"invalid_token\", error_description \"A bearer token is required.\"",
+   "credentials": "none",
+   "surface": "backend_http",
+   "how_to_verify": "Checked from outside (HTTP response): curl -i output."
+  }
+ ],
+ "regression_checklist": [
+  "🔴 Files search — at risk via server/src/files/search.ts. Steps: 1. As user A, tools/call files_search {\"pageSize\":3}. Expected: HTTP 200 with a table headed Name, File ID. Check: result text.",
+  "🟡 Viewer card in the chat client — at risk via server/src/viewer/stamp.ts. Steps: 1. In the chat client, open a document. 2. Reopen the chat after more than 2 minutes. Expected: the reopened card shows 'Show this document again'. Check: the card.",
+  "🟡 Identity provider key outage — at risk via server/src/app.ts. Steps: 1. Only if the platform team can block JWKS for a moment; otherwise skip. Expected: 503 with Retry-After 5 and no WWW-Authenticate. Check: curl -i.",
+  "🟡 Batch requests — at risk via server/src/app.ts. Steps: 1. POST /mcp with a JSON array of two tools/call. Expected: 400 JSON-RPC -32600 'Batch requests are not supported.' Check: response.",
+  "🟡 Wrong host — at risk via server/src/app.ts. Steps: 1. POST /mcp with Host: evil.example. Expected: 421 {\"error\":\"misdirected_request\"}. Check: response (an envoy rejection earlier on is also acceptable; record which layer answered)."
+ ],
+ "environment_topology_v1": [
+  {"environment": "integ", "in_front": "envoy-host → app pod (port 3000) serving mcp.example.test; Fastify route POST /mcp",
+   "in_front_source": "deploy/integ/values.yaml:10", "replicas": "unknown", "replicas_source": "unverified"}
+ ],
+ "environment_topology_cdn": [
+  {"environment": "integ", "in_front": "Cloudflare (proxied DNS) → envoy ingress → app pod (port 3000) serving mcp.example.test",
+   "in_front_source": "deploy/integ/values.yaml:13", "replicas": "2", "replicas_source": "deploy/integ/values.yaml:4"}
+ ]
+}

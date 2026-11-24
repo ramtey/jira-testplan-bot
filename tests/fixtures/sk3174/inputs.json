@@ -1,0 +1,30 @@
+{
+ "_about": "SK-3174-shaped generation fixture for evals/sk3174_request_layers.py, synthetic and sanitized: one authenticated JSON-RPC route (POST /mcp) with an auth hook before a host check and the handler's batch check, a Cloudflare-proxied public hostname, and a 503 for an identity-provider key outage that only a unit test can reach. The PR's files are repo/server/** (added); the deployment values are repo/deploy/integ/values.yaml. No real hosts, tokens or people.",
+ "ticket_key": "SK-3174",
+ "summary": "MCP server: verify bearer tokens in a request hook, refuse JSON-RPC batches, and answer unknown hosts with 421",
+ "issue_type": "Story",
+ "description": "The MCP server (POST /mcp, JSON-RPC 2.0) must refuse every request that does not carry a valid bearer token issued by our identity provider, before any tool runs.\n\nAcceptance criteria\n1. A request with no bearer token, or an invalid one, gets 401 with WWW-Authenticate pointing at /.well-known/oauth-protected-resource/mcp.\n2. JSON-RPC batch requests (a JSON array) are refused with JSON-RPC error -32600 and nothing runs.\n3. A request whose Host is not one of ours gets 421 misdirected_request.\n4. If the identity provider's key set cannot be fetched, callers get 503 with Retry-After, not 401.\n5. Existing tools (files_search, documents_get) keep working for signed-in members.\n\nEnvironment: integ at https://mcp.example.test/mcp. Members connect through the chat client's connector sign-in, which mints a bearer token with the files.read scope for the signed-in user.",
+ "repository": "acme/mcp-server",
+ "pull_request": {
+  "title": "SK-3174 feat(mcp): bearer check in onRequest hook, batch refusal, host allow-list, 503 on key-set outage",
+  "status": "MERGED",
+  "url": "https://github.com/acme/mcp-server/pull/12",
+  "source_branch": "SK-3174-auth-hook",
+  "destination_branch": "main",
+  "repository": "acme/mcp-server",
+  "github_description": "Moves bearer verification into an onRequest hook so it runs before every route except the public metadata and health routes. Adds a Host allow-list (421), refuses JSON-RPC batches (-32600), and answers 503 + Retry-After when the IdP key set cannot be fetched. Tests in server/test/app.test.ts.",
+  "merged_at": "2026-11-17T18:02:11Z",
+  "head_sha": "5f0c2ab0d2b54f3d8a1c0e7d9b6a4c3e2f1a0b9c",
+  "merge_commit_sha": "5f0c2ab0d2b54f3d8a1c0e7d9b6a4c3e2f1a0b9c",
+  "number": 12,
+  "author": "dev-agent",
+  "comments": [],
+  "github_enrichment_failed": false
+ },
+ "pr_files": ["server/src/app.ts", "server/src/shared/auth/verify.ts", "server/test/app.test.ts"],
+ "deploy_state": [
+  {"repo": "acme/mcp-server", "env": "integ", "source": "acme/mcp-server/deploy/integ/values.yaml",
+   "tag": "main-5f0c2ab", "deployed_commit": "5f0c2ab", "error": null,
+   "prs": [{"number": 12, "url": "https://github.com/acme/mcp-server/pull/12", "included": true, "detail": ""}]}
+ ]
+}

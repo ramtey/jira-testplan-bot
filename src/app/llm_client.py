@@ -1841,6 +1841,35 @@ naming a path these steps do not reach is replaced with the path they take.
 ❌ BAD: expected "The RPC created the row first, and upsertStreamedText then took the 23505 → update path with no error." — when upsertStreamedText reads the row first (streamedTextsRepository.ts:114) and, because the refusal RPC already created it, goes straight to the owner-scoped update (:139-150); the 23505 fallback (:128-135) needs a concurrent insert that one sequential message never makes.
 ✅ GOOD: expected "The response is a judgeRejection (blocked:false). Exactly one streamed_texts row exists for the UUID, with user_id = test user A, soft_refusals = 1 and messages/debug_data filled in. No streamed_text_write_failed event for the UUID in the API logs."; mechanism_note "record_chat_refusal creates the row; upsertStreamedText then finds it (streamedTextsRepository.ts:114) and updates it, scoped to the owner (:139-150)."
 
+**AM. A request states who sends it, and expects the answer of the layer that
+answers first.** Every case that sends an HTTP request — security cases,
+graded cases AND regression-checklist lines — states the principal and the
+auth it is sent with: "Runs as: <principal>. Auth: <what goes in the
+Authorization header or cookie>". If the route is authenticated and the case
+is not about authentication itself, say "with a valid token for <principal>
+(<scopes>)". Before an Expected names the response of a check, trace the
+request through every layer in order: edge (CDN/WAF, e.g. a hostname that
+answers `server: cloudflare`) → proxy/ingress (envoy, nginx, ALB) → framework
+hooks and middleware (auth, host allow-list, rate limit) → the handler. If an
+earlier layer answers the input first, either change the input so it passes
+those layers (add the token) or make Expected that layer's answer and say so.
+- Host-header, header-spoofing (X-Forwarded-*, X-Real-IP) and malformed-request
+  cases: when `environment_topology` shows a CDN/WAF in front, or cannot rule
+  one out, say which layer is expected to answer from outside. If the app's
+  own check cannot be reached from outside, point at the unit test that
+  asserts it (`<file> › <test name>`) or say it is not externally verifiable.
+- A case whose only trigger is something a tester cannot do (an identity
+  provider or key-set outage, a dependency down) names the unit/integration
+  test that asserts it, or is marked manual with the owning team named —
+  never "only if the platform team can …".
+- If you cannot verify the order of the checks, assert the outcome ("refused,
+  no downstream call") and mark the exact status/message unverified.
+Code re-checks this before save: a request to an authenticated route with no
+principal gets one added, a header-level case is held to "refused, record which
+layer answered", and an outage case is pointed at its test or marked manual.
+❌ BAD: regression line "Batch requests — at risk via server/src/app.ts. Steps: 1. POST /mcp with a JSON array of two tools/call. Expected: 400 JSON-RPC -32600." — the bearer check runs in the onRequest hook before the handler's batch check, so the request as written gets 401 and never reaches it. Same for "POST /mcp with Host: evil.example. Expected: 421" through a Cloudflare-proxied hostname, which answers 403 before envoy or the app sees it.
+✅ GOOD: "Batch requests — at risk via server/src/app.ts:66. Runs as: test user A. Auth: Bearer token for user A (files.read). Steps: 1. POST /mcp with a JSON array of two tools/call. Expected: 400, JSON-RPC error -32600. Check: response body." and "Wrong host — Runs as: test user A. Auth: Bearer token for user A. Steps: 1. POST https://<public host>/mcp with Host: evil.example. Expected: refused before the app — from outside Cloudflare answers (record status and cf-ray); the app's 421 is asserted by server/test/app.test.ts › answers a wrong Host with the same 421. Check: status and server header."
+
 **5. DROP UNOBSERVABLE AND VACUOUS CASES.**
 Every case needs a concrete way to tell pass from fail. Reject cases of the form
 "X remains unaffected" / "no regressions in Y" / "existing behaviour is
@@ -2670,6 +2699,10 @@ The regression checklist must contain ONLY runtime behaviors that can be manuall
 <file>[:<line>]. Steps: 1. … 2. … Expected: <one observable result>. Check:
 <where to look: on-screen text, file path, log line, dashboard>." A line with no
 steps, no expected result or no place to check is marked by code before save.
+A line that sends an HTTP request also says who sends it, before Steps
+(rule AM): "… — at risk via <file>. Runs as: <principal>. Auth: <token/cookie,
+scopes>. Steps: …". A line whose only trigger is an outage a tester cannot
+cause names the test that asserts it instead of "only if <team> can …".
 
 **Every line cites what puts that area at risk.** Name the changed file, or the
 call site of changed code, that the area depends on, as `<path>[:<line>]` — a
@@ -2857,6 +2890,7 @@ Before generating each section, mentally sort your tests:
 ✅ Does every case have a `verification_channel`, and does every `unit_test_only` case name its test? (AE)
 ✅ Does every case list the accounts and data it needs in `required_setup`, and is a case whose setup is not confirmed marked `blocked_by_setup`? (AF)
 ✅ Does every case have a title and steps? Is every claim about a repo's scripts or tests read from its package.json or build files? (AG)
+✅ Does every case and regression line that sends an HTTP request say who it runs as and with what auth? Traced edge → proxy → hooks (auth, host) → handler: does any earlier layer answer this input before the check Expected names? Host-header/spoofing cases behind a CDN/WAF that cannot be ruled out: which layer answers from outside, and which unit test asserts the app's own answer? Outage-only triggers: which test asserts it, or which team runs it manually? (AM)
 
 Generate the test plan now. Remember: SORT BY PRIORITY FIRST and ONLY TEST WHAT IS EXPLICITLY MENTIONED."""
 
@@ -5724,7 +5758,7 @@ SUBMIT_TEST_PLAN_TOOL = {
             },
             "regression_checklist": {
                 "type": "array",
-                "description": "Runtime behaviour adjacent to the change that must still work. Every line cites the changed file or the call site of changed code that puts it at risk, as `<path>[:<line>]`; a line without one is moved out of the core checklist as low-confidence.",
+                "description": "Runtime behaviour adjacent to the change that must still work. Every line cites the changed file or the call site of changed code that puts it at risk, as `<path>[:<line>]`; a line without one is moved out of the core checklist as low-confidence. A line that sends an HTTP request says 'Runs as: <principal>. Auth: <…>.' before its Steps, and expects the answer of the first layer that answers it (rule AM).",
                 "items": {"type": "string"},
             },
             "superseded_acs": {
@@ -5841,7 +5875,7 @@ SUBMIT_TEST_PLAN_TOOL = {
                     "type": "object",
                     "properties": {
                         "environment": {"type": "string", "description": "e.g. 'integ'"},
-                        "in_front": {"type": "string", "description": "The request path before the service, e.g. 'Cloudflare → ALB → nginx ingress → express router'."},
+                        "in_front": {"type": "string", "description": "The request path before the service, starting at the public hostname's edge, e.g. 'Cloudflare → ALB → nginx ingress → express router'. Rule AM: name the CDN/WAF when one is proxied (a `server: cloudflare` response, a proxied-DNS annotation), say 'no CDN' only when a file shows none, and 'edge unverified' otherwise."},
                         "in_front_source": {"type": "string", "description": "`<file>:<line>` or 'unverified'."},
                         "replicas": {"type": "string", "description": "Pods/instances serving it, e.g. '3' or '2-6 (HPA)'; 'unknown' when not read."},
                         "replicas_source": {"type": "string", "description": "`<file>:<line>` or 'unverified'."},
