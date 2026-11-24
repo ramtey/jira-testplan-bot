@@ -5,6 +5,10 @@ transition; the watcher sweep calls it for tickets dragged into the column on
 the board, which nothing here sees happen. Both go through `auto_post_own_plan`
 so they skip the same tickets for the same reasons.
 
+With AUTO_POST_ON_QUEUE the QA queue (`watch_status`, Ready to Test) is a
+posting status too: the watcher posts a plan it just generated there at once,
+and the sweep covers a ticket dragged into the queue that already had a plan.
+
 What it posts is deliberately narrow: the ticket's own single-ticket plan,
 onto a ticket that has no plan comment yet — or, for a regeneration, over the
 comment this app recorded for the older live version, edited in place as the
@@ -132,6 +136,33 @@ async def render_jira_text(plan: dict, walkthrough: dict | None) -> str:
     return text
 
 
+def posting_statuses() -> list[str]:
+    """The statuses whose tickets get their plan posted, in sweep order.
+
+    `auto_post_status` (empty switches auto-post off altogether), then the QA
+    queue when AUTO_POST_ON_QUEUE is set.
+    """
+    primary = (settings.auto_post_status or "").strip()
+    if not primary:
+        return []
+    statuses = [primary]
+    queue = (settings.watch_status or "").strip()
+    if settings.auto_post_on_queue and queue and queue.lower() != primary.lower():
+        statuses.append(queue)
+    return statuses
+
+
+def posts_on(status: str | None) -> bool:
+    """Whether a ticket in `status` gets its plan posted."""
+    current = (status or "").strip().lower()
+    return bool(current) and any(current == s.lower() for s in posting_statuses())
+
+
+def _is_queue_status(status: str | None) -> bool:
+    queue = (settings.watch_status or "").strip().lower()
+    return bool(queue) and (status or "").strip().lower() == queue
+
+
 async def queue_if_in_testing(background_tasks, ticket_key: str, plan: dict) -> dict | None:
     """Queue the post for a plan just generated on a ticket already in testing.
 
@@ -142,8 +173,7 @@ async def queue_if_in_testing(background_tasks, ticket_key: str, plan: dict) -> 
     Returns {"action": "queued"} when queued, else None. A status read that
     fails queues nothing and is logged; the sweep still picks the ticket up.
     """
-    status = (settings.auto_post_status or "").strip()
-    if not status or plan.get("plan_id") is None or plan.get("no_source"):
+    if not posting_statuses() or plan.get("plan_id") is None or plan.get("no_source"):
         return None
     key = ticket_key.upper()
     try:
@@ -151,32 +181,37 @@ async def queue_if_in_testing(background_tasks, ticket_key: str, plan: dict) -> 
     except Exception:
         logger.warning("auto-post: could not read %s's status after generating", key, exc_info=True)
         return None
-    if (current or "").strip().lower() != status.lower():
+    if not posts_on(current):
         await log_not_in_testing(key, plan, current, trigger=TRIGGER_GENERATE)
         return None
     background_tasks.add_task(auto_post_own_plan, JiraClient(), key, trigger=TRIGGER_GENERATE)
     return {"action": "queued"}
 
 
-async def note_watcher_plan(ticket_key: str, plan: dict) -> None:
-    """Record why a plan the watcher just generated was not posted. Never raises.
+async def note_watcher_plan(ticket_key: str, plan: dict) -> AutoPostOutcome | None:
+    """Post a plan the watcher just generated, or record why it waits. Never raises.
 
-    The watcher generates for the QA queue, before anyone starts testing, so
-    its plans normally wait. Status is read again here, not taken from before
-    generating: a run takes minutes, and a ticket pulled meanwhile is the
-    sweep's to post, not something to log as waiting.
+    The watcher generates for the QA queue. With AUTO_POST_ON_QUEUE a ticket
+    still in the queue gets the plan posted here, through the same
+    `auto_post_own_plan` refusals; without it the plan waits for testing and
+    that is logged. Status is read again here, not taken from before
+    generating: a run takes minutes. A ticket pulled into testing meanwhile is
+    the sweep's to post (it waits out Pull to testing's own post), and a
+    no_source refusal or an unsaved plan posts nothing.
     """
-    status = (settings.auto_post_status or "").strip()
-    if not status or plan.get("plan_id") is None or plan.get("no_source"):
-        return
+    if not posting_statuses() or plan.get("plan_id") is None or plan.get("no_source"):
+        return None
     key = ticket_key.upper()
     try:
         current = await JiraClient().get_issue_status(key)
     except Exception:
         logger.warning("auto-post: could not read %s's status after the watcher generated", key, exc_info=True)
-        return
-    if (current or "").strip().lower() != status.lower():
+        return None
+    if _is_queue_status(current) and posts_on(current):
+        return await auto_post_own_plan(JiraClient(), key, trigger=TRIGGER_WATCHER)
+    if not posts_on(current):
         await log_not_in_testing(key, plan, current, trigger=TRIGGER_WATCHER)
+    return None
 
 
 async def log_not_in_testing(
@@ -188,7 +223,7 @@ async def log_not_in_testing(
     control and the sweep's change detection, and this is not a decision
     either of them made.
     """
-    status = settings.auto_post_status
+    status = " or ".join(posting_statuses()) or settings.auto_post_status
     try:
         await auto_post_repository.add_event(
             get_db(),

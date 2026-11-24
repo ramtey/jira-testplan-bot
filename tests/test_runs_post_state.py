@@ -63,3 +63,8 @@ def test_a_failed_lookup_is_unknown_and_history_still_loads():
     assert response.status_code == 200
     assert response.json()["post_state"] is None
     assert response.json()["runs"] == []
+
+
+def test_says_whether_the_queue_posts_too(monkeypatch):
+    monkeypatch.setattr(runs_routes.settings, "auto_post_on_queue", True)
+    assert _get().json()["post_state"]["auto_post_on_queue"] is True

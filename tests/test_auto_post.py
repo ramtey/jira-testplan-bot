@@ -491,3 +491,79 @@ async def test_the_search_excludes_old_and_fresh_moves_in_jql():
         "ORDER BY updated DESC"
     )
     assert "DURING" not in sent["jql"]
+
+
+# --- posting on the QA queue (AUTO_POST_ON_QUEUE) ---------------------------
+
+
+def _queue_on(monkeypatch, on=True):
+    monkeypatch.setattr(settings, "auto_post_status", "In Testing")
+    monkeypatch.setattr(settings, "watch_status", "Ready to Test")
+    monkeypatch.setattr(settings, "auto_post_on_queue", on)
+    monkeypatch.setattr(settings, "auto_post_lookback_hours", 24)
+
+
+async def test_posting_statuses_add_the_queue_only_when_switched_on(monkeypatch):
+    _queue_on(monkeypatch, on=False)
+    assert auto_post.posting_statuses() == ["In Testing"]
+    assert not auto_post.posts_on("Ready To Test")
+    _queue_on(monkeypatch)
+    assert auto_post.posting_statuses() == ["In Testing", "Ready to Test"]
+    assert auto_post.posts_on("ready to test") and auto_post.posts_on("In Testing")
+    assert not auto_post.posts_on("Ready for UAT") and not auto_post.posts_on(None)
+    # Auto-post switched off is off for the queue too.
+    monkeypatch.setattr(settings, "auto_post_status", "")
+    assert auto_post.posting_statuses() == []
+
+
+async def test_sweep_also_posts_tickets_that_entered_the_queue(monkeypatch):
+    _queue_on(monkeypatch)
+    monkeypatch.setattr(settings, "uat_auto_queue", True)
+
+    async def search(project, status, **_kw):
+        return {"In Testing": ["SK-1"], "Ready to Test": ["SK-2"]}[status]
+
+    post = AsyncMock(side_effect=lambda _j, key, **_kw: auto_post.AutoPostOutcome(key, auto_post.POSTED))
+    uat = AsyncMock()
+    with patch.object(queue_watcher.JiraClient, "search_keys_entered_status", AsyncMock(side_effect=search)) as s, \
+         patch.object(queue_watcher.auto_post, "auto_post_own_plan", post), \
+         patch.object(queue_watcher, "_queue_uat_run", uat):
+        result = await queue_watcher.sweep_auto_post(projects=["SK"])
+
+    assert [c.args[1] for c in s.await_args_list] == ["In Testing", "Ready to Test"]
+    assert [o.ticket_key for o in result.outcomes] == ["SK-1", "SK-2"]
+    # A UAT run is for a ticket being tested, not one still in the queue.
+    assert [c.args[0] for c in uat.await_args_list] == ["SK-1"]
+
+
+async def test_sweep_leaves_the_queue_alone_when_switched_off(monkeypatch):
+    _queue_on(monkeypatch, on=False)
+    search = AsyncMock(return_value=[])
+    with patch.object(queue_watcher.JiraClient, "search_keys_entered_status", search):
+        await queue_watcher.sweep_auto_post(projects=["SK"])
+    assert [c.args[1] for c in search.await_args_list] == ["In Testing"]
+
+
+async def test_one_unreadable_status_does_not_hide_the_other(monkeypatch):
+    _queue_on(monkeypatch)
+
+    async def search(project, status, **_kw):
+        if status == "In Testing":
+            raise queue_watcher.JiraConnectionError("offline")
+        return ["SK-2"]
+
+    post = AsyncMock(return_value=auto_post.AutoPostOutcome("SK-2", auto_post.POSTED))
+    with patch.object(queue_watcher.JiraClient, "search_keys_entered_status", AsyncMock(side_effect=search)), \
+         patch.object(queue_watcher.auto_post, "auto_post_own_plan", post):
+        result = await queue_watcher.sweep_auto_post(projects=["SK"])
+    assert "offline" in result.queue_error
+    assert [o.ticket_key for o in result.outcomes] == ["SK-2"]
+
+
+async def test_a_ticket_found_under_both_statuses_is_posted_once(monkeypatch):
+    _queue_on(monkeypatch)
+    post = AsyncMock(return_value=auto_post.AutoPostOutcome("SK-1", auto_post.POSTED))
+    with patch.object(queue_watcher.JiraClient, "search_keys_entered_status", AsyncMock(return_value=["SK-1"])), \
+         patch.object(queue_watcher.auto_post, "auto_post_own_plan", post):
+        await queue_watcher.sweep_auto_post(projects=["SK"])
+    post.assert_awaited_once()

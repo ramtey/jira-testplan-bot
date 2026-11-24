@@ -72,6 +72,12 @@ test('auto-post is promised only on a ticket waiting in the queue', () => {
   assert.equal(done.prominent, true)
 })
 
+test('with queue posting on, the promise names the watcher, not Pull to testing', () => {
+  const s = planPostState({ plan, ticketKey: 'SK-1', ticketStatus: 'Ready to Test', postState: state({ auto_post_on_queue: true }), runs })
+  assert.equal(s.mode, 'auto_pending')
+  assert.match(s.hint, /watcher posts it/)
+})
+
 test('no promise when auto-post is switched off', () => {
   const s = planPostState({ plan, ticketKey: 'SK-1', ticketStatus: 'Ready to Test', postState: state({ auto_post_status: null }), runs })
   assert.equal(s.mode, 'unposted')

@@ -95,7 +95,7 @@ def auto_post_status(
             )
     waiting = [e for e in auto if e.get("reason") == auto_post.SKIP_NOT_IN_TESTING]
     if waiting:
-        console.print(f"  Generated before testing (posts on {auto_post.settings.auto_post_status}): {len(waiting)}")
+        console.print(f"  Generated before testing (posts on {' / '.join(auto_post.posting_statuses()) or auto_post.settings.auto_post_status}): {len(waiting)}")
     regenerated = [e for e in manual if versions.get(e.get("plan_id"), 1) > 1]
     console.print(
         f"  Posted by hand: {len(manual)}"

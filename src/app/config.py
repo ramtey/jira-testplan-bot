@@ -298,6 +298,12 @@ class Settings(BaseSettings):
     # this window. Without it the first sweep would post onto every ticket
     # already sitting in the column, including ones a tester chose not to post.
     auto_post_lookback_hours: int = 24
+    # Also post when the ticket lands in the QA queue (`watch_status`), not
+    # only when testing starts: the watcher posts the plan it just generated
+    # straight away, and the auto-post sweep covers a ticket dragged into the
+    # queue that already had a plan. Same refusals as every other auto-post.
+    # UAT runs (UAT_AUTO_QUEUE) still queue only on `auto_post_status`.
+    auto_post_on_queue: bool = False
     # Who a tick in the browser is recorded as. The app has no login, so a
     # person's results name whoever this email belongs to (a `users` row).
     # Unset: results are still recorded as human, with no identity.

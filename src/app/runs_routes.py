@@ -85,6 +85,8 @@ async def _post_state(db, key: str) -> dict | None:
         # only on a ticket that is actually headed there.
         "auto_post_status": settings.auto_post_status or None,
         "queue_status": settings.watch_status or None,
+        # The watcher also posts on queue_status (AUTO_POST_ON_QUEUE).
+        "auto_post_on_queue": bool(settings.auto_post_on_queue),
     }
 
 

@@ -122,3 +122,69 @@ def test_a_batch_plan_from_the_key_door_is_never_queued():
     assert response.status_code == 200, response.text
     assert "auto_post" not in response.json()
     q.assert_not_awaited()
+
+
+# --- AUTO_POST_ON_QUEUE: the watcher posts what it generated -----------------
+
+
+def _queue_on(monkeypatch, on=True):
+    monkeypatch.setattr(settings, "auto_post_status", "In Testing")
+    monkeypatch.setattr(settings, "watch_status", "Ready to Test")
+    monkeypatch.setattr(settings, "auto_post_on_queue", on)
+
+
+@pytest.mark.asyncio
+async def test_a_watcher_plan_on_a_queued_ticket_is_posted_at_once(monkeypatch):
+    _queue_on(monkeypatch)
+    outcome = auto_post.AutoPostOutcome("SK-1", auto_post.POSTED, plan_id=7)
+    with patch.object(auto_post, "JiraClient", return_value=_jira(status="Ready To Test")), \
+         patch.object(auto_post, "auto_post_own_plan", AsyncMock(return_value=outcome)) as post, \
+         patch.object(auto_post.auto_post_repository, "add_event", AsyncMock()) as add:
+        got = await auto_post.note_watcher_plan("sk-1", PLAN)
+    assert got is outcome
+    assert post.await_args.args[1] == "SK-1"
+    assert post.await_args.kwargs == {"trigger": auto_post.TRIGGER_WATCHER}
+    add.assert_not_awaited()  # nothing to log as waiting
+
+
+@pytest.mark.asyncio
+async def test_a_no_source_or_unsaved_watcher_plan_posts_nothing(monkeypatch):
+    _queue_on(monkeypatch)
+    with patch.object(auto_post, "JiraClient", return_value=_jira(status="Ready to Test")) as client, \
+         patch.object(auto_post, "auto_post_own_plan", AsyncMock()) as post:
+        assert await auto_post.note_watcher_plan("sk-1", {"plan_id": 7, "no_source": True}) is None
+        assert await auto_post.note_watcher_plan("sk-1", {"happy_path": []}) is None
+    post.assert_not_awaited()
+    client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_queue_posting_off_still_only_logs_the_wait(monkeypatch):
+    _queue_on(monkeypatch, on=False)
+    with patch.object(auto_post, "JiraClient", return_value=_jira(status="Ready to Test")), \
+         patch.object(auto_post, "auto_post_own_plan", AsyncMock()) as post, \
+         patch.object(auto_post.auto_post_repository, "add_event", AsyncMock()) as add, \
+         patch.object(auto_post, "get_db"):
+        assert await auto_post.note_watcher_plan("sk-1", PLAN) is None
+    post.assert_not_awaited()
+    assert add.await_args.kwargs["event"]["reason"] == auto_post.SKIP_NOT_IN_TESTING
+
+
+@pytest.mark.asyncio
+async def test_a_watcher_plan_on_a_ticket_pulled_meanwhile_is_still_left_to_the_sweep(monkeypatch):
+    """Pull to testing posts on its own; posting here too could race it."""
+    _queue_on(monkeypatch)
+    with patch.object(auto_post, "JiraClient", return_value=_jira(status="In Testing")), \
+         patch.object(auto_post, "auto_post_own_plan", AsyncMock()) as post, \
+         patch.object(auto_post.auto_post_repository, "add_event", AsyncMock()) as add:
+        assert await auto_post.note_watcher_plan("sk-1", PLAN) is None
+    post.assert_not_awaited()
+    add.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_plan_generated_by_hand_on_a_queued_ticket_is_queued(monkeypatch):
+    _queue_on(monkeypatch)
+    out, tasks = await _queue(status="Ready to Test")
+    assert out == {"action": "queued"}
+    assert [t.func for t in tasks] == [auto_post.auto_post_own_plan]

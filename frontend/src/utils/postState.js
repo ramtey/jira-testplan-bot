@@ -162,8 +162,11 @@ export const planPostState = ({ plan, ticketKey, ticketStatus, postState, runs }
       label: 'Post now',
       buttonText: 'Post now',
       // Pull to testing posts it; a drag on the board waits for the watcher
-      // sweep, which nothing here can vouch for.
-      hint: `Pull to testing posts it to Jira automatically. Moving the card on the board relies on the watcher sweep.`,
+      // sweep, which nothing here can vouch for. With auto_post_on_queue the
+      // sweep posts it while the ticket is still in the queue.
+      hint: postState.auto_post_on_queue
+        ? `The watcher posts it to Jira on its next sweep while the ticket is in ${queueStatus}, or post it now.`
+        : `Pull to testing posts it to Jira automatically. Moving the card on the board relies on the watcher sweep.`,
     }
   }
   return { ...UNKNOWN, mode: 'unposted' }

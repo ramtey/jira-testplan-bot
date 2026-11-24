@@ -423,25 +423,30 @@ class AutoPostSweepResult:
 async def sweep_auto_post(
     *, projects: list[str] | None = None, dry_run: bool = False
 ) -> AutoPostSweepResult:
-    """Post plans for tickets dragged into `auto_post_status` on the board.
+    """Post plans for tickets dragged into a posting status on the board.
 
     Pull to testing posts on its own; this catches the moves it never sees,
     and the ones where the plan was still generating when the ticket moved.
-    Only tickets that entered the column within `auto_post_lookback_hours`
-    are considered — see `JiraClient.search_keys_entered_status`.
+    The posting statuses are `auto_post_status`, plus the QA queue with
+    AUTO_POST_ON_QUEUE (`auto_post.posting_statuses`). Only tickets that
+    entered one within `auto_post_lookback_hours` are considered — see
+    `JiraClient.search_keys_entered_status`. UAT runs queue only for
+    `auto_post_status`: a ticket still in the queue is not being tested yet.
     """
     result = AutoPostSweepResult()
-    status_name = (settings.auto_post_status or "").strip()
-    if not status_name:
+    statuses = auto_post.posting_statuses()
+    if not statuses:
         return result
     projects = projects or watched_projects()
+    testing = statuses[0]
 
     jira = JiraClient()
-    keys: list[str] = []
-    for project_key in projects:
-        try:
-            keys.extend(
-                await jira.search_keys_entered_status(
+    found: list[tuple[str, str]] = []
+    errors: list[str] = []
+    for status_name in statuses:
+        for project_key in projects:
+            try:
+                keys = await jira.search_keys_entered_status(
                     project_key,
                     status_name,
                     # Reaches back across the schedule's off period, so a
@@ -451,19 +456,27 @@ async def sweep_auto_post(
                     ),
                     settle_minutes=AUTO_POST_SETTLE_MINUTES,
                 )
-            )
-        except Exception as e:
-            result.queue_error = f"{type(e).__name__}: {e}"
-            logger.error("auto-post: could not read %s %r: %s", project_key, status_name, e)
+            except Exception as e:
+                errors.append(f"{type(e).__name__}: {e}")
+                logger.error("auto-post: could not read %s %r: %s", project_key, status_name, e)
+                continue
+            found.extend((key, status_name) for key in keys)
+    result.queue_error = "; ".join(errors) or None
 
-    result.scanned = len(keys)
-    for key in keys:
+    # A ticket is in one status at a time; the guard is for a status that
+    # changed between the two searches.
+    seen: set[str] = set()
+    result.scanned = len(found)
+    for key, status_name in found:
+        if key in seen:
+            continue
+        seen.add(key)
         result.outcomes.append(
             await auto_post.auto_post_own_plan(
                 jira, key, dry_run=dry_run, trigger=auto_post.TRIGGER_SWEEP
             )
         )
-        if settings.uat_auto_queue and not dry_run:
+        if settings.uat_auto_queue and not dry_run and status_name == testing:
             await _queue_uat_run(key, status_name, result)
     return result
 

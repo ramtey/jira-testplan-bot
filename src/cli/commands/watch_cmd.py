@@ -105,7 +105,7 @@ _AUTO_POST_LABEL = {
 
 
 def _render_auto_post(result: queue_watcher.AutoPostSweepResult, *, quiet: bool) -> None:
-    status = settings.auto_post_status
+    status = " / ".join(auto_post.posting_statuses()) or settings.auto_post_status
     if result.queue_error:
         console.print(f"[red]✗ Could not read \"{status}\":[/red] {result.queue_error}")
     # Always printed, quiet or not: a queued run is what the dispatcher acts
