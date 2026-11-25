@@ -399,7 +399,102 @@ async def sweep_once(
         if (payload.get("issue_type") or "").lower() == "bug":
             await _dispatch_bug_lens(payload, serialized)
 
+    # A dry run shows what a sweep would do and has no side effects, so it
+    # neither alerts nor touches the alert state a real sweep dedupes on.
+    if not dry_run:
+        alert_no_pr_tickets(result)
     return result
+
+
+# No-PR alerts. A ticket the watcher refuses for want of a PR is skipped on
+# every sweep, and before this nothing said so anywhere: SK-3210 and SK-3211
+# sat unplanned for most of a day (2026-11-24/25) because their fix PR was
+# titled under a different ticket. The fix is a human linking the PR, so the
+# alert names the ticket and that fix — it never guesses a PR from a parent
+# or linked ticket, which could ground a plan in the wrong code.
+#
+# Dedupe rule: one alert per ticket per NO_PR_REALERT_HOURS while it stays
+# refused. A ticket's entry is dropped once it gets a plan or leaves the
+# queue, so a ticket that comes back alerts again straight away. State is on
+# disk for the same reason as the token state: launchd runs a fresh
+# `watch --once` process every sweep.
+NO_PR_ALERT_STATE_PATH = Path(
+    os.environ.get("WATCH_NO_PR_STATE",
+                   Path.home() / ".jira-testplan-bot" / "no-pr-alerts.json")
+)
+NO_PR_REALERT_HOURS = 24
+NO_PR_REASONS = (SKIP_NO_MERGED_PR, SKIP_NO_SOURCE)
+
+
+def _read_no_pr_state() -> dict:
+    try:
+        state = json.loads(NO_PR_ALERT_STATE_PATH.read_text())
+        return state if isinstance(state, dict) else {}
+    except Exception:
+        # Missing or unreadable means "never alerted": erring toward one
+        # extra alert beats erring toward silence.
+        return {}
+
+
+def _write_no_pr_state(state: dict) -> None:
+    try:
+        NO_PR_ALERT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        NO_PR_ALERT_STATE_PATH.write_text(json.dumps(state, indent=2, sort_keys=True))
+    except Exception:
+        logger.warning("watcher: could not persist no-PR alert state to %s",
+                       NO_PR_ALERT_STATE_PATH, exc_info=True)
+
+
+def alert_no_pr_tickets(result: SweepResult, *, now: float | None = None) -> list[str]:
+    """Notify about tickets refused for having no PR; return the keys alerted.
+
+    Never raises — an alert that cannot be sent or recorded must not cost
+    the sweep.
+    """
+    try:
+        now = time.time() if now is None else now
+        state = _read_no_pr_state()
+        before = dict(state)
+
+        no_pr = [o for o in result.outcomes if o.reason in NO_PR_REASONS]
+        resolved = {
+            o.ticket_key for o in result.outcomes
+            if o.action == "generated" or o.reason == SKIP_ALREADY_PLANNED
+        }
+        for key in resolved:
+            state.pop(key, None)
+        # Only a fully read queue says what has left it; a partial read would
+        # forget tickets that are still waiting and alert on them again.
+        if result.queue_error is None:
+            in_queue = {o.ticket_key for o in result.outcomes}
+            for key in list(state):
+                if key not in in_queue:
+                    state.pop(key)
+
+        due = []
+        for o in no_pr:
+            last = (state.get(o.ticket_key) or {}).get("alerted_epoch")
+            if isinstance(last, (int, float)) and now - last < NO_PR_REALERT_HOURS * 3600:
+                continue
+            due.append(o.ticket_key)
+            state[o.ticket_key] = {"alerted_epoch": now, "reason": o.reason}
+
+        if due:
+            keys = ", ".join(due)
+            logger.warning("watcher: no PR linked, no plan written for %s", keys)
+            notify(
+                "Test Plan Bot: no PR linked",
+                f"{keys} {'is' if len(due) == 1 else 'are'} in "
+                f"{settings.watch_status} with no merged PR, so no plan was "
+                "written. Link the PR on the ticket (Development panel) or "
+                "paste its URL in a comment.",
+            )
+        if state != before:
+            _write_no_pr_state(state)
+        return due
+    except Exception:
+        logger.exception("watcher: no-PR alert failed; the sweep is unaffected")
+        return []
 
 
 # Pull to testing posts within seconds of its own transition. A sweep that

@@ -128,6 +128,15 @@ def no_desktop_notifications(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_no_pr_alert_state(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """Keep sweeps under test from reading or writing the real no-PR alert
+    state in ~/.jira-testplan-bot, which the live watcher dedupes on."""
+    from src.app.services import queue_watcher
+
+    monkeypatch.setattr(queue_watcher, "NO_PR_ALERT_STATE_PATH", tmp_path / "no-pr-alerts.json")
+
+
+@pytest.fixture(autouse=True)
 def no_watch_schedule(monkeypatch: pytest.MonkeyPatch):
     """Run every test as if the watcher had no active hours.
 

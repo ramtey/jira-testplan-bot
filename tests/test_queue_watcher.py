@@ -558,3 +558,143 @@ async def test_a_github_outage_holds_every_ticket_and_writes_nothing():
     assert _reasons(result) == {"SK-1": queue_watcher.SKIP_GITHUB_UNREADABLE,
                                 "SK-2": queue_watcher.SKIP_GITHUB_UNREADABLE}
     assert all(o.detail == reason for o in result.outcomes)
+
+
+# ---------------------------------------------------------------------------
+# No-PR alerts and log lines
+# ---------------------------------------------------------------------------
+#
+# 2026-11-24/25: SK-3210 and SK-3211 sat in Ready to Test unplanned for most
+# of a day because their fix PR was titled under another ticket. The watcher
+# skipped them every sweep and the log showed only timestamps.
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(queue_watcher, "notify", lambda t, m, **k: sent.append((t, m)))
+    return sent
+
+
+def _sweep(*outcomes, queue_error=None) -> queue_watcher.SweepResult:
+    result = queue_watcher.SweepResult(queue_error=queue_error)
+    for key, action, reason in outcomes:
+        result.outcomes.append(queue_watcher.TicketOutcome(key, action, reason))
+    return result
+
+
+_NO_PR = ("SK-3210", "skipped", queue_watcher.SKIP_NO_MERGED_PR)
+
+
+@pytest.mark.asyncio
+async def test_a_no_pr_skip_alerts_with_the_ticket_and_the_fix(monkeypatch, alerts):
+    monkeypatch.setattr(settings, "watch_require_merged_pr", True, raising=False)
+    with _Harness(queue=("SK-3210",), payload=_payload(pull_requests=[])):
+        await queue_watcher.sweep_once(projects=["SK"])
+    assert len(alerts) == 1
+    title, message = alerts[0]
+    assert "no PR" in title
+    assert "SK-3210" in message
+    assert "Link the PR on the ticket" in message and "comment" in message
+
+
+@pytest.mark.asyncio
+async def test_a_generator_refusal_alerts_too(monkeypatch, alerts):
+    monkeypatch.setattr(settings, "watch_require_merged_pr", False, raising=False)
+    with _Harness(payload=_payload(pull_requests=[]), plan={"no_source": True}):
+        await queue_watcher.sweep_once(projects=["SK"])
+    assert len(alerts) == 1 and "SK-1" in alerts[0][1]
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_neither_alerts_nor_records(monkeypatch, alerts):
+    monkeypatch.setattr(settings, "watch_require_merged_pr", True, raising=False)
+    with _Harness(payload=_payload(pull_requests=[])):
+        await queue_watcher.sweep_once(projects=["SK"], dry_run=True)
+    assert alerts == []
+    assert not queue_watcher.NO_PR_ALERT_STATE_PATH.exists()
+
+
+def test_several_tickets_share_one_alert(alerts):
+    due = queue_watcher.alert_no_pr_tickets(
+        _sweep(_NO_PR, ("SK-3211", "skipped", queue_watcher.SKIP_NO_SOURCE)), now=1000
+    )
+    assert due == ["SK-3210", "SK-3211"]
+    assert len(alerts) == 1
+    assert "SK-3210, SK-3211 are in" in alerts[0][1]
+
+
+def test_the_same_ticket_does_not_alert_every_sweep(alerts):
+    queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000)
+    for minutes in (5, 10, 60 * 23):
+        assert queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000 + minutes * 60) == []
+    assert len(alerts) == 1
+
+
+def test_it_alerts_again_after_the_cooldown(alerts):
+    queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000)
+    later = 1000 + queue_watcher.NO_PR_REALERT_HOURS * 3600
+    assert queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=later) == ["SK-3210"]
+    assert len(alerts) == 2
+
+
+def test_other_skips_keep_the_ticket_quiet(alerts):
+    """After a generator refusal the ticket shows as recent_attempt, and the
+    cap or a hold can also hide it. None of those means the PR was linked."""
+    queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000)
+    for reason in (queue_watcher.SKIP_COOLDOWN, queue_watcher.SKIP_CAP_REACHED,
+                   queue_watcher.SKIP_ON_HOLD):
+        queue_watcher.alert_no_pr_tickets(_sweep(("SK-3210", "skipped", reason)), now=2000)
+    assert queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=3000) == []
+    assert len(alerts) == 1
+
+
+def test_a_ticket_that_got_a_plan_alerts_again_if_it_comes_back(alerts):
+    queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000)
+    queue_watcher.alert_no_pr_tickets(
+        _sweep(("SK-3210", "skipped", queue_watcher.SKIP_ALREADY_PLANNED)), now=2000
+    )
+    assert queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=3000) == ["SK-3210"]
+
+
+def test_a_ticket_that_left_the_queue_alerts_again_if_it_comes_back(alerts):
+    queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000)
+    queue_watcher.alert_no_pr_tickets(_sweep(), now=2000)  # queue read, ticket gone
+    assert queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=3000) == ["SK-3210"]
+
+
+def test_an_unreadable_queue_does_not_forget_who_was_alerted(alerts):
+    queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000)
+    queue_watcher.alert_no_pr_tickets(_sweep(queue_error="JiraConnectionError"), now=2000)
+    assert queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=3000) == []
+
+
+def test_unreadable_state_alerts_rather_than_staying_silent(alerts):
+    queue_watcher.NO_PR_ALERT_STATE_PATH.write_text("not json")
+    assert queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000) == ["SK-3210"]
+
+
+def test_a_failing_notification_never_breaks_the_sweep(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("no notification centre")
+
+    monkeypatch.setattr(queue_watcher, "notify", _boom)
+    assert queue_watcher.alert_no_pr_tickets(_sweep(_NO_PR), now=1000) == []
+
+
+def test_quiet_log_has_one_line_per_skipped_ticket():
+    from src.cli.commands.watch_cmd import skip_lines
+
+    result = _sweep(
+        ("SK-1", "generated", None),
+        _NO_PR,
+        ("SK-3211", "skipped", queue_watcher.SKIP_NO_SOURCE),
+        ("SK-9", "skipped", queue_watcher.SKIP_ALREADY_PLANNED),
+        ("SK-5", "failed", "fetch_failed"),
+    )
+    lines = skip_lines(result)
+    assert lines == [
+        "skipped SK-3210 no_merged_pr: no merged PR linked — link it on the ticket or in a comment",
+        "skipped SK-3211 no_source: generator found no PR — link it on the ticket or in a comment",
+        "skipped SK-9 already_has_plan: already has a plan",
+    ]

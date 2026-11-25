@@ -28,7 +28,9 @@ _ACTION_STYLE = {
 _REASON_LABEL = {
     queue_watcher.SKIP_ALREADY_PLANNED: "already has a plan",
     queue_watcher.SKIP_COOLDOWN: f"attempted in the last {settings.watch_retry_cooldown_hours}h",
-    queue_watcher.SKIP_NO_MERGED_PR: "no merged PR — the diff is still moving",
+    queue_watcher.SKIP_NO_MERGED_PR: "no merged PR linked — link it on the ticket or in a comment",
+    queue_watcher.SKIP_NO_SOURCE: "generator found no PR — link it on the ticket or in a comment",
+    queue_watcher.SKIP_GITHUB_UNREADABLE: "GitHub refuses the bot — held",
     queue_watcher.SKIP_ON_HOLD: "on hold — QA parked this ticket",
     queue_watcher.SKIP_CAP_REACHED: "per-sweep cap reached",
     queue_watcher.SKIP_NON_TESTABLE: "issue type isn't planned for",
@@ -54,6 +56,15 @@ def _apply_config_env() -> None:
     os.environ["LLM_PROVIDER"] = "claude"
 
 
+def skip_lines(result: queue_watcher.SweepResult) -> list[str]:
+    """`skipped <key> <reason>: <label>` per skipped ticket, for the log."""
+    lines = []
+    for o in result.skipped:
+        label = _REASON_LABEL.get(o.reason)
+        lines.append(f"skipped {o.ticket_key} {o.reason}" + (f": {label}" if label else ""))
+    return lines
+
+
 def _render(result: queue_watcher.SweepResult, *, quiet: bool) -> None:
     if result.queue_error:
         # An unreadable board is not an empty board — never let it read as
@@ -63,6 +74,10 @@ def _render(result: queue_watcher.SweepResult, *, quiet: bool) -> None:
     if quiet:
         for outcome in result.generated:
             print(outcome.ticket_key)
+        # One line per skip, every sweep: the quiet log used to show only
+        # timestamps while a ticket with no PR sat unplanned for a day.
+        for line in skip_lines(result):
+            print(line)
         return
 
     if not result.outcomes:
@@ -190,7 +205,7 @@ def watch(
     ] = None,
     quiet: Annotated[
         bool,
-        typer.Option("--quiet", "-q", help="Print only the keys that got a plan."),
+        typer.Option("--quiet", "-q", help="Log-friendly output: keys that got a plan, then one line per skipped ticket."),
     ] = False,
     anytime: Annotated[
         bool,
