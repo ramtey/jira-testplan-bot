@@ -64,6 +64,8 @@ class _Harness:
         # What Mongo returns for a ticket's first-ever outcome.
         self.record = AsyncMock(return_value=None)
         self.add_event = AsyncMock()
+        self.claim = AsyncMock(return_value=True)
+        self.release = AsyncMock()
 
     def __enter__(self):
         repo = auto_post.plan_repository
@@ -79,6 +81,8 @@ class _Harness:
             patch.object(auto_post.plan_posting, "post_one", self.post_one),
             patch.object(auto_post.auto_post_repository, "record", self.record),
             patch.object(auto_post.auto_post_repository, "add_event", self.add_event),
+            patch.object(auto_post.auto_post_repository, "claim", self.claim),
+            patch.object(auto_post.auto_post_repository, "release", self.release),
             patch.object(
                 auto_post.plan_service, "serialize_issue", lambda _issue: self.serialized
             ),
@@ -567,3 +571,57 @@ async def test_a_ticket_found_under_both_statuses_is_posted_once(monkeypatch):
          patch.object(queue_watcher.auto_post, "auto_post_own_plan", post):
         await queue_watcher.sweep_auto_post(projects=["SK"])
     post.assert_awaited_once()
+
+
+# --- one poster at a time across processes ----------------------------------
+
+
+async def test_a_post_holds_the_ticket_lease_and_gives_it_back():
+    with _Harness() as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "sk-1")
+    assert out.action == auto_post.POSTED
+    claimed = h.claim.await_args.kwargs
+    assert claimed["ticket_key"] == "SK-1"
+    assert claimed["lease_seconds"] == auto_post.CLAIM_LEASE_SECONDS
+    assert h.release.await_args.kwargs == {"ticket_key": "SK-1", "owner": claimed["owner"]}
+
+
+async def test_a_ticket_another_process_is_posting_is_skipped_and_not_recorded():
+    with _Harness() as h:
+        h.claim.return_value = False
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert (out.action, out.reason) == (auto_post.SKIPPED, auto_post.SKIP_POST_IN_PROGRESS)
+    h.post_one.assert_not_awaited()
+    h.jira.get_comments.assert_not_awaited()
+    # The holder records its own outcome; this one must not race it.
+    h.record.assert_not_awaited()
+    h.release.assert_not_awaited()
+
+
+async def test_no_claim_no_post():
+    with _Harness() as h:
+        h.claim.side_effect = RuntimeError("db down")
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert (out.action, out.reason) == (auto_post.FAILED, "claim_failed")
+    h.post_one.assert_not_awaited()
+
+
+async def test_the_lease_is_given_back_when_the_post_fails():
+    with _Harness(post_error=RuntimeError("Jira is down")) as h:
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.action == auto_post.FAILED
+    h.release.assert_awaited_once()
+
+
+async def test_a_failed_release_does_not_change_the_outcome():
+    with _Harness() as h:
+        h.release.side_effect = RuntimeError("db blip")
+        out = await auto_post.auto_post_own_plan(h.jira, "SK-1")
+    assert out.action == auto_post.POSTED
+
+
+async def test_a_dry_run_takes_no_lease():
+    with _Harness() as h:
+        await auto_post.auto_post_own_plan(h.jira, "SK-1", dry_run=True)
+    h.claim.assert_not_awaited()
+    h.release.assert_not_awaited()

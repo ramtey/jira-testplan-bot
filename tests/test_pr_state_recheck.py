@@ -408,6 +408,8 @@ async def test_auto_post_posts_the_refreshed_plan_instead_of_skipping_it_as_stal
             patch.object(auto_post.plan_posting, "post_one", post_one), \
             patch.object(auto_post.auto_post_repository, "record", AsyncMock(return_value=None)), \
             patch.object(auto_post.auto_post_repository, "add_event", AsyncMock()), \
+            patch.object(auto_post.auto_post_repository, "claim", AsyncMock(return_value=True)), \
+            patch.object(auto_post.auto_post_repository, "release", AsyncMock()), \
             patch.object(auto_post, "_alert", lambda _o: None), \
             patch.object(auto_post.plan_service, "serialize_issue", lambda _i: serialized):
         out = await auto_post.auto_post_own_plan(jira, "SK-3084")

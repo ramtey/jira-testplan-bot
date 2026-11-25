@@ -100,6 +100,7 @@ _AUTO_POST_LABEL = {
     auto_post.SKIP_ALREADY_LIVE: "a plan is already live",
     auto_post.POSTED_UPDATED: "regeneration updated in place",
     auto_post.SKIP_COMMENT_EXISTS: "ticket already has a plan comment",
+    auto_post.SKIP_POST_IN_PROGRESS: "another process is posting it",
     "dry_run": "would post",
 }
 

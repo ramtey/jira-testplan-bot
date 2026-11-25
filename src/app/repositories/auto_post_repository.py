@@ -8,10 +8,11 @@ a fetch overlapping a sweep would write the stale value back over this one.
 
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import timedelta, timezone
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from src.app.db.base import utcnow
 
@@ -20,6 +21,42 @@ COLLECTION = "auto_post_outcomes"
 # ticket's outcome, plus manual posts. Not one per sweep — a ticket the sweep
 # re-checks every five minutes would bury the week in identical skips.
 EVENTS = "auto_post_events"
+# One row per ticket while an auto-post is under way. The watcher (launchd)
+# and the API (Pull to testing, generate) are separate processes that both
+# post; each reads Jira for an existing plan comment first, and two reads a
+# few seconds apart both see none. This is the claim that serializes them.
+CLAIMS = "auto_post_claims"
+
+
+async def claim(
+    db: AsyncIOMotorDatabase, *, ticket_key: str, owner: str, lease_seconds: int
+) -> bool:
+    """Take the ticket's posting lease; False while someone else holds it.
+
+    `_id` is the ticket, so Mongo's own unique `_id` does the work and no
+    index is needed. The filter matches only an expired lease: a live one
+    makes the upsert insert a second `_id`, which Mongo refuses. A holder
+    that died is outlived by its lease, never by a person clearing it.
+    """
+    now = utcnow()
+    try:
+        await db[CLAIMS].find_one_and_update(
+            {"_id": ticket_key.upper(), "expires_at": {"$lte": now}},
+            {"$set": {
+                "owner": owner,
+                "claimed_at": now,
+                "expires_at": now + timedelta(seconds=lease_seconds),
+            }},
+            upsert=True,
+        )
+    except DuplicateKeyError:
+        return False
+    return True
+
+
+async def release(db: AsyncIOMotorDatabase, *, ticket_key: str, owner: str) -> None:
+    """Drop the lease, only if `owner` still holds it."""
+    await db[CLAIMS].delete_one({"_id": ticket_key.upper(), "owner": owner})
 
 
 async def record(

@@ -42,7 +42,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
+import socket
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,6 +77,12 @@ SKIP_GROUNDING_MOVED = "grounding_moved"
 # testing. History only, so "nothing logged" never has to be explained.
 SKIP_NOT_IN_TESTING = "not_in_testing"
 FAIL_FRESHNESS_UNKNOWN = "freshness_unknown"
+# Another process holds the ticket's posting lease. Not recorded: the holder
+# records its own outcome, and this one would race it for the slot.
+SKIP_POST_IN_PROGRESS = "post_in_progress"
+# Longer than the slowest post (dev panel 5-14s, formatter up to 30s, a
+# multi-part comment), short enough that a crashed holder costs one sweep.
+CLAIM_LEASE_SECONDS = 300
 # A POSTED outcome that edited the live older version's comment in place.
 POSTED_UPDATED = "updated"
 
@@ -344,6 +353,21 @@ async def auto_post_own_plan(
     """
     key = ticket_key.upper()
     seen: dict = {"plan_id": None}
+    # A dry run posts nothing, so it takes no lease and never blocks a post.
+    owner = None if dry_run else f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+    try:
+        if owner and not await auto_post_repository.claim(
+            get_db(), ticket_key=key, owner=owner, lease_seconds=CLAIM_LEASE_SECONDS
+        ):
+            logger.info("auto-post: %s is being posted by another process; skipped", key)
+            return AutoPostOutcome(
+                key, SKIPPED, SKIP_POST_IN_PROGRESS, "another auto-post is posting this ticket"
+            )
+    except Exception as exc:
+        # Posting without the lease is the race it exists to stop, and a
+        # database that cannot take a claim could not record the post either.
+        logger.exception("auto-post: could not claim %s", key)
+        return AutoPostOutcome(key, FAILED, "claim_failed", f"{type(exc).__name__}: {exc}")
     try:
         outcome = await _decide_and_post(jira, key, dry_run=dry_run, seen=seen)
     except Exception as exc:
@@ -351,6 +375,13 @@ async def auto_post_own_plan(
         outcome = AutoPostOutcome(
             key, FAILED, "post_failed", f"{type(exc).__name__}: {exc}", seen["plan_id"]
         )
+    finally:
+        if owner:
+            try:
+                await auto_post_repository.release(get_db(), ticket_key=key, owner=owner)
+            except Exception:
+                # The lease runs out on its own; until then the ticket skips.
+                logger.exception("auto-post: could not release the claim on %s", key)
     if not dry_run:
         try:
             previous = await auto_post_repository.record(
